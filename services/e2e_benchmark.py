@@ -210,9 +210,13 @@ class CLIProvider:
         return self.available
 
     def run(self, prompt: str, cwd: str, with_c3: bool = True,
-            timeout: int = 180) -> CLIResponse:
+            timeout: int = 180, multi_turn: bool = False) -> CLIResponse:
         """Execute prompt through CLI, return structured response."""
         response = CLIResponse()
+
+        if multi_turn and with_c3 and self.name == "claude":
+            return self._run_multi_turn(prompt, cwd, timeout)
+
         cmd = self._build_command(prompt, with_c3)
 
         env = os.environ.copy()
@@ -286,6 +290,99 @@ class CLIProvider:
             return cmd
 
         raise ValueError(f"Unknown provider: {self.name}")
+
+    def _run_multi_turn(self, prompt: str, cwd: str, timeout: int) -> CLIResponse:
+        """Two-prompt flow: explore first, then answer with --resume."""
+        response = CLIResponse()
+        exe = self.executable or self.name
+
+        env = os.environ.copy()
+        for block_var in ("CLAUDECODE", "CLAUDE_CODE", "GEMINI_CLI", "CODEX_CLI"):
+            env.pop(block_var, None)
+        env["C3_BENCHMARK_MODE"] = "1"
+        _cflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+        explore_prompt = (
+            f"Using C3 MCP tools, explore the codebase to understand the following. "
+            f"Do NOT answer yet — just gather context using c3_memory, c3_search, "
+            f"c3_compress, and c3_read.\n\nQuestion: {prompt}"
+        )
+        answer_prompt = (
+            f"Based on your exploration, now answer the question. "
+            f"Be specific with file paths, function names, and line numbers. "
+            f"Keep your answer concise (under 500 words).\n\nQuestion: {prompt}"
+        )
+
+        t0 = time.perf_counter()
+
+        try:
+            # Turn 1: Explore
+            cmd1 = [exe, "-p", explore_prompt, "--output-format", "json",
+                    "--permission-mode", self.permission_mode]
+            if self.model:
+                cmd1 += ["--model", self.model]
+
+            result1 = subprocess.run(
+                cmd1, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                env=env, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, creationflags=_cflags,
+            )
+
+            # Extract session ID from turn 1 for safe --resume
+            # (--continue would race under concurrent task_workers)
+            session_id = None
+            try:
+                data1_parsed = json.loads(result1.stdout or "{}")
+                session_id = data1_parsed.get("session_id") or data1_parsed.get("sessionId")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Turn 2: Answer — use --resume if we got a session ID, else --continue
+            cmd2 = [exe, "-p", answer_prompt, "--output-format", "json",
+                    "--permission-mode", self.permission_mode]
+            if session_id:
+                cmd2 += ["--resume", session_id]
+            else:
+                cmd2 += ["--continue"]
+            if self.model:
+                cmd2 += ["--model", self.model]
+
+            result2 = subprocess.run(
+                cmd2, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                env=env, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, creationflags=_cflags,
+            )
+
+            response.latency_ms = (time.perf_counter() - t0) * 1000
+            response.exit_code = result2.returncode
+            # Use turn 2 output as the main response (it has the answer)
+            response.raw_stdout = result2.stdout or ""
+            # Combine stderr from both turns for tool detection
+            response.raw_stderr = (result1.stderr or "") + "\n" + (result2.stderr or "")
+            self._parse_output(response)
+
+            # Merge cost/tokens from turn 1 if available
+            try:
+                data1 = json.loads(result1.stdout or "{}")
+                usage1 = data1.get("usage", data1.get("result", {}).get("usage", {}))
+                if usage1:
+                    response.input_tokens += usage1.get("input_tokens", 0)
+                    response.output_tokens += usage1.get("output_tokens", 0)
+                    response.cache_creation_tokens += usage1.get("cache_creation_input_tokens", 0)
+                    response.cache_read_tokens += usage1.get("cache_read_input_tokens", 0)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        except subprocess.TimeoutExpired:
+            response.latency_ms = timeout * 2 * 1000
+            response.error = f"Multi-turn timeout after {timeout}s"
+        except Exception as e:
+            response.latency_ms = (time.perf_counter() - t0) * 1000
+            response.error = str(e)
+
+        response.response_text = response.text
+        response.tool_usage = self._extract_tool_usage(response, with_c3=True)
+        return response
 
     def _parse_output(self, response: CLIResponse):
         """Parse raw output into structured response fields."""
@@ -1124,12 +1221,13 @@ class E2EBenchmark:
         )
 
         if self.verbose:
-            print(f"  >> {provider.name:>7} | C3 + BASE | starting in parallel...", flush=True)
+            mt_label = " [multi-turn]" if task.multi_turn else ""
+            print(f"  >> {provider.name:>7} | C3 + BASE | starting in parallel...{mt_label}", flush=True)
 
         # Run C3 and baseline concurrently — halves wall time per task
         with ThreadPoolExecutor(max_workers=2) as pool:
-            c3_future = pool.submit(provider.run, prompt, self._sandbox_path, True, self.timeout)
-            base_future = pool.submit(provider.run, prompt, self._sandbox_path, False, self.timeout)
+            c3_future = pool.submit(provider.run, prompt, self._sandbox_path, True, self.timeout, task.multi_turn)
+            base_future = pool.submit(provider.run, prompt, self._sandbox_path, False, self.timeout, False)
             tr.c3_response = c3_future.result()
             tr.baseline_response = base_future.result()
 
