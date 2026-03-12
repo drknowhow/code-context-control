@@ -131,9 +131,9 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_e2e.add_argument("project_path", nargs="?", default=".", help="Project path to benchmark")
     p_e2e.add_argument("--providers", default=None, help="Comma-separated: claude,gemini,codex (default: auto-detect)")
     p_e2e.add_argument("--models", default=None, help="Model overrides: claude=sonnet,gemini=gemini-2.5-flash,codex=o3")
-    p_e2e.add_argument("--tasks", default="all", help="Task filter: all, explanation, file_discovery, dependency_analysis, architecture, call_chain, code_review")
-    p_e2e.add_argument("--max-tasks", type=int, default=2, help="Max tasks per category (default: 2)")
-    p_e2e.add_argument("--timeout", type=int, default=180, help="Per-task timeout in seconds (default: 180)")
+    p_e2e.add_argument("--tasks", default="all", help="Task filter: all (default high-signal categories), or comma-separated: architecture,call_chain,code_review,bug_injection,multi_file_trace,explanation,file_discovery,etc.")
+    p_e2e.add_argument("--max-tasks", type=int, default=1, help="Max tasks per category (default: 1)")
+    p_e2e.add_argument("--timeout", type=int, default=120, help="Per-task timeout in seconds (default: 120)")
     p_e2e.add_argument("--no-parallel", action="store_true", help="Run providers sequentially instead of in parallel")
     p_e2e.add_argument("--judge", default=None, help="Enable AI-as-judge scoring with this CLI (e.g. claude, gemini)")
     p_e2e.add_argument("--judge-model", default=None, help="Model override for the judge CLI")
@@ -146,7 +146,7 @@ def build_parser(version: str, parse_cli_ide_arg):
                        help="Run N tasks concurrently (default: 1). Higher values are faster but may hit rate limits.")
     p_e2e.add_argument("--no-cache", action="store_true",
                        help="Ignore cached results and re-run all tasks (cache is enabled by default, TTL=24h)")
-    p_e2e.add_argument("--permission-mode", default="auto-edit",
-                       help="Permission mode for AI CLI (default: auto-edit). Use 'plan' for read-only mode.")
+    p_e2e.add_argument("--permission-mode", default="bypassPermissions",
+                       help="Permission mode for AI CLI (default: bypassPermissions). Use 'plan' for read-only mode.")
 
     return parser

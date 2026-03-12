@@ -5003,7 +5003,7 @@ def cmd_benchmark_e2e(args):
     # Detect providers
     requested = [p.strip() for p in args.providers.split(",")] if args.providers else None
     providers = detect_providers(requested, model_overrides,
-                                permission_mode=getattr(args, "permission_mode", "auto-edit"))
+                                permission_mode=getattr(args, "permission_mode", "bypassPermissions"))
     if not providers:
         print("\n  Error: No AI CLIs detected. Install claude, gemini, or codex.")
         return
@@ -5014,12 +5014,14 @@ def cmd_benchmark_e2e(args):
     indexer = CodeIndex(str(project_path), str(project_path / ".c3" / "index"))
     file_memory = FileMemoryStore(str(project_path))
     builder = TaskBuilder(str(project_path), indexer=indexer, file_memory=file_memory)
-    all_tasks = builder.build_tasks(max_per_category=args.max_tasks)
-
-    # Filter tasks by category
+    # Determine category filter
     if args.tasks and args.tasks != "all":
-        filter_cats = [c.strip() for c in args.tasks.split(",")]
-        all_tasks = [t for t in all_tasks if t.category in filter_cats]
+        categories = set(c.strip() for c in args.tasks.split(","))
+    else:
+        categories = None  # uses BENCHMARK_CATEGORIES default
+
+    all_tasks = builder.build_tasks(max_per_category=args.max_tasks,
+                                    categories=categories)
 
     if not all_tasks:
         print("\n  Error: No tasks generated. Is the project indexed? Run `c3 init` first.")
@@ -5067,7 +5069,7 @@ def cmd_benchmark_e2e(args):
         verbose=args.verbose,
         task_workers=task_workers,
         cache=use_cache,
-        permission_mode=getattr(args, "permission_mode", "auto-edit"),
+        permission_mode=getattr(args, "permission_mode", "bypassPermissions"),
     )
     results = bench.run_all()
 

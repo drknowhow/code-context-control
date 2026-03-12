@@ -187,7 +187,7 @@ class CLIProvider:
     executable: str = ""
     model: str | None = None
     available: bool = False
-    permission_mode: str = "auto-edit"
+    permission_mode: str = "bypassPermissions"
 
     def detect(self) -> bool:
         """Check if CLI is installed and accessible."""
@@ -220,7 +220,8 @@ class CLIProvider:
         cmd = self._build_command(prompt, with_c3)
 
         env = os.environ.copy()
-        for block_var in ("CLAUDECODE", "CLAUDE_CODE", "GEMINI_CLI", "CODEX_CLI"):
+        for block_var in ("CLAUDECODE", "CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT",
+                         "GEMINI_CLI", "CODEX_CLI"):
             env.pop(block_var, None)
         # Prevent C3 MCP server subprocesses from auto-restoring snapshots between tasks,
         # which would carry over accumulated budget from the previous task's session end.
@@ -297,7 +298,8 @@ class CLIProvider:
         exe = self.executable or self.name
 
         env = os.environ.copy()
-        for block_var in ("CLAUDECODE", "CLAUDE_CODE", "GEMINI_CLI", "CODEX_CLI"):
+        for block_var in ("CLAUDECODE", "CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT",
+                         "GEMINI_CLI", "CODEX_CLI"):
             env.pop(block_var, None)
         env["C3_BENCHMARK_MODE"] = "1"
         _cflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -855,7 +857,7 @@ class TaskResult:
 def detect_providers(
     requested: list[str] | None = None,
     model_overrides: dict[str, str] | None = None,
-    permission_mode: str = "auto-edit",
+    permission_mode: str = "bypassPermissions",
 ) -> list[CLIProvider]:
     """Detect available AI CLIs on the system."""
     all_providers = [
@@ -931,13 +933,13 @@ class E2EBenchmark:
         providers: list[CLIProvider],
         tasks: list[E2ETask],
         evaluator: Evaluator,
-        timeout: int = 180,
+        timeout: int = 120,
         parallel: bool = True,
         verbose: bool = False,
         on_progress: callable = None,
         task_workers: int = 1,
         cache: bool = True,
-        permission_mode: str = "auto-edit",
+        permission_mode: str = "bypassPermissions",
     ):
         self.project_path = str(Path(project_path).resolve())
         self.providers = providers
@@ -997,8 +999,28 @@ class E2EBenchmark:
                             s = os.path.join(src_c3, item)
                             if os.path.isfile(s):
                                 shutil.copy2(s, os.path.join(dst_c3, item))
+
+                    # Copy CLAUDE.md — required for C3 tool mandate
+                    for md_file in ("CLAUDE.md",):
+                        s = os.path.join(self.project_path, md_file)
+                        if os.path.isfile(s):
+                            shutil.copy2(s, os.path.join(worktree_dir, md_file))
+
+                    # Copy .mcp.json — registers C3 MCP server with Claude CLI
+                    src_mcp = os.path.join(self.project_path, ".mcp.json")
+                    if os.path.isfile(src_mcp):
+                        shutil.copy2(src_mcp, os.path.join(worktree_dir, ".mcp.json"))
+
+                    # Copy .claude/ settings (contains MCP hooks, local config)
+                    src_claude = os.path.join(self.project_path, ".claude")
+                    dst_claude = os.path.join(worktree_dir, ".claude")
+                    if os.path.isdir(src_claude) and not os.path.isdir(dst_claude):
+                        shutil.copytree(src_claude, dst_claude, dirs_exist_ok=True)
+
                     if not os.path.isfile(os.path.join(worktree_dir, "CLAUDE.md")):
                         print("  !! Warning: CLAUDE.md not found in worktree — C3 instructions may be missing")
+                    if not os.path.isfile(os.path.join(worktree_dir, ".mcp.json")):
+                        print("  !! Warning: .mcp.json not found in worktree — MCP tools won't be available")
                     sandbox_path = worktree_dir
                     if self.verbose:
                         print(f"  Sandbox: {worktree_dir}")
@@ -1222,12 +1244,12 @@ class E2EBenchmark:
         )
 
         if self.verbose:
-            mt_label = " [multi-turn]" if task.multi_turn else ""
-            print(f"  >> {provider.name:>7} | C3 + BASE | starting in parallel...{mt_label}", flush=True)
+            print(f"  >> {provider.name:>7} | C3 + BASE | starting in parallel...", flush=True)
 
         # Run C3 and baseline concurrently — halves wall time per task
+        # Always single-turn: multi-turn doubles wall time and causes timeouts
         with ThreadPoolExecutor(max_workers=2) as pool:
-            c3_future = pool.submit(provider.run, prompt, self._sandbox_path, True, self.timeout, task.multi_turn)
+            c3_future = pool.submit(provider.run, prompt, self._sandbox_path, True, self.timeout, False)
             base_future = pool.submit(provider.run, prompt, self._sandbox_path, False, self.timeout, False)
             tr.c3_response = c3_future.result()
             tr.baseline_response = base_future.result()
@@ -1290,7 +1312,6 @@ class E2EBenchmark:
                 "file_mention":  tr.c3_score.file_mention_score  - tr.baseline_score.file_mention_score,
                 "completeness":  tr.c3_score.completeness_score  - tr.baseline_score.completeness_score,
                 "structural":    tr.c3_score.structural_score    - tr.baseline_score.structural_score,
-                "hallucination": tr.c3_score.hallucination_score - tr.baseline_score.hallucination_score,
                 "keyword":       tr.c3_score.keyword_score       - tr.baseline_score.keyword_score,
             }
             worst_dim, worst_gap = min(dims.items(), key=lambda x: x[1])
@@ -1563,7 +1584,7 @@ def generate_e2e_report(
 
     # Score breakdown by dimension (averaged across all results)
     dimensions = ["keyword_score", "structural_score", "file_mention_score",
-                   "hallucination_score", "factual_score", "completeness_score"]
+                   "factual_score", "completeness_score"]
     dimension_breakdown = {}
     for dim in dimensions:
         c3_vals = [getattr(r.c3_score, dim, 0) for r in results]
@@ -2304,7 +2325,6 @@ def render_e2e_html(report: dict) -> str:
                 Keyword: {r['c3_score']['keyword_score']:.2f} |
                 Structural: {r['c3_score']['structural_score']:.2f} |
                 Files: {r['c3_score']['file_mention_score']:.2f} |
-                Halluc: {r['c3_score']['hallucination_score']:.2f} |
                 Factual: {r['c3_score']['factual_score']:.2f} |
                 Complete: {r['c3_score']['completeness_score']:.2f}
               </div>
@@ -2316,7 +2336,6 @@ def render_e2e_html(report: dict) -> str:
                 Keyword: {r['baseline_score']['keyword_score']:.2f} |
                 Structural: {r['baseline_score']['structural_score']:.2f} |
                 Files: {r['baseline_score']['file_mention_score']:.2f} |
-                Halluc: {r['baseline_score']['hallucination_score']:.2f} |
                 Factual: {r['baseline_score']['factual_score']:.2f} |
                 Complete: {r['baseline_score']['completeness_score']:.2f}
               </div>
@@ -2516,7 +2535,7 @@ def render_e2e_html(report: dict) -> str:
     <div class="label">$/mo Projected</div>
   </div>
   <div class="card">
-    <div class="big" style="color: var(--accent)">{report.get('tool_adoption', {{}}).get('adoption_rate', 0):.0f}%</div>
+    <div class="big" style="color: var(--accent)">{(report.get('tool_adoption') or {}).get('adoption_rate', 0):.0f}%</div>
     <div class="label">MCP Adoption</div>
   </div>
 </div>

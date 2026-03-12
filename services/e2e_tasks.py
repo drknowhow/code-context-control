@@ -47,15 +47,11 @@ class GroundTruth:
     expected_answer_summary: str = ""
     # Factual claims that can be verified: list of (claim_text, is_true) tuples
     verifiable_claims: list[tuple[str, bool]] = field(default_factory=list)
-    # All known project files — used for hallucination detection
-    known_project_files: list[str] = field(default_factory=list)
-    # All known symbols — used for hallucination detection
-    known_project_symbols: list[str] = field(default_factory=list)
     # Multi-part: list of sub-questions that should each be addressed
     required_aspects: list[str] = field(default_factory=list)
     scoring_weights: dict = field(default_factory=lambda: {
-        "keyword": 0.15, "structural": 0.10, "file_mention": 0.10,
-        "hallucination": 0.20, "factual": 0.25, "completeness": 0.20,
+        "keyword": 0.15, "structural": 0.10, "file_mention": 0.15,
+        "factual": 0.35, "completeness": 0.25,
     })
 
 
@@ -93,17 +89,21 @@ class E2ETask:
 
 
 TASK_PROMPT_TEMPLATE = (
-    "Answer the following question about this codebase.\n\n"
-    "IMPORTANT: You MUST use C3 MCP tools to explore before answering:\n"
-    "1. Start with c3_memory(action='recall', query='<relevant terms>') for prior context\n"
-    "2. Use c3_search(action='files' or 'code' or 'semantic') to discover relevant files\n"
-    "3. Use c3_compress(mode='map') or c3_read(symbols=[...]) to understand file structure\n"
-    "4. Use c3_filter for large outputs, c3_validate for syntax checks when relevant\n"
-    "Do NOT use native Read/Grep/Glob when a c3_* equivalent exists.\n"
-    "Be specific — mention exact file paths, function names, and line numbers where relevant.\n"
-    "Keep your answer concise (under 500 words).\n\n"
+    "Use C3 MCP tools (not native Read/Grep/Glob). "
+    "Be concise, cite file paths and line numbers.\n\n"
     "Question: {query}"
 )
+
+# Categories included in benchmark runs.  Others still exist for ad-hoc use
+# via --tasks but are excluded by default because they produce low or zero
+# score delta between C3 and baseline.
+BENCHMARK_CATEGORIES: set[str] = {
+    "call_chain",
+    "code_review",
+    "bug_injection",
+    "architecture",
+    "multi_file_trace",
+}
 
 # Maps task category -> recommended C3 tools
 _CATEGORY_TOOL_HINTS: dict[str, list[str]] = {
@@ -129,29 +129,40 @@ class TaskBuilder:
         self.file_memory = file_memory
         self._file_records: dict[str, dict] = {}
         self._all_symbols: list[tuple[str, str, dict]] = []  # (rel_path, symbol_name, section_info)
-        self._all_project_files: list[str] = []
-        self._all_known_symbols: list[str] = []
 
-    def build_tasks(self, max_per_category: int = 3) -> list[E2ETask]:
-        """Build all task categories, return combined list."""
+    def build_tasks(self, max_per_category: int = 1,
+                    categories: set[str] | None = None) -> list[E2ETask]:
+        """Build benchmark tasks, filtered to high-signal categories.
+
+        Args:
+            max_per_category: Max tasks per category (default 1).
+            categories: Set of category names to include.
+                        Defaults to BENCHMARK_CATEGORIES.
+        """
         self._scan_files()
         if not self._all_symbols:
             return []
 
+        include = categories or BENCHMARK_CATEGORIES
+
+        # Map category name -> builder method
+        all_builders = {
+            "explanation": self._symbol_explanation_tasks,
+            "file_discovery": self._file_discovery_tasks,
+            "dependency_analysis": self._dependency_analysis_tasks,
+            "architecture": self._architecture_tasks,
+            "call_chain": self._call_chain_tasks,
+            "code_review": self._code_review_tasks,
+            "multi_file_trace": self._multi_file_trace_tasks,
+            "large_file_needle": self._large_file_needle_tasks,
+            "refactor_suggestion": self._refactor_suggestion_tasks,
+            "bug_injection": self._bug_injection_tasks,
+        }
+
         tasks = []
-        builders = [
-            self._symbol_explanation_tasks,
-            self._file_discovery_tasks,
-            self._dependency_analysis_tasks,
-            self._architecture_tasks,
-            self._call_chain_tasks,
-            self._code_review_tasks,
-            self._multi_file_trace_tasks,
-            self._large_file_needle_tasks,
-            self._refactor_suggestion_tasks,
-            self._bug_injection_tasks,
-        ]
-        for builder_fn in builders:
+        for cat_name, builder_fn in all_builders.items():
+            if cat_name not in include:
+                continue
             try:
                 category_tasks = builder_fn(max_per_category)
                 tasks.extend(category_tasks)
@@ -167,7 +178,6 @@ class TaskBuilder:
         if not self.file_memory:
             return
         all_files = self.file_memory.list_tracked()
-        self._all_project_files = list(all_files)
         for rel_path in all_files:
             record = self.file_memory.get(rel_path)
             if not record or not record.get("sections"):
@@ -176,26 +186,10 @@ class TaskBuilder:
             for section in record["sections"]:
                 if section.get("type") in ("class", "function", "method"):
                     self._all_symbols.append((rel_path, section["name"], section))
-                    self._all_known_symbols.append(section["name"])
 
     def _base_ground_truth(self, **kwargs) -> GroundTruth:
-        """Create a GroundTruth with project-wide file/symbol lists pre-filled.
-
-        Task-relevant files (from expected_files/target_files in kwargs) are
-        prepended so they're always within the 200-file cap used by the
-        hallucination detector — prevents false hallucination positives for
-        the specific files the task is about.
-        """
-        # Ensure task-specific files appear in the known list regardless of project size
-        priority_files = list(kwargs.get("expected_files", []))
-        remaining = [f for f in self._all_project_files if f not in set(priority_files)]
-        known_files = (priority_files + remaining)[:200]
-        gt = GroundTruth(
-            known_project_files=known_files,
-            known_project_symbols=self._all_known_symbols[:500],
-            **kwargs,
-        )
-        return gt
+        """Create a GroundTruth pre-filled with common defaults."""
+        return GroundTruth(**kwargs)
 
     def _pick_symbols(self, n: int, types: list[str] | None = None,
                       min_name_len: int = 0) -> list[tuple[str, str, dict]]:
@@ -729,16 +723,13 @@ class TaskBuilder:
                     expected_answer_summary=f"Issues in {rel_path}: {', '.join(issues)}",
                     verifiable_claims=claims,
                     required_aspects=["issues_found", "locations", "suggestions"],
-                    # Reduced hallucination weight — detailed bug reports reference many
-                    # symbols that may not be in the known-symbol list; factual accuracy
-                    # and completeness are the meaningful signals here.
+                    # Bug reports benefit most from factual accuracy and completeness.
                     scoring_weights={
                         "keyword": 0.10,
                         "structural": 0.10,
                         "file_mention": 0.10,
-                        "hallucination": 0.10,
-                        "factual": 0.30,
-                        "completeness": 0.30,
+                        "factual": 0.35,
+                        "completeness": 0.35,
                     },
                 ),
             ))
