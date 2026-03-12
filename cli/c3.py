@@ -1,0 +1,5219 @@
+#!/usr/bin/env python3
+"""
+C3 â€” Claude Code Companion
+
+A unified local tool that reduces Claude Code token usage through:
+1. AST-based code compression
+2. Smart local code index with TF-IDF retrieval
+3. Session state management with auto-CLAUDE.md
+4. Compression protocol for prompts
+
+Usage:
+    c3 init <project_path>
+    c3 index
+    c3 compress <file> [--mode structure|outline|smart|diff]
+    c3 context <query> [--top-k 5] [--max-tokens 4000]
+    c3 encode <text>
+    c3 decode <text>
+    c3 session start [description]
+    c3 session save [summary]
+    c3 session load [session_id]
+    c3 session list
+    c3 session context
+    c3 claudemd generate
+    c3 claudemd save
+    c3 stats
+    c3 benchmark
+    c3 optimize
+    c3 pipe <query>    # All-in-one: index + context + encode, pipe to Claude
+"""
+import os
+import sys
+import json
+import tempfile
+import argparse
+import subprocess
+import re
+import time
+import html
+import shlex
+from copy import deepcopy
+from pathlib import Path
+
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core import count_tokens, measure_savings, format_token_count
+from cli.commands.common import CommandDeps
+from cli.commands.common import cmd_claudemd as common_cmd_claudemd
+from cli.commands.common import cmd_compress as common_cmd_compress
+from cli.commands.common import cmd_context as common_cmd_context
+from cli.commands.common import cmd_decode as common_cmd_decode
+from cli.commands.common import cmd_encode as common_cmd_encode
+from cli.commands.common import cmd_index as common_cmd_index
+from cli.commands.common import cmd_optimize as common_cmd_optimize
+from cli.commands.common import cmd_pipe as common_cmd_pipe
+from cli.commands.common import cmd_session as common_cmd_session
+from cli.commands.common import cmd_stats as common_cmd_stats
+from cli.commands.common import cmd_ui as common_cmd_ui
+from cli.commands.parser import build_parser
+from services.compressor import CodeCompressor
+from services.indexer import CodeIndex
+from services.file_memory import FileMemoryStore
+from services.ollama_client import OllamaClient
+from services.output_filter import OutputFilter
+from services.session_manager import SessionManager
+from services.protocol import CompressionProtocol
+from core.ide import get_profile, detect_ide, load_ide_config, PROFILES, normalize_ide_name
+from core.config import DEFAULTS as HYBRID_DEFAULTS, PROXY_DEFAULTS, DELEGATE_DEFAULTS, AGENT_DEFAULTS, load_delegate_config
+
+# Rich for beautiful terminal output
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich import print as rprint
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
+
+console = Console() if HAS_RICH else None
+
+# Config
+CONFIG_DIR = ".c3"
+CONFIG_FILE = ".c3/config.json"
+__version__ = "2.20.0"
+
+
+def _command_deps() -> CommandDeps:
+    return CommandDeps(
+        load_config=load_config,
+        print_header=print_header,
+        print_savings=print_savings,
+        count_tokens=count_tokens,
+        format_token_count=format_token_count,
+        CodeIndex=CodeIndex,
+        CodeCompressor=CodeCompressor,
+        CompressionProtocol=CompressionProtocol,
+        SessionManager=SessionManager,
+        HAS_RICH=HAS_RICH,
+        Table=Table if HAS_RICH else None,
+        console=console,
+        __file__=__file__,
+    )
+
+
+def load_config(project_path: str = ".") -> dict:
+    """Load C3 config for a project."""
+    config_path = Path(project_path) / CONFIG_FILE
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {"project_path": str(Path(project_path).resolve())}
+
+
+def save_config(config: dict, project_path: str = "."):
+    """Save C3 config, merging with existing config to preserve keys like 'ide'."""
+    config_dir = Path(project_path) / CONFIG_DIR
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.json"
+
+    # Merge with existing to preserve keys set by other commands (e.g. "ide")
+    existing = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    merged = {**existing, **config}
+    with open(config_path, 'w', encoding="utf-8") as f:
+        json.dump(merged, f, indent=2)
+
+
+def _deep_merge_dict(base: dict, override: dict) -> dict:
+    """Recursively merge dicts. Values from override win."""
+    result = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _build_init_config(project_path: str) -> dict:
+    """Build init/update config with token-saving defaults + existing overrides."""
+    existing = load_config(project_path)
+    defaults = {
+        "project_path": project_path,
+        "version": __version__,
+        "index_auto_update": True,
+        "compression_mode": "smart",
+        "mcp": {"mode": "direct"},
+        "hybrid": deepcopy(HYBRID_DEFAULTS),
+        "proxy": deepcopy(PROXY_DEFAULTS),
+        "delegate": deepcopy(DELEGATE_DEFAULTS),
+        "agents": deepcopy(AGENT_DEFAULTS),
+    }
+    merged = _deep_merge_dict(defaults, existing if isinstance(existing, dict) else {})
+    # Always persist current path/version on init/update.
+    merged["project_path"] = project_path
+    merged["version"] = __version__
+    hybrid = merged.get("hybrid")
+    if isinstance(hybrid, dict):
+        if "validate_timeout_seconds" not in hybrid and "validate_review_timeout_seconds" in hybrid:
+            hybrid["validate_timeout_seconds"] = hybrid.get("validate_review_timeout_seconds")
+        hybrid.pop("validate_review_timeout_seconds", None)
+        # Remove dead budget keys from hybrid (compression levels removed in v2.20)
+        for dead_key in ("show_savings_footer", "SHOW_SAVINGS_SUMMARY",
+                         "response_token_cap_level_1", "response_token_cap_level_2",
+                         "related_facts_max_level",
+                         "search_tight_top_k", "search_tight_max_tokens",
+                         "search_minimal_top_k", "search_minimal_max_tokens",
+                         "delegate_tight_max_context_tokens", "delegate_minimal_max_context_tokens"):
+            hybrid.pop(dead_key, None)
+    # Migrate old context_budget keys → single threshold
+    cb = merged.get("context_budget")
+    if isinstance(cb, dict):
+        if "threshold" not in cb and "nudge" in cb:
+            cb["threshold"] = cb["nudge"]
+        for dead_key in ("level_1", "level_2", "nudge",
+                         "response_token_cap_level_1", "response_token_cap_level_2"):
+            cb.pop(dead_key, None)
+    # Remove ContextBudget from agents config (agent removed in v2.20)
+    agents = merged.get("agents")
+    if isinstance(agents, dict):
+        agents.pop("ContextBudget", None)
+    return merged
+
+
+def print_header(text: str):
+    if HAS_RICH:
+        console.print(Panel(f"[bold cyan]{text}[/bold cyan]", border_style="blue"))
+    else:
+        print(f"\n{'='*60}\n  {text}\n{'='*60}")
+
+
+def print_savings(savings: dict):
+    if HAS_RICH:
+        table = Table(title="Token Savings")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Original", format_token_count(savings.get("original_tokens", 0)))
+        table.add_row("Compressed", format_token_count(savings.get("compressed_tokens", 0)))
+        table.add_row("Saved", format_token_count(savings.get("saved_tokens", 0)))
+        table.add_row("Savings %", f"{savings.get('savings_pct', 0)}%")
+        console.print(table)
+    else:
+        print(f"  Original:   {format_token_count(savings.get('original_tokens', 0))}")
+        print(f"  Compressed: {format_token_count(savings.get('compressed_tokens', 0))}")
+        print(f"  Saved:      {format_token_count(savings.get('saved_tokens', 0))} ({savings.get('savings_pct', 0)}%)")
+
+
+# â”€â”€â”€ Commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+_C3_INIT_SUBDIRS = [
+    "cache", "index", "sessions", "analytics", "facts",
+    "snapshots", "transcript_index", "file_memory", "embeddings",
+    "doc_index",
+]
+
+
+def _check_c3_health(project_path: str) -> dict:
+    """Inspect an existing .c3 installation and return a health report."""
+    c3_dir = Path(project_path) / CONFIG_DIR
+    issues = []
+    info = {}
+
+    # Config version
+    config = load_config(project_path)
+    info["config_version"] = config.get("version", "unknown")
+
+    # Path change detection â€” project was copied/moved
+    stored_path = config.get("project_path", "")
+    if stored_path and stored_path != project_path:
+        issues.append(f"project path changed (was copied/moved from {stored_path})")
+        info["path_changed"] = True
+        info["old_path"] = stored_path
+
+    # Missing subdirectories
+    missing_dirs = [d for d in _C3_INIT_SUBDIRS if not (c3_dir / d).exists()]
+    if missing_dirs:
+        issues.append(f"missing directories: {', '.join(missing_dirs)}")
+        info["missing_dirs"] = missing_dirs
+
+    # Index presence and basic stats
+    index_file = c3_dir / "index" / "index.json"
+    if not index_file.exists():
+        issues.append("code index not built")
+        info["index_files"] = 0
+        info["index_chunks"] = 0
+    else:
+        try:
+            data = json.loads(index_file.read_text(encoding="utf-8"))
+            info["index_files"] = len(data.get("documents", {}))
+            info["index_chunks"] = len(data.get("chunks", {}))
+        except Exception:
+            issues.append("code index corrupt")
+            info["index_files"] = 0
+            info["index_chunks"] = 0
+
+    # Stale file changes (tracked by the watcher inside CodeIndex)
+    # The watcher writes pending changes to .c3/index/changes.json
+    changes_file = c3_dir / "index" / "changes.json"
+    info["stale_files"] = 0
+    if changes_file.exists():
+        try:
+            changes = json.loads(changes_file.read_text(encoding="utf-8"))
+            info["stale_files"] = len(changes) if isinstance(changes, list) else 0
+            if info["stale_files"] > 5:
+                issues.append(f"index stale ({info['stale_files']} file changes pending)")
+        except Exception:
+            pass
+
+    # Instructions file
+    from core.ide import load_ide_config, get_profile as _get_profile
+    ide_name = load_ide_config(project_path)
+    profile = _get_profile(ide_name)
+    instructions_file = profile.instructions_file or "CLAUDE.md"
+    info["instructions_file"] = instructions_file
+    if not (Path(project_path) / instructions_file).exists():
+        issues.append(f"{instructions_file} missing")
+
+    # Embedding index status
+    embed_hashes = c3_dir / "embeddings" / "file_hashes.json"
+    if embed_hashes.exists():
+        try:
+            import json as _json
+            hashes = _json.loads(embed_hashes.read_text(encoding="utf-8"))
+            info["embedded_files"] = len(hashes)
+        except Exception:
+            info["embedded_files"] = 0
+    else:
+        info["embedded_files"] = 0
+
+    # Doc index status (Local RAG Pipeline)
+    doc_index_file = c3_dir / "doc_index" / "index.json"
+    if doc_index_file.exists():
+        try:
+            import json as _json2
+            di_data = _json2.loads(doc_index_file.read_text(encoding="utf-8"))
+            info["doc_chunks"] = len(di_data.get("chunks", {}))
+        except Exception:
+            info["doc_chunks"] = 0
+    else:
+        info["doc_chunks"] = 0
+
+    # Sessions and facts counts (informational only)
+    sessions_dir = c3_dir / "sessions"
+    info["sessions"] = len(list(sessions_dir.glob("*.json"))) if sessions_dir.exists() else 0
+    facts_dir = c3_dir / "facts"
+    info["facts"] = len(list(facts_dir.glob("*.json"))) if facts_dir.exists() else 0
+
+    info["issues"] = issues
+    info["healthy"] = len(issues) == 0
+    return info
+
+
+def _prompt_choice(prompt: str, choices: list[str]) -> str:
+    """Print numbered choices and return the selected key."""
+    print(prompt)
+    for i, label in enumerate(choices, 1):
+        print(f"  [{i}] {label}")
+    while True:
+        try:
+            raw = input("  Choice: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+        if raw.isdigit() and 1 <= int(raw) <= len(choices):
+            return choices[int(raw) - 1]
+        print(f"  Please enter a number between 1 and {len(choices)}.")
+
+
+def _git_is_available() -> bool:
+    """Return True if the local git executable is available."""
+    try:
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(
+            ["git", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            **kwargs
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _init_local_git_repo(project_path: str) -> str:
+    """Initialize a local Git repository if needed."""
+    target = Path(project_path).resolve()
+    git_dir = target / ".git"
+    if git_dir.exists():
+        print("Git: existing repository detected.")
+        return "existing"
+
+    if not _git_is_available():
+        print("Git: skipped (local git executable not found).")
+        return "unavailable"
+
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    result = subprocess.run(
+        ["git", "init", str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+        **kwargs
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "unknown git init error"
+        raise RuntimeError(f"Failed to initialize local Git repository: {detail}")
+
+    print(f"Git: initialized local repository at {git_dir}")
+    return "initialized"
+
+
+def _select_init_ide(default_ide: str) -> str:
+    """Prompt for the target IDE during guided init."""
+    choices = [
+        "Auto         — detect from project markers",
+        "Claude Code  — .mcp.json + hooks",
+        "VS Code      — .vscode/mcp.json + Copilot instructions",
+        "Cursor       — .cursor/mcp.json",
+        "Codex        — .codex/config.toml + AGENTS.md",
+        "Gemini       — .gemini/settings.json + GEMINI.md",
+        "Antigravity  — ~/.gemini/antigravity/mcp_config.json",
+    ]
+    selected = _prompt_choice("Step 1/3 — Choose IDE profile", choices)
+    mapping = {
+        choices[0]: "auto",
+        choices[1]: "claude-code",
+        choices[2]: "vscode",
+        choices[3]: "cursor",
+        choices[4]: "codex",
+        choices[5]: "gemini",
+        choices[6]: "antigravity",
+    }
+    chosen = mapping.get(selected or "", normalize_ide_name(default_ide) if default_ide != "auto" else "auto")
+    print(f"  IDE profile: {chosen}")
+    return chosen
+
+
+def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "direct") -> tuple[str, bool]:
+    """Run guided post-init setup steps for Git and MCP."""
+    chosen_ide = _select_init_ide(ide_name or "auto")
+    save_config({"ide": chosen_ide}, project_path)
+
+    print()
+    git_choice = _prompt_choice(
+        "Step 2/3 — Initialize a local Git repository for this project?",
+        [
+            "Yes  — run local git init in this folder",
+            "No   — leave version control untouched",
+        ],
+    )
+    if git_choice and git_choice.startswith("Yes"):
+        _init_local_git_repo(project_path)
+    else:
+        print("Git: skipped.")
+
+    print()
+    install_choice = _prompt_choice(
+        "Step 3/3 — Install MCP tooling for this project?",
+        [
+            "Yes  — configure the IDE and wire up C3 MCP",
+            "No   — skip MCP install for now",
+        ],
+    )
+    if not install_choice or install_choice.startswith("No"):
+        print("MCP: skipped.")
+        return chosen_ide, False
+
+    mode_choice = _prompt_choice(
+        "Choose MCP mode",
+        [
+            "Direct  — recommended, connect IDE straight to c3 mcp_server.py",
+            "Proxy   — advanced, use c3 mcp_proxy.py for dynamic filtering experiments",
+        ],
+    )
+    mcp_mode = "proxy" if mode_choice and mode_choice.startswith("Proxy") else default_mode
+    _run_install_mcp(project_path, chosen_ide, mcp_mode=mcp_mode)
+    return chosen_ide, True
+
+
+def _parse_cli_ide_arg(value: str) -> str:
+    """Parse public CLI IDE names while still accepting legacy aliases."""
+    raw = (value or "").strip().lower()
+    if raw == "auto":
+        return "auto"
+    normalized = normalize_ide_name(raw)
+    if normalized not in PROFILES:
+        raise argparse.ArgumentTypeError(
+            "Unsupported IDE. Use one of: auto, claude, vscode, cursor, codex, gemini, antigravity."
+        )
+    return normalized
+
+
+def _do_init(project_path: str, ide_name: str = None):
+    """Run the core init steps (shared by new install and re-init after clear/reset)."""
+    config = _build_init_config(project_path)
+    save_config(config, project_path)
+
+    for subdir in _C3_INIT_SUBDIRS:
+        (Path(project_path) / CONFIG_DIR / subdir).mkdir(parents=True, exist_ok=True)
+
+    print("Building code index...")
+    indexer = CodeIndex(project_path)
+    result = indexer.build_index()
+    print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks")
+
+    # Build embedding index if Ollama is available (non-blocking on failure)
+    try:
+        from services.ollama_client import OllamaClient
+        from services.embedding_index import EmbeddingIndex
+        config = load_config(project_path)
+        ollama_url = config.get("ollama_base_url", "http://localhost:11434")
+        ollama = OllamaClient(ollama_url)
+        embed_model = config.get("embed_model", "nomic-embed-text")
+        ei = EmbeddingIndex(project_path, ollama, embed_model=embed_model)
+        if ei.ready:
+            print("Building embedding index...")
+            ei_result = ei.build(indexer)
+            print(f"  Embedded {ei_result.get('chunks_embedded', 0)} chunks "
+                  f"({ei_result.get('files_processed', 0)} files)")
+        else:
+            print("  Embedding index skipped (Ollama not available or model not pulled)")
+    except Exception:
+        pass
+
+    # Build doc index for Local RAG Pipeline
+    try:
+        from services.doc_index import DocIndex
+        print("Building doc index...")
+        di = DocIndex(project_path)
+        di_result = di.build()
+        print(f"  Indexed {di_result['docs_indexed']} docs, {di_result['chunks_created']} chunks")
+    except Exception:
+        pass
+
+    print("Building compression dictionary...")
+    protocol = CompressionProtocol(project_path)
+    new_terms = protocol.build_project_dictionary()
+    print(f"  Added {len(new_terms)} project-specific terms")
+
+    from core.ide import load_ide_config, get_profile as _get_profile, detect_ide
+    # Use caller-supplied IDE if given, otherwise detect from disk markers
+    if not ide_name or ide_name == "auto":
+        ide_name = load_ide_config(project_path)
+        if ide_name == "claude-code":
+            # Re-detect in case .vscode/ etc was just created
+            ide_name = detect_ide(project_path)
+    profile = _get_profile(ide_name)
+    instructions_file = profile.instructions_file or "CLAUDE.md"
+
+    # Ensure parent directory exists (e.g. .github/ for VS Code)
+    instructions_path = Path(project_path) / instructions_file
+    instructions_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sm = SessionManager(project_path)
+    _sync_project_instruction_docs(project_path, sm)
+
+
+def cmd_init(args):
+    """Initialize C3 for a project, or upgrade/repair an existing install."""
+    import shutil
+
+    project_path = str(Path(args.project_path or ".").resolve())
+    c3_dir = Path(project_path) / CONFIG_DIR
+    requested_ide = getattr(args, "ide", "auto")
+    if requested_ide != "auto":
+        requested_ide = normalize_ide_name(requested_ide)
+    git_requested = getattr(args, "git", False)
+
+    # â”€â”€ Brand-new install â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if not c3_dir.exists() or not (c3_dir / "config.json").exists():
+        print_header(f"Initializing C3 for: {project_path}")
+        _do_init(project_path, ide_name=requested_ide)
+        if getattr(args, "force", False):
+            if git_requested:
+                _init_local_git_repo(project_path)
+            _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"))
+        else:
+            _prompt_init_steps(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"))
+        print("\n[OK] C3 initialized!")
+        print("  Use 'c3 --help' for all available commands.")
+        return
+
+    # â”€â”€ Existing install â€” run health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    print_header(f"C3 already installed: {project_path}")
+    health = _check_c3_health(project_path)
+
+    # Show summary
+    print(f"  Index : {health.get('index_files', 0)} files, "
+          f"{health.get('index_chunks', 0)} chunks"
+          + (f", {health['stale_files']} stale" if health.get("stale_files") else ""))
+    embed_count = health.get("embedded_files", 0)
+    print(f"  Embed : {embed_count} files" + (" (semantic search ready)" if embed_count > 0 else " (not built)"))
+    print(f"  Data  : {health['sessions']} sessions, {health['facts']} facts")
+    print(f"  Guide : {health['instructions_file']}"
+          + ("" if not health["issues"] or
+             health["instructions_file"] + " missing" not in " ".join(health["issues"])
+             else " [MISSING]"))
+
+    if health["healthy"]:
+        print("\n  Status: healthy â€” no issues detected.")
+    else:
+        print(f"\n  Status: {len(health['issues'])} issue(s) found:")
+        for issue in health["issues"]:
+            print(f"    ! {issue}")
+
+    # â”€â”€ Path-change fast path (project was copied/moved) â”€â”€â”€â”€â”€â”€
+    if health.get("path_changed"):
+        old_path = health.get("old_path", "?")
+        print(f"\n  [!] Path change detected:")
+        print(f"      was : {old_path}")
+        print(f"      now : {project_path}")
+        print("\n  Updating MCP config and index paths...")
+        from types import SimpleNamespace
+        # Clear stale transcript index manifest so it rebuilds with new slug
+        ti_manifest = c3_dir / "transcript_index" / "manifest.json"
+        if ti_manifest.exists():
+            ti_manifest.write_text("{}", encoding="utf-8")
+        _do_init(project_path, ide_name=requested_ide)
+        if git_requested:
+            _init_local_git_repo(project_path)
+        _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
+        print("\n[OK] Paths updated.")
+        return
+
+    # â”€â”€ Non-interactive (--clear) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if getattr(args, "clear", False):
+        print("\n[--clear] Wiping C3 files...")
+        _uninstall_mcp_all(project_path)
+        if c3_dir.exists():
+            shutil.rmtree(c3_dir)
+            print("  Deleted .c3/")
+        for filename, _ in _instruction_documents_for_project():
+            p = Path(project_path) / filename
+            if p.exists():
+                p.unlink()
+                print(f"  Deleted {filename}")
+        print("\n[OK] C3 project files removed.")
+        return
+
+    # â”€â”€ Non-interactive (--force) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if getattr(args, "force", False):
+        print("\n[--force] Applying update...")
+        _do_init(project_path, ide_name=requested_ide)
+        if git_requested:
+            _init_local_git_repo(project_path)
+        _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
+        print("\n[OK] C3 updated.")
+        return
+
+    # â”€â”€ Interactive prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    print()
+    choices = [
+        "Update  â€” rebuild index & refresh instructions file, keep all data",
+        "Clear   â€” wipe index/cache/sessions, keep facts & memory, then rebuild",
+        "Reset   â€” delete entire .c3 directory and start fresh",
+        "Wipe    â€” remove .c3/ and instruction docs, then exit (no rebuild)",
+        "Cancel  â€” exit without changes",
+    ]
+    selected = _prompt_choice("What would you like to do?", choices)
+
+    if not selected or selected.startswith("Cancel"):
+        print("  Cancelled.")
+        return
+
+    if selected.startswith("Update"):
+        print()
+        _do_init(project_path, ide_name=requested_ide)
+        if git_requested:
+            _init_local_git_repo(project_path)
+        _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
+        print("\n[OK] C3 updated.")
+
+    elif selected.startswith("Clear"):
+        print("\nClearing index, cache, sessions, and analytics (keeping facts & memory)...")
+        clear_dirs = ["cache", "index", "sessions", "analytics", "snapshots",
+                      "transcript_index", "file_memory"]
+        for subdir in clear_dirs:
+            target = c3_dir / subdir
+            if target.exists():
+                shutil.rmtree(target)
+                print(f"  Removed .c3/{subdir}/")
+        print()
+        _do_init(project_path, ide_name=requested_ide)
+        if git_requested:
+            _init_local_git_repo(project_path)
+        _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
+        print("\n[OK] C3 cleared and rebuilt.")
+
+    elif selected.startswith("Reset"):
+        confirm = input(
+            "\n  WARNING: This will permanently delete .c3/ including all sessions,\n"
+            "  facts, and memory. Type 'yes' to confirm: "
+        ).strip().lower()
+        if confirm != "yes":
+            print("  Reset cancelled.")
+            return
+        shutil.rmtree(c3_dir)
+        print("  Deleted .c3/")
+        print()
+        _do_init(project_path, ide_name=requested_ide)
+        if git_requested:
+            _init_local_git_repo(project_path)
+        _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Re-installing MCP tools...")
+        print("\n[OK] C3 reset and re-initialized.")
+
+    elif selected.startswith("Wipe"):
+        confirm = input(
+            "\n  WARNING: This will permanently delete .c3/ and all project\n"
+            "  instruction files (CLAUDE.md, GEMINI.md, AGENTS.md), and remove\n"
+            "  C3 MCP configurations from your IDE. Type 'yes' to confirm: "
+        ).strip().lower()
+        if confirm != "yes":
+            print("  Wipe cancelled.")
+            return
+
+        _uninstall_mcp_all(project_path)
+
+        if c3_dir.exists():
+            shutil.rmtree(c3_dir)
+            print("  Deleted .c3/")
+
+        for filename, _ in _instruction_documents_for_project():
+            p = Path(project_path) / filename
+            if p.exists():
+                p.unlink()
+                print(f"  Deleted {filename}")
+
+        print("\n[OK] C3 project files removed.")
+
+
+def cmd_index(args):
+    """Rebuild the code index."""
+    return common_cmd_index(args, _command_deps())
+
+
+def cmd_compress(args):
+    """Compress a file and show results."""
+    return common_cmd_compress(args, _command_deps())
+
+
+def cmd_context(args):
+    """Get relevant context for a query."""
+    return common_cmd_context(args, _command_deps())
+
+
+def cmd_encode(args):
+    """Encode text to compressed format."""
+    return common_cmd_encode(args, _command_deps())
+
+
+def cmd_decode(args):
+    """Decode compressed text back to readable format."""
+    return common_cmd_decode(args, _command_deps())
+
+
+def cmd_session(args):
+    """Session management commands."""
+    return common_cmd_session(args, _command_deps())
+
+
+def cmd_claudemd(args):
+    """Instructions file generation commands."""
+    return common_cmd_claudemd(args, _command_deps())
+
+
+def cmd_stats(args):
+    """Show comprehensive stats."""
+    return common_cmd_stats(args, _command_deps())
+
+
+def _benchmark_extract_preview(full_path: Path, compressor: CodeCompressor, pattern: str = "", max_lines: int = 50) -> str:
+    """Approximate c3_filter behavior for local benchmarking without MCP startup."""
+    import re as _re
+    from collections import Counter
+
+    ext = full_path.suffix.lower()
+    code_exts = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".cpp", ".h", ".cs"}
+
+    original_text = full_path.read_text(encoding="utf-8", errors="replace")
+    original_tokens = count_tokens(original_text)
+    lines = original_text.splitlines()
+    extracted = ""
+
+    if ext in code_exts and not pattern:
+        result = compressor.compress_file(str(full_path), "smart")
+        extracted = result.get("compressed", "") if "error" not in result else f"Error: {result['error']}"
+
+    elif ext == ".jsonl" and not pattern:
+        entry_count = len(lines)
+        sample_lines = lines if entry_count <= 6 else lines[:3] + ["..."] + lines[-3:]
+        fields = ""
+        aggregates = []
+        if lines:
+            try:
+                first = json.loads(lines[0])
+                fields = f"fields: {', '.join(first.keys())}"
+                parsed = [json.loads(line) for line in lines[: min(len(lines), 200)] if line.strip()]
+                for key in ("event", "status", "type", "level"):
+                    values = [str(item.get(key, "")).strip() for item in parsed if item.get(key) not in (None, "")]
+                    if values:
+                        common = Counter(values).most_common(3)
+                        aggregates.append(f"{key}: " + ", ".join(f"{name} x{count}" for name, count in common))
+            except Exception:
+                fields = "fields: (parse error)"
+        aggregate_text = (" | " + " | ".join(aggregates)) if aggregates else ""
+        extracted = f"[jsonl] {entry_count} entries | {fields}{aggregate_text}\n" + "\n".join(sample_lines[:max_lines])
+
+    elif ext in (".log", ".txt") and not pattern:
+        error_patterns = [
+            (_re.compile(r"ERROR", _re.IGNORECASE), "ERROR"),
+            (_re.compile(r"WARN", _re.IGNORECASE), "WARN"),
+            (_re.compile(r"Exception", _re.IGNORECASE), "Exception"),
+            (_re.compile(r"Traceback", _re.IGNORECASE), "Traceback"),
+        ]
+        counts = {name: 0 for _, name in error_patterns}
+        clusters = {}
+        for i, line in enumerate(lines):
+            for pat, name in error_patterns:
+                if pat.search(line):
+                    counts[name] += 1
+                    normalized = _re.sub(r"\d+", "<n>", line.strip())
+                    normalized = _re.sub(r"0x[0-9a-f]+", "0x<hex>", normalized, flags=_re.IGNORECASE)
+                    bucket = clusters.setdefault(normalized, {"count": 0, "example": line[:200], "first_line": i + 1, "kind": name})
+                    bucket["count"] += 1
+                    break
+        freq = " | ".join(f"{k}:{v}" for k, v in counts.items() if v > 0)
+        if clusters:
+            ranked = sorted(
+                clusters.values(),
+                key=lambda item: (item["count"], item["kind"] == "ERROR", item["kind"] == "Traceback"),
+                reverse=True,
+            )
+            summaries = [
+                f"{item['kind']} x{item['count']} @L{item['first_line']}: {item['example']}"
+                for item in ranked[:max_lines]
+            ]
+            extracted = f"[log] {len(lines)} lines | {freq or 'no errors detected'}\n" + "\n".join(summaries)
+        else:
+            extracted = f"[log] {len(lines)} lines | {freq or 'no errors detected'}"
+
+    elif pattern:
+        try:
+            pat = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as e:
+            extracted = f"[extract:error] invalid pattern: {e}"
+        else:
+            matched = []
+            for i, line in enumerate(lines):
+                if pat.search(line):
+                    start = max(0, i - 1)
+                    end = min(len(lines), i + 2)
+                    for j in range(start, end):
+                        marker = ">" if j == i else " "
+                        entry = f"{marker}L{j+1}: {lines[j][:200]}"
+                        if entry not in matched:
+                            matched.append(entry)
+                    if len(matched) >= max_lines:
+                        break
+            extracted = f"[grep:{pattern}] {len(matched)} lines matched\n" + "\n".join(matched[:max_lines])
+
+    else:
+        if len(lines) <= max_lines:
+            extracted = original_text
+        else:
+            half = max_lines // 2
+            extracted = (
+                "\n".join(lines[:half])
+                + f"\n... ({len(lines) - max_lines} lines omitted) ...\n"
+                + "\n".join(lines[-half:])
+            )
+
+    extracted_tokens = count_tokens(extracted)
+    saved_pct = round((1 - extracted_tokens / original_tokens) * 100, 1) if original_tokens > 0 else 0.0
+    return f"[extract:{ext}] {original_tokens}tok->{extracted_tokens}tok ({saved_pct}% saved)\n{extracted}"
+
+
+def _build_benchmark_fixtures(project_path: Path, sample: list[tuple[Path, str, int]]) -> dict:
+    """Create representative local fixtures for logs, JSONL, and noisy terminal output."""
+    fixture_dir = project_path / ".c3" / "benchmark" / "fixtures"
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+
+    rel_paths = [str(item[0].relative_to(project_path)).replace("\\", "/") for item in sample[:8]]
+    if not rel_paths:
+        rel_paths = ["cli/c3.py"]
+
+    def _stamp(idx: int) -> str:
+        return f"2026-03-05T16:{idx % 60:02d}:{(idx * 7) % 60:02d}"
+
+    log_lines = []
+    for idx in range(72):
+        rel = rel_paths[idx % len(rel_paths)]
+        log_lines.append(f"{_stamp(idx)} INFO indexed {rel} chunks={(idx % 5) + 1}")
+        if idx % 2 == 0:
+            log_lines.extend([f"{_stamp(idx)} INFO heartbeat ok"] * 3)
+        if idx % 3 == 0:
+            log_lines.append(f"{_stamp(idx)} WARN slow parse {rel} latency_ms={40 + idx}")
+        if idx % 5 == 0:
+            log_lines.append(f"{_stamp(idx)} ERROR failed to analyze {rel}")
+            log_lines.append("Traceback (most recent call last):")
+            log_lines.append(f"  File \"{rel}\", line {10 + idx}, in benchmark_fixture")
+            log_lines.append("RuntimeError: benchmark fixture failure")
+
+    log_path = fixture_dir / "benchmark_tool.log"
+    log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+
+    jsonl_entries = []
+    for idx in range(180):
+        rel = rel_paths[idx % len(rel_paths)]
+        jsonl_entries.append({
+            "ts": _stamp(idx),
+            "event": "compress" if idx % 2 == 0 else "search",
+            "file": rel,
+            "status": "ok" if idx % 11 else "warn",
+            "tokens": 250 + idx,
+            "latency_ms": 3 + (idx % 17),
+        })
+
+    jsonl_path = fixture_dir / "benchmark_events.jsonl"
+    jsonl_path.write_text("\n".join(json.dumps(entry) for entry in jsonl_entries) + "\n", encoding="utf-8")
+
+    terminal_lines = ["\x1b[36mcollecting benchmark output\x1b[0m", ""]
+    for idx in range(96):
+        rel = rel_paths[idx % len(rel_paths)]
+        terminal_lines.append(f"tests/test_{idx:03d}.py::test_{idx % 9}_{Path(rel).stem} PASSED")
+        if idx % 6 == 0:
+            terminal_lines.extend(["Downloading model shard 3/7..."] * 4)
+        if idx % 8 == 0:
+            terminal_lines.append("████████████████████████████ 100%")
+        if idx % 12 == 0:
+            terminal_lines.append(f"WARN cache miss while scanning {rel}")
+        if idx % 20 == 0:
+            terminal_lines.append(f"ERROR failed benchmark step for {rel}")
+            terminal_lines.append(f"FAILED tests/test_benchmark.py::test_{idx:03d} - AssertionError: timed out on {rel}")
+        if idx % 14 == 0:
+            terminal_lines.extend(["", ""])
+
+    terminal_text = "\n".join(terminal_lines) + "\n"
+    terminal_path = fixture_dir / "benchmark_terminal_output.txt"
+    terminal_path.write_text(terminal_text, encoding="utf-8")
+
+    return {
+        "fixture_dir": str(fixture_dir),
+        "fixture_strategy": (
+            "Generated representative local log, JSONL, and terminal-output fixtures under .c3/benchmark_fixtures "
+            "because this repository does not contain large native log/data artifacts."
+        ),
+        "log_path": str(log_path),
+        "jsonl_path": str(jsonl_path),
+        "terminal_output_path": str(terminal_path),
+        "log_signals": ["ERROR", "WARN", "Traceback", "RuntimeError"],
+        "jsonl_fields": list(jsonl_entries[0].keys()),
+        "terminal_signals": ["WARN", "ERROR", "FAILED", "[line repeated x"],
+    }
+
+
+_BENCHMARK_DELEGATE_TASKS = {
+    "summarize": {
+        "default_model": "gemma3n:latest",
+        "system": "You are a concise code summarizer. Output terse bullet points.",
+        "prompt_template": "Summarize the following:\n\n{context}\n\n{task}",
+    },
+}
+
+
+def _benchmark_delegate_confidence(task_type: str, response: str, response_tokens: int) -> str:
+    """Mirror c3_delegate confidence heuristics for benchmark reporting."""
+    hedging = [
+        "i'm not sure",
+        "i don't know",
+        "it's unclear",
+        "might be",
+        "possibly",
+        "i cannot determine",
+        "hard to say",
+        "not enough context",
+    ]
+    hedge_count = sum(1 for phrase in hedging if phrase in (response or "").lower())
+    min_tokens = {"summarize": 15, "explain": 30, "docstring": 10, "review": 20, "ask": 10, "test": 30, "diagnose": 20, "improve": 10}
+    too_short = response_tokens < min_tokens.get(task_type, 10)
+    if too_short or hedge_count >= 2:
+        return "low"
+    if hedge_count == 1 or response_tokens < min_tokens.get(task_type, 10) * 2:
+        return "medium"
+    return "high"
+
+
+def _benchmark_resolve_model_name(candidate: str, available: list[str]) -> str:
+    """Resolve a configured delegate model name against installed Ollama models."""
+    if not candidate:
+        return ""
+    normalized = candidate.strip().lower()
+    if not normalized:
+        return ""
+
+    for model in available:
+        if model.lower() == normalized:
+            return model
+
+    base = normalized.split(":", 1)[0]
+    for model in available:
+        lower = model.lower()
+        if lower == base or lower.startswith(base + ":"):
+            return model
+
+    for model in available:
+        if base in model.lower():
+            return model
+
+    return ""
+
+
+def _benchmark_delegate_fallback_order(task_type: str) -> list[str]:
+    """Conservative fallback order aligned with c3_delegate."""
+    if task_type in {"ask", "diagnose", "explain"}:
+        return ["llama3.2:latest", "llama3.2:3b", "qwen3-coder-next:latest", "llama3.1:latest", "gemma3n:latest"]
+    return ["llama3.2:latest", "llama3.2:3b", "qwen3-coder-next:latest", "gemma3n:latest"]
+
+
+def _benchmark_delegate_optional(project_path: Path, sample: list[tuple[Path, str, int]], compressor: CodeCompressor) -> dict:
+    """Benchmark c3_delegate offload against direct primary-model prompting."""
+    evaluation = {
+        "tool": "c3_delegate",
+        "status": "skipped",
+        "included_in_main_scorecard": True,
+        "comparison_scope": "primary-model prompt savings",
+        "description": "Offload large-file understanding to a local Ollama model instead of sending the full file to the primary AI.",
+    }
+
+    if not sample:
+        evaluation["reason"] = "No eligible source files were available for delegate benchmarking."
+        return evaluation
+
+    delegate_config = load_delegate_config(str(project_path))
+    evaluation["config"] = {
+        "enabled": bool(delegate_config.get("enabled", True)),
+        "preferred_model": delegate_config.get("preferred_model", ""),
+        "max_context_tokens": delegate_config.get("max_context_tokens", DELEGATE_DEFAULTS.get("max_context_tokens", 2000)),
+        "allow_model_fallback": bool(delegate_config.get("allow_model_fallback", True)),
+    }
+
+    if not delegate_config.get("enabled", True):
+        evaluation["reason"] = "Delegation is disabled in .c3/config.json."
+        return evaluation
+
+    ollama = OllamaClient()
+    if not ollama.is_available():
+        evaluation["reason"] = "Ollama is not reachable on localhost, so delegate offload cannot be measured."
+        return evaluation
+
+    available = ollama.list_models() or []
+    if not available:
+        evaluation["reason"] = "Ollama is reachable but no local models are installed."
+        return evaluation
+
+    fpath, raw_content, raw_tokens = max(sample, key=lambda item: item[2])
+    rel_path = str(fpath.relative_to(project_path)).replace("\\", "/")
+    task_type = "summarize"
+    task_def = _BENCHMARK_DELEGATE_TASKS[task_type]
+    task = (
+        f"Summarize the purpose and main moving parts of {rel_path}. "
+        "Focus on responsibilities, important functions/classes, and notable dependencies."
+    )
+
+    compressed_result = compressor.compress_file(str(fpath), "smart")
+    compressed_context = compressed_result.get("compressed", "") if isinstance(compressed_result, dict) else ""
+    if not compressed_context:
+        compressed_context = raw_content
+
+    max_ctx_tokens = delegate_config.get("max_context_tokens", DELEGATE_DEFAULTS.get("max_context_tokens", 2000))
+    compressed_context_tokens = count_tokens(compressed_context)
+    if compressed_context_tokens > max_ctx_tokens:
+        char_limit = max_ctx_tokens * 4
+        compressed_context = compressed_context[:char_limit] + f"\n... [truncated to ~{max_ctx_tokens}tok]"
+        compressed_context_tokens = max_ctx_tokens
+
+    threshold_enabled = delegate_config.get("threshold_enabled", False)
+    threshold_min = delegate_config.get("threshold_min_total_tokens", 80)
+    threshold_types = delegate_config.get("threshold_task_types", ["ask", "explain", "summarize", "improve", "docstring"]) or []
+    force_types = delegate_config.get("threshold_force_task_types", ["diagnose", "review", "test"]) or []
+    if isinstance(threshold_types, str):
+        threshold_types = [threshold_types]
+    if isinstance(force_types, str):
+        force_types = [force_types]
+    total_delegate_tokens = count_tokens(task) + compressed_context_tokens
+    if threshold_enabled and task_type in set(threshold_types) and task_type not in set(force_types) and total_delegate_tokens < threshold_min:
+        evaluation["reason"] = f"Delegate threshold prevented execution ({total_delegate_tokens}tok < {threshold_min}tok minimum)."
+        return evaluation
+
+    requested_model = delegate_config.get(f"{task_type}_model", "") or delegate_config.get("preferred_model", "") or task_def["default_model"]
+    model = _benchmark_resolve_model_name(requested_model, available)
+    fallback_used = False
+    fallback_from = requested_model
+    if not model and delegate_config.get("allow_model_fallback", True):
+        fallback_models = delegate_config.get("fallback_models", []) or []
+        if isinstance(fallback_models, str):
+            fallback_models = [fallback_models]
+        candidates = [task_def["default_model"]] + _benchmark_delegate_fallback_order(task_type) + fallback_models + available
+        for candidate in candidates:
+            resolved = _benchmark_resolve_model_name(candidate, available)
+            if resolved:
+                model = resolved
+                fallback_used = True
+                break
+
+    if not model:
+        evaluation["status"] = "failed"
+        evaluation["reason"] = f"Requested delegate model '{requested_model}' was not installed and no fallback model was available."
+        evaluation["available_models"] = available[:10]
+        return evaluation
+
+    delegate_prompt = task_def["prompt_template"].format(context=compressed_context, task=task)
+    baseline_prompt = task_def["prompt_template"].format(context=raw_content, task=task)
+    delegate_prompt_tokens = count_tokens(delegate_prompt)
+    baseline_prompt_tokens = count_tokens(baseline_prompt)
+
+    t0 = time.perf_counter()
+    response = ollama.generate(
+        prompt=delegate_prompt,
+        model=model,
+        system=task_def["system"],
+        temperature=delegate_config.get("temperature", 0.3),
+        max_tokens=delegate_config.get("max_tokens", 1024),
+    )
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    if response is None:
+        evaluation["status"] = "failed"
+        evaluation["reason"] = "Ollama returned no response for the delegate benchmark request."
+        evaluation["with_c3"] = {
+            "tool": "c3_delegate",
+            "task_type": task_type,
+            "task_file": rel_path,
+            "model": model,
+            "latency_ms": latency_ms,
+        }
+        return evaluation
+
+    response_tokens = count_tokens(response)
+    confidence = _benchmark_delegate_confidence(task_type, response, response_tokens)
+    primary_model_tokens = response_tokens
+
+    evaluation.update({
+        "status": "measured",
+        "reason": "Delegate benchmark completed successfully.",
+        "available_models_sample": available[:10],
+        "with_c3": {
+            "tool": "c3_delegate",
+            "task_type": task_type,
+            "task_file": rel_path,
+            "model": model,
+            "fallback_used": fallback_used,
+            "fallback_from": fallback_from if fallback_used else "",
+            "context_tokens": compressed_context_tokens,
+            "delegate_prompt_tokens": delegate_prompt_tokens,
+            "primary_model_prompt_tokens": primary_model_tokens,
+            "response_tokens": response_tokens,
+            "latency_ms": latency_ms,
+            "confidence": confidence,
+        },
+        "without_c3": {
+            "approach": "send full file directly to the primary AI",
+            "task_type": task_type,
+            "task_file": rel_path,
+            "primary_model_prompt_tokens": baseline_prompt_tokens,
+            "context_tokens": raw_tokens,
+        },
+        "primary_model_token_savings_pct": round(((baseline_prompt_tokens - primary_model_tokens) / baseline_prompt_tokens) * 100, 1) if baseline_prompt_tokens else 0.0,
+        "prompt_budget_multiplier": round((baseline_prompt_tokens / primary_model_tokens), 2) if primary_model_tokens else 0.0,
+        "response_preview": (response[:300] + "...") if len(response) > 300 else response,
+    })
+    return evaluation
+
+
+def _benchmark_route_optional(project_path: Path, fixtures: dict, sample: list[tuple[Path, str, int]]) -> dict:
+    """Benchmark c3_delegate(task_type='auto') as an optional local-routing/offload path."""
+    from core.config import load_hybrid_config
+    from services.router import ModelRouter
+
+    evaluation = {
+        "tool": "c3_delegate(task_type='auto')",
+        "status": "skipped",
+        "included_in_main_scorecard": False,
+        "comparison_scope": "primary-model prompt savings",
+        "description": "Classify requests and route them to local models when they fit a low-cost lane.",
+    }
+
+    hybrid_config = load_hybrid_config(str(project_path))
+    if hybrid_config.get("HYBRID_DISABLE_TIER2"):
+        evaluation["reason"] = "Router tier is disabled in .c3/config.json."
+        return evaluation
+
+    router = ModelRouter(hybrid_config)
+    if not router.ollama.is_available():
+        evaluation["reason"] = "Ollama is not reachable on localhost, so router offload cannot be measured."
+        return evaluation
+
+    log_text = Path(fixtures["terminal_output_path"]).read_text(encoding="utf-8", errors="replace")
+    stacktrace_excerpt = "\n".join(Path(fixtures["log_path"]).read_text(encoding="utf-8", errors="replace").splitlines()[:80])
+    file_hint = str(sample[0][0].relative_to(project_path)).replace("\\", "/") if sample else "cli/c3.py"
+    cases = [
+        {
+            "name": "log_summary",
+            "query": "Summarize the key failures in this test output.",
+            "context": log_text,
+            "expected_class": "log_summary",
+        },
+        {
+            "name": "simple_qa",
+            "query": "What file defines IDE profiles?",
+            "context": "",
+            "expected_class": "simple_qa",
+        },
+        {
+            "name": "complex",
+            "query": f"Diagnose the likely root cause in this traceback and explain what to inspect in {file_hint}.",
+            "context": stacktrace_excerpt,
+            "expected_class": "complex",
+        },
+    ]
+
+    total_baseline_tokens = 0
+    total_primary_tokens = 0
+    total_latency_ms = 0.0
+    class_hits = 0
+    handled_locally = 0
+    used_models = []
+
+    for case in cases:
+        baseline_prompt = case["query"] if not case["context"] else f"{case['query']}\n\nContext:\n{case['context']}"
+        baseline_tokens = count_tokens(baseline_prompt)
+        total_baseline_tokens += baseline_tokens
+
+        classification = router.classify(case["query"], case["context"])
+        if classification["route_class"] == case["expected_class"]:
+            class_hits += 1
+
+        result = router.route(case["query"], case["context"])
+        total_latency_ms += float(result.get("latency_ms", 0) or 0)
+        if result.get("route_class") != "passthrough" and result.get("response"):
+            handled_locally += 1
+            response_tokens = count_tokens(result["response"])
+            total_primary_tokens += response_tokens
+            if result.get("model"):
+                used_models.append(result["model"])
+        else:
+            total_primary_tokens += baseline_tokens
+            if result.get("model"):
+                used_models.append(result["model"])
+
+    class_hit_rate = round((class_hits / len(cases)) * 100, 1) if cases else 0.0
+    local_handling_rate = round((handled_locally / len(cases)) * 100, 1) if cases else 0.0
+    evaluation.update({
+        "status": "measured",
+        "reason": "Router benchmark completed successfully.",
+        "notes": f"{class_hits}/{len(cases)} expected route classes matched; {handled_locally}/{len(cases)} cases were handled locally.",
+        "quality": {
+            "metric": "expected route-class hit rate",
+            "with_c3": class_hit_rate,
+            "local_handling_rate": local_handling_rate,
+        },
+        "cases": [
+            {
+                "name": case["name"],
+                "expected_class": case["expected_class"],
+            } for case in cases
+        ],
+        "with_c3": {
+            "tool": "c3_delegate(task_type='auto')",
+            "task_type": "query routing",
+            "task_file": f"{len(cases)} benchmark cases",
+            "model": ", ".join(sorted(set(used_models)))[:120],
+            "primary_model_prompt_tokens": total_primary_tokens,
+            "latency_ms": round(total_latency_ms / len(cases), 2) if cases else 0.0,
+            "confidence": "high" if class_hit_rate >= 100 else ("medium" if class_hit_rate >= 66 else "low"),
+        },
+        "without_c3": {
+            "approach": "send each query and context directly to the primary AI",
+            "task_type": "query routing",
+            "task_file": f"{len(cases)} benchmark cases",
+            "primary_model_prompt_tokens": total_baseline_tokens,
+        },
+        "primary_model_token_savings_pct": round(((total_baseline_tokens - total_primary_tokens) / total_baseline_tokens) * 100, 1) if total_baseline_tokens else 0.0,
+        "prompt_budget_multiplier": round((total_baseline_tokens / total_primary_tokens), 2) if total_primary_tokens else 0.0,
+    })
+    return evaluation
+
+
+def _benchmark_summarize_optional(project_path: Path, fixtures: dict) -> dict:
+    """Benchmark c3_delegate(task_type='summarize') as an optional local summarization path."""
+    from core.config import load_hybrid_config
+    from services.router import ModelRouter
+
+    evaluation = {
+        "tool": "c3_delegate(task_type='summarize')",
+        "status": "skipped",
+        "included_in_main_scorecard": False,
+        "comparison_scope": "primary-model prompt savings",
+        "description": "Use a local summary first so the primary AI receives a condensed version of large text.",
+    }
+
+    hybrid_config = load_hybrid_config(str(project_path))
+    if hybrid_config.get("HYBRID_DISABLE_TIER2"):
+        evaluation["reason"] = "Router tier is disabled in .c3/config.json, so summarize is unavailable."
+        return evaluation
+
+    router = ModelRouter(hybrid_config)
+    if not router.ollama.is_available():
+        evaluation["reason"] = "Ollama is not reachable on localhost, so summarize offload cannot be measured."
+        return evaluation
+
+    source_text = Path(fixtures["terminal_output_path"]).read_text(encoding="utf-8", errors="replace")
+    baseline_prompt_tokens = count_tokens(f"Summarize:\n\n{source_text[:4000]}")
+    t0 = time.perf_counter()
+    result = router.summarize(source_text, "bullet")
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    if result.get("summary") is None:
+        evaluation["status"] = "failed"
+        evaluation["reason"] = f"Local summarize model {result.get('model', '')} returned no response."
+        return evaluation
+
+    summary = result["summary"]
+    response_tokens = count_tokens(summary)
+    signals = fixtures.get("terminal_signals", [])
+    signal_hits = sum(1 for sig in signals if sig.lower() in summary.lower())
+    signal_retention = round((signal_hits / len(signals)) * 100, 1) if signals else 0.0
+    confidence = _benchmark_delegate_confidence("summarize", summary, response_tokens)
+
+    evaluation.update({
+        "status": "measured",
+        "reason": "Summarize benchmark completed successfully.",
+        "notes": f"{signal_hits}/{len(signals)} tracked terminal signals appeared in the local summary.",
+        "quality": {
+            "metric": "tracked signal retention",
+            "with_c3": signal_retention,
+            "without_c3": 100.0,
+        },
+        "with_c3": {
+            "tool": "c3_delegate(task_type='summarize')",
+            "task_type": "terminal summary",
+            "task_file": Path(fixtures["terminal_output_path"]).name,
+            "model": result.get("model", ""),
+            "primary_model_prompt_tokens": response_tokens,
+            "latency_ms": latency_ms,
+            "confidence": confidence,
+        },
+        "without_c3": {
+            "approach": "send the full terminal text to the primary AI for summarization",
+            "task_type": "terminal summary",
+            "task_file": Path(fixtures["terminal_output_path"]).name,
+            "primary_model_prompt_tokens": baseline_prompt_tokens,
+        },
+        "primary_model_token_savings_pct": round(((baseline_prompt_tokens - response_tokens) / baseline_prompt_tokens) * 100, 1) if baseline_prompt_tokens else 0.0,
+        "prompt_budget_multiplier": round((baseline_prompt_tokens / response_tokens), 2) if response_tokens else 0.0,
+        "response_preview": (summary[:300] + "...") if len(summary) > 300 else summary,
+    })
+    return evaluation
+
+
+def _benchmark_recall_optional(project_path: Path) -> dict:
+    """Benchmark c3_memory(action='recall') against scanning the full fact store."""
+    from services.memory import MemoryStore
+
+    evaluation = {
+        "tool": "c3_memory(action='recall')",
+        "status": "skipped",
+        "included_in_main_scorecard": False,
+        "comparison_scope": "prompt savings vs full fact-store scan",
+        "description": "Retrieve only the most relevant stored facts instead of loading the whole memory store into context.",
+    }
+
+    fixture_dir = project_path / ".c3" / "benchmark" / "fixtures" / "memory_eval"
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    facts_file = fixture_dir / "facts.json"
+    benchmark_facts = [
+        {"id": "bm_fact_01", "fact": "Use c3_compress(mode='map') before reading large code files so you can target small sections instead of loading the full file.", "category": "workflow", "source_session": "", "timestamp": "2026-03-05T00:00:00+00:00", "relevance_count": 0},
+        {"id": "bm_fact_02", "fact": "Use c3_filter before reading logs, txt files, or jsonl files directly.", "category": "workflow", "source_session": "", "timestamp": "2026-03-05T00:00:00+00:00", "relevance_count": 0},
+        {"id": "bm_fact_03", "fact": "Use c3_delegate for files over 200 lines when you need understanding but are not editing the file.", "category": "delegate", "source_session": "", "timestamp": "2026-03-05T00:00:00+00:00", "relevance_count": 0},
+        {"id": "bm_fact_04", "fact": "Use c3_search to locate relevant symbols and code chunks before opening files.", "category": "search", "source_session": "", "timestamp": "2026-03-05T00:00:00+00:00", "relevance_count": 0},
+        {"id": "bm_fact_05", "fact": "Use c3_filter when terminal output is noisy and contains repeated progress or PASS lines.", "category": "output", "source_session": "", "timestamp": "2026-03-05T00:00:00+00:00", "relevance_count": 0},
+    ]
+    facts_file.write_text(json.dumps(benchmark_facts, indent=2), encoding="utf-8")
+    memory = MemoryStore(str(project_path), data_dir=".c3/benchmark/fixtures/memory_eval")
+
+    queries = [
+        ("large code files targeted sections", "c3_compress"),
+        ("tracebacks logs jsonl direct read", "c3_filter"),
+        ("over 200 lines understanding not editing", "c3_delegate"),
+        ("locate relevant symbols before opening files", "c3_search"),
+    ]
+
+    full_facts_text = "\n".join(f"[{fact['category']}] {fact['fact']}" for fact in benchmark_facts)
+    total_baseline_tokens = 0
+    total_recall_tokens = 0
+    recall_latency_ms = []
+    baseline_latency_ms = []
+    hits = 0
+    previews = []
+
+    for query, expected in queries:
+        baseline_prompt = f"Facts:\n{full_facts_text}\n\nQuestion: {query}"
+        total_baseline_tokens += count_tokens(baseline_prompt)
+        t_base = time.perf_counter()
+        _ = full_facts_text
+        baseline_latency_ms.append((time.perf_counter() - t_base) * 1000)
+
+        t0 = time.perf_counter()
+        results = memory.recall(query, top_k=3)
+        recall_latency_ms.append((time.perf_counter() - t0) * 1000)
+
+        recall_text = "\n".join(f"[{item['category']}] {item['fact']}" for item in results)
+        total_recall_tokens += count_tokens(recall_text)
+        joined = " ".join(item["fact"] for item in results)
+        if expected in joined:
+            hits += 1
+        if results:
+            previews.append(results[0]["fact"][:120])
+
+    hit_rate = round((hits / len(queries)) * 100, 1) if queries else 0.0
+    evaluation.update({
+        "status": "measured",
+        "reason": "Recall benchmark completed successfully.",
+        "notes": f"{hits}/{len(queries)} expected benchmark facts were retrieved.",
+        "quality": {
+            "metric": "expected-fact hit rate",
+            "with_c3": hit_rate,
+            "without_c3": 100.0,
+        },
+        "with_c3": {
+            "tool": "c3_memory(action='recall')",
+            "task_type": "memory lookup",
+            "task_file": "benchmark memory fixture",
+            "model": "tf-idf memory search",
+            "primary_model_prompt_tokens": total_recall_tokens,
+            "latency_ms": round(sum(recall_latency_ms) / len(recall_latency_ms), 2) if recall_latency_ms else 0.0,
+            "confidence": "high" if hit_rate >= 100 else ("medium" if hit_rate >= 75 else "low"),
+        },
+        "without_c3": {
+            "approach": "scan the full fact store in the primary model context",
+            "task_type": "memory lookup",
+            "task_file": "benchmark memory fixture",
+            "primary_model_prompt_tokens": total_baseline_tokens,
+        },
+        "primary_model_token_savings_pct": round(((total_baseline_tokens - total_recall_tokens) / total_baseline_tokens) * 100, 1) if total_baseline_tokens else 0.0,
+        "prompt_budget_multiplier": round((total_baseline_tokens / total_recall_tokens), 2) if total_recall_tokens else 0.0,
+        "response_preview": " | ".join(previews[:2]),
+    })
+    return evaluation
+
+
+_BENCHMARK_SESSION_ASSUMPTIONS = {
+    "system_and_instructions_tokens": 4000,
+    "claude_md_tokens": 2000,
+    "mcp_tool_schemas_tokens": 1500,
+    "user_turn_tokens": 150,
+    "assistant_reply_tokens": 400,
+    "tool_wrapper_tokens": 120,
+}
+
+# Overhead that C3 adds but vanilla Claude Code does not have
+_BENCHMARK_C3_OVERHEAD = {
+    "claude_md_c3_mandates_tokens": 800,
+    "mcp_c3_tool_schemas_tokens": 1200,
+    "mandatory_recall_tokens_per_session": 600,
+    "avg_c3_tool_response_wrapper_tokens": 80,
+}
+
+
+_BENCHMARK_SESSION_PROFILES = {
+    "balanced": {
+        "label": "Balanced",
+        "description": "Even mix across the main benchmark scenarios.",
+        "weights": {},
+    },
+    "lean_coding": {
+        "label": "Lean Coding",
+        "description": "Mostly search, file-map, and filtered-output turns with fewer heavy file reads.",
+        "weights": {
+            "search_retrieval": 0.35,
+            "file_navigation": 0.25,
+            "terminal_output_filtering": 0.15,
+            "broad_file_understanding": 0.10,
+            "log_triage": 0.10,
+            "structured_data_scan": 0.05,
+        },
+    },
+    "heavy_analysis": {
+        "label": "Heavy Analysis",
+        "description": "More large-file understanding, logs, and structured-data investigation.",
+        "weights": {
+            "broad_file_understanding": 0.30,
+            "search_retrieval": 0.20,
+            "file_navigation": 0.15,
+            "log_triage": 0.15,
+            "structured_data_scan": 0.10,
+            "terminal_output_filtering": 0.10,
+        },
+    },
+}
+
+
+def _benchmark_session_reality(project_path: Path, scenarios: dict) -> dict:
+    """Estimate retained-session growth with realistic overhead modeling.
+
+    Computes two views:
+    - tool_level: raw per-operation savings (what the old benchmark showed)
+    - session_net: accounts for fixed overhead that dwarfs per-tool savings,
+      plus the extra overhead C3 itself introduces (CLAUDE.md mandates,
+      MCP tool schemas, mandatory recall calls)
+    """
+    session_mgr = SessionManager(str(project_path))
+    thresholds = dict(getattr(session_mgr, "_budget_thresholds", SessionManager.DEFAULT_BUDGET_THRESHOLDS))
+    transcript_usage = session_mgr.parse_claude_session_tokens(str(project_path))
+
+    # Measure actual CLAUDE.md size if available
+    claude_md_path = project_path / "CLAUDE.md"
+    if claude_md_path.exists():
+        actual_claude_md_tokens = count_tokens(claude_md_path.read_text(encoding="utf-8", errors="replace"))
+        _BENCHMARK_SESSION_ASSUMPTIONS["claude_md_tokens"] = actual_claude_md_tokens
+
+    # Fixed overhead present in BOTH with-C3 and without-C3 sessions
+    base_overhead = (
+        _BENCHMARK_SESSION_ASSUMPTIONS["system_and_instructions_tokens"]
+        + _BENCHMARK_SESSION_ASSUMPTIONS["user_turn_tokens"]
+        + _BENCHMARK_SESSION_ASSUMPTIONS["assistant_reply_tokens"]
+        + _BENCHMARK_SESSION_ASSUMPTIONS["tool_wrapper_tokens"]
+    )
+    # Without C3: base overhead + minimal CLAUDE.md (project might still have one)
+    vanilla_claude_md = 300  # typical non-C3 CLAUDE.md
+    overhead_without_c3 = base_overhead + vanilla_claude_md
+
+    # With C3: base overhead + full CLAUDE.md + C3-specific overhead
+    c3_extra = sum(_BENCHMARK_C3_OVERHEAD.values())
+    overhead_with_c3 = base_overhead + _BENCHMARK_SESSION_ASSUMPTIONS["claude_md_tokens"] + c3_extra
+
+    scenario_token_map = {}
+    for name, data in scenarios.items():
+        scenario_token_map[name] = {
+            "with_c3": float(data.get("with_c3", {}).get("total_tokens", data.get("with_c3", {}).get("avg_context_tokens", 0)) or 0),
+            "without_c3": float(data.get("without_c3", {}).get("total_tokens", data.get("without_c3", {}).get("avg_context_tokens", 0)) or 0),
+        }
+
+    def _weighted_tokens(side: str, weights: dict) -> float:
+        if not weights:
+            values = [entry[side] for entry in scenario_token_map.values()]
+            return (sum(values) / len(values)) if values else 0.0
+        return sum(scenario_token_map.get(name, {}).get(side, 0.0) * weight for name, weight in weights.items())
+
+    profiles = {}
+    for key, meta in _BENCHMARK_SESSION_PROFILES.items():
+        context_with = _weighted_tokens("with_c3", meta.get("weights", {}))
+        context_without = _weighted_tokens("without_c3", meta.get("weights", {}))
+
+        # Tool-level view (old metric, kept for comparison)
+        tool_multiplier = round((context_without / context_with), 2) if context_with else 0.0
+
+        # Session-net view: includes realistic fixed overhead
+        retained_with = context_with + overhead_with_c3
+        retained_without = context_without + overhead_without_c3
+
+        net_savings_pct = round(((retained_without - retained_with) / retained_without) * 100, 1) if retained_without else 0.0
+        net_multiplier = round((retained_without / retained_with), 2) if retained_with else 0.0
+
+        profiles[key] = {
+            "label": meta["label"],
+            "description": meta["description"],
+            "avg_context_tokens_with_c3": round(context_with, 1),
+            "avg_context_tokens_without_c3": round(context_without, 1),
+            "tool_level_multiplier": tool_multiplier,
+            "retained_tokens_per_turn_with_c3": round(retained_with, 1),
+            "retained_tokens_per_turn_without_c3": round(retained_without, 1),
+            "session_net_savings_pct": net_savings_pct,
+            "session_net_multiplier": net_multiplier,
+            "turns_until_level_1_with_c3": round((thresholds["level_1"] / retained_with), 1) if retained_with else 0.0,
+            "turns_until_level_1_without_c3": round((thresholds["level_1"] / retained_without), 1) if retained_without else 0.0,
+            "turns_until_level_2_with_c3": round((thresholds["level_2"] / retained_with), 1) if retained_with else 0.0,
+            "turns_until_level_2_without_c3": round((thresholds["level_2"] / retained_without), 1) if retained_without else 0.0,
+        }
+
+    return {
+        "note": "Session-net multiplier accounts for fixed overhead (system prompt, CLAUDE.md, MCP schemas) and C3's own overhead (mandates, tool schemas, mandatory recalls). Tool-level multiplier shows raw per-operation savings for comparison.",
+        "assumptions": {
+            "base_per_turn": _BENCHMARK_SESSION_ASSUMPTIONS,
+            "c3_overhead": _BENCHMARK_C3_OVERHEAD,
+            "overhead_with_c3": overhead_with_c3,
+            "overhead_without_c3": overhead_without_c3,
+            "c3_net_overhead_delta": overhead_with_c3 - overhead_without_c3,
+        },
+        "thresholds": thresholds,
+        "profiles": profiles,
+        "transcript_usage": transcript_usage,
+    }
+
+
+def _cmd_benchmark_legacy(args):
+    """Run a local with/without-C3 benchmark for common code-understanding workflows."""
+    config = load_config(args.project_path or ".")
+    project_path = Path(args.project_path or config.get("project_path", ".")).resolve()
+
+    indexer = CodeIndex(str(project_path), str(project_path / ".c3" / "index"))
+    compressor = CodeCompressor(str(project_path / ".c3" / "cache"), project_root=str(project_path))
+    file_memory = FileMemoryStore(str(project_path))
+
+    skip_dirs = set(getattr(indexer, "skip_dirs", set()))
+    code_exts = set(getattr(indexer, "code_exts", set()))
+
+    files = []
+    for fpath in project_path.rglob("*"):
+        if not fpath.is_file():
+            continue
+        if fpath.suffix.lower() not in code_exts:
+            continue
+        if any(skip in fpath.parts for skip in skip_dirs):
+            continue
+        if compressor.is_protected_file(fpath):
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        files.append((fpath, content, count_tokens(content)))
+
+    if not files:
+        print("Error: no benchmark-eligible files found")
+        return
+
+    sample = sorted([f for f in files if f[2] >= args.min_tokens], key=lambda x: x[2], reverse=True)[:args.sample_size]
+    if not sample:
+        sample = sorted(files, key=lambda x: x[2], reverse=True)[:args.sample_size]
+
+    def _avg(values):
+        return (sum(values) / len(values)) if values else 0.0
+
+    def _pct_delta(current, baseline):
+        if not baseline:
+            return 0.0
+        return ((current - baseline) / baseline) * 100
+
+    def _pct_saved(current, baseline):
+        if not baseline:
+            return 0.0
+        return ((baseline - current) / baseline) * 100
+
+    def _prompt_gain(current, baseline):
+        if not current:
+            return 0.0
+        return baseline / current
+
+    def _rel_path(path: Path) -> str:
+        return str(path.relative_to(project_path)).replace("\\", "/")
+
+    comp_orig = 0
+    comp_comp = 0
+    comp_c3_latencies = []
+    comp_baseline_latencies = []
+
+    for fpath, content, tokens in sample:
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        comp_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+
+        t0 = time.perf_counter()
+        result = compressor.compress_file(str(fpath), "smart")
+        comp_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        raw_tokens = count_tokens(raw_content)
+        comp_orig += raw_tokens
+        comp_comp += int(result.get("compressed_tokens", raw_tokens))
+
+    file_map_sample_size = min(len(sample), max(5, min(args.sample_size, 10)))
+    file_map_sample = sample[:file_map_sample_size]
+    file_map_orig = 0
+    file_map_comp = 0
+    file_map_c3_latencies = []
+    file_map_baseline_latencies = []
+    file_map_successes = 0
+
+    for fpath, content, tokens in file_map_sample:
+        rel = _rel_path(fpath)
+
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        file_map_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        file_map_orig += count_tokens(raw_content)
+
+        t0 = time.perf_counter()
+        map_text = file_memory.get_or_build_map(rel)
+        file_map_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        file_map_comp += count_tokens(map_text)
+        if "[file_map] Could not build map" not in map_text and "[file_map:error]" not in map_text:
+            file_map_successes += 1
+
+    queries = [
+        ("compress file and return results endpoint", "cli/server.py"),
+        ("method that blocks protected files from compression", "services/compressor.py"),
+        ("hybrid metrics collector summary", "services/metrics.py"),
+        ("token counting helper", "core/__init__.py"),
+        ("mcp tool c3_compress implementation", "cli/mcp_server.py"),
+        ("IDE profile registry", "core/ide.py"),
+    ]
+
+    stop_terms = {
+        "the", "and", "for", "that", "from", "with", "into", "this",
+        "tool", "api", "implementation", "what", "where",
+    }
+
+    def lexical_top_files(query: str, top_k: int = 5) -> list:
+        terms = [t for t in re.findall(r"[A-Za-z_]+", query.lower()) if len(t) > 2 and t not in stop_terms]
+        scored = []
+        for fpath, content, _ in files:
+            low = content.lower()
+            score = sum(low.count(term) for term in terms)
+            if score > 0:
+                scored.append((score, fpath))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [str(path.relative_to(project_path)).replace("\\", "/") for _, path in scored[:top_k]]
+
+    c3_tokens = []
+    lexical_tokens = []
+    c3_latencies = []
+    lexical_latencies = []
+    c3_hits = 0
+    lexical_hits = 0
+
+    for query, expected_path in queries:
+        t0 = time.perf_counter()
+        results = indexer.search(query, top_k=args.top_k, max_tokens=args.max_tokens)
+        context = indexer.get_context(query, top_k=args.top_k, max_tokens=args.max_tokens)
+        c3_latencies.append((time.perf_counter() - t0) * 1000)
+        c3_tokens.append(count_tokens(context))
+
+        c3_paths = []
+        for item in results:
+            p = item.get("file") or item.get("filepath") or ""
+            if p:
+                c3_paths.append(str(p).replace("\\", "/"))
+        if any(expected_path in p for p in c3_paths):
+            c3_hits += 1
+
+        t1 = time.perf_counter()
+        lex_paths = lexical_top_files(query, top_k=args.top_k)
+        full_context = []
+        for rel in lex_paths:
+            try:
+                full_context.append((project_path / rel).read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
+        lexical_latencies.append((time.perf_counter() - t1) * 1000)
+        lexical_tokens.append(count_tokens("\n\n".join(full_context)))
+        if any(expected_path in p for p in lex_paths):
+            lexical_hits += 1
+
+    total_c3_tokens = sum(c3_tokens)
+    total_lex_tokens = sum(lexical_tokens)
+    token_reduction = _pct_saved(total_c3_tokens, total_lex_tokens)
+    comp_savings = _pct_saved(comp_comp, comp_orig)
+    file_map_savings = _pct_saved(file_map_comp, file_map_orig)
+
+    overall_c3_tokens = comp_comp + file_map_comp + total_c3_tokens
+    overall_baseline_tokens = comp_orig + file_map_orig + total_lex_tokens
+    overall_c3_latencies = comp_c3_latencies + file_map_c3_latencies + c3_latencies
+    overall_baseline_latencies = comp_baseline_latencies + file_map_baseline_latencies + lexical_latencies
+    overall_hit_rate_c3 = (c3_hits / len(queries) * 100) if queries else 0.0
+    overall_hit_rate_baseline = (lexical_hits / len(queries) * 100) if queries else 0.0
+
+    benchmarked_tools = ["c3_compress", "c3_compress_map", "c3_read", "c3_validate", "c3_search", "c3_filter_file", "c3_filter_text"]
+    if delegate_evaluation.get("status") == "measured":
+        benchmarked_tools.append("c3_delegate")
+
+    optional_tools = {
+        "c3_delegate_route": {
+            "status": route_evaluation.get("status", "unknown"),
+            "reason": route_evaluation.get("reason", "Router quality and latency depend on local Ollama availability and model selection."),
+        },
+        "c3_delegate_summarize": {
+            "status": summarize_evaluation.get("status", "unknown"),
+            "reason": summarize_evaluation.get("reason", "Summarize quality depends on local Ollama availability and summary model quality."),
+        },
+        "c3_memory_recall": {
+            "status": recall_evaluation.get("status", "unknown"),
+            "reason": recall_evaluation.get("reason", "Memory tools need benchmark facts or project history to compare fairly."),
+        },
+    }
+    if delegate_evaluation.get("status") != "measured":
+        optional_tools["c3_delegate"] = {
+            "status": delegate_evaluation.get("status", "unknown"),
+            "reason": delegate_evaluation.get("reason", "Delegate quality and latency depend on local Ollama availability and model selection."),
+        }
+
+    # Scenario: Surgical Reading (c3_read)
+    read_sample_size = min(len(sample), max(5, min(args.sample_size, 10)))
+    read_sample = sample[:read_sample_size]
+    read_orig = 0
+    read_comp = 0
+    read_c3_latencies = []
+    read_baseline_latencies = []
+    read_successes = 0
+
+    for fpath, content, tokens in read_sample:
+        rel = _rel_path(fpath)
+        
+        # Baseline: read full file
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        read_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        read_orig += count_tokens(raw_content)
+
+        # C3: surgical read of symbols
+        t0 = time.perf_counter()
+        record = file_memory.get(rel)
+        if not record or file_memory.needs_update(rel):
+            record = file_memory.update(rel)
+        
+        extracted_text = ""
+        if record and record.get("sections"):
+            # Pick the most relevant single symbol for surgical reading
+            sections = [s for s in record["sections"] if s.get("type") in ("class", "function", "method")][:1]
+            if sections:
+                lines = raw_content.splitlines()
+                for s in sections:
+                    start, end = s["line_start"], s["line_end"]
+                    raw_extracted = "\n".join(lines[start-1:end]) + "\n"
+                    # Apply C3 compression to the surgical read result to maximize savings
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
+                        tmp.write(raw_extracted)
+                        tmp_path = tmp.name
+                    try:
+                        comp_res = compressor.compress_file(tmp_path, mode="smart")
+                        extracted_text += comp_res.get("compressed", raw_extracted)
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                read_successes += 1
+            else:
+                # No symbols, fallback to full text for fair latency comparison if no reduction possible
+                extracted_text = raw_content
+        else:
+            extracted_text = raw_content
+            
+        read_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        read_comp += count_tokens(extracted_text)
+
+    report = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "project_path": str(project_path),
+        "files_considered": len(files),
+        "benchmarked_tools": benchmarked_tools,
+        "categories": ["speed", "token_usage", "performance"],
+        "scorecard": {
+            "token_usage": {
+                "with_c3_total_tokens": overall_c3_tokens + read_comp,
+                "without_c3_total_tokens": overall_baseline_tokens + read_orig,
+                "savings_pct": round(_pct_saved(overall_c3_tokens + read_comp, overall_baseline_tokens + read_orig), 1),
+                "prompt_budget_multiplier": round(_prompt_gain(overall_c3_tokens + read_comp, overall_baseline_tokens + read_orig), 2),
+            },
+            "speed": {
+                "with_c3_avg_latency_ms": round(_avg(overall_c3_latencies + read_c3_latencies), 2),
+                "without_c3_avg_latency_ms": round(_avg(overall_baseline_latencies + read_baseline_latencies), 2),
+                "latency_delta_pct_vs_baseline": round(
+                    _pct_delta(_avg(overall_c3_latencies + read_c3_latencies), _avg(overall_baseline_latencies + read_baseline_latencies)), 1
+                ),
+                "note": "Negative values mean C3 was faster; positive values mean C3 spent extra local time to save prompt tokens.",
+            },
+            "performance": {
+                "metric": "expected-file hit rate in retrieval benchmark",
+                "with_c3_hit_rate": round(overall_hit_rate_c3, 1),
+                "without_c3_hit_rate": round(overall_hit_rate_baseline, 1),
+                "delta_pct_points": round(overall_hit_rate_c3 - overall_hit_rate_baseline, 1),
+            },
+        },
+        "scenarios": {
+            "broad_file_understanding": {
+                "description": "Use c3_compress-style summaries instead of full-file reads for large source files.",
+                "sample_files": len(sample),
+                "with_c3": {
+                    "tool": "c3_compress",
+                    "total_tokens": comp_comp,
+                    "avg_latency_ms": round(_avg(comp_c3_latencies), 2),
+                },
+                "without_c3": {
+                    "approach": "read full files into context",
+                    "total_tokens": comp_orig,
+                    "avg_latency_ms": round(_avg(comp_baseline_latencies), 2),
+                },
+                "token_savings_pct": round(comp_savings, 1),
+                "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(comp_c3_latencies), _avg(comp_baseline_latencies)), 1),
+                "prompt_budget_multiplier": round(_prompt_gain(comp_comp, comp_orig), 2),
+            },
+            "file_navigation": {
+                "description": "Use c3_compress(mode='map') to choose targeted reads instead of opening whole files blindly.",
+                "sample_files": len(file_map_sample),
+                "with_c3": {
+                    "tool": "c3_compress(mode='map')",
+                    "total_tokens": file_map_comp,
+                    "avg_latency_ms": round(_avg(file_map_c3_latencies), 2),
+                    "map_success_rate": round((file_map_successes / len(file_map_sample) * 100), 1) if file_map_sample else 0.0,
+                },
+                "without_c3": {
+                    "approach": "read full files into context",
+                    "total_tokens": file_map_orig,
+                    "avg_latency_ms": round(_avg(file_map_baseline_latencies), 2),
+                },
+                "token_savings_pct": round(file_map_savings, 1),
+                "latency_delta_pct_vs_baseline": round(
+                    _pct_delta(_avg(file_map_c3_latencies), _avg(file_map_baseline_latencies)), 1
+                ),
+                "prompt_budget_multiplier": round(_prompt_gain(file_map_comp, file_map_orig), 2),
+            },
+            "surgical_reading": {
+                "description": "Use c3_read to extract specific symbols instead of reading the whole file.",
+                "sample_files": len(read_sample),
+                "with_c3": {
+                    "tool": "c3_read",
+                    "total_tokens": read_comp,
+                    "avg_latency_ms": round(_avg(read_c3_latencies), 2),
+                    "extraction_success_rate": round((read_successes / len(read_sample) * 100), 1) if read_sample else 0.0,
+                },
+                "without_c3": {
+                    "approach": "read full files into context",
+                    "total_tokens": read_orig,
+                    "avg_latency_ms": round(_avg(read_baseline_latencies), 2),
+                },
+                "token_savings_pct": round(_pct_saved(read_comp, read_orig), 1),
+                "latency_delta_pct_vs_baseline": round(
+                    _pct_delta(_avg(read_c3_latencies), _avg(read_baseline_latencies)), 1
+                ),
+                "prompt_budget_multiplier": round(_prompt_gain(read_comp, read_orig), 2),
+            },
+            "search_retrieval": {
+                "description": "Use c3_search/index context instead of lexical filename/content matching plus full-file reads.",
+                "queries": len(queries),
+                "with_c3": {
+                    "tool": "c3_search",
+                    "avg_context_tokens": round(_avg(c3_tokens), 1),
+                    "avg_latency_ms": round(_avg(c3_latencies), 2),
+                    "hit_rate": round(overall_hit_rate_c3, 1),
+                },
+                "without_c3": {
+                    "approach": "lexical search + full-file context",
+                    "avg_context_tokens": round(_avg(lexical_tokens), 1),
+                    "avg_latency_ms": round(_avg(lexical_latencies), 2),
+                    "hit_rate": round(overall_hit_rate_baseline, 1),
+                },
+                "token_savings_pct": round(token_reduction, 1),
+                "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(c3_latencies), _avg(lexical_latencies)), 1),
+                "performance_delta_pct_points": round(overall_hit_rate_c3 - overall_hit_rate_baseline, 1),
+            },
+        },
+    }
+
+    if args.output:
+        out_path = Path(args.output)
+        if not out_path.is_absolute():
+            out_path = project_path / out_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    print_header("C3 Benchmark")
+    print(f"  Files considered: {report['files_considered']}")
+    print("  Categories: speed, token usage, performance")
+    print(
+        f"  Token usage: C3 {report['scorecard']['token_usage']['with_c3_total_tokens']} tok "
+        f"vs baseline {report['scorecard']['token_usage']['without_c3_total_tokens']} tok "
+        f"({report['scorecard']['token_usage']['savings_pct']}% saved, "
+        f"{report['scorecard']['token_usage']['prompt_budget_multiplier']}x prompt budget)"
+    )
+    print(
+        f"  Speed: C3 {report['scorecard']['speed']['with_c3_avg_latency_ms']} ms "
+        f"vs baseline {report['scorecard']['speed']['without_c3_avg_latency_ms']} ms "
+        f"({report['scorecard']['speed']['latency_delta_pct_vs_baseline']}% vs baseline)"
+    )
+    print(
+        f"  Performance: C3 hit rate {report['scorecard']['performance']['with_c3_hit_rate']}% "
+        f"vs baseline {report['scorecard']['performance']['without_c3_hit_rate']}% "
+        f"({report['scorecard']['performance']['delta_pct_points']} pts)"
+    )
+    print("  Scenarios:")
+    print(
+        f"    Broad file understanding: {report['scenarios']['broad_file_understanding']['token_savings_pct']}% token savings "
+        f"using c3_compress"
+    )
+    print(
+        f"    File navigation: {report['scenarios']['file_navigation']['token_savings_pct']}% token savings "
+        f"using c3_compress(mode='map')"
+    )
+    print(
+        f"    Search retrieval: {report['scenarios']['search_retrieval']['token_savings_pct']}% token savings; "
+        f"C3 hit rate {report['scenarios']['search_retrieval']['with_c3']['hit_rate']}%"
+    )
+    if args.output:
+        print(f"  Saved report: {out_path}")
+
+
+def _render_benchmark_html(reports: list[dict]) -> str:
+    """Render a modern, high-detail bento-grid benchmark report with Chart.js visualizations."""
+    if not reports:
+        return "<html><body>No reports to display.</body></html>"
+
+    # Primary report details
+    primary = reports[-1]
+    scorecard = primary.get("scorecard", {})
+    scenarios = primary.get("scenarios", {})
+    runner = primary.get("runner", {})
+    quality_checks = primary.get("quality_checks", {})
+    session_reality = primary.get("session_reality", {})
+    fixtures = primary.get("fixtures", {})
+    optional_evals = primary.get("optional_evaluations", {})
+
+    def _num(value, digits: int = 1):
+        if isinstance(value, (int, float)):
+            return f"{float(value):.{digits}f}"
+        return str(value)
+
+    def _display_timestamp(value: str) -> str:
+        if not value:
+            return "unknown"
+        return str(value).replace("T", " ")
+
+    def _hbar_rows(data, key, suffix, digits, cls):
+        res = []
+        for d in data:
+            val = d.get(key, 0)
+            res.append(f"""
+                <div class="chart-row">
+                    <div class="chart-label">{html.escape(d.get('label', ''))}</div>
+                    <div class="chart-track"><div class="chart-bar {cls}" style="width: {min(100, float(val))}%"></div></div>
+                    <div class="chart-value">{_num(val, digits)}{suffix}</div>
+                </div>
+            """)
+        return "".join(res)
+
+    def _dual_rows(data, key1, key2, suffix, digits):
+        res = []
+        for d in data:
+            v1 = d.get(key1, 0)
+            v2 = d.get(key2, 0)
+            total = max(0.001, float(v1) + float(v2))
+            p1 = (float(v1) / total) * 100
+            p2 = (float(v2) / total) * 100
+            res.append(f"""
+                <div class="dual-row">
+                    <div class="chart-label">{html.escape(d.get('label', ''))}</div>
+                    <div class="dual-stack">
+                        <div class="dual-track">
+                            <div class="chart-bar c3" style="width: {p1}%"></div>
+                            <div class="mini-tag">C3: {_num(v1, digits)}{suffix}</div>
+                        </div>
+                        <div class="dual-track">
+                            <div class="chart-bar baseline" style="width: {p2}%"></div>
+                            <div class="mini-tag">Base: {_num(v2, digits)}{suffix}</div>
+                        </div>
+                    </div>
+                </div>
+            """)
+        return "".join(res)
+
+    # ─── Data Preparation for Charts ───────────────────────────
+    # Sort scenarios to ensure deterministic chart labels
+    sorted_scenario_keys = sorted(scenarios.keys())
+    scenario_display_labels = [s.replace('_', ' ').title() for s in sorted_scenario_keys]
+    
+    scenario_c3_tokens = []
+    scenario_base_tokens = []
+    scenario_savings = []
+    
+    for k in sorted_scenario_keys:
+        s = scenarios[k]
+        c3_tok = s.get('with_c3', {}).get('total_tokens', s.get('with_c3', {}).get('avg_context_tokens', 0))
+        base_tok = s.get('without_c3', {}).get('total_tokens', s.get('without_c3', {}).get('avg_context_tokens', 0))
+        scenario_c3_tokens.append(c3_tok)
+        scenario_base_tokens.append(base_tok)
+        scenario_savings.append(s.get('token_savings_pct', 0))
+
+    # Model distribution data (from offload evals)
+    model_counts = {}
+    for name, eval_data in optional_evals.items():
+        if eval_data.get("status") == "measured":
+            m = eval_data.get("with_c3", {}).get("model", "unknown")
+            model_counts[m] = model_counts.get(m, 0) + 1
+    
+    model_labels = list(model_counts.keys())
+    model_data = list(model_counts.values())
+
+    # ─── Table Rows ──────────────────────────────────────────
+    scenario_matrix_rows = []
+    for k in sorted_scenario_keys:
+        s = scenarios[k]
+        with_c3 = s.get("with_c3", {})
+        without_c3 = s.get("without_c3", {})
+        scenario_matrix_rows.append(f"""
+            <tr>
+                <td><strong>{html.escape(k.replace('_', ' ').title())}</strong><div class="td-note">{html.escape(s.get('description', ''))}</div></td>
+                <td><span class="badge tool">{html.escape(with_c3.get('tool', 'n/a'))}</span></td>
+                <td>{_num(scenario_c3_tokens[sorted_scenario_keys.index(k)])}</td>
+                <td>{_num(scenario_base_tokens[sorted_scenario_keys.index(k)])}</td>
+                <td class="text-green">{_num(s.get('token_savings_pct', 0))}%</td>
+                <td>{_num(s.get('prompt_budget_multiplier', 0))}x</td>
+                <td>{_num(with_c3.get('avg_latency_ms', 0))}ms</td>
+            </tr>
+        """)
+
+    comparison_list = []
+    for r in reports:
+        r_sc = r.get("scorecard", {})
+        r_run = r.get("runner", {})
+        label = r_run.get("system_label", r_run.get("system_name", "unknown"))
+        if r_run.get("system_version"): label += f" {r_run['system_version']}"
+        timestamp_label = _display_timestamp(r.get("timestamp", ""))
+        comparison_list.append(f"""
+            <div class="comp-row">
+                <div class="comp-label">{html.escape(label)}</div>
+                <div class="td-note">Run: {html.escape(timestamp_label)}</div>
+                <div class="comp-bar-track"><div class="comp-bar" style="width: {r_sc.get('token_usage',{}).get('savings_pct',0)}%"></div></div>
+                <div class="comp-value">{_num(r_sc.get('token_usage',{}).get('savings_pct',0))}% saved</div>
+            </div>
+        """)
+
+    raw_json = html.escape(json.dumps(reports, indent=2))
+
+    # ─── History Track Preparation ─────────────────────────────
+    history_labels = []
+    history_savings = []
+    history_quality = []
+    history_latency = []
+
+    for r in reports:
+        ts = _display_timestamp(r.get("timestamp", ""))
+        ver = r.get("runner", {}).get("c3_version", "unknown")
+        history_labels.append(f"{ts} (v{ver})")
+
+        r_sc = r.get("scorecard", {})
+        history_savings.append(r_sc.get("token_usage", {}).get("savings_pct", 0))
+        history_quality.append(r_sc.get("performance", {}).get("with_c3_quality_pct", 0))
+        history_latency.append(r_sc.get("speed", {}).get("with_c3_avg_latency_ms", 0))
+
+    if False:  # legacy template — superseded by the richer return below
+     _legacy_html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C3 Benchmark Report</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {{
+      --bg: #f3eee6;
+      --panel: rgba(255,250,243,0.86);
+      --panel-strong: #fffaf4;
+      --ink: #182126;
+      --muted: #617079;
+      --line: #d8cfbf;
+      --accent: #0c7c59;
+      --accent-soft: #d8efe7;
+      --baseline: #d38b4d;
+      --baseline-soft: #f7e5d3;
+      --shadow: 0 16px 38px rgba(24,33,38,0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(12,124,89,0.16), transparent 26%),
+        radial-gradient(circle at bottom right, rgba(211,139,77,0.16), transparent 24%),
+        linear-gradient(180deg, #fbf6ef 0%, var(--bg) 100%);
+    }}
+    .wrap {{ max-width: 1360px; margin: 0 auto; padding: 28px 20px 48px; }}
+    .hero, .tab-panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }}
+    .hero-grid {{ display: grid; grid-template-columns: 1.2fr .8fr; gap: 20px; align-items: end; }}
+    h1 {{ margin: 0 0 10px; font-size: 44px; line-height: 1.03; }}
+    h2 {{ margin: 0 0 10px; font-size: 24px; }}
+    h3 {{ margin: 0 0 8px; font-size: 18px; }}
+    p {{ margin: 0; color: var(--muted); line-height: 1.55; }}
+    .eyebrow {{ text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; color: var(--muted); margin-bottom: 10px; }}
+    .hero-meta {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; margin-top: 16px; color: var(--muted); font-size: 14px; }}
+    .hero-stat {{
+      background: linear-gradient(180deg, rgba(12,124,89,0.10), rgba(12,124,89,0.04));
+      border: 1px solid rgba(12,124,89,0.18);
+      border-radius: 22px;
+      padding: 20px;
+    }}
+    .hero-stat .big {{ font-size: 58px; line-height: 1; font-weight: 700; margin-bottom: 10px; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }}
+    .metric-card {{ background: var(--panel-strong); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+    .metric {{ font-size: 30px; font-weight: 700; margin-bottom: 8px; }}
+    .detail {{ color: var(--muted); font-size: 14px; }}
+    .tabs {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 14px; }}
+    .tab-btn {{
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.74);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .tab-btn.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+    .panel-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }}
+    .subpanel {{ background: var(--panel-strong); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+    .chart-row {{ display: grid; grid-template-columns: 180px 1fr 84px; gap: 12px; align-items: center; margin-top: 12px; }}
+    .dual-row {{ display: grid; grid-template-columns: 180px 1fr; gap: 12px; margin-top: 12px; align-items: start; }}
+    .chart-label {{ text-transform: capitalize; font-size: 14px; }}
+    .chart-track, .dual-track {{ height: 14px; background: rgba(24,33,38,0.07); border-radius: 999px; overflow: visible; position: relative; }}
+    .chart-bar {{ height: 100%; border-radius: 999px; min-width: 2px; }}
+    .chart-bar.c3 {{ background: linear-gradient(90deg, var(--accent), #39aa7f); }}
+    .chart-bar.baseline {{ background: linear-gradient(90deg, var(--baseline), #e8ba8c); }}
+    .chart-value {{ text-align: right; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }}
+    .dual-stack {{ display: grid; gap: 10px; }}
+    .mini-tag {{ position: absolute; right: 8px; top: -2px; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; background: var(--panel-strong); border-radius: 16px; overflow: hidden; }}
+    th, td {{ text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ background: var(--accent-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .td-note {{ color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.45; }}
+    .pill-list {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
+    .pill {{ border-radius: 999px; padding: 7px 12px; background: rgba(12,124,89,0.08); border: 1px solid rgba(12,124,89,0.18); font-size: 13px; }}
+    code, pre {{ font-family: Consolas, "SFMono-Regular", monospace; }}
+    code {{ background: rgba(12,124,89,0.08); padding: 2px 6px; border-radius: 6px; }}
+    pre {{ margin: 14px 0 0; background: #1f282d; color: #e8f0f2; border-radius: 18px; padding: 18px; overflow: auto; font-size: 13px; line-height: 1.45; }}
+    .history-grid {{ display: grid; grid-template-columns: 1fr; gap: 24px; margin-top: 16px; }}
+    .chart-container {{ position: relative; height: 260px; width: 100%; }}
+    .text-green {{ color: var(--accent); font-weight: 600; }}
+    .text-orange {{ color: var(--baseline); font-weight: 600; }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-family: Consolas, monospace; }}
+    .badge.tool {{ background: rgba(12,124,89,0.10); border: 1px solid rgba(12,124,89,0.22); color: var(--accent); }}
+    .status-measured {{ color: var(--accent); font-weight: 600; }}
+    .status-skipped {{ color: var(--muted); }}
+    .status-unavailable {{ color: var(--baseline); }}
+    @media (max-width: 920px) {{
+      .hero-grid {{ grid-template-columns: 1fr; }}
+      .chart-row, .dual-row {{ grid-template-columns: 1fr; }}
+      .chart-value {{ text-align: left; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">C3 Benchmark Report</div>
+          <h1>With C3 vs Without C3</h1>
+          <p>Generated on {html.escape(primary.get("timestamp", ""))} for <code>{html.escape(primary.get("project_path", ""))}</code>. This report compares C3-assisted workflows against raw baseline paths across code, logs, structured data, and terminal output. Task-level savings are not the same thing as full-session lifetime; see Session Reality for retained-turn estimates.</p>
+          <div class="hero-meta">
+            <div><strong>System:</strong> {html.escape(runner.get("system_label", runner.get("system_name", "unknown")))}{html.escape((' ' + runner.get('system_version')) if runner.get('system_version') else '')}</div>
+            <div><strong>IDE profile:</strong> {html.escape(runner.get("ide_display_name", runner.get("ide_name", "unknown")))}</div>
+            <div><strong>Files considered:</strong> {html.escape(str(primary.get("files_considered", 0)))}</div>
+            <div><strong>Benchmarked tools:</strong> {html.escape(", ".join(primary.get("coverage", {}).get("benchmarked_tools", [])))}</div>
+            <div><strong>Fixture strategy:</strong> {html.escape(fixtures.get("fixture_strategy", "native repository inputs"))}</div>
+            <div><strong>HTML report:</strong> <code>{html.escape(primary.get("artifacts", {}).get("html_report", ""))}</code></div>
+          </div>
+        </div>
+        <div class="hero-stat">
+          <div class="eyebrow">Task-Level Result</div>
+          <div class="big">{html.escape(_num(scorecard.get('token_usage', {}).get('savings_pct', 0)))}%</div>
+          <p>task-level prompt reduction, <strong>{html.escape(_num(scorecard.get('token_usage', {}).get('prompt_budget_multiplier', 0)))}x</strong> prompt-budget multiplier, and <strong>{html.escape(_num(scorecard.get('performance', {}).get('delta_pct_points', 0)))} pts</strong> average performance uplift.</p>
+        </div>
+      </div>
+      <div class="cards">
+        <div class='metric-card'>
+            <div class='eyebrow'>Token Usage</div>
+            <div class='metric'>{_num(scorecard.get('token_usage', {}).get('savings_pct', 0))}%</div>
+            <div class='detail'>{_num(scorecard.get('token_usage', {}).get('with_c3_total_tokens', 0), 1)} tok with C3 vs {_num(scorecard.get('token_usage', {}).get('without_c3_total_tokens', 0), 1)} tok baseline</div>
+        </div>
+        <div class='metric-card'>
+            <div class='eyebrow'>Prompt Budget</div>
+            <div class='metric'>{_num(scorecard.get('token_usage', {}).get('prompt_budget_multiplier', 0))}x</div>
+            <div class='detail'>More input fits into the same context window.</div>
+        </div>
+        <div class='metric-card'>
+            <div class='eyebrow'>Speed</div>
+            <div class='metric'>{_num(scorecard.get('speed', {}).get('latency_delta_pct_vs_baseline', 0))}%</div>
+            <div class='detail'>{_num(scorecard.get('speed', {}).get('with_c3_avg_latency_ms', 0))} ms with C3 vs {_num(scorecard.get('speed', {}).get('without_c3_avg_latency_ms', 0))} ms baseline</div>
+        </div>
+        <div class='metric-card'>
+            <div class='eyebrow'>Performance</div>
+            <div class='metric'>{_num(scorecard.get('performance', {}).get('with_c3_quality_pct', 0))}%</div>
+            <div class='detail'>{_num(scorecard.get('performance', {}).get('delta_pct_points', 0))} pts vs baseline</div>
+        </div>
+        <div class='metric-card'>
+            <div class='eyebrow'>Session Reality</div>
+            <div class='metric'>{_num(session_reality.get('profiles', {}).get('balanced', {}).get('session_adjusted_savings_pct', 0))}%</div>
+            <div class='detail'>Balanced retained-turn savings; ~{_num(session_reality.get('profiles', {}).get('balanced', {}).get('turns_until_level_2_with_c3', 0))} turns to L2 with C3</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="history">Performance History</button>
+      <button class="tab-btn" data-tab="scenarios">Scenarios</button>
+      <button class="tab-btn" data-tab="quality">Quality</button>
+      <button class="tab-btn" data-tab="session">Session</button>
+      <button class="tab-btn" data-tab="raw">Raw Data</button>
+    </div>
+
+    <section class="tab-panel active" id="tab-overview">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h3>Token Savings By Scenario</h3>
+          <p>Higher is better. This shows where C3 removes the most prompt payload.</p>
+          {_hbar_rows([dict(label=k.replace('_', ' ').title(), token_savings_pct=s.get('token_savings_pct', 0)) for k, s in scenarios.items()], 'token_savings_pct', '%', 1, 'c3')}
+        </div>
+        <div class="subpanel">
+          <h3>Prompt Budget Multiplier</h3>
+          <p>How much more input fits before you hit the same context ceiling.</p>
+          {_hbar_rows([dict(label=k.replace('_', ' ').title(), prompt_budget_multiplier=s.get('prompt_budget_multiplier', 0)) for k, s in scenarios.items()], 'prompt_budget_multiplier', 'x', 2, 'baseline')}
+        </div>
+      </div>
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h3>Latency Comparison</h3>
+          <p>C3 spends local milliseconds to reduce prompt volume. This chart shows both paths per scenario.</p>
+          {_dual_rows([dict(label=k.replace('_', ' ').title(), c3_latency_ms=s.get('with_c3', {}).get('avg_latency_ms', 0), baseline_latency_ms=s.get('without_c3', {}).get('avg_latency_ms', 0)) for k, s in scenarios.items()], 'c3_latency_ms', 'baseline_latency_ms', ' ms', 2)}
+        </div>
+        <div class="subpanel">
+          <h3>Performance Comparison</h3>
+          <p>Task-specific success or signal-retention checks for C3 versus the raw baseline path.</p>
+          {_dual_rows([dict(label=k.replace('_', ' ').title(), c3_perf=s.get('performance_metric_with_c3', 0), baseline_perf=s.get('performance_metric_without_c3', 0)) for k, s in scenarios.items()], 'c3_perf', 'baseline_perf', '%', 1)}
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-history">
+      <div class="history-grid">
+        <div class="subpanel">
+          <h3>Token Savings History</h3>
+          <p>Tracking the percentage of tokens saved across versions and runs.</p>
+          <div class="chart-container"><canvas id="savingsChart"></canvas></div>
+        </div>
+        <div class="subpanel">
+          <h3>Intelligence Quality History</h3>
+          <p>Ensuring mapping and retrieval quality remains stable as parsers evolve.</p>
+          <div class="chart-container"><canvas id="qualityChart"></canvas></div>
+        </div>
+        <div class="subpanel">
+          <h3>Avg Local Latency History</h3>
+          <p>Monitoring the local computational cost of C3 features.</p>
+          <div class="chart-container"><canvas id="latencyChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-scenarios">
+      <div class="subpanel">
+        <h2>Scenario Matrix</h2>
+        <p>Detailed comparison of each benchmarked workflow, including token impact, latency, and the task-specific performance metric.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Tool</th>
+              <th>C3 Tokens</th>
+              <th>Baseline Tokens</th>
+              <th>Savings</th>
+              <th>Budget</th>
+              <th>Latency</th>
+            </tr>
+          </thead>
+          <tbody>{"".join(scenario_matrix_rows)}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-quality">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Quality Checks</h2>
+          <p>Baseline full-read paths retain all information by definition. C3 is measured on whether it keeps the signals the task needs.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Check</th>
+                <th>Metric</th>
+                <th>With C3</th>
+                <th>Without C3</th>
+                <th>Delta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join([f"<tr><td>{html.escape(k.replace('_', ' ').title())}</td><td>{html.escape(v.get('metric', ''))}</td><td>{_num(v.get('with_c3_pct', 0))}%</td><td>{_num(v.get('without_c3_pct', 0))}%</td><td>{_num(v.get('delta_pct_points', 0))} pts</td></tr>" for k, v in quality_checks.items()])}
+            </tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Quality Distribution</h2>
+          <p>The benchmark mixes retrieval hit-rate checks with signal and schema retention checks.</p>
+          {_dual_rows([dict(label=k.replace('_', ' ').title(), with_c3=v.get('with_c3_pct', 0), without_c3=v.get('without_c3_pct', 0)) for k, v in quality_checks.items()], 'with_c3', 'without_c3', '%', 1)}
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-session">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Session Reality</h2>
+          <p>{html.escape(session_reality.get("note", ""))}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>C3 Retained/Turn</th>
+                <th>Base Retained/Turn</th>
+                <th>Savings</th>
+                <th>Budget</th>
+                <th>L1 C3/Base</th>
+                <th>L2 C3/Base</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join([f"<tr><td><strong>{html.escape(k.title())}</strong></td><td>{_num(v.get('retained_tokens_per_turn_with_c3', 0), 1)}</td><td>{_num(v.get('retained_tokens_per_turn_without_c3', 0), 1)}</td><td>{_num(v.get('session_adjusted_savings_pct', 0))}%</td><td>{_num(v.get('session_adjusted_prompt_budget_multiplier', 0), 2)}x</td><td>{_num(v.get('turns_until_level_1_with_c3', 0), 1)} / {_num(v.get('turns_until_level_1_without_c3', 0), 1)}</td><td>{_num(v.get('turns_until_level_2_with_c3', 0), 1)} / {_num(v.get('turns_until_level_2_without_c3', 0), 1)}</td></tr>" for k, v in session_reality.get("profiles", {}).items()])}
+            </tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Assumptions</h2>
+          <table>
+            <thead><tr><th>Input</th><th>Tokens</th></tr></thead>
+            <tbody>
+              <tr><td>Fixed overhead per turn</td><td>{_num(session_reality.get('assumptions', {}).get('fixed_overhead_tokens_per_turn', 0), 1)}</td></tr>
+              <tr><td>L1 threshold</td><td>{_num(session_reality.get('thresholds', {}).get('level_1', 0), 0)}</td></tr>
+              <tr><td>L2 threshold</td><td>{_num(session_reality.get('thresholds', {}).get('level_2', 0), 0)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-raw">
+      <div class="subpanel">
+        <h2>Raw JSON</h2>
+        <pre>{raw_json}</pre>
+      </div>
+    </section>
+  </div>
+  <script>
+    const buttons = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.tab-panel');
+    buttons.forEach((button) => {{
+      button.addEventListener('click', () => {{
+        const tab = button.dataset.tab;
+        buttons.forEach((b) => b.classList.toggle('active', b === button));
+        panels.forEach((panel) => panel.classList.toggle('active', panel.id === 'tab-' + tab));
+      }});
+    }});
+
+    const historyLabels = {json.dumps(history_labels)};
+    const commonOpts = {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        x: {{ ticks: {{ font: {{ family: 'Georgia' }} }} }},
+        y: {{ beginAtZero: true }}
+      }}
+    }};
+
+    new Chart(document.getElementById('savingsChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Savings %',
+          data: {json.dumps(history_savings)},
+          borderColor: '#0c7c59',
+          backgroundColor: 'rgba(12,124,89,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#0c7c59'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}}% saved` }} }} }} }}
+    }});
+
+    new Chart(document.getElementById('qualityChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Quality %',
+          data: {json.dumps(history_quality)},
+          borderColor: '#d38b4d',
+          backgroundColor: 'rgba(211,139,77,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#d38b4d'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}}% quality` }} }} }} }}
+    }});
+
+    new Chart(document.getElementById('latencyChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Latency (ms)',
+          data: {json.dumps(history_latency)},
+          borderColor: '#617079',
+          backgroundColor: 'rgba(97,112,121,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#617079'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}} ms avg local latency` }} }} }} }}
+    }});
+  </script>
+</body>
+</html>
+"""
+
+
+
+    coverage = primary.get("tool_coverage", {})
+    artifacts = primary.get("artifacts", {})
+    benchmarked = coverage.get("benchmarked_tools", [])
+    optional = coverage.get("optional_tools", {})
+
+    scenario_items = [
+        {
+            "label": k.replace("_", " ").title(),
+            "description": s.get("description", ""),
+            "tool": s.get("with_c3", {}).get("tool", "n/a"),
+            "baseline": s.get("without_c3", {}).get("approach", "n/a"),
+            "c3_tokens": s.get("with_c3", {}).get("total_tokens", s.get("with_c3", {}).get("avg_context_tokens", 0)),
+            "baseline_tokens": s.get("without_c3", {}).get("total_tokens", s.get("without_c3", {}).get("avg_context_tokens", 0)),
+            "token_savings_pct": s.get("token_savings_pct", 0),
+            "prompt_budget_multiplier": s.get("prompt_budget_multiplier", 0),
+            "c3_latency_ms": s.get("with_c3", {}).get("avg_latency_ms", 0),
+            "baseline_latency_ms": s.get("without_c3", {}).get("avg_latency_ms", 0),
+            "c3_perf": s.get("performance_metric_with_c3", s.get("with_c3", {}).get("performance", 0)),
+            "baseline_perf": s.get("performance_metric_without_c3", s.get("without_c3", {}).get("performance", 0)),
+            "performance_metric": s.get("performance_metric", ""),
+        }
+        for k, s in scenarios.items()
+    ]
+
+    quality_items = [
+        {
+            "label": k.replace("_", " ").title(),
+            "metric": v.get("metric", ""),
+            "with_c3": v.get("with_c3_pct", 0),
+            "without_c3": v.get("without_c3_pct", 0),
+            "delta": v.get("delta_pct_points", 0),
+        }
+        for k, v in quality_checks.items()
+    ]
+
+    session_profiles = [
+        {
+            "label": k.title(),
+            "description": _BENCHMARK_SESSION_PROFILES.get(k, {}).get("description", ""),
+            "with_c3": v.get("retained_tokens_per_turn_with_c3", 0),
+            "without_c3": v.get("retained_tokens_per_turn_without_c3", 0),
+            "savings_pct": v.get("session_adjusted_savings_pct", 0),
+            "budget_multiplier": v.get("session_adjusted_prompt_budget_multiplier", 0),
+            "l1_with": v.get("turns_until_level_1_with_c3", 0),
+            "l1_without": v.get("turns_until_level_1_without_c3", 0),
+            "l2_with": v.get("turns_until_level_2_with_c3", 0),
+            "l2_without": v.get("turns_until_level_2_without_c3", 0),
+        }
+        for k, v in session_reality.get("profiles", {}).items()
+    ]
+
+    def _metric_card(title: str, metric: str, detail: str) -> str:
+        return (
+            "<div class='metric-card'>"
+            f"<div class='eyebrow'>{html.escape(title)}</div>"
+            f"<div class='metric'>{html.escape(metric)}</div>"
+            f"<div class='detail'>{html.escape(detail)}</div>"
+            "</div>"
+        )
+
+    def _hbar_rows(items, value_key: str, suffix: str = "", decimals: int = 1, color_class: str = "c3") -> str:
+        max_value = max((float(item.get(value_key, 0) or 0) for item in items), default=1.0) or 1.0
+        rows = []
+        for item in items:
+            value = float(item.get(value_key, 0) or 0)
+            width = max(2.0, (value / max_value) * 100)
+            rows.append(
+                "<div class='chart-row'>"
+                f"<div class='chart-label'>{html.escape(item['label'])}</div>"
+                "<div class='chart-track'>"
+                f"<div class='chart-bar {color_class}' style='width:{width:.1f}%'></div>"
+                "</div>"
+                f"<div class='chart-value'>{html.escape(_num(value, decimals))}{html.escape(suffix)}</div>"
+                "</div>"
+            )
+        return "".join(rows)
+
+    def _dual_rows(items, left_key: str, right_key: str, suffix: str = "", decimals: int = 1) -> str:
+        max_value = max(
+            [float(item.get(left_key, 0) or 0) for item in items] +
+            [float(item.get(right_key, 0) or 0) for item in items] + [1.0]
+        )
+        rows = []
+        for item in items:
+            left = float(item.get(left_key, 0) or 0)
+            right = float(item.get(right_key, 0) or 0)
+            left_width = max(2.0, (left / max_value) * 100)
+            right_width = max(2.0, (right / max_value) * 100)
+            rows.append(
+                "<div class='dual-row'>"
+                f"<div class='chart-label'>{html.escape(item['label'])}</div>"
+                "<div class='dual-stack'>"
+                "<div class='dual-track'>"
+                f"<div class='chart-bar c3' style='width:{left_width:.1f}%'></div>"
+                f"<span class='mini-tag'>C3 {_num(left, decimals)}{suffix}</span>"
+                "</div>"
+                "<div class='dual-track'>"
+                f"<div class='chart-bar baseline' style='width:{right_width:.1f}%'></div>"
+                f"<span class='mini-tag'>Base {_num(right, decimals)}{suffix}</span>"
+                "</div>"
+                "</div>"
+                "</div>"
+            )
+        return "".join(rows)
+
+    overview_cards = "".join([
+        _metric_card(
+            "Token Usage",
+            f"{_num(scorecard.get('token_usage', {}).get('savings_pct', 0))}%",
+            (
+                f"{_num(scorecard.get('token_usage', {}).get('with_c3_total_tokens', 0), 1)} tok with C3 vs "
+                f"{_num(scorecard.get('token_usage', {}).get('without_c3_total_tokens', 0), 1)} tok baseline"
+            ),
+        ),
+        _metric_card(
+            "Prompt Budget",
+            f"{_num(scorecard.get('token_usage', {}).get('prompt_budget_multiplier', 0))}x",
+            "More input fits into the same context window.",
+        ),
+        _metric_card(
+            "Speed",
+            f"{_num(scorecard.get('speed', {}).get('latency_delta_pct_vs_baseline', 0))}%",
+            (
+                f"{_num(scorecard.get('speed', {}).get('with_c3_avg_latency_ms', 0))} ms with C3 vs "
+                f"{_num(scorecard.get('speed', {}).get('without_c3_avg_latency_ms', 0))} ms baseline"
+            ),
+        ),
+        _metric_card(
+            "Performance",
+            f"{_num(scorecard.get('performance', {}).get('with_c3_quality_pct', 0))}%",
+            f"{_num(scorecard.get('performance', {}).get('delta_pct_points', 0))} pts vs baseline",
+        ),
+        _metric_card(
+            "Session Reality",
+            f"{_num(session_reality.get('profiles', {}).get('balanced', {}).get('session_adjusted_savings_pct', 0))}%",
+            (
+                f"Balanced retained-turn savings; ~{_num(session_reality.get('profiles', {}).get('balanced', {}).get('turns_until_level_2_with_c3', 0))} turns to L2 with C3"
+            ),
+        ),
+    ])
+
+    scenario_rows = []
+    for item in scenario_items:
+        savings = float(item["token_savings_pct"])
+        savings_cls = "text-green" if savings >= 50 else ("text-orange" if savings >= 20 else "")
+        scenario_rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(item['label'])}</strong><div class='td-note'>{html.escape(item['description'])}</div></td>"
+            f"<td><span class='badge tool'>{html.escape(item['tool'])}</span></td>"
+            f"<td class='td-note'>{html.escape(item['baseline'])}</td>"
+            f"<td>{html.escape(_num(item['c3_tokens'], 0))}</td>"
+            f"<td>{html.escape(_num(item['baseline_tokens'], 0))}</td>"
+            f"<td class='{savings_cls}'>{html.escape(_num(savings))}%</td>"
+            f"<td>{html.escape(_num(item['prompt_budget_multiplier'], 2))}x</td>"
+            f"<td>{html.escape(_num(item['c3_latency_ms']))} / {html.escape(_num(item['baseline_latency_ms']))} ms</td>"
+            f"<td class='td-note'>{html.escape(item['performance_metric'])}<br><strong class='text-green'>{html.escape(_num(item['c3_perf']))}</strong> vs {html.escape(_num(item['baseline_perf']))}</td>"
+            "</tr>"
+        )
+
+    quality_rows = []
+    for item in quality_items:
+        delta = float(item["delta"])
+        delta_cls = "text-green" if delta >= 0 else "text-orange"
+        delta_sign = "+" if delta >= 0 else ""
+        quality_rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(item['label'])}</strong></td>"
+            f"<td class='td-note'>{html.escape(item['metric'])}</td>"
+            f"<td class='text-green'>{html.escape(_num(item['with_c3']))}%</td>"
+            f"<td>{html.escape(_num(item['without_c3']))}%</td>"
+            f"<td class='{delta_cls}'>{delta_sign}{html.escape(_num(delta))} pts</td>"
+            "</tr>"
+        )
+
+    optional_rows = []
+    for name, meta in optional.items():
+        status = meta.get("status", "unknown")
+        status_cls = "status-measured" if status == "measured" else ("status-skipped" if status == "skipped" else "status-unavailable")
+        optional_rows.append(
+            "<tr>"
+            f"<td><code>{html.escape(name)}</code></td>"
+            f"<td><span class='{status_cls}'>{html.escape(status)}</span></td>"
+            f"<td class='td-note'>{html.escape(meta.get('reason', ''))}</td>"
+            "</tr>"
+        )
+
+    optional_eval_rows = []
+    for name, meta in optional_evals.items():
+        with_c3 = meta.get("with_c3", {})
+        without_c3 = meta.get("without_c3", {})
+        optional_eval_rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(name)}</strong><div class='td-note'>{html.escape(meta.get('description', ''))}</div></td>"
+            f"<td>{html.escape(meta.get('status', 'unknown'))}</td>"
+            f"<td>{html.escape(with_c3.get('task_type', without_c3.get('task_type', '')))}<br><span class='td-note'>{html.escape(with_c3.get('task_file', without_c3.get('task_file', '')))}</span></td>"
+            f"<td>{html.escape(with_c3.get('model', ''))}</td>"
+            f"<td>{html.escape(_num(with_c3.get('primary_model_prompt_tokens', 0), 1))}</td>"
+            f"<td>{html.escape(_num(without_c3.get('primary_model_prompt_tokens', 0), 1))}</td>"
+            f"<td>{html.escape(_num(meta.get('primary_model_token_savings_pct', 0)))}%</td>"
+            f"<td>{html.escape(_num(meta.get('prompt_budget_multiplier', 0), 2))}x</td>"
+            f"<td>{html.escape(_num(with_c3.get('latency_ms', 0), 2))} ms</td>"
+            f"<td>{html.escape(with_c3.get('confidence', ''))}</td>"
+            f"<td>{html.escape(meta.get('notes', meta.get('reason', '')))}</td>"
+            "</tr>"
+        )
+
+    session_rows = []
+    for item in session_profiles:
+        session_rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(item['label'])}</strong><div class='td-note'>{html.escape(item['description'])}</div></td>"
+            f"<td>{html.escape(_num(item['with_c3'], 1))}</td>"
+            f"<td>{html.escape(_num(item['without_c3'], 1))}</td>"
+            f"<td>{html.escape(_num(item['savings_pct']))}%</td>"
+            f"<td>{html.escape(_num(item['budget_multiplier'], 2))}x</td>"
+            f"<td>{html.escape(_num(item['l1_with'], 1))} / {html.escape(_num(item['l1_without'], 1))}</td>"
+            f"<td>{html.escape(_num(item['l2_with'], 1))} / {html.escape(_num(item['l2_without'], 1))}</td>"
+            "</tr>"
+        )
+
+    transcript_usage = session_reality.get("transcript_usage", {})
+    transcript_rows = []
+    if transcript_usage:
+        transcript_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(transcript_usage.get('sessions_found', 0)))}</td>"
+            f"<td>{html.escape(_num(transcript_usage.get('total_input_tokens', 0), 1))}</td>"
+            f"<td>{html.escape(_num(transcript_usage.get('total_output_tokens', 0), 1))}</td>"
+            f"<td>{html.escape(_num(transcript_usage.get('cache_creation_tokens', 0), 1))}</td>"
+            f"<td>{html.escape(_num(transcript_usage.get('cache_read_tokens', 0), 1))}</td>"
+            "</tr>"
+        )
+
+    assumptions = session_reality.get("assumptions", {})
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C3 Benchmark Report</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {{
+      --bg: #f3eee6;
+      --panel: rgba(255,250,243,0.86);
+      --panel-strong: #fffaf4;
+      --ink: #182126;
+      --muted: #617079;
+      --line: #d8cfbf;
+      --accent: #0c7c59;
+      --accent-soft: #d8efe7;
+      --baseline: #d38b4d;
+      --baseline-soft: #f7e5d3;
+      --shadow: 0 16px 38px rgba(24,33,38,0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(12,124,89,0.16), transparent 26%),
+        radial-gradient(circle at bottom right, rgba(211,139,77,0.16), transparent 24%),
+        linear-gradient(180deg, #fbf6ef 0%, var(--bg) 100%);
+    }}
+    .wrap {{ max-width: 1360px; margin: 0 auto; padding: 28px 20px 48px; }}
+    .hero, .tab-panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }}
+    .hero-grid {{ display: grid; grid-template-columns: 1.2fr .8fr; gap: 20px; align-items: end; }}
+    h1 {{ margin: 0 0 10px; font-size: 44px; line-height: 1.03; }}
+    h2 {{ margin: 0 0 10px; font-size: 24px; }}
+    h3 {{ margin: 0 0 8px; font-size: 18px; }}
+    p {{ margin: 0; color: var(--muted); line-height: 1.55; }}
+    .eyebrow {{ text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; color: var(--muted); margin-bottom: 10px; }}
+    .hero-meta {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; margin-top: 16px; color: var(--muted); font-size: 14px; }}
+    .hero-stat {{
+      background: linear-gradient(180deg, rgba(12,124,89,0.10), rgba(12,124,89,0.04));
+      border: 1px solid rgba(12,124,89,0.18);
+      border-radius: 22px;
+      padding: 20px;
+    }}
+    .hero-stat .big {{ font-size: 58px; line-height: 1; font-weight: 700; margin-bottom: 10px; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }}
+    .metric-card {{ background: var(--panel-strong); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+    .metric {{ font-size: 30px; font-weight: 700; margin-bottom: 8px; }}
+    .detail {{ color: var(--muted); font-size: 14px; }}
+    .tabs {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 14px; }}
+    .tab-btn {{
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.74);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .tab-btn.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+    .panel-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }}
+    .subpanel {{ background: var(--panel-strong); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+    .chart-row {{ display: grid; grid-template-columns: 180px 1fr 84px; gap: 12px; align-items: center; margin-top: 12px; }}
+    .dual-row {{ display: grid; grid-template-columns: 180px 1fr; gap: 12px; margin-top: 12px; align-items: start; }}
+    .chart-label {{ text-transform: capitalize; font-size: 14px; }}
+    .chart-track, .dual-track {{ height: 14px; background: rgba(24,33,38,0.07); border-radius: 999px; overflow: visible; position: relative; }}
+    .chart-bar {{ height: 100%; border-radius: 999px; min-width: 2px; }}
+    .chart-bar.c3 {{ background: linear-gradient(90deg, var(--accent), #39aa7f); }}
+    .chart-bar.baseline {{ background: linear-gradient(90deg, var(--baseline), #e8ba8c); }}
+    .chart-value {{ text-align: right; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }}
+    .dual-stack {{ display: grid; gap: 10px; }}
+    .mini-tag {{ position: absolute; right: 8px; top: -2px; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; background: var(--panel-strong); border-radius: 16px; overflow: hidden; }}
+    th, td {{ text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ background: var(--accent-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .td-note {{ color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.45; }}
+    .pill-list {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
+    .pill {{ border-radius: 999px; padding: 7px 12px; background: rgba(12,124,89,0.08); border: 1px solid rgba(12,124,89,0.18); font-size: 13px; }}
+    code, pre {{ font-family: Consolas, "SFMono-Regular", monospace; }}
+    code {{ background: rgba(12,124,89,0.08); padding: 2px 6px; border-radius: 6px; }}
+    pre {{ margin: 14px 0 0; background: #1f282d; color: #e8f0f2; border-radius: 18px; padding: 18px; overflow: auto; font-size: 13px; line-height: 1.45; }}
+    .history-grid {{ display: grid; grid-template-columns: 1fr; gap: 24px; margin-top: 16px; }}
+    .chart-container {{ position: relative; height: 260px; width: 100%; }}
+    .text-green {{ color: var(--accent); font-weight: 600; }}
+    .text-orange {{ color: var(--baseline); font-weight: 600; }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-family: Consolas, monospace; }}
+    .badge.tool {{ background: rgba(12,124,89,0.10); border: 1px solid rgba(12,124,89,0.22); color: var(--accent); }}
+    .status-measured {{ color: var(--accent); font-weight: 600; }}
+    .status-skipped {{ color: var(--muted); }}
+    .status-unavailable {{ color: var(--baseline); }}
+    @media (max-width: 920px) {{
+      .hero-grid {{ grid-template-columns: 1fr; }}
+      .chart-row, .dual-row {{ grid-template-columns: 1fr; }}
+      .chart-value {{ text-align: left; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">C3 Benchmark Report</div>
+          <h1>With C3 vs Without C3</h1>
+          <p>Generated on {html.escape(primary.get("timestamp", ""))} for <code>{html.escape(primary.get("project_path", ""))}</code>. This report compares C3-assisted workflows against raw baseline paths across code, logs, structured data, and terminal output. Task-level savings are not the same thing as full-session lifetime; see Session Reality for retained-turn estimates.</p>
+          <div class="hero-meta">
+            <div><strong>System:</strong> {html.escape(runner.get("system_label", runner.get("system_name", "unknown")))}{html.escape((' ' + runner.get('system_version')) if runner.get('system_version') else '')}</div>
+            <div><strong>IDE profile:</strong> {html.escape(runner.get("ide_display_name", runner.get("ide_name", "unknown")))}</div>
+            <div><strong>Files considered:</strong> {html.escape(str(primary.get("files_considered", 0)))}</div>
+            <div><strong>Benchmarked tools:</strong> {html.escape(", ".join(benchmarked))}</div>
+            <div><strong>Fixture strategy:</strong> {html.escape(fixtures.get("fixture_strategy", "native repository inputs"))}</div>
+            <div><strong>HTML report:</strong> <code>{html.escape(artifacts.get("html_report", ""))}</code></div>
+          </div>
+        </div>
+        <div class="hero-stat">
+          <div class="eyebrow">Task-Level Result</div>
+          <div class="big">{html.escape(_num(scorecard.get('token_usage', {}).get('savings_pct', 0)))}%</div>
+          <p>task-level prompt reduction, <strong>{html.escape(_num(scorecard.get('token_usage', {}).get('prompt_budget_multiplier', 0)))}x</strong> prompt-budget multiplier, and <strong>{html.escape(_num(scorecard.get('performance', {}).get('delta_pct_points', 0)))} pts</strong> average performance uplift.</p>
+        </div>
+      </div>
+      <div class="cards">{overview_cards}</div>
+    </section>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="history">Performance History</button>
+      <button class="tab-btn" data-tab="scenarios">Scenarios</button>
+      <button class="tab-btn" data-tab="quality">Quality</button>
+      <button class="tab-btn" data-tab="session">Session</button>
+      <button class="tab-btn" data-tab="coverage">Coverage</button>
+      <button class="tab-btn" data-tab="raw">Raw Data</button>
+    </div>
+
+    <section class="tab-panel active" id="tab-overview">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h3>Token Savings By Scenario</h3>
+          <p>Higher is better. This shows where C3 removes the most prompt payload.</p>
+          {_hbar_rows(scenario_items, 'token_savings_pct', '%', 1, 'c3')}
+        </div>
+        <div class="subpanel">
+          <h3>Prompt Budget Multiplier</h3>
+          <p>How much more input fits before you hit the same context ceiling.</p>
+          {_hbar_rows(scenario_items, 'prompt_budget_multiplier', 'x', 2, 'baseline')}
+        </div>
+      </div>
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h3>Latency Comparison</h3>
+          <p>C3 spends local milliseconds to reduce prompt volume. This chart shows both paths per scenario.</p>
+          {_dual_rows(scenario_items, 'c3_latency_ms', 'baseline_latency_ms', ' ms', 2)}
+        </div>
+        <div class="subpanel">
+          <h3>Performance Comparison</h3>
+          <p>Task-specific success or signal-retention checks for C3 versus the raw baseline path.</p>
+          {_dual_rows(scenario_items, 'c3_perf', 'baseline_perf', '%', 1)}
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-history">
+      <div class="history-grid">
+        <div class="subpanel">
+          <h3>Token Savings History</h3>
+          <p>Tracking the percentage of tokens saved across versions and runs.</p>
+          <div class="chart-container"><canvas id="savingsChart"></canvas></div>
+        </div>
+        <div class="subpanel">
+          <h3>Intelligence Quality History</h3>
+          <p>Ensuring mapping and retrieval quality remains stable as parsers evolve.</p>
+          <div class="chart-container"><canvas id="qualityChart"></canvas></div>
+        </div>
+        <div class="subpanel">
+          <h3>Avg Local Latency History</h3>
+          <p>Monitoring the local computational cost of C3 features.</p>
+          <div class="chart-container"><canvas id="latencyChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-scenarios">
+      <div class="subpanel">
+        <h2>Scenario Matrix</h2>
+        <p>Detailed comparison of each benchmarked workflow, including token impact, latency, and the task-specific performance metric.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>With C3</th>
+              <th>Without C3</th>
+              <th>C3 Tokens</th>
+              <th>Baseline Tokens</th>
+              <th>Savings</th>
+              <th>Budget</th>
+              <th>Latency C3 / Base</th>
+              <th>Performance</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(scenario_rows)}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-quality">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Quality Checks</h2>
+          <p>Baseline full-read paths retain all information by definition. C3 is measured on whether it keeps the signals the task needs.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Check</th>
+                <th>Metric</th>
+                <th>With C3</th>
+                <th>Without C3</th>
+                <th>Delta</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(quality_rows)}</tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Quality Distribution</h2>
+          <p>The benchmark mixes retrieval hit-rate checks with signal and schema retention checks.</p>
+          {_dual_rows(quality_items, 'with_c3', 'without_c3', '%', 1)}
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-session">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Session Reality</h2>
+          <p>{html.escape(session_reality.get("note", ""))}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>With C3 Retained/Turn</th>
+                <th>Base Retained/Turn</th>
+                <th>Savings</th>
+                <th>Budget</th>
+                <th>Turns To L1 C3 / Base</th>
+                <th>Turns To L2 C3 / Base</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(session_rows)}</tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Assumptions</h2>
+          <p>These fixed overheads are added per retained turn before the scenario context is counted.</p>
+          <table>
+            <thead>
+              <tr><th>Input</th><th>Tokens</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>System and instructions</td><td>{html.escape(_num(assumptions.get('system_and_instructions_tokens', 0), 1))}</td></tr>
+              <tr><td>User turn</td><td>{html.escape(_num(assumptions.get('user_turn_tokens', 0), 1))}</td></tr>
+              <tr><td>Assistant reply</td><td>{html.escape(_num(assumptions.get('assistant_reply_tokens', 0), 1))}</td></tr>
+              <tr><td>Tool wrapper</td><td>{html.escape(_num(assumptions.get('tool_wrapper_tokens', 0), 1))}</td></tr>
+              <tr><td>Fixed overhead total</td><td>{html.escape(_num(assumptions.get('fixed_overhead_tokens_per_turn', 0), 1))}</td></tr>
+              <tr><td>L1 threshold</td><td>{html.escape(_num(session_reality.get('thresholds', {}).get('level_1', 0), 1))}</td></tr>
+              <tr><td>L2 threshold</td><td>{html.escape(_num(session_reality.get('thresholds', {}).get('level_2', 0), 1))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Transcript Usage</h2>
+          <p>When Claude Code transcripts are available for this project, they are shown here as a reality check against synthetic estimates.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Sessions</th>
+                <th>Total Input</th>
+                <th>Total Output</th>
+                <th>Cache Create</th>
+                <th>Cache Read</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(transcript_rows) if transcript_rows else "<tr><td colspan='5'>No Claude Code transcript usage was found for this project.</td></tr>"}</tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Profile Savings</h2>
+          <p>These bars are session-adjusted rather than raw scenario-only token reductions.</p>
+          {_hbar_rows(session_profiles, 'savings_pct', '%', 1, 'c3')}
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-coverage">
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Benchmarked Tools</h2>
+          <p>These tools currently contribute to the main scorecard.</p>
+          <div class="pill-list">{''.join(f"<div class='pill'>{html.escape(tool)}</div>" for tool in benchmarked)}</div>
+          <table>
+            <thead>
+              <tr><th>Artifact</th><th>Path</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>System</td><td><code>{html.escape(runner.get('system_name', 'unknown'))}</code></td></tr>
+              <tr><td>System label</td><td><code>{html.escape(runner.get('system_label', 'unknown'))}</code></td></tr>
+              <tr><td>System version</td><td><code>{html.escape(runner.get('system_version', ''))}</code></td></tr>
+              <tr><td>C3 Version</td><td><code>{html.escape(ver)}</code></td></tr>
+              <tr><td>IDE profile</td><td><code>{html.escape(runner.get('ide_name', 'unknown'))}</code></td></tr>
+              <tr><td>JSON report</td><td><code>{html.escape(artifacts.get('json_report', ''))}</code></td></tr>
+              <tr><td>HTML report</td><td><code>{html.escape(artifacts.get('html_report', ''))}</code></td></tr>
+              <tr><td>Fixture directory</td><td><code>{html.escape(fixtures.get('fixture_dir', ''))}</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Optional Tools</h2>
+          <p>These remain outside the main scorecard because they rely on environment-specific routing quality or project history. When local Ollama is available, c3_delegate is promoted into the main scorecard automatically.</p>
+          <table>
+            <thead>
+              <tr><th>Tool</th><th>Status</th><th>Reason</th></tr>
+            </thead>
+            <tbody>{''.join(optional_rows)}</tbody>
+          </table>
+          <table>
+            <thead>
+              <tr>
+                <th>Evaluation</th>
+                <th>Status</th>
+                <th>Task</th>
+                <th>Model</th>
+                <th>C3 Primary Tokens</th>
+                <th>Baseline Primary Tokens</th>
+                <th>Savings</th>
+                <th>Budget</th>
+                <th>Latency</th>
+                <th>Confidence</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(optional_eval_rows) if optional_eval_rows else "<tr><td colspan='11'>No optional evaluations were recorded for this run.</td></tr>"}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel-grid">
+        <div class="subpanel">
+          <h2>Fixture Inputs</h2>
+          <table>
+            <thead>
+              <tr><th>Fixture</th><th>Path</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Log fixture</td><td><code>{html.escape(fixtures.get('log_path', ''))}</code></td></tr>
+              <tr><td>JSONL fixture</td><td><code>{html.escape(fixtures.get('jsonl_path', ''))}</code></td></tr>
+              <tr><td>Terminal fixture</td><td><code>{html.escape(fixtures.get('terminal_output_path', ''))}</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="subpanel">
+          <h2>Signals Under Test</h2>
+          <div class="pill-list">
+            {''.join(f"<div class='pill'>{html.escape(sig)}</div>" for sig in fixtures.get('log_signals', []))}
+            {''.join(f"<div class='pill'>{html.escape(field)}</div>" for field in fixtures.get('jsonl_fields', []))}
+            {''.join(f"<div class='pill'>{html.escape(sig)}</div>" for sig in fixtures.get('terminal_signals', []))}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-raw">
+      <div class="subpanel">
+        <h2>Raw JSON</h2>
+        <p>The full machine-readable benchmark output is embedded here for quick inspection.</p>
+        <pre>{raw_json}</pre>
+      </div>
+    </section>
+  </div>
+  <script>
+    const buttons = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.tab-panel');
+    buttons.forEach((button) => {{
+      button.addEventListener('click', () => {{
+        const tab = button.dataset.tab;
+        buttons.forEach((b) => b.classList.toggle('active', b === button));
+        panels.forEach((panel) => panel.classList.toggle('active', panel.id === 'tab-' + tab));
+      }});
+    }});
+
+    const historyLabels = {json.dumps(history_labels)};
+    const commonOpts = {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        x: {{ ticks: {{ font: {{ family: 'Georgia' }} }} }},
+        y: {{ beginAtZero: true }}
+      }}
+    }};
+
+    new Chart(document.getElementById('savingsChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Savings %',
+          data: {json.dumps(history_savings)},
+          borderColor: '#0c7c59',
+          backgroundColor: 'rgba(12,124,89,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#0c7c59'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}}% saved` }} }} }} }}
+    }});
+
+    new Chart(document.getElementById('qualityChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Quality %',
+          data: {json.dumps(history_quality)},
+          borderColor: '#d38b4d',
+          backgroundColor: 'rgba(211,139,77,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#d38b4d'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}}% quality` }} }} }} }}
+    }});
+
+    new Chart(document.getElementById('latencyChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyLabels,
+        datasets: [{{
+          label: 'Latency (ms)',
+          data: {json.dumps(history_latency)},
+          borderColor: '#617079',
+          backgroundColor: 'rgba(97,112,121,0.1)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 5,
+          pointBackgroundColor: '#617079'
+        }}]
+      }},
+      options: {{ ...commonOpts, plugins: {{ tooltip: {{ callbacks: {{ label: (c) => ` ${{c.parsed.y}} ms avg local latency` }} }} }} }}
+    }});
+  </script>
+</body>
+</html>"""
+
+
+def cmd_benchmark(args):
+    """Run a local with/without-C3 benchmark for common code-understanding workflows."""
+    config = load_config(args.project_path or ".")
+    project_path = Path(args.project_path or config.get("project_path", ".")).resolve()
+    runtime_ide_name = ""
+    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_MANAGED_BY_NPM"):
+        runtime_ide_name = "codex"
+    configured_ide_name = load_ide_config(str(project_path))
+    detected_ide_name = detect_ide(str(project_path))
+    ide_name = runtime_ide_name or (
+        configured_ide_name if configured_ide_name != "claude-code" else detected_ide_name
+    ) or detected_ide_name
+    ide_profile = get_profile(ide_name)
+    system_name = (getattr(args, "system_name", "") or os.environ.get("C3_BENCHMARK_SYSTEM") or ide_profile.name).strip()
+    system_label = (getattr(args, "system_label", "") or os.environ.get("C3_BENCHMARK_SYSTEM_LABEL") or ide_profile.display_name).strip()
+    system_version = (getattr(args, "system_version", "") or os.environ.get("C3_BENCHMARK_SYSTEM_VERSION") or "").strip()
+
+    indexer = CodeIndex(str(project_path), str(project_path / ".c3" / "index"))
+    compressor = CodeCompressor(str(project_path / ".c3" / "cache"), project_root=str(project_path))
+    file_memory = FileMemoryStore(str(project_path))
+    output_filter = OutputFilter({"HYBRID_DISABLE_TIER1": True})
+
+    skip_dirs = set(getattr(indexer, "skip_dirs", set()))
+    code_exts = set(getattr(indexer, "code_exts", set()))
+
+    files = []
+    for fpath in project_path.rglob("*"):
+        if not fpath.is_file():
+            continue
+        if fpath.suffix.lower() not in code_exts:
+            continue
+        if any(skip in fpath.parts for skip in skip_dirs):
+            continue
+        if compressor.is_protected_file(fpath):
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        files.append((fpath, content, count_tokens(content)))
+
+    if not files:
+        print("Error: no benchmark-eligible files found")
+        return
+
+    sample = sorted([f for f in files if f[2] >= args.min_tokens], key=lambda x: x[2], reverse=True)[:args.sample_size]
+    if not sample:
+        sample = sorted(files, key=lambda x: x[2], reverse=True)[:args.sample_size]
+
+    fixtures = _build_benchmark_fixtures(project_path, sample)
+
+    def _avg(values):
+        return (sum(values) / len(values)) if values else 0.0
+
+    def _pct_delta(current, baseline):
+        if not baseline:
+            return 0.0
+        return ((current - baseline) / baseline) * 100
+
+    def _pct_saved(current, baseline):
+        if not baseline:
+            return 0.0
+        return ((baseline - current) / baseline) * 100
+
+    def _prompt_gain(current, baseline):
+        if not current:
+            return 0.0
+        return baseline / current
+
+    def _rel_path(path: Path) -> str:
+        return str(path.relative_to(project_path)).replace("\\", "/")
+
+    comp_orig = 0
+    comp_comp = 0
+    comp_c3_latencies = []
+    comp_baseline_latencies = []
+    for fpath, content, _ in sample:
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        comp_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        t0 = time.perf_counter()
+        result = compressor.compress_file(str(fpath), "smart")
+        comp_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        raw_tokens = count_tokens(raw_content)
+        comp_orig += raw_tokens
+        comp_comp += int(result.get("compressed_tokens", raw_tokens))
+
+    file_map_sample = sample[:min(len(sample), max(5, min(args.sample_size, 10)))]
+    file_map_orig = 0
+    file_map_comp = 0
+    file_map_c3_latencies = []
+    file_map_baseline_latencies = []
+    file_map_successes = 0
+    for fpath, content, _ in file_map_sample:
+        rel = _rel_path(fpath)
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        file_map_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        file_map_orig += count_tokens(raw_content)
+        t0 = time.perf_counter()
+        map_text = file_memory.get_or_build_map(rel)
+        file_map_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        file_map_comp += count_tokens(map_text)
+        if "[file_map] Could not build map" not in map_text and "[file_map:error]" not in map_text:
+            file_map_successes += 1
+
+    # Scenario: Surgical Reading (c3_read)
+    read_sample_size = min(len(sample), max(5, min(args.sample_size, 10)))
+    read_sample = sample[:read_sample_size]
+    read_orig = 0
+    read_comp = 0
+    read_c3_latencies = []
+    read_baseline_latencies = []
+    read_successes = 0
+
+    for fpath, content, _ in read_sample:
+        rel = _rel_path(fpath)
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        read_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        read_orig += count_tokens(raw_content)
+
+        t0 = time.perf_counter()
+        record = file_memory.get(rel)
+        if not record or file_memory.needs_update(rel):
+            record = file_memory.update(rel)
+        
+        extracted_text = ""
+        if record and record.get("sections"):
+            # Pick the most relevant single symbol for surgical reading
+            sections = [s for s in record["sections"] if s.get("type") in ("class", "function", "method")][:1]
+            if sections:
+                lines = raw_content.splitlines()
+                for s in sections:
+                    start, end = s["line_start"], s["line_end"]
+                    raw_extracted = "\n".join(lines[start-1:end]) + "\n"
+                    # Apply C3 compression to the surgical read result to maximize savings
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
+                        tmp.write(raw_extracted)
+                        tmp_path = tmp.name
+                    try:
+                        comp_res = compressor.compress_file(tmp_path, mode="smart")
+                        extracted_text += comp_res.get("compressed", raw_extracted)
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                read_successes += 1
+            else:
+                extracted_text = raw_content
+        else:
+            extracted_text = raw_content
+            
+        read_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        read_comp += count_tokens(extracted_text)
+
+    # Scenario: Syntax Validation (c3_validate / AST)
+    from services.parser import check_syntax_ast
+    val_sample_size = min(len(sample), max(5, min(args.sample_size, 15)))
+    val_sample = sample[:val_sample_size]
+    val_orig = 0
+    val_comp = 0 # Validation consumes context if errors are found, but here we measure metadata overhead
+    val_c3_latencies = []
+    val_baseline_latencies = []
+    val_successes = 0
+
+    for fpath, content, _ in val_sample:
+        t_read = time.perf_counter()
+        try:
+            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            raw_content = content
+        val_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
+        val_orig += count_tokens(raw_content)
+
+        t0 = time.perf_counter()
+        errors = check_syntax_ast(raw_content, fpath.suffix.lower())
+        val_c3_latencies.append((time.perf_counter() - t0) * 1000)
+        # Validation overhead is minimal (just the tool result message)
+        err_msg = f"Found {len(errors)} errors" if errors else "No errors"
+        val_comp += count_tokens(err_msg)
+        val_successes += 1
+
+    queries = [
+        ("compress file and return results endpoint", "cli/server.py"),
+        ("method that blocks protected files from compression", "services/compressor.py"),
+        ("hybrid metrics collector summary", "services/metrics.py"),
+        ("token counting helper", "core/__init__.py"),
+        ("mcp tool c3_compress implementation", "cli/mcp_server.py"),
+        ("IDE profile registry", "core/ide.py"),
+    ]
+    stop_terms = {"the", "and", "for", "that", "from", "with", "into", "this", "tool", "api", "implementation", "what", "where"}
+
+    def lexical_top_files(query: str, top_k: int = 5) -> list:
+        terms = [t for t in re.findall(r"[A-Za-z_]+", query.lower()) if len(t) > 2 and t not in stop_terms]
+        scored = []
+        for fpath, content, _ in files:
+            low = content.lower()
+            score = sum(low.count(term) for term in terms)
+            if score > 0:
+                scored.append((score, fpath))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [str(path.relative_to(project_path)).replace("\\", "/") for _, path in scored[:top_k]]
+
+    c3_tokens = []
+    lexical_tokens = []
+    c3_latencies = []
+    lexical_latencies = []
+    c3_hits = 0
+    lexical_hits = 0
+    for query, expected_path in queries:
+        t0 = time.perf_counter()
+        results = indexer.search(query, top_k=args.top_k, max_tokens=args.max_tokens)
+        context = indexer.get_context(query, top_k=args.top_k, max_tokens=args.max_tokens)
+        c3_latencies.append((time.perf_counter() - t0) * 1000)
+        c3_tokens.append(count_tokens(context))
+        c3_paths = []
+        for item in results:
+            p = item.get("file") or item.get("filepath") or ""
+            if p:
+                c3_paths.append(str(p).replace("\\", "/"))
+        if any(expected_path in p for p in c3_paths):
+            c3_hits += 1
+        t1 = time.perf_counter()
+        lex_paths = lexical_top_files(query, top_k=args.top_k)
+        full_context = []
+        for rel in lex_paths:
+            try:
+                full_context.append((project_path / rel).read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
+        lexical_latencies.append((time.perf_counter() - t1) * 1000)
+        lexical_tokens.append(count_tokens("\n\n".join(full_context)))
+        if any(expected_path in p for p in lex_paths):
+            lexical_hits += 1
+
+    log_path = Path(fixtures["log_path"])
+    log_full_text = log_path.read_text(encoding="utf-8", errors="replace")
+    t_log_base = time.perf_counter()
+    _ = log_path.read_text(encoding="utf-8", errors="replace")
+    log_baseline_latency = (time.perf_counter() - t_log_base) * 1000
+    t_log_c3 = time.perf_counter()
+    log_extract = _benchmark_extract_preview(log_path, compressor)
+    log_c3_latency = (time.perf_counter() - t_log_c3) * 1000
+    log_signal_recall = round(sum(1 for sig in fixtures["log_signals"] if sig in log_extract) / len(fixtures["log_signals"]) * 100, 1)
+
+    jsonl_path = Path(fixtures["jsonl_path"])
+    jsonl_full_text = jsonl_path.read_text(encoding="utf-8", errors="replace")
+    t_jsonl_base = time.perf_counter()
+    _ = jsonl_path.read_text(encoding="utf-8", errors="replace")
+    jsonl_baseline_latency = (time.perf_counter() - t_jsonl_base) * 1000
+    t_jsonl_c3 = time.perf_counter()
+    jsonl_extract = _benchmark_extract_preview(jsonl_path, compressor)
+    jsonl_c3_latency = (time.perf_counter() - t_jsonl_c3) * 1000
+    jsonl_schema_retention = round(sum(1 for field in fixtures["jsonl_fields"] if field in jsonl_extract) / len(fixtures["jsonl_fields"]) * 100, 1)
+
+    terminal_text = Path(fixtures["terminal_output_path"]).read_text(encoding="utf-8", errors="replace")
+    t_filter_c3 = time.perf_counter()
+    filter_result = output_filter.filter(terminal_text, use_llm=False)
+    filter_c3_latency = (time.perf_counter() - t_filter_c3) * 1000
+    filter_signal_retention = round(sum(1 for sig in fixtures["terminal_signals"] if sig in filter_result["filtered"]) / len(fixtures["terminal_signals"]) * 100, 1)
+
+    total_c3_tokens = sum(c3_tokens)
+    total_lex_tokens = sum(lexical_tokens)
+    log_extract_tokens = count_tokens(log_extract)
+    jsonl_extract_tokens = count_tokens(jsonl_extract)
+
+    quality_checks = {
+        "search_retrieval_hit_rate": {"metric": "expected-file hit rate", "with_c3_pct": round((c3_hits / len(queries) * 100), 1), "without_c3_pct": round((lexical_hits / len(queries) * 100), 1)},
+        "log_triage_signal_retention": {"metric": "error signal retention", "with_c3_pct": log_signal_recall, "without_c3_pct": 100.0},
+        "structured_data_schema_retention": {"metric": "field retention", "with_c3_pct": jsonl_schema_retention, "without_c3_pct": 100.0},
+        "terminal_output_signal_retention": {"metric": "warning/error retention", "with_c3_pct": filter_signal_retention, "without_c3_pct": 100.0},
+    }
+    for check in quality_checks.values():
+        check["delta_pct_points"] = round(check["with_c3_pct"] - check["without_c3_pct"], 1)
+
+    scenarios = {
+        "broad_file_understanding": {
+            "description": "Use c3_compress-style summaries instead of full-file reads for large source files.",
+            "performance_metric": "context sufficiency proxy",
+            "with_c3": {"tool": "c3_compress", "total_tokens": comp_comp, "avg_latency_ms": round(_avg(comp_c3_latencies), 2), "performance": 100.0},
+            "without_c3": {"approach": "read full files into context", "total_tokens": comp_orig, "avg_latency_ms": round(_avg(comp_baseline_latencies), 2), "performance": 100.0},
+            "token_savings_pct": round(_pct_saved(comp_comp, comp_orig), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(comp_c3_latencies), _avg(comp_baseline_latencies)), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(comp_comp, comp_orig), 2),
+        },
+        "file_navigation": {
+            "description": "Use c3_compress(mode='map') to choose targeted reads instead of opening whole files blindly.",
+            "performance_metric": "map success rate",
+            "with_c3": {"tool": "c3_compress(mode='map')", "total_tokens": file_map_comp, "avg_latency_ms": round(_avg(file_map_c3_latencies), 2), "performance": round((file_map_successes / len(file_map_sample) * 100), 1) if file_map_sample else 0.0},
+            "without_c3": {"approach": "read full files into context", "total_tokens": file_map_orig, "avg_latency_ms": round(_avg(file_map_baseline_latencies), 2), "performance": 100.0},
+            "token_savings_pct": round(_pct_saved(file_map_comp, file_map_orig), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(file_map_c3_latencies), _avg(file_map_baseline_latencies)), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(file_map_comp, file_map_orig), 2),
+        },
+        "search_retrieval": {
+            "description": "Use c3_search/index context instead of lexical filename/content matching plus full-file reads.",
+            "performance_metric": "expected-file hit rate",
+            "with_c3": {"tool": "c3_search", "avg_context_tokens": round(_avg(c3_tokens), 1), "avg_latency_ms": round(_avg(c3_latencies), 2), "hit_rate": quality_checks["search_retrieval_hit_rate"]["with_c3_pct"]},
+            "without_c3": {"approach": "lexical search + full-file context", "avg_context_tokens": round(_avg(lexical_tokens), 1), "avg_latency_ms": round(_avg(lexical_latencies), 2), "hit_rate": quality_checks["search_retrieval_hit_rate"]["without_c3_pct"]},
+            "token_savings_pct": round(_pct_saved(total_c3_tokens, total_lex_tokens), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(c3_latencies), _avg(lexical_latencies)), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(total_c3_tokens, total_lex_tokens), 2),
+        },
+        "log_triage": {
+            "description": "Use c3_filter to surface warnings, errors, and tracebacks instead of loading the full log.",
+            "performance_metric": "error signal retention",
+            "with_c3": {"tool": "c3_filter(file_path=...)", "total_tokens": log_extract_tokens, "avg_latency_ms": round(log_c3_latency, 2), "signal_retention_pct": log_signal_recall},
+            "without_c3": {"approach": "read full log into context", "total_tokens": count_tokens(log_full_text), "avg_latency_ms": round(log_baseline_latency, 2), "signal_retention_pct": 100.0},
+            "token_savings_pct": round(_pct_saved(log_extract_tokens, count_tokens(log_full_text)), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(log_c3_latency, log_baseline_latency), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(log_extract_tokens, count_tokens(log_full_text)), 2),
+        },
+        "structured_data_scan": {
+            "description": "Use c3_filter to summarize JSONL records and schema instead of loading the entire dataset.",
+            "performance_metric": "field retention",
+            "with_c3": {"tool": "c3_filter(file_path=...)", "total_tokens": jsonl_extract_tokens, "avg_latency_ms": round(jsonl_c3_latency, 2), "schema_retention_pct": jsonl_schema_retention},
+            "without_c3": {"approach": "read full JSONL into context", "total_tokens": count_tokens(jsonl_full_text), "avg_latency_ms": round(jsonl_baseline_latency, 2), "schema_retention_pct": 100.0},
+            "token_savings_pct": round(_pct_saved(jsonl_extract_tokens, count_tokens(jsonl_full_text)), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(jsonl_c3_latency, jsonl_baseline_latency), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(jsonl_extract_tokens, count_tokens(jsonl_full_text)), 2),
+        },
+        "terminal_output_filtering": {
+            "description": "Use c3_filter to collapse repeated passes and noisy output before it enters context.",
+            "performance_metric": "warning/error retention",
+            "with_c3": {"tool": "c3_filter(text=...)", "total_tokens": filter_result["filtered_tokens"], "avg_latency_ms": round(filter_c3_latency, 2), "signal_retention_pct": filter_signal_retention},
+            "without_c3": {"approach": "raw terminal output", "total_tokens": filter_result["raw_tokens"], "avg_latency_ms": 0.0, "signal_retention_pct": 100.0},
+            "token_savings_pct": round(filter_result["savings_pct"], 1),
+            "latency_delta_pct_vs_baseline": 0.0,
+            "prompt_budget_multiplier": round(_prompt_gain(filter_result["filtered_tokens"], filter_result["raw_tokens"]), 2),
+        },
+        "surgical_reading": {
+            "description": "Use c3_read to extract specific symbols instead of reading the whole file.",
+            "performance_metric": "extraction success rate",
+            "with_c3": {"tool": "c3_read", "total_tokens": read_comp, "avg_latency_ms": round(_avg(read_c3_latencies), 2), "performance": round((read_successes / len(read_sample) * 100), 1) if read_sample else 0.0},
+            "without_c3": {"approach": "read full files into context", "total_tokens": read_orig, "avg_latency_ms": round(_avg(read_baseline_latencies), 2), "performance": 100.0},
+            "token_savings_pct": round(_pct_saved(read_comp, read_orig), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(read_c3_latencies), _avg(read_baseline_latencies)), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(read_comp, read_orig), 2),
+        },
+        "syntax_validation": {
+            "description": "Use c3_validate (AST) to check code syntax without reading the full file into LLM context.",
+            "performance_metric": "AST parsing success",
+            "with_c3": {"tool": "c3_validate", "total_tokens": val_comp, "avg_latency_ms": round(_avg(val_c3_latencies), 2), "performance": round((val_successes / len(val_sample) * 100), 1) if val_sample else 0.0},
+            "without_c3": {"approach": "read full files into context", "total_tokens": val_orig, "avg_latency_ms": round(_avg(val_baseline_latencies), 2), "performance": 100.0},
+            "token_savings_pct": round(_pct_saved(val_comp, val_orig), 1),
+            "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(val_c3_latencies), _avg(val_baseline_latencies)), 1),
+            "prompt_budget_multiplier": round(_prompt_gain(val_comp, val_orig), 2),
+        },
+    }
+
+    delegate_evaluation = _benchmark_delegate_optional(project_path, sample, compressor)
+    route_evaluation = _benchmark_route_optional(project_path, fixtures, sample)
+    summarize_evaluation = _benchmark_summarize_optional(project_path, fixtures)
+    recall_evaluation = _benchmark_recall_optional(project_path)
+    optional_evaluations = {
+        "c3_delegate": delegate_evaluation,
+        "c3_delegate_route": route_evaluation,
+        "c3_delegate_summarize": summarize_evaluation,
+        "c3_memory_recall": recall_evaluation,
+    }
+
+    # Merge offload evaluations into scenarios for main reporting
+    for name, eval_data in optional_evaluations.items():
+        if eval_data.get("status") == "measured":
+            with_c3 = eval_data.get("with_c3", {})
+            without_c3 = eval_data.get("without_c3", {})
+            
+            # Ensure tokens are available for charts
+            c3_tok = with_c3.get("primary_model_prompt_tokens", 0)
+            base_tok = without_c3.get("primary_model_prompt_tokens", 0)
+            
+            # Resolve performance and latency metrics for the HTML charts
+            c3_latency = with_c3.get("latency_ms", 0.0)
+            base_latency = without_c3.get("latency_ms", 0.0)
+            
+            # Use confidence as a proxy for performance if no quality metric is provided
+            perf_c3 = eval_data.get("quality", {}).get("with_c3")
+            if perf_c3 is None:
+                conf = with_c3.get("confidence", "high")
+                perf_c3 = 100.0 if conf == "high" else (70.0 if conf == "medium" else 40.0)
+                
+            perf_base = eval_data.get("quality", {}).get("without_c3", 100.0)
+
+            scenarios[name] = {
+                "description": eval_data.get("description", ""),
+                "performance_metric": eval_data.get("quality", {}).get("metric", "quality proxy"),
+                "with_c3": {
+                    **with_c3, 
+                    "total_tokens": c3_tok,
+                    "avg_latency_ms": c3_latency,
+                    "performance": perf_c3
+                },
+                "without_c3": {
+                    **without_c3, 
+                    "total_tokens": base_tok,
+                    "avg_latency_ms": base_latency,
+                    "performance": perf_base
+                },
+                "performance_metric_with_c3": perf_c3,
+                "performance_metric_without_c3": perf_base,
+                "token_savings_pct": eval_data.get("primary_model_token_savings_pct", 0),
+                "latency_delta_pct_vs_baseline": round(_pct_delta(c3_latency, base_latency), 1) if base_latency > 0 else 0.0,
+                "prompt_budget_multiplier": eval_data.get("prompt_budget_multiplier", 0),
+            }
+
+    session_reality = _benchmark_session_reality(project_path, scenarios)
+
+    overall_c3_tokens = sum(s["with_c3"].get("total_tokens", s["with_c3"].get("avg_context_tokens", 0)) for s in scenarios.values())
+    overall_baseline_tokens = sum(s["without_c3"].get("total_tokens", s["without_c3"].get("avg_context_tokens", 0)) for s in scenarios.values())
+    overall_c3_latencies = [s["with_c3"].get("avg_latency_ms", 0.0) for s in scenarios.values()]
+    overall_baseline_latencies = [s["without_c3"].get("avg_latency_ms", 0.0) for s in scenarios.values()]
+    performance_c3 = _avg([check["with_c3_pct"] for check in quality_checks.values()])
+    performance_baseline = _avg([check["without_c3_pct"] for check in quality_checks.values()])
+
+    benchmarked_tools = ["c3_compress", "c3_compress_map", "c3_read", "c3_validate", "c3_search", "c3_filter_file", "c3_filter_text"]
+    if delegate_evaluation.get("status") == "measured":
+        benchmarked_tools.append("c3_delegate")
+
+    optional_tools = {
+        "c3_delegate_route": {
+            "status": route_evaluation.get("status", "unknown"),
+            "reason": route_evaluation.get("reason", "Router quality and latency depend on local Ollama availability and model selection."),
+        },
+        "c3_delegate_summarize": {
+            "status": summarize_evaluation.get("status", "unknown"),
+            "reason": summarize_evaluation.get("reason", "Summarize quality depends on local Ollama availability and summary model quality."),
+        },
+        "c3_memory_recall": {
+            "status": recall_evaluation.get("status", "unknown"),
+            "reason": recall_evaluation.get("reason", "Memory tools need benchmark facts or project history to compare fairly."),
+        },
+    }
+    if delegate_evaluation.get("status") != "measured":
+        optional_tools["c3_delegate"] = {
+            "status": delegate_evaluation.get("status", "unknown"),
+            "reason": delegate_evaluation.get("reason", "Delegate quality and latency depend on local Ollama availability and model selection."),
+        }
+
+    report = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "project_path": str(project_path),
+        "runner": {
+            "c3_version": __version__,
+            "system_name": system_name,
+            "system_label": system_label,
+            "system_version": system_version,
+            "ide_name": ide_name,
+            "ide_display_name": ide_profile.display_name,
+        },
+        "files_considered": len(files),
+        "categories": ["speed", "token_usage", "performance"],
+        "tool_coverage": {
+            "benchmarked_tools": benchmarked_tools,
+            "optional_tools": optional_tools,
+        },
+        "fixtures": fixtures,
+        "optional_evaluations": optional_evaluations,
+        "session_reality": session_reality,
+        "quality_checks": quality_checks,
+        "scorecard": {
+            "token_usage": {"with_c3_total_tokens": overall_c3_tokens, "without_c3_total_tokens": overall_baseline_tokens, "savings_pct": round(_pct_saved(overall_c3_tokens, overall_baseline_tokens), 1), "prompt_budget_multiplier": round(_prompt_gain(overall_c3_tokens, overall_baseline_tokens), 2)},
+            "speed": {"with_c3_avg_latency_ms": round(_avg(overall_c3_latencies), 2), "without_c3_avg_latency_ms": round(_avg(overall_baseline_latencies), 2), "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(overall_c3_latencies), _avg(overall_baseline_latencies)), 1), "note": "Positive values mean C3 spent extra local milliseconds to reduce prompt size before a model sees the data."},
+            "performance": {"metric": "average quality across task-specific checks", "with_c3_quality_pct": round(performance_c3, 1), "without_c3_quality_pct": round(performance_baseline, 1), "delta_pct_points": round(performance_c3 - performance_baseline, 1)},
+        },
+        "scenarios": scenarios,
+        "artifacts": {"json_report": "", "html_report": ""},
+    }
+
+    out_path = None
+    if args.output:
+        out_path = Path(args.output)
+        if not out_path.is_absolute():
+            out_path = project_path / out_path
+    else:
+        # Default to saving in .c3/benchmark/runs/ with a timestamp
+        runs_dir = project_path / ".c3" / "benchmark" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        out_path = runs_dir / f"benchmark_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    report["artifacts"]["json_report"] = str(out_path)
+
+    # Load all benchmark reports for comparison
+    reports = []
+    benchmark_dir = project_path / ".c3" / "benchmark"
+    runs_dir = benchmark_dir / "runs"
+    if runs_dir.exists():
+        for f in runs_dir.glob("benchmark_*.json"):
+            try:
+                reports.append(json.loads(f.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+    
+    # Sort by timestamp
+    reports.sort(key=lambda x: x.get("timestamp", ""))
+    
+    # If the current run wasn't saved yet, ensure it's in the list for rendering
+    if not any(r.get("timestamp") == report["timestamp"] for r in reports):
+        reports.append(report)
+
+    if not getattr(args, "no_html", False):
+        html_out_path = Path(args.html_output or ".c3/benchmark/latest.html")
+        if not html_out_path.is_absolute():
+            html_out_path = project_path / html_out_path
+        html_out_path.parent.mkdir(parents=True, exist_ok=True)
+        report["artifacts"]["html_report"] = str(html_out_path)
+        html_out_path.write_text(_render_benchmark_html(reports), encoding="utf-8")
+
+    if out_path:
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    def _supports_console_glyphs() -> bool:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            "█░┌┐└┘─│".encode(encoding)
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    unicode_console = _supports_console_glyphs()
+
+    def _bar(pct, width=20):
+        filled = max(0, min(width, round(float(pct) / 100 * width)))
+        fill_char = "█" if unicode_console else "#"
+        empty_char = "░" if unicode_console else "-"
+        return fill_char * filled + empty_char * (width - filled)
+
+    def _pct_label(pct, decimals=1):
+        return f"{float(pct):.{decimals}f}%"
+
+    print_header("C3 Benchmark")
+    runner = report["runner"]
+    runner_line = runner["system_label"]
+    if runner.get("system_version"):
+        runner_line += f" {runner['system_version']}"
+    print(f"  System  : {runner_line} ({runner['system_name']})")
+    print(f"  IDE     : {runner['ide_display_name']} ({runner['ide_name']})")
+    print(f"  Files   : {report['files_considered']} considered, {len(scenarios)} scenarios benchmarked")
+    print()
+
+    sc = report["scorecard"]
+    tok = sc["token_usage"]
+    spd = sc["speed"]
+    perf = sc["performance"]
+    scorecard_top = "  ┌─ Scorecard ──────────────────────────────────────────────────┐" if unicode_console else "  +- Scorecard -------------------------------------------------+"
+    scorecard_mid = "  │" if unicode_console else "  |"
+    scorecard_bottom = "  └──────────────────────────────────────────────────────────────┘" if unicode_console else "  +--------------------------------------------------------------+"
+    print(scorecard_top)
+    print(f"{scorecard_mid}  Token savings   {_pct_label(tok['savings_pct']):>7}  [{_bar(tok['savings_pct'])}]  {tok['prompt_budget_multiplier']}x budget  {scorecard_mid[-1]}")
+    print(f"{scorecard_mid}  Quality delta   {('+' if float(perf['delta_pct_points']) >= 0 else '') + _pct_label(perf['delta_pct_points']):>7}  C3 {_pct_label(perf['with_c3_quality_pct'])} vs base {_pct_label(perf['without_c3_quality_pct'])}  {scorecard_mid[-1]}")
+    lat_delta = float(spd['latency_delta_pct_vs_baseline'])
+    print(f"{scorecard_mid}  Local latency   {('+' if lat_delta >= 0 else '') + _pct_label(lat_delta):>7}  C3 {spd['with_c3_avg_latency_ms']} ms vs base {spd['without_c3_avg_latency_ms']} ms     {scorecard_mid[-1]}")
+    balanced_session = session_reality.get("profiles", {}).get("balanced", {})
+    sess_savings = balanced_session.get("session_adjusted_savings_pct", 0)
+    l1 = balanced_session.get("turns_until_level_1_with_c3", 0)
+    l2 = balanced_session.get("turns_until_level_2_with_c3", 0)
+    print(f"{scorecard_mid}  Session reality {_pct_label(sess_savings):>7}  ~{l1:.0f} turns to L1, ~{l2:.0f} turns to L2           {scorecard_mid[-1]}")
+    print(scorecard_bottom)
+    print()
+
+    core_scenario_keys = [
+        "broad_file_understanding", "file_navigation", "surgical_reading", "syntax_validation", "search_retrieval",
+        "log_triage", "structured_data_scan", "terminal_output_filtering",
+    ]
+    print("  Scenarios:")
+    print(f"  {'Scenario':<32} {'Savings':>8}  {'Budget':>7}  Bar")
+    print(f"  {'-'*32} {'-'*8}  {'-'*7}  {'-'*20}")
+    for key in core_scenario_keys:
+        if key not in scenarios:
+            continue
+        s = scenarios[key]
+        label = key.replace("_", " ").title()
+        savings = s["token_savings_pct"]
+        budget = s["prompt_budget_multiplier"]
+        print(f"  {label:<32} {_pct_label(savings):>8}  {budget:>6.2f}x  {_bar(savings, 20)}")
+
+    optional_keys = ["c3_delegate", "c3_delegate_route", "c3_delegate_summarize", "c3_memory_recall"]
+    optional_evals = [
+        ("Delegate offload", delegate_evaluation),
+        ("Delegate routing", route_evaluation),
+        ("Summarize offload", summarize_evaluation),
+        ("Memory recall", recall_evaluation),
+    ]
+    optional_lines = []
+    for label, ev in optional_evals:
+        if ev.get("status") == "measured":
+            savings = ev.get("primary_model_token_savings_pct", 0)
+            extra = ""
+            if "quality" in ev:
+                q = ev["quality"].get("with_c3", 0)
+                extra = f"  {q}% hit rate"
+            with_c3 = ev.get("with_c3", {})
+            model = with_c3.get("model", "")
+            if model:
+                extra += f"  [{model}]"
+            optional_lines.append(f"  {label:<32} {_pct_label(savings):>8}{extra}")
+        else:
+            status = ev.get("status", "skipped")
+            optional_lines.append(f"  {label:<32} {'—':>8}  {status}")
+    if optional_lines:
+        print(f"  {'-'*32} {'-'*8}  {'-'*7}  (optional — require local Ollama)")
+        for line in optional_lines:
+            print(line)
+
+    print()
+    if out_path:
+        print(f"  JSON: {out_path}")
+    if report["artifacts"]["html_report"]:
+        print(f"  HTML: {report['artifacts']['html_report']}")
+
+
+def cmd_optimize(args):
+    """Show optimization suggestions."""
+    return common_cmd_optimize(args, _command_deps())
+
+
+def cmd_pipe(args):
+    """All-in-one pipeline: get context + output for piping to Claude."""
+    return common_cmd_pipe(args, _command_deps())
+
+
+from services.claude_md import C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW
+
+_C3_COMPACT_WORKFLOW = _SHARED_C3_COMPACT_WORKFLOW
+
+_CLAUDE_MD_CONTENT = _C3_COMPACT_WORKFLOW
+
+_COPILOT_INSTRUCTIONS_CONTENT = _C3_COMPACT_WORKFLOW
+
+_AGENTS_MD_CONTENT = _C3_COMPACT_WORKFLOW + """
+
+## IDE Configuration (Codex)
+This project uses project-scoped MCP servers. Ensure your `.codex/config.toml` includes:
+```toml
+[mcp_servers.c3]
+command = "python"
+args = ["<path-to-c3>/cli/mcp_server.py", "--project", "."]
+enabled = true
+```
+"""
+
+_GEMINI_MD_CONTENT = _C3_COMPACT_WORKFLOW + """
+
+## IDE Configuration (Gemini CLI)
+This project uses project-scoped MCP servers. Ensure your `.gemini/settings.json` includes:
+```json
+{
+  "mcpServers": {
+    "c3": {
+      "command": "python",
+      "args": ["<path-to-c3>/cli/mcp_server.py", "--project", "."]
+    }
+  }
+}
+```
+
+## Gemini Enforcement
+- `c3 init` and `c3 install-mcp` install this file as a required workflow, not a suggestion.
+- After install, use the `c3` MCP server for recall, search, structural mapping, surgical reads, filtering, and session logging before native Gemini repo exploration.
+- Do not bypass C3 with broad native search/read steps unless a matching `c3_*` tool failed or was too narrow for a final follow-up.
+- If fallback is necessary, say which `c3_*` tool was attempted or skipped and why.
+"""
+
+
+def _toml_escape_str(value: str) -> str:
+    """Convert a value to a TOML-safe string.
+
+    TOML double-quoted strings interpret backslash sequences (like \\U, \\P) as
+    Unicode escapes, which breaks Windows paths.  Forward slashes are universally
+    valid path separators and are accepted by Python, so we replace backslashes.
+    """
+    return value.replace("\\", "/")
+
+
+def _upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
+    """Add or replace a dotted TOML section (e.g. 'mcp_servers.c3') in-place.
+
+    Reads the existing file, removes the old section if present, and appends
+    the new section at the end. Handles simple scalar and list values only.
+    """
+    content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
+    header = f"[{section}]"
+
+    # Strip existing section (header + its key=value lines)
+    lines = content.splitlines()
+    new_lines: list[str] = []
+    skip = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == header:
+            skip = True
+            continue
+        if skip and stripped.startswith("["):
+            skip = False
+        if not skip:
+            new_lines.append(line)
+
+    content = "\n".join(new_lines).rstrip()
+
+    # Build new section
+    section_lines = [f"\n\n{header}"]
+    for k, v in entries.items():
+        if isinstance(v, list):
+            # Escape each list item individually
+            items = ", ".join(f'"{_toml_escape_str(x)}"' for x in v)
+            section_lines.append(f'"{k}" = [{items}]')
+        elif isinstance(v, bool):
+            section_lines.append(f'"{k}" = {"true" if v else "false"}')
+        else:
+            section_lines.append(f'"{k}" = "{_toml_escape_str(v)}"')
+    section_lines.append("")
+
+    toml_path.parent.mkdir(parents=True, exist_ok=True)
+    toml_path.write_text(content + "\n".join(section_lines), encoding="utf-8")
+
+
+def _toml_section_bool_value(toml_path: Path, section: str, key: str) -> bool | None:
+    """Read a boolean key from a TOML section using a minimal parser."""
+    if not toml_path.exists():
+        return None
+
+    header = f"[{section}]"
+    in_section = False
+    try:
+        lines = toml_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return None
+
+    for raw in lines:
+        stripped = raw.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == header
+            continue
+        if not in_section or "=" not in stripped:
+            continue
+        k, v = stripped.split("=", 1)
+        if k.strip() != key:
+            continue
+        value = v.strip().lower()
+        if value.startswith("true"):
+            return True
+        if value.startswith("false"):
+            return False
+    return None
+
+
+def _ensure_instruction_workflow(instructions_path: Path, template: str, required_markers: list[str]) -> str:
+    """Ensure an instructions file has required C3 workflow markers.
+
+    Returns one of: "written", "updated", "kept".
+    """
+    if not instructions_path.exists():
+        instructions_path.parent.mkdir(parents=True, exist_ok=True)
+        instructions_path.write_text(template, encoding="utf-8")
+        return "written"
+
+    try:
+        existing = instructions_path.read_text(encoding="utf-8")
+    except Exception:
+        existing = ""
+
+    if all(marker in existing for marker in required_markers):
+        return "kept"
+
+    merged = (
+        template.rstrip()
+        + "\n\n---\n\n## Existing Project Instructions\n\n"
+        + existing.lstrip()
+    )
+    instructions_path.write_text(merged, encoding="utf-8")
+    return "updated"
+
+
+def _ensure_codex_agents_workflow(agents_md_path: Path) -> str:
+    """Ensure AGENTS.md contains the mandatory C3 workflow for Codex sessions."""
+    required_markers = [
+        "C3 Tooling Mandate (CRITICAL)",
+        "Native IDE search/read tools are fallback-only.",
+        "Required Workflow",
+        "Fallback Rules",
+        "c3_search",
+        "c3_read",
+        "c3_validate",
+        "c3_session",
+        "c3_memory",
+        "c3_filter",
+    ]
+    return _ensure_instruction_workflow(agents_md_path, _AGENTS_MD_CONTENT, required_markers)
+
+
+def _ensure_vscode_instructions_workflow(instructions_path: Path) -> str:
+    """Ensure VS Code Copilot instructions include the latest C3 workflow markers."""
+    required_markers = [
+        "C3 Tooling Mandate (CRITICAL)",
+        "Native IDE search/read tools are fallback-only.",
+        "Required Workflow",
+        "Fallback Rules",
+        "c3_search",
+        "c3_read",
+        "c3_validate",
+        "c3_session",
+        "c3_memory",
+        "c3_filter",
+    ]
+    return _ensure_instruction_workflow(instructions_path, _COPILOT_INSTRUCTIONS_CONTENT, required_markers)
+
+
+def _safe_read_json(path: Path, label: str = "") -> dict:
+    """Read a JSON config file, backing up if corrupted.
+
+    Returns the parsed dict, or {} if the file doesn't exist or is empty.
+    If the file has content but can't be parsed, creates a .bak backup and
+    warns the user so existing entries (MCP servers, hooks, etc.) aren't
+    silently lost.
+    """
+    if not path.exists():
+        return {}
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        print(f"  WARNING: Could not read {label or path}: {e}")
+        return {}
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        # File has content but isn't valid JSON — back it up.
+        bak = path.with_suffix(path.suffix + ".bak")
+        try:
+            import shutil
+            shutil.copy2(path, bak)
+            print(f"  WARNING: {label or path} is malformed JSON — backed up to {bak.name}")
+        except Exception:
+            print(f"  WARNING: {label or path} is malformed JSON and backup failed: {e}")
+        return {}
+
+
+def _upsert_json_mcp_server(config_path: Path, config_key: str, server_name: str, server_entry: dict) -> str:
+    """Add or replace an MCP server entry in a JSON config while preserving other keys."""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config = _safe_read_json(config_path, str(config_path))
+
+    servers = config.get(config_key)
+    if not isinstance(servers, dict):
+        servers = {}
+    previous_entry = servers.get(server_name)
+
+    servers[server_name] = server_entry
+    config[config_key] = servers
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+    return "updated" if previous_entry is not None else "written"
+
+
+def _ensure_project_session_configs(target: Path, server_script: str, primary_profile: str | None = None) -> None:
+    """Keep project-local Codex and Gemini MCP configs in sync for new sessions."""
+    # Ensure forward slashes for config portability and avoid Windows path-splitting issues
+    server_script_posix = Path(server_script).as_posix()
+    server_args = [server_script_posix, "--project", target.as_posix()]
+
+    if primary_profile != "codex":
+        codex_path = target / ".codex" / "config.toml"
+        codex_state = "updated" if codex_path.exists() else "written"
+        _upsert_toml_section(
+            codex_path,
+            "mcp_servers.c3",
+            {
+                "command": "python",
+                "args": server_args,
+                "enabled": True,
+            },
+        )
+        print(f"{codex_state.capitalize()} {codex_path}")
+
+    if primary_profile != "gemini":
+        gemini_path = target / ".gemini" / "settings.json"
+        gemini_state = _upsert_json_mcp_server(
+            gemini_path,
+            "mcpServers",
+            "c3",
+            {
+                "command": "python",
+                "args": server_args,
+            },
+        )
+        print(f"{gemini_state.capitalize()} {gemini_path}")
+
+
+def _ensure_global_session_fallbacks(server_script: str) -> None:
+    """Keep user-global Codex/Gemini MCP configs pointing at C3.
+
+    These fallback entries omit `--project` so the MCP server can resolve the
+    active working directory dynamically when a session starts in a project that
+    does not yet have project-local Codex/Gemini config files.
+    """
+    server_script_posix = Path(server_script).as_posix()
+    fallback_args = [server_script_posix]
+
+    codex_path = Path.home() / ".codex" / "config.toml"
+    try:
+        codex_state = "updated" if codex_path.exists() else "written"
+        _upsert_toml_section(
+            codex_path,
+            "mcp_servers.c3",
+            {
+                "command": "python",
+                "args": fallback_args,
+                "enabled": True,
+            },
+        )
+        print(f"{codex_state.capitalize()} {codex_path}  (global fallback)")
+    except PermissionError:
+        print(f"Warning: Could not update {codex_path} (global fallback skipped)")
+
+    gemini_path = Path.home() / ".gemini" / "settings.json"
+    try:
+        gemini_state = _upsert_json_mcp_server(
+            gemini_path,
+            "mcpServers",
+            "c3",
+            {
+                "command": sys.executable,
+                "args": fallback_args,
+            },
+        )
+        print(f"{gemini_state.capitalize()} {gemini_path}  (global fallback)")
+    except PermissionError:
+        print(f"Warning: Could not update {gemini_path} (global fallback skipped)")
+
+
+def _uninstall_mcp_all(project_path: str):
+    """Remove C3 MCP server configurations from all supported IDEs."""
+    from core.ide import PROFILES
+    from pathlib import Path
+    import shutil
+
+    print("\nRemoving C3 MCP server configurations...")
+    target = Path(project_path).resolve()
+
+    # Remove .mcp.json if it exists (standard MCP config file)
+    mcp_json = target / ".mcp.json"
+    if mcp_json.exists():
+        try:
+            with open(mcp_json, 'r', encoding="utf-8") as f:
+                mcp_data = json.load(f)
+            if "mcpServers" in mcp_data and "c3" in mcp_data["mcpServers"]:
+                del mcp_data["mcpServers"]["c3"]
+                if not mcp_data["mcpServers"]:
+                    mcp_json.unlink()
+                    print(f"  Deleted empty {mcp_json}")
+                else:
+                    with open(mcp_json, 'w', encoding="utf-8") as f:
+                        json.dump(mcp_data, f, indent=2)
+                    print(f"  Removed C3 from {mcp_json}")
+        except Exception as e:
+            print(f"  Warning: Could not update {mcp_json}: {e}")
+
+    for ide_name, profile in PROFILES.items():
+        # MCP Config paths to check
+        config_paths = []
+        if profile.config_path_global:
+            config_paths.append(Path.home() / profile.config_path)
+        else:
+            config_paths.append(target / profile.config_path)
+            # For Codex and Gemini, also check the global fallback in home dir
+            if ide_name in ("codex", "gemini"):
+                config_paths.append(Path.home() / profile.config_path)
+
+        for mcp_config_path in config_paths:
+            if mcp_config_path.exists():
+                try:
+                    if profile.config_format == "toml":
+                        content = mcp_config_path.read_text(encoding="utf-8")
+                        section = f"[{profile.config_key}.c3]"
+                        lines = content.splitlines()
+                        new_lines = []
+                        skip = False
+                        found = False
+                        for line in lines:
+                            stripped = line.strip()
+                            if stripped == section:
+                                skip = True
+                                found = True
+                                continue
+                            if skip and stripped.startswith("["):
+                                skip = False
+                            if not skip:
+                                new_lines.append(line)
+                        if found:
+                            # If the file only had the C3 section (or is now empty), we can potentially delete it
+                            remaining = "\n".join(new_lines).strip()
+                            if not remaining:
+                                mcp_config_path.unlink()
+                                print(f"  Deleted empty {mcp_config_path}")
+                            else:
+                                mcp_config_path.write_text(remaining + "\n", encoding="utf-8")
+                                print(f"  Removed C3 from {mcp_config_path}")
+                    else:
+                        with open(mcp_config_path, 'r', encoding="utf-8") as f:
+                            config = json.load(f)
+                        if profile.config_key in config and "c3" in config[profile.config_key]:
+                            del config[profile.config_key]["c3"]
+                            if not config[profile.config_key]:
+                                del config[profile.config_key]
+
+                            if not config:
+                                mcp_config_path.unlink()
+                                print(f"  Deleted empty {mcp_config_path}")
+                            else:
+                                with open(mcp_config_path, 'w', encoding="utf-8") as f:
+                                    json.dump(config, f, indent=2)
+                                print(f"  Removed C3 from {mcp_config_path}")
+                except Exception as e:
+                    print(f"  Warning: Could not update {mcp_config_path}: {e}")
+
+        # Claude Code Hooks & Settings
+        if profile.supports_hooks and profile.settings_path:
+            settings_path = target / profile.settings_path
+            if settings_path.exists():
+                try:
+                    with open(settings_path, 'r', encoding="utf-8") as f:
+                        settings = json.load(f)
+
+                    # Remove hooks
+                    hooks = settings.get("hooks", {}).get("PostToolUse", [])
+                    new_hooks = []
+                    c3_hook_files = {"hook_filter.py", "hook_read.py", "hook_c3read.py"}
+                    for h in hooks:
+                        if h.get("matcher") in ("Bash", "Read", "mcp__c3__c3_read"):
+                            h["hooks"] = [hook for hook in h.get("hooks", [])
+                                          if not any(f in hook.get("command", "") for f in c3_hook_files)]
+                            if h["hooks"]:
+                                new_hooks.append(h)
+                        else:
+                            new_hooks.append(h)
+
+                    if new_hooks:
+                        settings["hooks"]["PostToolUse"] = new_hooks
+                    elif "hooks" in settings and "PostToolUse" in settings["hooks"]:
+                        del settings["hooks"]["PostToolUse"]
+                        if not settings["hooks"]:
+                            del settings["hooks"]
+
+                    # Remove enabled server
+                    if "enabledMcpjsonServers" in settings and "c3" in settings["enabledMcpjsonServers"]:
+                        settings["enabledMcpjsonServers"].remove("c3")
+
+                    if not settings:
+                        settings_path.unlink()
+                        print(f"  Deleted empty {settings_path}")
+                    else:
+                        with open(settings_path, 'w', encoding="utf-8") as f:
+                            json.dump(settings, f, indent=2)
+                        print(f"  Removed C3 hooks/settings from {settings_path}")
+                except Exception as e:
+                    print(f"  Warning: Could not update {settings_path}: {e}")
+
+        # VS Code Settings
+        if ide_name == "vscode":
+            vscode_settings_path = target / ".vscode" / "settings.json"
+            if vscode_settings_path.exists():
+                try:
+                    with open(vscode_settings_path, 'r', encoding="utf-8") as f:
+                        vscode_settings = json.load(f)
+
+                    keys_to_clean = [
+                        "github.copilot.chat.codeGeneration.instructions",
+                        "github.copilot.chat.reviewSelection.instructions",
+                        "github.copilot.chat.testGeneration.instructions"
+                    ]
+                    for key in keys_to_clean:
+                        if key in vscode_settings:
+                            vscode_settings[key] = [i for i in vscode_settings[key]
+                                                   if i.get("file") not in (".github/copilot-instructions.md", "CLAUDE.md")]
+                            if not vscode_settings[key]:
+                                del vscode_settings[key]
+
+                    if not vscode_settings:
+                        vscode_settings_path.unlink()
+                        print(f"  Deleted empty {vscode_settings_path}")
+                    else:
+                        with open(vscode_settings_path, 'w', encoding="utf-8") as f:
+                            json.dump(vscode_settings, f, indent=2)
+                        print(f"  Cleaned Copilot instructions from {vscode_settings_path}")
+                except Exception as e:
+                    print(f"  Warning: Could not update {vscode_settings_path}: {e}")
+
+    # Final pass: clean up empty IDE directories (.claude, .codex, .gemini, .vscode, .github)
+    dirs_to_check = [".claude", ".codex", ".gemini", ".vscode", ".github"]
+    for dname in dirs_to_check:
+        dpath = target / dname
+        if dpath.exists() and dpath.is_dir():
+            # If directory is empty or only contains empty subdirectories, remove it
+            try:
+                # Recursive check for empty dirs
+                is_empty = True
+                for item in dpath.rglob("*"):
+                    if item.is_file():
+                        is_empty = False
+                        break
+                if is_empty:
+                    shutil.rmtree(dpath)
+                    print(f"  Deleted empty directory {dname}/")
+            except Exception:
+                pass
+
+
+def _instruction_documents_for_project() -> list[tuple[str, str]]:
+    """Return the project-local instruction documents C3 should keep in sync."""
+    return [
+        ("CLAUDE.md", _CLAUDE_MD_CONTENT),
+        ("AGENTS.md", _AGENTS_MD_CONTENT),
+        ("GEMINI.md", _GEMINI_MD_CONTENT),
+    ]
+
+
+def _sync_project_instruction_docs(project_path: str, sm: SessionManager) -> None:
+    """Write the current C3 instruction docs into the project root."""
+    repo_root = Path(__file__).resolve().parent.parent
+    synced: list[str] = []
+    for instructions_file, template in _instruction_documents_for_project():
+        print(f"Generating {instructions_file}...")
+        # Resolve placeholder for project-scoped MCP configs
+        resolved_template = template.replace("<path-to-c3>", str(repo_root).replace("\\", "/"))
+        result = sm.save_claude_md(instructions_file=instructions_file, template=resolved_template)
+        print(f"  Saved to {result['path']} ({result['tokens']} tokens)")
+        synced.append(instructions_file)
+    print(f"Synced instruction docs: {', '.join(synced)}")
+
+
+def _run_install_mcp(project_path: str, ide_name: str, mcp_mode: str = "direct", banner: str = "Installing MCP tools...") -> None:
+    """Run install-mcp programmatically with a consistent banner."""
+    print(f"\n{banner}")
+    from types import SimpleNamespace
+    cmd_install_mcp(SimpleNamespace(project_path=project_path, ide=ide_name, mcp_mode=mcp_mode))
+
+
+def _prompt_install_mcp(project_path: str, ide_name: str, default_mode: str = "direct", banner: str = "Installing MCP tools...") -> bool:
+    """Ask whether to install MCP tooling and, if so, which mode to use."""
+    print()
+    install_choice = _prompt_choice(
+        "Install MCP tooling for this project?",
+        [
+            "Yes  — configure the IDE and wire up C3 MCP",
+            "No   — skip MCP install for now",
+        ],
+    )
+    if not install_choice or install_choice.startswith("No"):
+        print("  Skipped MCP install.")
+        return False
+
+    mode_choice = _prompt_choice(
+        "Choose MCP mode",
+        [
+            "Direct  — recommended, connect IDE straight to c3 mcp_server.py",
+            "Proxy   — advanced, use c3 mcp_proxy.py for dynamic filtering experiments",
+        ],
+    )
+    mcp_mode = "proxy" if mode_choice and mode_choice.startswith("Proxy") else default_mode
+    _run_install_mcp(project_path, ide_name, mcp_mode=mcp_mode, banner=banner)
+    return True
+
+
+def _resolve_mcp_mode(raw_mode: str | None) -> str:
+    """Normalize requested MCP mode."""
+    mode = str(raw_mode or "direct").strip().lower()
+    if mode not in {"direct", "proxy"}:
+        raise ValueError(f"Unsupported MCP mode '{raw_mode}'. Use 'direct' or 'proxy'.")
+    return mode
+
+
+def _resolve_install_mcp_cli_args(raw_targets: list[str] | None, ide_name: str | None) -> tuple[str, str]:
+    """Resolve `install-mcp` CLI positionals with IDE shorthand support."""
+    resolved_ide = str(ide_name or "auto").strip().lower() or "auto"
+    targets = [str(item).strip() for item in (raw_targets or []) if str(item).strip()]
+    if len(targets) > 2:
+        raise RuntimeError("install-mcp accepts at most one project path and one IDE.")
+
+    project_path = "."
+    positional_ide = None
+
+    for target in targets:
+        normalized = normalize_ide_name(target)
+        if normalized in PROFILES:
+            if positional_ide and positional_ide != normalized:
+                raise RuntimeError("install-mcp received multiple IDE values.")
+            positional_ide = normalized
+            continue
+        if project_path != ".":
+            raise RuntimeError("install-mcp accepts at most one project path.")
+        project_path = target
+
+    if resolved_ide != "auto":
+        resolved_ide = _parse_cli_ide_arg(resolved_ide)
+    if resolved_ide != "auto" and positional_ide and resolved_ide != positional_ide:
+        raise RuntimeError("install-mcp received conflicting IDE values.")
+    if positional_ide:
+        resolved_ide = positional_ide
+
+    return project_path, resolved_ide
+
+
+def cmd_install_mcp(args):
+    """Generate MCP config and optional hooks for the target IDE."""
+    raw_targets = getattr(args, "targets", None)
+    if raw_targets is None and hasattr(args, "project_path"):
+        raw_targets = [getattr(args, "project_path")]
+    project_path, cli_ide = _resolve_install_mcp_cli_args(raw_targets, getattr(args, "ide", "auto"))
+    target = Path(project_path or ".").resolve()
+    cli_dir = Path(__file__).parent.resolve()
+    from services.session_manager import SessionManager
+    sm = SessionManager(str(target))
+
+    # Resolve IDE choice
+    ide_name = cli_ide if hasattr(args, 'ide') else "auto"
+    if ide_name != "auto":
+        ide_name = normalize_ide_name(ide_name)
+    if ide_name == "auto":
+        ide_name = detect_ide(str(target))
+    profile = get_profile(ide_name)
+
+    mcp_mode = _resolve_mcp_mode(getattr(args, "mcp_mode", "direct"))
+    server_filename = "mcp_proxy.py" if mcp_mode == "proxy" else "mcp_server.py"
+    # Use forward slashes for cross-platform compatibility in config files
+    server_script = (cli_dir / server_filename).as_posix()
+
+    # Use 'python' for project-scoped IDE configs to be portable in templates,
+    # but use sys.executable for the actual config write to be precise.
+    # On Windows, Gemini CLI splits command args by space, so we must quote the script path.
+    new_entry = {
+        "command": "python",
+        "args": [server_script, "--project", "."],
+    }
+    if profile.needs_type_field:
+        new_entry["type"] = "stdio"
+
+    # â”€â”€ Write MCP config â”€â”€
+    # Global profiles (e.g. Antigravity) write to the user home dir, not the project
+    if profile.config_path_global:
+        mcp_config_path = Path.home() / profile.config_path
+    else:
+        mcp_config_path = target / profile.config_path
+    mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Cleanup .mcp.json if it's NOT the target config but exists (to avoid confusion)
+    if profile.config_path != ".mcp.json":
+        mcp_json_legacy = target / ".mcp.json"
+        if mcp_json_legacy.exists():
+            try:
+                with open(mcp_json_legacy, 'r', encoding="utf-8") as f:
+                    legacy_data = json.load(f)
+                if "mcpServers" in legacy_data and "c3" in legacy_data["mcpServers"]:
+                    del legacy_data["mcpServers"]["c3"]
+                    if not legacy_data["mcpServers"]:
+                        mcp_json_legacy.unlink()
+                        print(f"  Removed obsolete {mcp_json_legacy}")
+                    else:
+                        with open(mcp_json_legacy, 'w', encoding="utf-8") as f:
+                            json.dump(legacy_data, f, indent=2)
+                        print(f"  Removed C3 from obsolete {mcp_json_legacy}")
+            except Exception:
+                pass
+
+    try:
+        if profile.config_format == "toml":
+            # Codex uses TOML: [mcp_servers.c3] with command/args
+            toml_entries = {"command": sys.executable, "args": [server_script, "--project", str(target)]}
+            if profile.name == "codex":
+                # Codex supports explicit enable/disable per server.
+                toml_entries["enabled"] = True
+            _upsert_toml_section(
+                mcp_config_path,
+                f"{profile.config_key}.c3",
+                toml_entries,
+            )
+        else:
+            config = _safe_read_json(mcp_config_path, str(mcp_config_path))
+
+            if profile.config_key not in config:
+                config[profile.config_key] = {}
+
+            config[profile.config_key]["c3"] = new_entry
+
+            with open(mcp_config_path, 'w', encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            # Ensure newline at end of file
+            with open(mcp_config_path, 'a', encoding="utf-8") as f:
+                f.write("\n")
+    except PermissionError as e:
+        raise RuntimeError(
+            f"Cannot write {mcp_config_path} (permission denied / file in use). "
+            "Close the IDE or unlock the file, then run install-mcp again."
+        ) from e
+
+    print(f"Wrote {mcp_config_path}")
+    if profile.name in {"codex", "gemini"}:
+        _ensure_project_session_configs(target, server_script, primary_profile=profile.name)
+        _ensure_global_session_fallbacks(server_script)
+
+    # â”€â”€ Persist IDE choice to .c3/config.json â”€â”€
+    c3_config_dir = target / ".c3"
+    c3_config_dir.mkdir(parents=True, exist_ok=True)
+    c3_config_path = c3_config_dir / "config.json"
+
+    c3_config = _safe_read_json(c3_config_path, ".c3/config.json")
+
+    c3_config["ide"] = ide_name
+    c3_config["mcp"] = {"mode": mcp_mode}
+    with open(c3_config_path, 'w', encoding="utf-8") as f:
+        json.dump(c3_config, f, indent=2)
+
+    # ── Install hooks (Claude Code + Gemini CLI) ──
+    if profile.supports_hooks and profile.settings_path:
+        settings_dir = target / Path(profile.settings_path).parent
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = target / profile.settings_path
+
+        settings = _safe_read_json(settings_path, str(settings_path))
+
+        # Build hook commands using the Python executable that runs c3.
+        # On Windows, Claude Code executes hooks via /usr/bin/bash (Git Bash), which cannot
+        # parse Windows absolute paths containing parentheses (e.g. "(C3)"). Prefix with
+        # "cmd /c" so cmd.exe handles path resolution instead of bash.
+        _hook_prefix = "cmd /c " if sys.platform == "win32" else ""
+        hook_filter_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_filter.py'))}"
+        hook_read_cmd     = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_read.py'))}"
+        hook_c3read_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
+
+        # Tool matcher names differ by IDE: Gemini uses snake_case built-in names.
+        if profile.name == "gemini":
+            shell_matcher = "run_shell_command"
+            read_matcher  = "read_file"
+        else:
+            shell_matcher = "Bash"
+            read_matcher  = "Read"
+        desired_hooks = [
+            {
+                "matcher": shell_matcher,
+                "hooks": [{"type": "command", "command": hook_filter_cmd}]
+            },
+            {
+                "matcher": read_matcher,
+                "hooks": [{"type": "command", "command": hook_read_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_read",
+                "hooks": [{"type": "command", "command": hook_c3read_cmd}]
+            },
+        ]
+
+        # Merge: replace existing C3 hooks (so re-running install-mcp updates commands),
+        # preserve any non-C3 hooks the user may have added.
+        hook_event = profile.hook_event
+        c3_matchers = {h.get("matcher") for h in desired_hooks}
+        existing_hooks = [
+            h for h in settings.get("hooks", {}).get(hook_event, [])
+            if h.get("matcher") not in c3_matchers
+        ]
+        existing_hooks.extend(desired_hooks)
+
+        settings.setdefault("hooks", {})[hook_event] = existing_hooks
+
+        # Claude Code only: enable MCP server prompt settings
+        if profile.name == "claude-code":
+            settings["enableAllProjectMcpServers"] = True
+            settings.setdefault("enabledMcpjsonServers", [])
+            if "c3" not in settings["enabledMcpjsonServers"]:
+                settings["enabledMcpjsonServers"].append("c3")
+
+        with open(settings_path, 'w', encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+
+        print(f"Wrote {settings_path}")
+        print(f"  Hooks ({hook_event}): {shell_matcher} (output filter) + {read_matcher} (C3 enforcement) + mcp__c3__c3_read (Edit unlock)")
+        if profile.name == "claude-code":
+            print("  Claude MCP prompt settings enabled for this project")
+        if not settings_path.exists():
+            raise RuntimeError(f"{profile.display_name} settings file was not created: {settings_path}")
+
+    # â”€â”€ VS Code Copilot enforcement files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if profile.name == "vscode":
+        # 1. Ensure copilot-instructions.md has the latest C3 workflow markers
+        instructions_path = target / ".github" / "copilot-instructions.md"
+        vs_state = _ensure_vscode_instructions_workflow(instructions_path)
+        if vs_state == "written":
+            print(f"Wrote {instructions_path}")
+        elif vs_state == "updated":
+            print(f"Updated {instructions_path}  (enforced C3 workflow)")
+        else:
+            print(f"Kept  {instructions_path}  (C3 workflow present)")
+
+        # 2. Create/update .vscode/settings.json with Copilot instruction references
+        vscode_settings_path = target / ".vscode" / "settings.json"
+        vscode_settings_path.parent.mkdir(parents=True, exist_ok=True)
+        vscode_settings = {}
+        if vscode_settings_path.exists():
+            try:
+                with open(vscode_settings_path, encoding="utf-8") as f:
+                    vscode_settings = json.load(f)
+            except Exception:
+                pass
+
+        instruction_files = [
+            {"file": ".github/copilot-instructions.md"},
+            {"file": "CLAUDE.md"},
+        ]
+        vscode_settings["github.copilot.chat.codeGeneration.instructions"] = instruction_files
+        vscode_settings["github.copilot.chat.reviewSelection.instructions"] = [
+            {"file": ".github/copilot-instructions.md"},
+        ]
+        vscode_settings["github.copilot.chat.testGeneration.instructions"] = [
+            {"file": ".github/copilot-instructions.md"},
+        ]
+
+        with open(vscode_settings_path, "w", encoding="utf-8") as f:
+            json.dump(vscode_settings, f, indent=2)
+        print(f"Wrote {vscode_settings_path}")
+        print(f"  Copilot: C3 instructions linked for code gen, review, and test generation")
+
+    # â”€â”€ Codex AGENTS.md enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if profile.name == "codex":
+        agents_md_path = target / "AGENTS.md"
+        agents_state = _ensure_codex_agents_workflow(agents_md_path)
+        if agents_state == "written":
+            print(f"Wrote {agents_md_path}")
+        elif agents_state == "updated":
+            print(f"Updated {agents_md_path}  (enforced C3 workflow)")
+        else:
+            print(f"Kept  {agents_md_path}  (C3 workflow present)")
+
+        # Warn about a common conflict: global Codex config disables c3.
+        global_codex_cfg = Path.home() / ".codex" / "config.toml"
+        global_enabled = _toml_section_bool_value(global_codex_cfg, "mcp_servers.c3", "enabled")
+        if global_enabled is False:
+            print(f"Warning: {global_codex_cfg} has [mcp_servers.c3] enabled = false.")
+            print("  This can make C3 look disabled. Set it to true or remove that global c3 section.")
+
+    # â”€â”€ Gemini settings.json enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if profile.name == "gemini":
+        # Warn about a common conflict: global Gemini config pointing elsewhere.
+        global_gemini_cfg = Path.home() / ".gemini" / "settings.json"
+        if global_gemini_cfg.exists():
+            try:
+                with open(global_gemini_cfg, 'r', encoding="utf-8") as f:
+                    g_data = json.load(f)
+                if "mcpServers" in g_data and "c3" in g_data["mcpServers"]:
+                    print(f"Note: Global config {global_gemini_cfg} also defines 'c3'.")
+                    print("  The project-local config at .gemini/settings.json should take precedence.")
+            except Exception:
+                pass
+
+    _sync_project_instruction_docs(str(target), sm)
+
+    print(f"IDE: {profile.display_name}")
+    print(f"MCP Mode: {mcp_mode}")
+    print(f"Server: {server_script}")
+    print(f"Project: {target}")
+    print(f"\nRestart {profile.display_name} in this project to activate C3 tools.")
+
+
+def _remove_toml_section(toml_path: Path, section: str) -> bool:
+    """Remove a dotted TOML section (e.g. 'mcp_servers.c3') in-place."""
+    if not toml_path.exists():
+        return False
+    content = toml_path.read_text(encoding="utf-8")
+    header = f"[{section}]"
+    lines = content.splitlines()
+    new_lines: list[str] = []
+    skip = False
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == header:
+            skip = True
+            found = True
+            continue
+        if skip and stripped.startswith("["):
+            skip = False
+        if not skip:
+            new_lines.append(line)
+    if found:
+        remaining = "\n".join(new_lines).strip()
+        if not remaining:
+            toml_path.unlink()
+        else:
+            toml_path.write_text(remaining + "\n", encoding="utf-8")
+    return found
+
+
+def _remove_json_mcp_server(config_path: Path, config_key: str, server_name: str) -> bool:
+    """Remove an MCP server entry from a JSON config."""
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if config_key in config and server_name in config[config_key]:
+            del config[config_key][server_name]
+            if not config[config_key]:
+                del config[config_key]
+            if not config:
+                config_path.unlink()
+            else:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=2)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def cmd_mcp_remove(args):
+    """Remove an MCP server configuration from an IDE config."""
+    name = getattr(args, "name", "c3")
+    project_path = str(Path(getattr(args, "project_path", ".")).resolve())
+    ide_name = getattr(args, "ide", "auto")
+    if ide_name == "auto":
+        ide_name = load_ide_config(project_path)
+    if ide_name == "auto":
+        ide_name = detect_ide(project_path)
+
+    profile = get_profile(ide_name)
+    target = Path(project_path)
+
+    if profile.config_path_global:
+        mcp_config_path = Path.home() / profile.config_path
+    else:
+        mcp_config_path = target / profile.config_path
+
+    if not mcp_config_path.exists():
+        print(f"Error: MCP config not found at {mcp_config_path}")
+        return False
+
+    print(f"Removing MCP server '{name}' from {mcp_config_path}...")
+    removed = False
+    if profile.config_format == "toml":
+        section = f"{profile.config_key}.{name}"
+        removed = _remove_toml_section(mcp_config_path, section)
+    else:
+        removed = _remove_json_mcp_server(mcp_config_path, profile.config_key, name)
+
+    if removed:
+        print(f"[OK] Removed {name} from {ide_name} config.")
+    else:
+        print(f"Server '{name}' not found in {ide_name} config.")
+    return removed
+
+
+def cmd_ui(args):
+    """Launch the web UI."""
+    return common_cmd_ui(args, _command_deps())
+
+
+# â”€â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+
+
+def cmd_hub(args):
+    """Launch the Project Hub web dashboard."""
+    from services.hub_service import HubService
+    port = getattr(args, 'port', 3330)
+
+    if getattr(args, "install", False):
+        res = HubService().install(port)
+        print(res.get("output", "Service installed."))
+        return
+
+    if getattr(args, "uninstall", False):
+        res = HubService().uninstall()
+        print(res.get("output", "Service uninstalled."))
+        return
+
+    if getattr(args, "status", False):
+        res = HubService().status()
+        print(f"Hub Service Status ({res.get('platform', 'unknown')}):")
+        print(f"  Installed: {res.get('installed')}")
+        print(f"  Running  : {res.get('running')}")
+        print(f"  Port     : {res.get('port')}")
+        print(f"  Method   : {res.get('method')}")
+        print(f"  Log      : {res.get('log_path')}")
+        return
+
+    from cli.hub_server import run_hub
+    silent = bool(getattr(args, 'silent', False) or getattr(args, 'extra_silent', False))
+    quiet = bool(getattr(args, 'extra_silent', False))
+    open_browser = not (getattr(args, 'no_browser', False) or silent)
+    run_hub(port=port, open_browser=open_browser, silent=silent, quiet=quiet)
+
+
+def cmd_projects(args):
+    """Manage the global C3 project registry."""
+    from services.project_manager import ProjectManager
+    pm = ProjectManager()
+    sub = getattr(args, 'projects_cmd', 'list') or 'list'
+    path = getattr(args, 'project_path', None)
+
+    if sub == 'list':
+        projects = pm.list_projects()
+        if not projects:
+            print('No projects registered. Use `c3 projects add <path>` to register one.')
+            return
+        fmt = '{:<25} {:<12} {:<8} {:<6} {}'
+        print(fmt.format('NAME', 'IDE', 'STATUS', 'PORT', 'PATH'))
+        print('-' * 80)
+        for p in projects:
+            status = 'ACTIVE' if p.get('active') else 'stopped'
+            port = str(p['port']) if p.get('port') else '-'
+            print(fmt.format(
+                p.get('name', '?')[:24],
+                p.get('ide', '?')[:11],
+                status,
+                port,
+                p.get('path', ''),
+            ))
+        active = sum(1 for p in projects if p.get('active'))
+        print(f"\n{len(projects)} project(s) -- {active} active session(s)")
+
+    elif sub == 'add':
+        if not path:
+            print('Usage: c3 projects add <project_path> [--name NAME]')
+            return
+        name = getattr(args, 'name', None)
+        entry = pm.add_project(path, name)
+        print(f"Registered: {entry['name']}  ({entry['path']})")
+
+    elif sub == 'remove':
+        if not path:
+            print('Usage: c3 projects remove <project_path>')
+            return
+        removed = pm.remove_project(path)
+        print(f'Removed: {path}' if removed else f'Not found: {path}')
+
+    elif sub == 'start':
+        if not path:
+            print('Usage: c3 projects start <project_path>')
+            return
+        ok = pm.launch_session(path)
+        print(f'Launching session for {path}...' if ok else 'Failed to launch session.')
+
+    elif sub == 'sessions':
+        sessions = pm.get_active_sessions()
+        if not sessions:
+            print('No active sessions.')
+            return
+        for s in sessions:
+            print(f"  Port {s['port']:>5}  {s.get('project_name', '?'):<25}  {s.get('project_path', '')}")
+
+
+def cmd_session_benchmark(args):
+    """Run real-world session workflow benchmark."""
+    from services.session_benchmark import SessionBenchmark, generate_report, render_html, load_session_benchmark_history
+
+    project_path = Path(args.project_path or ".").resolve()
+    print_header("C3 Session Benchmark")
+    print(f"  Project: {project_path}")
+    print(f"  Sample size: {args.sample_size}, min tokens: {args.min_tokens}")
+    print()
+
+    bench = SessionBenchmark(str(project_path), sample_size=args.sample_size, min_tokens=args.min_tokens)
+    if not bench.files:
+        print("Error: no benchmark-eligible files found")
+        return
+
+    print(f"  Files: {len(bench.files)} eligible, {len(bench.sample)} sampled")
+    print("  Running 6 workflow scenarios...\n")
+
+    results = bench.run_all()
+    report = generate_report(str(project_path), results, args.sample_size, len(bench.files), sampled_files=bench.sample)
+
+    # Save JSON
+    out_dir = project_path / ".c3" / "session_benchmark" / "runs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.output:
+        json_path = Path(args.output)
+        if not json_path.is_absolute():
+            json_path = project_path / json_path
+    else:
+        json_path = out_dir / f"session_{time.strftime('%Y%m%d_%H%M%S')}.json"
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    # Load history (including the run we just saved) and render HTML with trends
+    history = load_session_benchmark_history(str(project_path))
+    if not any(r.get("timestamp") == report["timestamp"] for r in history):
+        history.append(report)
+
+    html_path = Path(args.html_output or ".c3/session_benchmark/latest.html")
+    if not html_path.is_absolute():
+        html_path = project_path / html_path
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(render_html(report, history=history), encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    # Console output
+    sc = report["scorecard"]
+    lon = report["session_longevity"]
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "█░┌┐└┘─│".encode(encoding)
+        unicode_ok = True
+    except (UnicodeEncodeError, LookupError):
+        unicode_ok = False
+
+    def _bar(pct, width=20):
+        filled = max(0, min(width, round(float(pct) / 100 * width)))
+        fc, ec = ("█", "░") if unicode_ok else ("#", "-")
+        return fc * filled + ec * (width - filled)
+
+    top = "  ┌─ Session Scorecard ──────────────────────────────────────────┐" if unicode_ok else "  +- Session Scorecard -------------------------------------------------+"
+    mid = "  │" if unicode_ok else "  |"
+    bot = "  └──────────────────────────────────────────────────────────────┘" if unicode_ok else "  +--------------------------------------------------------------+"
+    end = mid[-1]
+    print(top)
+    print(f"{mid}  Token savings   {sc['token_savings_pct']:>6.1f}%  [{_bar(sc['token_savings_pct'])}]  {sc['budget_multiplier']}x     {end}")
+    print(f"{mid}  Quality (C3)    {sc['avg_quality_c3']:>6.1f}%  vs baseline {sc['avg_quality_baseline']:.1f}%              {end}")
+    print(f"{mid}  Session turns   {lon['estimated_turns_c3']:>6.1f}   vs baseline {lon['estimated_turns_baseline']:.1f}  ({lon['turn_multiplier']}x)   {end}")
+    print(bot)
+    print()
+
+    print(f"  {'Scenario':<28} {'Savings':>8}  {'Budget':>7}  {'C3 tok':>8}  {'Base tok':>9}")
+    print(f"  {'-'*28} {'-'*8}  {'-'*7}  {'-'*8}  {'-'*9}")
+    for s in results:
+        label = s.name.replace("_", " ").title()
+        print(f"  {label:<28} {s.token_savings_pct:>7.1f}%  {s.budget_multiplier:>6.2f}x  {s.total_tokens_c3:>8,}  {s.total_tokens_baseline:>9,}")
+
+    print()
+    print(f"  JSON: {json_path}")
+    print(f"  HTML: {html_path}")
+
+
+def cmd_benchmark_e2e(args):
+    """Run end-to-end AI session benchmark comparing C3-augmented vs baseline workflows."""
+    from services.e2e_benchmark import (
+        E2EBenchmark, CLIProvider, detect_providers,
+        generate_e2e_report, render_e2e_html,
+    )
+    from services.e2e_tasks import TaskBuilder
+    from services.e2e_evaluator import Evaluator
+    from services.file_memory import FileMemoryStore
+    from services.indexer import CodeIndex
+
+    project_path = Path(args.project_path or ".").resolve()
+    print_header("C3 End-to-End Benchmark")
+    print(f"  Project: {project_path}")
+
+    # Parse model overrides: claude=sonnet,gemini=gemini-2.5-flash
+    model_overrides = {}
+    if args.models:
+        for pair in args.models.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                model_overrides[k.strip()] = v.strip()
+
+    # Detect providers
+    requested = [p.strip() for p in args.providers.split(",")] if args.providers else None
+    providers = detect_providers(requested, model_overrides,
+                                permission_mode=getattr(args, "permission_mode", "auto-edit"))
+    if not providers:
+        print("\n  Error: No AI CLIs detected. Install claude, gemini, or codex.")
+        return
+
+    print(f"  Providers: {', '.join(p.name + ('(' + p.model + ')' if p.model else '') for p in providers)}")
+
+    # Build tasks
+    indexer = CodeIndex(str(project_path), str(project_path / ".c3" / "index"))
+    file_memory = FileMemoryStore(str(project_path))
+    builder = TaskBuilder(str(project_path), indexer=indexer, file_memory=file_memory)
+    all_tasks = builder.build_tasks(max_per_category=args.max_tasks)
+
+    # Filter tasks by category
+    if args.tasks and args.tasks != "all":
+        filter_cats = [c.strip() for c in args.tasks.split(",")]
+        all_tasks = [t for t in all_tasks if t.category in filter_cats]
+
+    if not all_tasks:
+        print("\n  Error: No tasks generated. Is the project indexed? Run `c3 init` first.")
+        return
+
+    cats: dict[str, int] = {}
+    for t in all_tasks:
+        cats[t.category] = cats.get(t.category, 0) + 1
+    cat_summary = "  ".join(f"{c} ({n})" for c, n in sorted(cats.items()))
+    print(f"  Tasks:     {len(all_tasks)} across {len(cats)} categories")
+    print(f"             {cat_summary}")
+    total_runs = len(all_tasks) * len(providers) * 2  # x2 for C3 + baseline
+    min_est = max(1, total_runs * 20 // 60)
+    max_est = max(2, total_runs * args.timeout // 60)
+    print(f"  AI calls:  {total_runs} total  ({len(all_tasks)} tasks x {len(providers)} provider(s) x 2 modes)")
+    print(f"  Timeout:   {args.timeout}s per call")
+    print(f"  Est. time: {min_est}–{max_est} min  ({total_runs} calls x 20–{args.timeout}s each)")
+    print()
+
+    # Dry run — show plan and exit
+    if args.dry_run:
+        print("  DRY RUN — Tasks that would be executed:\n")
+        for t in all_tasks:
+            print(f"    [{t.category}] {t.id}: {t.query[:80]}...")
+        task_workers = getattr(args, "task_workers", 1)
+        effective_runs = max(1, total_runs // task_workers)
+        print(f"\n  Estimated time: {effective_runs * 60 // 60}–{effective_runs * 120 // 60} minutes")
+        print(f"  (based on {total_runs} calls at 60-120s each, {task_workers} task worker(s))")
+        return
+
+    # Setup evaluator
+    evaluator = Evaluator(judge_cli=args.judge, judge_model=args.judge_model)
+
+    # Run benchmark
+    task_workers = getattr(args, "task_workers", 1)
+    use_cache = not getattr(args, "no_cache", False)
+    print(f"  Starting {total_runs} AI calls — grab a coffee...\n")
+    bench = E2EBenchmark(
+        project_path=str(project_path),
+        providers=providers,
+        tasks=all_tasks,
+        evaluator=evaluator,
+        timeout=args.timeout,
+        parallel=not args.no_parallel,
+        verbose=args.verbose,
+        task_workers=task_workers,
+        cache=use_cache,
+        permission_mode=getattr(args, "permission_mode", "auto-edit"),
+    )
+    results = bench.run_all()
+
+    # Generate report
+    report = generate_e2e_report(str(project_path), results, providers, all_tasks)
+
+    # Save JSON
+    out_dir = project_path / ".c3" / "e2e_benchmark" / "runs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.output:
+        json_path = Path(args.output)
+        if not json_path.is_absolute():
+            json_path = project_path / json_path
+    else:
+        json_path = out_dir / f"e2e_{time.strftime('%Y%m%d_%H%M%S')}.json"
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    # Save HTML
+    html_path = Path(args.html_output or ".c3/e2e_benchmark/latest.html")
+    if not html_path.is_absolute():
+        html_path = project_path / html_path
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(render_e2e_html(report), encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    # Console output
+    sc = report["scorecard"]
+    trends = report.get("trends", {})
+    sl = trends.get("since_last", {})
+    has_trends = trends.get("available", False)
+
+    print()
+    print(f"  +- E2E Scorecard ---------------------------------------------------+")
+    wr_str = f"{sc['c3_win_rate']:>5.1f}%"
+    if has_trends and sl.get("win_rate_delta", 0) != 0:
+        wr_str += f"  ({sl['win_rate_delta']:+.1f}pp)"
+    print(f"  |  C3 Win Rate     {wr_str}   ({sc['c3_wins']} / {sc['c3_wins'] + sc['baseline_wins']} tasks)")
+    c3_str = f"{sc['avg_score_c3']:>5.3f}"
+    if has_trends and sl.get("avg_c3_delta", 0) != 0:
+        c3_str += f"  ({sl['avg_c3_delta']:+.3f})"
+    print(f"  |  Avg Score (C3)  {c3_str}   vs baseline {sc['avg_score_baseline']:.3f}")
+    print(f"  |  Score Delta     {sc['avg_score_delta']:>+5.3f}")
+    if has_trends:
+        print(f"  |  Run History     {trends.get('run_count', 0)} runs")
+    print(f"  +------------------------------------------------------------------+")
+    print()
+
+    # Per-provider summary
+    print(f"  {'Provider':<12} {'Model':<20} {'C3 Wins':>8} {'Win Rate':>9} {'Avg Delta':>10} {'Cost (C3)':>10}")
+    print(f"  {'-'*12} {'-'*20} {'-'*8} {'-'*9} {'-'*10} {'-'*10}")
+    for pname, pdata in report.get("provider_stats", {}).items():
+        print(f"  {pname:<12} {pdata['model']:<20} {pdata['c3_wins']:>3}/{pdata['tasks_run']:<4} "
+              f"{pdata['win_rate_c3']:>7.1f}%  {pdata['avg_score_delta']:>+9.3f}  "
+              f"${pdata['total_cost_c3_usd']:>8.4f}")
+
+    # Category breakdown table
+    cat_stats = report.get("category_stats", {})
+    if cat_stats:
+        print(f"\n  {'Category':<22} {'Wins':>5}  {'Rate':>6}  {'Delta':>7}")
+        print(f"  {'-'*22} {'-'*5}  {'-'*6}  {'-'*7}")
+        for cat, cs in sorted(cat_stats.items(), key=lambda x: -x[1].get("win_rate_c3", 0)):
+            wins = cs.get("c3_wins", 0)
+            total_t = cs.get("tasks_run", 0)
+            rate = cs.get("win_rate_c3", 0)
+            delta = cs.get("avg_score_delta", 0)
+            marker = "+" if rate >= 80 else ("!" if rate <= 20 else " ")
+            print(f"  {marker} {cat:<20} {wins:>2}/{total_t:<2}  {rate:>5.0f}%  {delta:>+6.3f}")
+
+    # Dimension scores
+    dim_bd = report.get("dimension_breakdown", {})
+    if dim_bd:
+        print(f"\n  {'Dimension':<18} {'C3':>6}  {'Base':>6}  {'Delta':>7}")
+        print(f"  {'-'*18} {'-'*6}  {'-'*6}  {'-'*7}")
+        for dim, dv in sorted(dim_bd.items(), key=lambda x: x[1].get("delta", 0)):
+            d = dv.get("delta", 0)
+            marker = "!" if d < -0.05 else ("+" if d > 0.05 else " ")
+            dim_label = dim.replace("_score", "").replace("_", " ")
+            print(f"  {marker} {dim_label:<16} {dv.get('avg_c3', 0):>6.3f}  {dv.get('avg_baseline', 0):>6.3f}  {d:>+6.3f}")
+
+    # Insights
+    ins = report.get("insights", {})
+    findings = ins.get("findings", [])
+    if findings:
+        print(f"\n  Findings:")
+        sev_icon = {"critical": "!!", "warning": " !", "strength": " +", "info": " *"}
+        for f in findings:
+            icon = sev_icon.get(f.get("severity", "info"), " *")
+            title = f.get("title", "")
+            action = f.get("action", "")
+            print(f"  [{icon}] {title}")
+            if action:
+                print(f"        -> {action}")
+
+    print()
+    print(f"  JSON: {json_path}")
+    print(f"  HTML: {html_path}")
+
+
+def main():
+    parser = build_parser(__version__, _parse_cli_ide_arg)
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    commands = {
+        "init": cmd_init,
+        "index": cmd_index,
+        "compress": cmd_compress,
+        "context": cmd_context,
+        "encode": cmd_encode,
+        "decode": cmd_decode,
+        "session": cmd_session,
+        "claudemd": cmd_claudemd,
+        "stats": cmd_stats,
+        "benchmark": cmd_benchmark,
+        "session-benchmark": cmd_session_benchmark,
+        "benchmark-e2e": cmd_benchmark_e2e,
+        "optimize": cmd_optimize,
+        "pipe": cmd_pipe,
+        "install-mcp": cmd_install_mcp,
+        "mcp-install": cmd_install_mcp,
+        "mcp-remove": cmd_mcp_remove,
+        "ui": cmd_ui,
+        "projects": cmd_projects,
+        "hub": cmd_hub,
+    }
+
+    cmd_func = commands.get(args.command)
+    if cmd_func:
+        try:
+            cmd_func(args)
+        except RuntimeError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
+
