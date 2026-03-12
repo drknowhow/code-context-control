@@ -535,6 +535,19 @@ class CLIProvider:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # Source 1c: Claude JSON — parse top-level 'result' array
+        if self.name == "claude" and response.raw_stdout and not counts:
+            try:
+                data = json.loads(response.raw_stdout)
+                result_list = data.get("result", [])
+                if isinstance(result_list, list):
+                    for block in result_list:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            name = block.get("name", "unknown")
+                            counts[name] = counts.get(name, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         # Source 1b: Gemini JSON — parse stats.tools if present
         if self.name == "gemini" and response.raw_stdout:
             stdout = response.raw_stdout
@@ -570,6 +583,18 @@ class CLIProvider:
             for name, count in heuristic_counts.items():
                 if name not in counts:
                     counts[name] = count
+
+        # Source 3: Parse stderr for tool call patterns
+        if not counts and response.raw_stderr:
+            import re
+            stderr_tools = re.findall(r'(?:Tool|tool_use|Calling)[\s:]+(\w+)', response.raw_stderr)
+            for tool_name in stderr_tools:
+                if tool_name.startswith("mcp__c3__"):
+                    tool_name = tool_name[9:]
+                elif tool_name.startswith("mcp_c3_"):
+                    tool_name = tool_name[7:]
+                if tool_name and tool_name != "unknown":
+                    counts[tool_name] = counts.get(tool_name, 0) + 1
 
         # If we have num_turns but no tool counts, estimate from turns
         if not counts and response.num_turns > 1:
@@ -1219,6 +1244,7 @@ def compute_trends(current: dict, history: list[dict]) -> dict:
     total_costs_c3 = []
     total_costs_base = []
     timestamps = []
+    mcp_ratios = []
 
     for run in timeline:
         sc = run.get("scorecard", {})
@@ -1230,6 +1256,7 @@ def compute_trends(current: dict, history: list[dict]) -> dict:
         total_costs_c3.append(eff.get("total_cost_c3_usd", 0))
         total_costs_base.append(eff.get("total_cost_baseline_usd", 0))
         timestamps.append(run.get("timestamp", ""))
+        mcp_ratios.append(run.get("mcp_ratio", run.get("tool_analysis", {}).get("summary", {}).get("mcp_ratio", 0)))
 
     # Since-last-run deltas (compare current vs most recent past run)
     prev = history[0]  # newest past run (history is newest-first)
@@ -1251,6 +1278,9 @@ def compute_trends(current: dict, history: list[dict]) -> dict:
         ),
         "token_saved_delta": (
             cur_eff.get("total_tokens_saved", 0) - prev_eff.get("total_tokens_saved", 0)
+        ),
+        "mcp_ratio_delta": round(
+            current.get("mcp_ratio", 0) - prev.get("mcp_ratio", prev.get("tool_analysis", {}).get("summary", {}).get("mcp_ratio", 0)), 1
         ),
         "prev_timestamp": prev.get("timestamp", "unknown"),
         "prev_total_tasks": prev.get("total_results", 0),
@@ -1287,6 +1317,7 @@ def compute_trends(current: dict, history: list[dict]) -> dict:
             "avg_base_scores": [round(x, 3) for x in avg_base_scores],
             "costs_c3": [round(x, 4) for x in total_costs_c3],
             "costs_base": [round(x, 4) for x in total_costs_base],
+            "mcp_ratios": [round(x, 1) for x in mcp_ratios],
             "timestamps": timestamps,
         },
         "since_last": since_last,
@@ -1449,6 +1480,21 @@ def generate_e2e_report(
     # Tool usage analysis
     tool_analysis = _build_tool_analysis(results)
 
+    # Tool adoption: how many C3-mode runs actually used MCP tools?
+    tasks_using_mcp = sum(1 for r in results if r.c3_response.tool_usage.c3_tool_calls > 0)
+    unique_mcp_tools_used = set()
+    for r in results:
+        for tool_name in r.c3_response.tool_usage.tool_counts:
+            if tool_name in _C3_TOOLS or tool_name.startswith("c3_"):
+                unique_mcp_tools_used.add(tool_name)
+    tool_adoption = {
+        "tasks_using_mcp": tasks_using_mcp,
+        "total_tasks": total_results,
+        "adoption_rate": round(tasks_using_mcp / total_results * 100, 1) if total_results else 0,
+        "unique_mcp_tools": sorted(unique_mcp_tools_used),
+        "unique_mcp_tool_count": len(unique_mcp_tools_used),
+    }
+
     report_data = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "project_path": project_path,
@@ -1473,6 +1519,10 @@ def generate_e2e_report(
         "tasks": [t.to_dict() for t in tasks],
         "results": [r.to_dict() for r in results],
     }
+
+    # Promote mcp_ratio for easy trend access
+    report_data["mcp_ratio"] = tool_analysis.get("summary", {}).get("mcp_ratio", 0)
+    report_data["tool_adoption"] = tool_adoption
 
     # Generate insights from the assembled report
     report_data["insights"] = _build_insights(report_data)
@@ -1754,6 +1804,24 @@ def _build_insights(report: dict) -> dict:
             "action": "Good adoption. C3 tools are being discovered and preferred.",
         })
 
+    # --- Tool adoption rate ---
+    adoption = report.get("tool_adoption", {})
+    adoption_rate = adoption.get("adoption_rate", 0)
+    if adoption_rate < 50:
+        findings.append({
+            "severity": "warning", "area": "adoption",
+            "title": f"Low C3 tool adoption ({adoption_rate:.0f}% of tasks)",
+            "detail": f"Only {adoption.get('tasks_using_mcp', 0)}/{adoption.get('total_tasks', 0)} C3-mode runs used any MCP tools.",
+            "action": "Strengthen prompt instructions or check if CLAUDE.md C3 mandate is being loaded.",
+        })
+    elif adoption_rate >= 80:
+        findings.append({
+            "severity": "strength", "area": "adoption",
+            "title": f"High C3 tool adoption ({adoption_rate:.0f}%)",
+            "detail": f"{adoption.get('tasks_using_mcp', 0)}/{adoption.get('total_tasks', 0)} tasks used C3 MCP tools. {adoption.get('unique_mcp_tool_count', 0)} unique tools.",
+            "action": "Good adoption across tasks.",
+        })
+
     if c3_diversity > base_diversity + 1:
         findings.append({
             "severity": "info", "area": "tools",
@@ -2001,7 +2069,8 @@ def render_e2e_html(report: dict) -> str:
             f'  Win rate {sl_wr:+.1f}pp |\n'
             f'  Score delta {sl_sd:+.3f} |\n'
             f'  Cost saved {sl_cs:+.4f} USD |\n'
-            f'  Tokens saved {sl_ts_saved:+,d}\n'
+            f'  Tokens saved {sl_ts_saved:+,d} |\n'
+            f'  MCP ratio {sl.get("mcp_ratio_delta", 0):+.1f}pp\n'
             f'</div>\n'
             f'<div class="trend-section">\n'
             f'  <div class="sparkline-grid">\n'
@@ -2009,6 +2078,7 @@ def render_e2e_html(report: dict) -> str:
             f'    <div class="card"><h3>Score Delta Over Time</h3><canvas id="trendDelta"></canvas></div>\n'
             f'    <div class="card"><h3>Avg Scores Over Time</h3><canvas id="trendScores"></canvas></div>\n'
             f'    <div class="card"><h3>Cost Per Run Over Time</h3><canvas id="trendCost"></canvas></div>\n'
+            f'    <div class="card"><h3>MCP Ratio Over Time</h3><canvas id="trendMcpRatio"></canvas></div>\n'
             f'  </div>\n'
             f'</div>\n'
         )
@@ -2019,6 +2089,7 @@ def render_e2e_html(report: dict) -> str:
         sp_bs = json.dumps(sparklines.get("avg_base_scores", []))
         sp_cc = json.dumps(sparklines.get("costs_c3", []))
         sp_cb = json.dumps(sparklines.get("costs_base", []))
+        sp_mr = json.dumps(sparklines.get("mcp_ratios", []))
         trend_charts_js = (
             f"const trendLabels = {sp_ts}.map(t => t ? t.slice(5,16) : '');\n"
             f"const sparkOpts = {{ ...chartOpts, plugins:{{ legend:{{ display:false }} }}, "
@@ -2049,6 +2120,11 @@ def render_e2e_html(report: dict) -> str:
             f"      {{ label:'Baseline', data:{sp_cb}, borderColor:BASE, borderWidth:2, fill:false }}\n"
             f"    ]\n"
             f"  }}, options:{{ ...sparkOpts, plugins:{{ legend:{{ display:true, labels:{{ color:'#888' }} }} }} }}\n"
+            f"}});\n\n"
+            f"new Chart(document.getElementById('trendMcpRatio'), {{\n"
+            f"  type:'line', data:{{ labels:trendLabels,\n"
+            f"    datasets:[{{ data:{sp_mr}, borderColor:ACCENT, borderWidth:2, fill:true, backgroundColor:ACCENT+'22' }}]\n"
+            f"  }}, options:{{ ...sparkOpts, scales:{{ ...sparkOpts.scales, y:{{ ...sparkOpts.scales.y, min:0, max:100 }} }} }}\n"
             f"}});\n"
         )
 
@@ -2339,6 +2415,10 @@ def render_e2e_html(report: dict) -> str:
   <div class="card">
     <div class="big">{eff.get('projected_monthly_cost_saved_usd', 0):+.1f}</div>
     <div class="label">$/mo Projected</div>
+  </div>
+  <div class="card">
+    <div class="big" style="color: var(--accent)">{report.get('tool_adoption', {{}}).get('adoption_rate', 0):.0f}%</div>
+    <div class="label">MCP Adoption</div>
   </div>
 </div>
 
