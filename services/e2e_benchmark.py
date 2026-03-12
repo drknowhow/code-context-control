@@ -883,8 +883,9 @@ def detect_providers(
 def _task_cache_key(task: "E2ETask", providers: list["CLIProvider"]) -> str:
     """Stable cache key from task id, query, and provider identities."""
     import hashlib
+    _CACHE_VERSION = "v2"  # Bump when prompt template or scoring changes
     provider_sig = ",".join(f"{p.name}:{p.model or ''}" for p in sorted(providers, key=lambda p: p.name))
-    raw = f"{task.id}|{task.query}|{provider_sig}"
+    raw = f"{_CACHE_VERSION}|{task.id}|{task.query}|{provider_sig}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
