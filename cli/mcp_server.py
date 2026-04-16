@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+"""
+C3 MCP Server - Claude Code Companion as a native MCP tool server.
+
+Exposes 10 C3 tools as MCP endpoints. Tool logic lives in cli/tools/.
+
+Usage:
+    python cli/mcp_server.py --project <path>
+"""
+import os
+import sys
+import time
+import asyncio
+import argparse
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from contextlib import asynccontextmanager
+from typing import Any
+
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from fastmcp import FastMCP, Context
+from core import count_tokens
+from services.transcript_index import TranscriptIndex
+from services.context_snapshot import ContextSnapshot
+from services.runtime import C3Runtime, build_runtime, start_runtime, stop_runtime
+from services.auto_memory import AutoMemory
+from core.ide import load_ide_config, get_profile
+
+# Read version without importing cli.c3 (heavy side effects)
+def _read_version() -> str:
+    try:
+        _c3_py = Path(__file__).parent / "c3.py"
+        for line in _c3_py.read_text(encoding="utf-8").splitlines():
+            if line.startswith("__version__"):
+                return line.split('"')[1]
+    except Exception:
+        pass
+    return "?"
+
+C3_VERSION = _read_version()
+
+# Tool handlers
+from cli.tools._helpers import maybe_related_facts, validate_file_path
+from cli.tools.search import handle_search
+from cli.tools.session import handle_session
+from cli.tools.memory import handle_memory
+from cli.tools.read import handle_read
+from cli.tools.compress import handle_compress
+from cli.tools.validate import handle_validate
+from cli.tools.filter import handle_filter
+from cli.tools.status import handle_status
+from cli.tools.delegate import handle_delegate
+from cli.tools.agent import handle_agent
+from cli.tools.edit import handle_edit
+
+
+def _get_project_path() -> str:
+    """Parse --project from sys.argv (before FastMCP takes over)."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--project", default=".")
+    args, _ = parser.parse_known_args()
+    return str(Path(args.project).resolve())
+
+
+PROJECT_PATH = _get_project_path()
+_IDE_NAME = load_ide_config(PROJECT_PATH)
+_IDE_PROFILE = get_profile(_IDE_NAME)
+
+
+def _build_instructions(ide_name: str) -> str:
+    """Build compact MCP instructions. Optimized for minimal token overhead.
+
+    Structure: intent-keyed one-liners so Claude can route by goal, not
+    by tool-name memorization. Each line = one intent → one tool.
+    """
+    return (
+        "C3 — local code intelligence. Route by goal:\n"
+        "  FIND candidates → c3_search\n"
+        "  MAP file shape → c3_compress(mode='map') then READ content → c3_read(symbols=…)\n"
+        "  EDIT code → c3_edit (always; it logs to the ledger automatically)\n"
+        "  VALIDATE after every edit → c3_validate\n"
+        "  BLAST RADIUS before shared-symbol edits → c3_impact\n"
+        "  DISTILL terminal/log output >10 lines → c3_filter\n"
+        "  RECALL cross-session knowledge → c3_memory(action='recall') (index+fetch for large stores)\n"
+        "  SNAPSHOT before /clear → c3_session(action='snapshot')\n"
+        "  HEALTH/budget checks → c3_status\n"
+        "  OFFLOAD to another model → c3_delegate\n"
+        "PLAN MODE: all read-only actions above are safe."
+    )
+
+
+@asynccontextmanager
+async def lifespan(server):
+    """Initialize all services, auto-start session, start file watcher."""
+    project = PROJECT_PATH
+    services = build_runtime(project, ide_name=_IDE_NAME)
+    transcript_index = TranscriptIndex(project)
+    services.transcript_index = transcript_index
+    snapshots = services.snapshots or ContextSnapshot(project)
+    services.snapshots = snapshots
+
+    if _IDE_PROFILE.supports_transcripts:
+        if not (Path(project) / ".c3" / "transcript_index" / "index.json").exists():
+            transcript_index.build_index()
+        else:
+            transcript_index._load_index()
+            transcript_index._load_manifest()
+
+    if not (Path(project) / ".c3" / "index" / "index.json").exists():
+        import threading
+
+        def _bg_build():
+            try:
+                services.indexer.build_index()
+            except Exception:
+                pass
+            # After code index is built, build embedding index
+            if services.embedding_index and services.embedding_index.ready:
+                try:
+                    services.embedding_index.build(services.indexer)
+                except Exception:
+                    pass
+            # Build doc index for Local RAG Pipeline
+            if services.doc_index:
+                try:
+                    services.doc_index.build()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg_build, daemon=True, name="c3-initial-index").start()
+    else:
+        services.indexer._load_index()
+        # Build/update embedding index in background
+        if services.embedding_index and services.embedding_index.ready:
+            import threading
+
+            def _bg_embed():
+                try:
+                    services.embedding_index.build(services.indexer)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_bg_embed, daemon=True, name="c3-embed-index").start()
+
+        # Build/update doc index in background for Local RAG Pipeline
+        if services.doc_index:
+            import threading
+
+            def _bg_doc_index():
+                try:
+                    services.doc_index.build()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_bg_doc_index, daemon=True, name="c3-doc-index").start()
+
+    started_session = services.session_mgr.start_session("MCP server session", source_system=_IDE_NAME)
+    start_runtime(services)
+
+    convo_store = services.convo_store
+    services.convo_store = convo_store
+    if _IDE_PROFILE.supports_transcripts:
+        try:
+            convo_store.sync(source="claude")
+            if services.retrieval:
+                services.retrieval.mark_sessions_dirty()
+        except Exception:
+            pass
+
+    import threading
+    _convo_sync_stop = threading.Event()
+    if _IDE_PROFILE.supports_transcripts:
+        def _bg_convo_sync():
+            while not _convo_sync_stop.wait(timeout=60):
+                try:
+                    convo_store.sync(source="claude")
+                    if services.retrieval:
+                        services.retrieval.mark_sessions_dirty()
+                except Exception:
+                    pass
+        threading.Thread(target=_bg_convo_sync, daemon=True, name="c3-convo-sync").start()
+
+    # Auto-memory: background learning from tool calls.
+    auto_mem_cfg = (services.hybrid_config or {}).get("auto_memory", {})
+    services.auto_memory = AutoMemory(services.memory, services.session_mgr, auto_mem_cfg)
+
+    if services.session_mgr.current_session:
+        services.activity_log.log("session_start", {
+            "session_id": services.session_mgr.current_session["id"],
+            "source_system": started_session.get("source_system", ""),
+        })
+
+    # Auto-restore latest snapshot if recent (< 30 min).
+    # Deferred to background thread so first tool call isn't blocked.
+    # Skipped in benchmark mode to prevent snapshot budget from carrying over between tasks.
+    if not os.environ.get("C3_BENCHMARK_MODE"):
+        import threading as _restore_t
+
+        def _bg_auto_restore():
+            try:
+                latest = snapshots._load_snapshot("latest")
+                if "error" not in latest and "created" in latest:
+                    created_dt = datetime.fromisoformat(latest["created"])
+                    age_sec = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                    if age_sec < 1800:
+                        res = snapshots.restore("latest", memory_store=services.memory, level=1)
+                        if "error" not in res:
+                            services.session_mgr.reset_budget(initial_tokens=res.get("tokens", 0))
+                            services.notifications.add(
+                                agent="c3",
+                                severity="info",
+                                title="Session Auto-Restored",
+                                message=f"Restored latest context from {round(age_sec/60)}m ago: {res['briefing']}"
+                            )
+                            services.activity_log.log("auto_restore", {
+                                "snapshot_id": res["snapshot_id"], "age_min": round(age_sec/60)})
+            except Exception:
+                pass
+
+        _restore_t.Thread(target=_bg_auto_restore, daemon=True, name="c3-auto-restore").start()
+
+    # Pre-warm delegate health checks so first c3_agent call skips 3-4s preflight.
+    import threading as _t
+
+    def _bg_delegate_prewarm():
+        try:
+            from cli.tools.delegate import check_gemini, check_codex
+            check_gemini()
+            check_codex()
+        except Exception:
+            pass
+
+    _t.Thread(target=_bg_delegate_prewarm, daemon=True, name="c3-delegate-prewarm").start()
+
+    # Background validation sweep: check recently-errored files and notify.
+    if services.validation_cache:
+        import threading as _t
+
+        def _bg_validation_sweep():
+            import time
+            time.sleep(8)  # Let watcher populate cache from initial file events.
+            errors = services.validation_cache.get_errors()
+            if errors:
+                names = ", ".join(e["path"] for e in errors[:5])
+                more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
+                services.notifications.add(
+                    agent="c3", severity="warning",
+                    title="Syntax Errors Detected",
+                    message=f"{len(errors)} file(s) have syntax errors: {names}{more}",
+                )
+        _t.Thread(target=_bg_validation_sweep, daemon=True, name="c3-validate-sweep").start()
+
+    try:
+        yield services
+    finally:
+        _convo_sync_stop.set()
+        # Auto-memory: extract remaining learnings and generate session summary.
+        if hasattr(services, "auto_memory"):
+            try:
+                services.auto_memory.on_session_end()
+            except Exception:
+                pass
+        # Memory consolidation: triage + prune at session end (lightweight).
+        if services.memory_consolidator:
+            try:
+                session = services.session_mgr.current_session
+                services.memory_consolidator.phase_triage(session)
+                services.memory_consolidator.phase_prune()
+            except Exception:
+                pass
+        stop_runtime(services)
+        services.session_mgr._persist_budget()
+        services.session_mgr.save_session()
+        if _IDE_PROFILE.supports_transcripts:
+            try:
+                convo_store.sync(source="claude", force=True)
+                if services.retrieval:
+                    services.retrieval.mark_sessions_dirty()
+            except Exception:
+                pass
+
+
+mcp = FastMCP(f"C3 v{C3_VERSION}", instructions=_build_instructions(_IDE_NAME), lifespan=lifespan)
+
+# ─── Helper Functions ─────────────────────────────────────────────
+
+def _svc(ctx: Context) -> C3Runtime:
+    return ctx.request_context.lifespan_context
+
+
+_last_tool_call_time: float = 0.0
+_last_badge_count: int = 0  # delta-based: only show badge when count increases
+_finalize_lock = threading.Lock()
+
+
+def _finalize_response(ctx: Context, tool_name: str, args: dict,
+                       response: str, summary: str = "",
+                       response_tokens: int = 0) -> str:
+    global _last_tool_call_time, _last_badge_count
+
+    deferred_snapshot = False
+    snap_pct = 0
+    svc = _svc(ctx)
+
+    # Minimal critical section: only the module-global timing state needs
+    # exclusive access. Disk I/O happens outside the lock so concurrent tool
+    # calls don't serialize on append-only JSONL writes.
+    gap_reset_seconds = 0
+    with _finalize_lock:
+        now = time.time()
+        if _last_tool_call_time > 0 and (now - _last_tool_call_time) > 30:
+            gap_reset_seconds = round(now - _last_tool_call_time)
+            _last_badge_count = 0  # surface any pending alerts after /clear
+        _last_tool_call_time = now
+
+    # Outside lock: append-only logs + budget track. These are independent
+    # across tool calls; holding the lock was serializing them needlessly.
+    if gap_reset_seconds:
+        svc.session_mgr.reset_budget()
+        svc.activity_log.log("budget_auto_reset", {"gap_seconds": gap_reset_seconds})
+
+    svc.session_mgr.log_tool_call(tool_name, args, summary)
+    svc.activity_log.log("tool_call", {"tool": tool_name, "args": args, "result_summary": summary})
+    svc.session_mgr.track_response(tool_name, response, response_tokens=response_tokens)
+
+    hybrid_cfg = svc.hybrid_config or {}
+
+    # Auto-snapshot check-then-set — short lock to ensure single-fire under
+    # concurrent tool calls.
+    with _finalize_lock:
+        snap = svc.session_mgr.get_budget_snapshot()
+        if "error" not in snap:
+            threshold = snap.get("threshold", 35000)
+            pct = round(snap["response_tokens"] / threshold * 100) if threshold > 0 else 0
+            if pct >= 80 and not snap.get("auto_snapshot_fired", False):
+                svc.session_mgr.mark_auto_snapshot_fired()
+                deferred_snapshot = True
+                snap_pct = pct
+
+    # --- Outside lock: auto-memory extraction (may do file I/O / Ollama) ---
+    if hasattr(svc, "auto_memory"):
+        try:
+            svc.auto_memory.on_tool_complete(tool_name, args, summary, response)
+        except Exception:
+            pass
+
+    # --- Slow path OUTSIDE lock: auto-snapshot (fires once per session) ---
+    if deferred_snapshot:
+        try:
+            from cli.tools.session import handle_session
+            handle_session("snapshot", data="auto_budget_snapshot",
+                           reasoning=f"Budget at {snap_pct}% — auto-snapshot before potential /clear",
+                           description="", summary="", event_type="auto",
+                           svc=svc, finalize=lambda *a, **kw: "")
+            response += (
+                f"\n\n[c3:auto_snapshot] Budget {snap_pct}%. Snapshot saved. "
+                f"Tell user to /clear, then restore."
+            )
+            svc.activity_log.log("auto_snapshot", {"budget_pct": snap_pct})
+        except Exception:
+            pass
+
+    return response
+
+
+# ─── TOOL REGISTRATIONS (13 tools) ────────────────────────────────
+# Each tool's first docstring line should state WHEN to reach for it —
+# that's what Claude reads when selecting between tools.
+
+@mcp.tool()
+async def c3_search(query: str, action: str = "code", top_k: int = 3,
+              max_tokens: int = 1200, prefetch: bool = False,
+              ctx: Context = None) -> str:
+    """FIND candidates. Use to discover which files/symbols are relevant (read-only, plan-mode safe).
+    action: 'code' (TF-IDF content), 'exact' (regex), 'files' (by name), 'transcript', 'semantic'.
+    prefetch: auto-compress top results. Next step: c3_compress/c3_read on hits."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_search, query, action, top_k, max_tokens, svc,
+                                   finalize, maybe_related_facts, prefetch=prefetch)
+
+
+@mcp.tool()
+async def c3_session(action: str, data: str = "", reasoning: str = "",
+               description: str = "", summary: str = "",
+               event_type: str = "auto", ctx: Context = None) -> str:
+    """Session management: start, save, log, plan, snapshot, restore, compact, convo_log (log/snapshot are safe in plan mode).
+    log: data + reasoning. snapshot: data=task, reasoning=next steps, summary=key files.
+    restore: data=snapshot_id. convo_log: data=text, event_type=role."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_session, action, data, reasoning, description, summary,
+                                   event_type, svc, finalize)
+
+
+@mcp.tool()
+async def c3_memory(action: str, query: str = "", fact: str = "",
+              category: str = "", top_k: int = 3,
+              fact_id: str = "", ctx: Context = None) -> str:
+    """Durable facts — cross-session knowledge. Read-only actions safe in plan mode.
+    Retrieve: recall (search), index (compact IDs+snippets, then fetch), fetch (full text by fact_id="id1,id2"), query (multi-source: facts+sessions+files).
+    Write:    add (fact+category, empty category→'general'), update (fact_id+fact), delete (fact_id).
+    Browse:   list (category='' shows all; 'foo' filters), export (markdown).
+    Audit:    review (health), ground (verify against code), score (salience), graph (edges), trends, lifespan, consolidate, consolidate_deep."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_memory, action, query, fact, category, top_k, svc, finalize,
+                                   fact_id=fact_id)
+
+
+@mcp.tool()
+async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
+            include_docstrings: bool = True, ctx: Context = None) -> str:
+    """READ exact content. Use after c3_compress when you need real source (read-only, plan-mode safe).
+    file_path: single or comma-separated. symbols: function/class names. lines: int, [start,end], or list of ranges."""
+    path_err = validate_file_path(file_path)
+    if path_err:
+        return f"[c3_read:error] {path_err}"
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_read, file_path, symbols, lines, include_docstrings, svc, finalize)
+
+
+@mcp.tool()
+async def c3_compress(file_path: str, mode: str = "smart", ctx: Context = None) -> str:
+    """MAP file shape — classes/functions/imports at 40-70% tokens (read-only, plan-mode safe).
+    Use before c3_read to know which symbols to fetch. Modes: map, dense_map, smart, diff, bug_scan, ast.
+    file_path: single or comma-separated."""
+    path_err = validate_file_path(file_path)
+    if path_err:
+        return f"[c3_compress:error] {path_err}"
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_compress, file_path, mode, svc, finalize, maybe_related_facts)
+
+
+@mcp.tool()
+async def c3_validate(file_path: str, ctx: Context = None) -> str:
+    """VALIDATE after every edit — syntax+types if pyright/tsc installed (read-only, plan-mode safe).
+    py, json, yaml, js, ts, go, rs, html, css, etc. file_path: single or comma-separated."""
+    path_err = validate_file_path(file_path)
+    if path_err:
+        return f"[c3_validate:error] {path_err}"
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await handle_validate(file_path, svc, finalize)
+
+
+@mcp.tool()
+async def c3_filter(file_path: str = "", text: str = "", pattern: str = "",
+              max_lines: int = 50, depth: str = "smart",
+              use_llm: bool = True, ctx: Context = None) -> str:
+    """DISTILL long output — use when terminal/log output exceeds ~10 lines (read-only, plan-mode safe).
+    text: inline output. file_path: log file. pattern: regex. depth: fast|smart|deep."""
+    if file_path:
+        path_err = validate_file_path(file_path)
+        if path_err:
+            return f"[c3_filter:error] {path_err}"
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_filter, file_path, text, pattern, max_lines, depth, use_llm,
+                                   svc, finalize)
+
+
+@mcp.tool()
+async def c3_status(view: str = "budget", detailed: bool = False,
+              ctx: Context = None) -> str:
+    """PROJECT health and budget — run at session start or when context feels stale (read-only, plan-mode safe).
+    views: budget (tokens/ratio), health (memory/index/notifications), notifications (actionable only), sessions, ghost_files."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_status, view, detailed, svc, finalize)
+
+
+@mcp.tool()
+async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
+                file_path: str = "", backend: str = "ollama",
+                ctx: Context = None) -> str:
+    """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
+    backend: ollama|codex|gemini|claude|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, codex_resume."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    # Wire progress notifications (same direct-stdout approach as c3_agent)
+    import json as _json, threading as _threading
+    _stdout_lock = _threading.Lock()
+
+    def _progress_cb(message: str):
+        try:
+            line = _json.dumps({
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"level": "info", "data": message},
+            }, separators=(",", ":")) + "\n"
+            with _stdout_lock:
+                sys.stdout.buffer.write(line.encode("utf-8"))
+                sys.stdout.buffer.flush()
+        except Exception:
+            pass
+    svc._agent_progress_cb = _progress_cb
+    try:
+        return await asyncio.to_thread(handle_delegate, task, task_type, context, file_path, svc, finalize, backend)
+    finally:
+        svc._agent_progress_cb = None
+
+
+@mcp.tool()
+async def c3_agent(workflow: str, scope: str = "", context: str = "",
+             ctx: Context = None) -> str:
+    """ORCHESTRATE a multi-step pipeline. Use for compound investigations that'd be 5+ tool calls otherwise.
+    workflow: available, review_changes, prepare_context, investigate, preflight, validate_compress.
+    scope: file paths, query, or git range. context: extra hints."""
+    svc = _svc(ctx)
+    loop = asyncio.get_running_loop()
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    # Wire live progress notifications: _log_progress calls this from the worker thread.
+    # We write raw JSON-RPC notifications directly to stdout instead of going through
+    # the async transport (session.send_log_message / ctx.info). The async approach fails
+    # because asyncio.run_coroutine_threadsafe coroutines never complete in time — the
+    # event loop is technically free (awaiting to_thread) but the transport write stalls.
+    # Direct stdout writes are safe here because the event loop is idle during to_thread
+    # (no concurrent transport writes until the tool response is sent after to_thread returns).
+    import json as _json, threading as _threading
+    _stdout_lock = _threading.Lock()
+
+    def _progress_cb(message: str):
+        try:
+            line = _json.dumps({
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"level": "info", "data": message},
+            }, separators=(",", ":")) + "\n"
+            with _stdout_lock:
+                sys.stdout.buffer.write(line.encode("utf-8"))
+                sys.stdout.buffer.flush()
+        except Exception:
+            pass
+    svc._agent_progress_cb = _progress_cb
+    try:
+        return await asyncio.to_thread(handle_agent, workflow, scope, context, svc, finalize)
+    finally:
+        svc._agent_progress_cb = None
+
+
+@mcp.tool()
+async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
+                  summary: str = "", tags: str = "", replace_all: bool = False,
+                  edits: str = "",
+                  ctx: Context = None) -> str:
+    """EDIT — read+patch+write+log in one step. Primary code-change tool; always prefer over native Edit.
+    old_string: text to replace. new_string: replacement. summary: ledger description.
+    edits: JSON list of {old_string, new_string, summary?} for multi-hunk batch on one file.
+    Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>."""
+    path_err = validate_file_path(file_path)
+    if path_err:
+        return f"[c3_edit:error] {path_err}"
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await asyncio.to_thread(handle_edit, file_path, old_string, new_string,
+                                   summary, tags, replace_all, svc, finalize, edits)
+
+
+@mcp.tool()
+async def c3_edits(action: str, file: str = "", change_type: str = "modified",
+             summary: str = "", lines_changed: str = "", tags: str = "",
+             limit: int = 50, since: str = "", edit_id: str = "",
+             tag: str = "", ctx: Context = None) -> str:
+    """EDIT HISTORY — inspect the ledger. Different from c3_edit (which writes); this one reads.
+    actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id)."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.edits import handle_edits
+    return await asyncio.to_thread(handle_edits, action, file, change_type, summary,
+                                   lines_changed, tags, limit, since, edit_id, tag,
+                                   svc, finalize)
+
+
+@mcp.tool()
+async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
+                    ctx: Context = None) -> str:
+    """BLAST RADIUS before editing a shared symbol — all call sites, imports, references.
+    target: symbol/function/class name. file_path: source file to exclude. mode: symbol | unstaged (affected files with uncommitted changes)."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.impact import handle_impact
+    return await asyncio.to_thread(handle_impact, target, file_path, mode, svc, finalize)
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio", show_banner=False, log_level="ERROR")
