@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tools Reference — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .tools-toc {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      margin-bottom: 40px;
+    }
+
+    .tools-toc h3 { margin-top: 0; font-size: 14px; }
+
+    .toc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 8px;
+    }
+
+    .toc-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-3);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--cyan);
+      text-decoration: none;
+      transition: all 0.15s;
+    }
+
+    .toc-item:hover {
+      border-color: var(--cyan);
+      text-decoration: none;
+      color: var(--cyan);
+    }
+
+    .toc-item .cat {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-family: var(--font);
+    }
+
+    .tool-section {
+      margin-bottom: 48px;
+    }
+
+    .tool-section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html" class="active">Tools</a>
+    </nav>
+    <span class="header-version">v2.x</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Search &amp; Read</div>
+      <a href="#c3_search"   class="sidebar-link"><span class="icon">🔍</span> c3_search</a>
+      <a href="#c3_read"     class="sidebar-link"><span class="icon">📖</span> c3_read</a>
+      <a href="#c3_compress" class="sidebar-link"><span class="icon">🗜️</span> c3_compress</a>
+      <a href="#c3_filter"   class="sidebar-link"><span class="icon">🔎</span> c3_filter</a>
+      <a href="#c3_impact"   class="sidebar-link"><span class="icon">💥</span> c3_impact</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Write</div>
+      <a href="#c3_edit"     class="sidebar-link"><span class="icon">✏️</span> c3_edit</a>
+      <a href="#c3_validate" class="sidebar-link"><span class="icon">✅</span> c3_validate</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label" id="session">Session &amp; Memory</div>
+      <a href="#c3_session"  class="sidebar-link"><span class="icon">📋</span> c3_session</a>
+      <a href="#c3_memory"   class="sidebar-link"><span class="icon">🧠</span> c3_memory</a>
+      <a href="#c3_status"   class="sidebar-link"><span class="icon">📊</span> c3_status</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label" id="delegation">AI &amp; Delegation</div>
+      <a href="#c3_delegate" class="sidebar-link"><span class="icon">🤖</span> c3_delegate</a>
+      <a href="#c3_agent"    class="sidebar-link"><span class="icon">🔗</span> c3_agent</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Ledger</div>
+      <a href="#c3_edits"    class="sidebar-link"><span class="icon">📝</span> c3_edits</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Tools Reference</h1>
+      <p>Complete reference for all 12 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+    </div>
+
+    <!-- TOC -->
+    <div class="tools-toc">
+      <h3>All Tools</h3>
+      <div class="toc-grid">
+        <a href="#c3_search"   class="toc-item">c3_search   <span class="cat">Search</span></a>
+        <a href="#c3_read"     class="toc-item">c3_read     <span class="cat">Read</span></a>
+        <a href="#c3_compress" class="toc-item">c3_compress <span class="cat">Read</span></a>
+        <a href="#c3_filter"   class="toc-item">c3_filter   <span class="cat">Utility</span></a>
+        <a href="#c3_impact"   class="toc-item">c3_impact   <span class="cat">Analysis</span></a>
+        <a href="#c3_edit"     class="toc-item">c3_edit     <span class="cat">Write</span></a>
+        <a href="#c3_validate" class="toc-item">c3_validate <span class="cat">Write</span></a>
+        <a href="#c3_session"  class="toc-item">c3_session  <span class="cat">Session</span></a>
+        <a href="#c3_memory"   class="toc-item">c3_memory   <span class="cat">Memory</span></a>
+        <a href="#c3_status"   class="toc-item">c3_status   <span class="cat">Status</span></a>
+        <a href="#c3_delegate" class="toc-item">c3_delegate <span class="cat">AI</span></a>
+        <a href="#c3_agent"    class="toc-item">c3_agent    <span class="cat">AI</span></a>
+        <a href="#c3_edits"    class="toc-item">c3_edits    <span class="cat">Ledger</span></a>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ SEARCH and READ ═══ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Search &amp; Read</div>
+
+      <!-- c3_search -->
+      <div class="tool-card" id="c3_search">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_search</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Codebase search — TF-IDF, semantic, files, exact</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">The primary discovery tool. Always use before Grep or Glob. Returns ranked results with file locations and surrounding context. Supports TF-IDF code search, embedding-based semantic search, file discovery, and exact regex search.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">query</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Search query — natural language or code pattern</td>
+              </tr>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"code"</td>
+                <td class="param-desc"><code>code</code> TF-IDF search · <code>files</code> file discovery · <code>semantic</code> embedding similarity · <code>exact</code> regex match · <code>transcript</code> session history search</td>
+              </tr>
+              <tr>
+                <td class="param-name">top_k</td>
+                <td class="param-type">int</td>
+                <td class="param-default">3</td>
+                <td class="param-desc">Max results to return</td>
+              </tr>
+              <tr>
+                <td class="param-name">prefetch</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Auto-compress top result files in parallel after search</td>
+              </tr>
+              <tr>
+                <td class="param-name">max_tokens</td>
+                <td class="param-type">int</td>
+                <td class="param-default">1200</td>
+                <td class="param-desc">Token budget for results</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Find code by content</span>
+c3_search(query=<span class="str">'session snapshot restore'</span>, action=<span class="str">'code'</span>)
+
+<span class="com"># Find files by name/path</span>
+c3_search(query=<span class="str">'hook files in cli/'</span>, action=<span class="str">'files'</span>)
+
+<span class="com"># Semantic similarity search</span>
+c3_search(query=<span class="str">'code that handles authentication expiry'</span>, action=<span class="str">'semantic'</span>)
+
+<span class="com"># Exact regex match</span>
+c3_search(query=<span class="str">'class.*Manager'</span>, action=<span class="str">'exact'</span>, top_k=10)
+
+<span class="com"># With auto-prefetch of top results</span>
+c3_search(query=<span class="str">'memory consolidation'</span>, action=<span class="str">'code'</span>, prefetch=<span class="val">True</span>)</code></pre>
+        </div>
+      </div>
+
+      <!-- c3_read -->
+      <div class="tool-card" id="c3_read">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_read</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Targeted symbol or line-range reads</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Read specific symbols (functions, classes, methods) or exact line ranges from a file. Always use after c3_compress to get the line map. Never read entire files.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Relative path to the file</td>
+              </tr>
+              <tr>
+                <td class="param-name">symbols</td>
+                <td class="param-type">array</td>
+                <td class="param-default">null</td>
+                <td class="param-desc">Symbol names to read: <code>["ClassName.method_name"]</code> or <code>["function_name"]</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">lines</td>
+                <td class="param-type">string</td>
+                <td class="param-default">null</td>
+                <td class="param-desc">Line range: <code>"100-150"</code> or <code>"100"</code></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Read specific symbols</span>
+c3_read(file_path=<span class="str">'services/session_manager.py'</span>, symbols=[<span class="str">'SessionManager.save'</span>, <span class="str">'SessionManager.restore'</span>])
+
+<span class="com"># Read by line range (from compress map)</span>
+c3_read(file_path=<span class="str">'cli/c3.py'</span>, lines=<span class="str">'660-720'</span>)
+
+<span class="com"># Read a standalone function</span>
+c3_read(file_path=<span class="str">'services/memory.py'</span>, symbols=[<span class="str">'recall_facts'</span>])</code></pre>
+        </div>
+      </div>
+
+      <!-- c3_compress -->
+      <div class="tool-card" id="c3_compress">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_compress</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Structural file map — 40–70% token savings</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Returns a compact structural summary of one or more files. Use before c3_read to understand file structure and get the line numbers needed for targeted reads. Supports batch (comma-separated paths).</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Single path or comma-separated list of paths</td>
+              </tr>
+              <tr>
+                <td class="param-name">mode</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"smart"</td>
+                <td class="param-desc"><code>map</code> symbol line-map · <code>dense_map</code> map + docstrings · <code>smart</code> adaptive · <code>diff</code> recent changes · <code>bug_scan</code> suspicious patterns · <code>ast</code> knowledge-graph via codebase-memory-mcp</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Map a single file</span>
+c3_compress(file_path=<span class="str">'cli/mcp_server.py'</span>, mode=<span class="str">'map'</span>)
+
+<span class="com"># Map multiple files in one call</span>
+c3_compress(file_path=<span class="str">'services/memory.py,services/agents.py'</span>, mode=<span class="str">'map'</span>)
+
+<span class="com"># See recent changes</span>
+c3_compress(file_path=<span class="str">'cli/c3.py'</span>, mode=<span class="str">'diff'</span>)
+
+<span class="com"># Quick bug scan</span>
+c3_compress(file_path=<span class="str">'services/embedding_index.py'</span>, mode=<span class="str">'bug_scan'</span>)
+
+<span class="com"># Knowledge-graph overview (requires codebase-memory-mcp installed)</span>
+c3_compress(file_path=<span class="str">'.'</span>, mode=<span class="str">'ast'</span>)</code></pre>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              The <code>map</code> output includes line numbers for every symbol. Use those line numbers directly in <code>c3_read(lines=…)</code> to read specific sections.
+              <br><br>
+              The <code>ast</code> mode uses <a href="https://github.com/DeusData/codebase-memory-mcp" target="_blank">codebase-memory-mcp</a> (optional install) for a project-wide knowledge graph — languages, entry points, hotspots, HTTP routes, and module clusters.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_filter -->
+      <div class="tool-card" id="c3_filter">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_filter</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Extract signal from terminal output and log files</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Filters noisy terminal output, log files, or JSONL data to return only relevant lines. Use whenever command output exceeds ~10 lines. Supports inline text or file path input.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">text</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Raw terminal output to filter (inline)</td>
+              </tr>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Path to a log or data file to filter</td>
+              </tr>
+              <tr>
+                <td class="param-name">pattern</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Regex pattern to filter by (e.g. <code>"error|warning"</code>)</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Filter inline terminal output</span>
+c3_filter(text=<span class="str">"&lt;pytest output with 200+ lines&gt;"</span>)
+
+<span class="com"># Filter a log file for errors</span>
+c3_filter(file_path=<span class="str">".c3/sessions/session_042.json"</span>, pattern=<span class="str">"error|fail"</span>)
+
+<span class="com"># Filter build output</span>
+c3_filter(text=<span class="str">"&lt;webpack build output&gt;"</span>, pattern=<span class="str">"warning|error"</span>)</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ WRITE ═══════════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Write</div>
+
+      <!-- c3_edit -->
+      <div class="tool-card" id="c3_edit">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_edit</span>
+          <div class="tag-row">
+            <span class="badge badge-yellow">writes files</span>
+            <span class="badge badge-cyan">logs to ledger</span>
+          </div>
+          <span class="tool-tagline">Atomic read-patch-write-log in one step</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">The only way to edit files in C3. Validates the old_string match, applies the patch, writes the file, and logs the change to the edit ledger. Supports single edits and batched edits to the same file. Can be called in parallel for different files.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Relative path to the file to edit</td>
+              </tr>
+              <tr>
+                <td class="param-name">old_string</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Exact text to find and replace (must be unique in the file)</td>
+              </tr>
+              <tr>
+                <td class="param-name">new_string</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Replacement text</td>
+              </tr>
+              <tr>
+                <td class="param-name">summary</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Human-readable description of the change (logged to ledger)</td>
+              </tr>
+              <tr>
+                <td class="param-name">edits</td>
+                <td class="param-type">array</td>
+                <td class="param-default">null</td>
+                <td class="param-desc">List of <code>{old_string, new_string}</code> objects for batch edits to the same file</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Single edit</h4>
+          <pre><code>c3_edit(
+  file_path=<span class="str">'services/auth.py'</span>,
+  old_string=<span class="str">'return token.expiry &gt; now'</span>,
+  new_string=<span class="str">'return token.expiry &gt; now + CLOCK_SKEW'</span>,
+  summary=<span class="str">'Add clock skew buffer to token expiry'</span>
+)</code></pre>
+
+          <h4>Batch edits to same file</h4>
+          <pre><code>c3_edit(
+  file_path=<span class="str">'core/config.py'</span>,
+  edits=[
+    {<span class="str">"old_string"</span>: <span class="str">"DEBUG = True"</span>,      <span class="str">"new_string"</span>: <span class="str">"DEBUG = False"</span>},
+    {<span class="str">"old_string"</span>: <span class="str">"LOG_LEVEL = 'DEBUG'"</span>, <span class="str">"new_string"</span>: <span class="str">"LOG_LEVEL = 'WARNING'"</span>}
+  ],
+  summary=<span class="str">'Production config hardening'</span>
+)</code></pre>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              <strong>old_string must be unique</strong> in the file. If it appears multiple times, c3_edit will fail. Expand the context in old_string to make it unique.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_validate -->
+      <div class="tool-card" id="c3_validate">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_validate</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Syntax-check files using native parsers</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Runs the appropriate native syntax checker for each file type. Supports comma-separated batch validation. Always call after c3_edit and before reporting done. If <code>pyright</code> (Python) or <code>tsc</code> (TypeScript) is on PATH, also runs a deep type check and reports type errors as advisory warnings alongside the PASS result.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Single path or comma-separated list of paths</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Single file</span>
+c3_validate(file_path=<span class="str">'services/memory.py'</span>)
+
+<span class="com"># Batch (runs in parallel)</span>
+c3_validate(file_path=<span class="str">'cli/c3.py,cli/mcp_server.py,services/agents.py'</span>)</code></pre>
+
+          <h4>Supported file types</h4>
+          <div class="tag-row">
+            <span class="badge badge-blue">Python (.py)</span>
+            <span class="badge badge-cyan">JS (.js .mjs)</span>
+            <span class="badge badge-cyan">TypeScript (.ts .tsx)</span>
+            <span class="badge badge-green">HTML (.html)</span>
+            <span class="badge badge-green">CSS (.css)</span>
+            <span class="badge badge-yellow">JSON (.json)</span>
+            <span class="badge badge-yellow">TOML (.toml)</span>
+            <span class="badge badge-purple">YAML (.yml .yaml)</span>
+            <span class="badge badge-orange">Bash (.sh)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_impact -->
+      <div class="tool-card" id="c3_impact">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_impact</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Blast-radius analysis — know what breaks before you change it</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Finds every file that references a symbol (function, class, variable) before you rename or remove it. Uses <code>git grep</code> for speed with a pure-Python fallback. Groups results by file, scores risk (SAFE / LOW / MEDIUM / HIGH), and in <code>unstaged</code> mode overlays which affected files have uncommitted changes.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">target</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Symbol name, function, or class to analyse</td>
+              </tr>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Source file to exclude from results (the definition site)</td>
+              </tr>
+              <tr>
+                <td class="param-name">mode</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"symbol"</td>
+                <td class="param-desc"><code>symbol</code> cross-project reference scan · <code>unstaged</code> overlay uncommitted-change files</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Check blast radius before renaming a function</span>
+c3_impact(target=<span class="str">'handle_memory'</span>, file_path=<span class="str">'cli/tools/memory.py'</span>)
+
+<span class="com"># Which affected files also have uncommitted changes?</span>
+c3_impact(target=<span class="str">'MemoryStore'</span>, mode=<span class="str">'unstaged'</span>)
+
+<span class="com"># Safe to remove? (check before deleting)</span>
+c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
+
+          <h4>Risk levels</h4>
+          <div class="tag-row">
+            <span class="badge badge-green">SAFE — 0 files</span>
+            <span class="badge badge-blue">LOW — 1-2 files</span>
+            <span class="badge badge-yellow">MEDIUM — 3-6 files</span>
+            <span class="badge badge-red">HIGH — 7+ files</span>
+          </div>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              Run <code>c3_impact</code> before <code>c3_edit</code> whenever you're renaming, removing, or changing the signature of a shared symbol. A HIGH risk result means you need to update all call sites in the same edit pass.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ SESSION and MEMORY ═ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Session &amp; Memory</div>
+
+      <!-- c3_session -->
+      <div class="tool-card" id="c3_session">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_session</span>
+          <div class="tag-row">
+            <span class="badge badge-cyan">session</span>
+          </div>
+          <span class="tool-tagline">Snapshot, restore, log, compact — session lifecycle</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Manages the session lifecycle. Use <code>log</code> to record decisions, <code>snapshot</code> before /clear, <code>restore</code> to recover after /clear, and <code>compact</code> for a one-step restart. Session data persists in <code>.c3/sessions/</code>.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">See action table below</td>
+              </tr>
+              <tr>
+                <td class="param-name">data</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Content for log/plan actions</td>
+              </tr>
+              <tr>
+                <td class="param-name">reasoning</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Optional rationale for log entries</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Read-only?</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">start</td><td>—</td><td class="param-desc">Start a new session (auto-called on server start)</td></tr>
+              <tr><td class="param-name">log</td><td>✓</td><td class="param-desc">Record a decision or note to the session</td></tr>
+              <tr><td class="param-name">plan</td><td>✓</td><td class="param-desc">Record a plan or approach</td></tr>
+              <tr><td class="param-name">snapshot</td><td>✓</td><td class="param-desc">Save full session state (call before /clear)</td></tr>
+              <tr><td class="param-name">restore</td><td>—</td><td class="param-desc">Restore last session snapshot (call after /clear)</td></tr>
+              <tr><td class="param-name">compact</td><td>—</td><td class="param-desc">One-step snapshot + summary + restore prompt</td></tr>
+              <tr><td class="param-name">convo_log</td><td>✓</td><td class="param-desc">Search session conversation history</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Log a decision</span>
+c3_session(action=<span class="str">'log'</span>, data=<span class="str">'Chose Redis over memcached — TTL support needed'</span>, reasoning=<span class="str">'Session persistence required'</span>)
+
+<span class="com"># Before /clear</span>
+c3_session(action=<span class="str">'snapshot'</span>)
+
+<span class="com"># After /clear</span>
+c3_session(action=<span class="str">'restore'</span>)
+
+<span class="com"># One-step restart</span>
+c3_session(action=<span class="str">'compact'</span>)</code></pre>
+        </div>
+      </div>
+
+      <!-- c3_memory -->
+      <div class="tool-card" id="c3_memory">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_memory</span>
+          <div class="tag-row">
+            <span class="badge badge-cyan">memory</span>
+          </div>
+          <span class="tool-tagline">Persistent cross-session facts — add, recall, query, manage</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Persistent key-fact store that survives /clear and session restarts. Use <code>recall</code> at session start to recover context. Facts are stored with salience scores and auto-decayed over time. Supports semantic recall, explicit query, and manual management.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">See action table below</td>
+              </tr>
+              <tr>
+                <td class="param-name">fact</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Fact text for <code>add</code> and <code>update</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">query</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Search query for <code>recall</code> and <code>query</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">category</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"general"</td>
+                <td class="param-desc">Fact category: <code>general</code>, <code>architecture</code>, <code>convention</code>, <code>feedback</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">fact_id</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Fact ID for <code>update</code> and <code>delete</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">top_k</td>
+                <td class="param-type">int</td>
+                <td class="param-default">3</td>
+                <td class="param-desc">Max facts to return</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Read-only?</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">recall</td><td>✓</td><td class="param-desc">Semantic recall of top-k relevant facts for a query</td></tr>
+              <tr><td class="param-name">query</td><td>✓</td><td class="param-desc">Exact/keyword search over facts</td></tr>
+              <tr><td class="param-name">list</td><td>✓</td><td class="param-desc">List all facts (optionally by category)</td></tr>
+              <tr><td class="param-name">add</td><td>—</td><td class="param-desc">Add a new persistent fact</td></tr>
+              <tr><td class="param-name">update</td><td>—</td><td class="param-desc">Update an existing fact by ID</td></tr>
+              <tr><td class="param-name">delete</td><td>—</td><td class="param-desc">Delete a fact by ID</td></tr>
+              <tr><td class="param-name">review</td><td>✓</td><td class="param-desc">Review facts for staleness / deduplication</td></tr>
+              <tr><td class="param-name">consolidate</td><td>—</td><td class="param-desc">Merge duplicate/redundant facts</td></tr>
+              <tr><td class="param-name">score</td><td>✓</td><td class="param-desc">Show salience scores for all facts</td></tr>
+              <tr><td class="param-name">trends</td><td>✓</td><td class="param-desc">Show memory usage trends over time</td></tr>
+              <tr><td class="param-name">graph</td><td>✓</td><td class="param-desc">Show fact relationships graph</td></tr>
+              <tr><td class="param-name">ground</td><td>—</td><td class="param-desc">Ground facts against current codebase (verify still accurate)</td></tr>
+              <tr><td class="param-name">export</td><td>✓</td><td class="param-desc">Export all facts as JSON</td></tr>
+              <tr><td class="param-name">lifespan</td><td>✓</td><td class="param-desc">Show fact age and decay information</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Session start — recall relevant facts</span>
+c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'authentication token system'</span>, top_k=<span class="num">5</span>)
+
+<span class="com"># Add a new fact</span>
+c3_memory(action=<span class="str">'add'</span>, fact=<span class="str">'[architecture] JWT tokens use RS256 — public key in /etc/c3/jwt.pub'</span>, category=<span class="str">'architecture'</span>)
+
+<span class="com"># Save a convention</span>
+c3_memory(action=<span class="str">'add'</span>, fact=<span class="str">'[convention] All new API handlers must call audit_log() before returning'</span>, category=<span class="str">'convention'</span>)
+
+<span class="com"># Verify facts are still accurate</span>
+c3_memory(action=<span class="str">'ground'</span>)
+
+<span class="com"># List all architecture facts</span>
+c3_memory(action=<span class="str">'list'</span>, category=<span class="str">'architecture'</span>)</code></pre>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              <strong>What to save in c3_memory vs Claude's auto-memory:</strong> C3 memory is the project's persistent knowledge store — architecture decisions, conventions, gotchas. Claude's ~/.claude auto-memory is for user preferences and cross-project behavior. Never conflate them.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_status -->
+      <div class="tool-card" id="c3_status">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_status</span>
+          <div class="tag-row">
+            <span class="badge badge-green">read-only</span>
+            <span class="badge badge-purple">plan-mode safe</span>
+          </div>
+          <span class="tool-tagline">Budget, health, notifications, session overview</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Project and session status dashboard. Check token budget, server health, pending notifications, and active session summary.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">view</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"budget"</td>
+                <td class="param-desc"><code>budget</code> token budget · <code>health</code> server health · <code>notifications</code> pending alerts · <code>sessions</code> session list</td>
+              </tr>
+              <tr>
+                <td class="param-name">detailed</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Include extended metrics</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code>c3_status(view=<span class="str">'budget'</span>)           <span class="com"># Token budget remaining</span>
+c3_status(view=<span class="str">'health'</span>)           <span class="com"># MCP server + services health</span>
+c3_status(view=<span class="str">'notifications'</span>)    <span class="com"># Pending alerts (budget warnings, etc.)</span>
+c3_status(view=<span class="str">'sessions'</span>)         <span class="com"># Recent sessions list</span></code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ AI and DELEGATION ══ -->
+    <div class="tool-section">
+      <div class="tool-section-label">AI &amp; Delegation</div>
+
+      <!-- c3_delegate -->
+      <div class="tool-card" id="c3_delegate">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_delegate</span>
+          <div class="tag-row">
+            <span class="badge badge-orange">AI</span>
+          </div>
+          <span class="tool-tagline">Offload tasks to Ollama, Codex, Gemini, or Claude CLI</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Delegates tasks to local or remote AI backends to save Claude tokens on routine work (summarization, routing, simple Q&amp;A). Supports automatic backend selection based on task type.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">task</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">The task or question to delegate</td>
+              </tr>
+              <tr>
+                <td class="param-name">task_type</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"ask"</td>
+                <td class="param-desc"><code>ask</code> general Q&amp;A · <code>summarize</code> summarization · <code>auto</code> let C3 route optimally</td>
+              </tr>
+              <tr>
+                <td class="param-name">context</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Additional context to include with the task</td>
+              </tr>
+              <tr>
+                <td class="param-name">backend</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"auto"</td>
+                <td class="param-desc"><code>ollama</code> · <code>codex</code> · <code>gemini</code> · <code>claude</code> · <code>auto</code></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Delegate summarization to local Ollama</span>
+c3_delegate(task=<span class="str">'Summarize what this function does'</span>, context=<span class="str">'&lt;function code&gt;'</span>, backend=<span class="str">'ollama'</span>, task_type=<span class="str">'summarize'</span>)
+
+<span class="com"># Auto-route based on task type</span>
+c3_delegate(task=<span class="str">'What is the purpose of this config key?'</span>, context=<span class="str">'&lt;config snippet&gt;'</span>, backend=<span class="str">'auto'</span>)</code></pre>
+
+          <div class="callout callout-info">
+            <span class="callout-icon">ℹ️</span>
+            <div class="callout-body">
+              Requires Ollama running locally for <code>ollama</code> backend. Codex and Gemini backends require their respective CLIs. The <code>claude</code> backend uses the Claude Code CLI in non-interactive print mode (<code>claude -p</code>) — no extra config needed if Claude Code is installed. Use <code>task_type='available'</code> to check which of the 4 backends are reachable.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_agent -->
+      <div class="tool-card" id="c3_agent">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_agent</span>
+          <div class="tag-row">
+            <span class="badge badge-orange">AI</span>
+          </div>
+          <span class="tool-tagline">Multi-step compound workflows</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Executes compound multi-step workflows using multiple C3 tools in sequence. Useful for common patterns like reviewing changes, preparing context, or running a preflight check.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">workflow</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Workflow name — see workflow table below</td>
+              </tr>
+              <tr>
+                <td class="param-name">scope</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">File paths or focus area for the workflow</td>
+              </tr>
+              <tr>
+                <td class="param-name">context</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Additional context to pass into the workflow</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Available workflows</h4>
+          <table class="params-table">
+            <thead><tr><th>Workflow</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">available</td>
+                <td class="param-desc">List all available workflows with descriptions</td>
+              </tr>
+              <tr>
+                <td class="param-name">review_changes</td>
+                <td class="param-desc">Compress recently changed files + summarize what changed</td>
+              </tr>
+              <tr>
+                <td class="param-name">prepare_context</td>
+                <td class="param-desc">Search + compress files relevant to a scope/topic</td>
+              </tr>
+              <tr>
+                <td class="param-name">investigate</td>
+                <td class="param-desc">Multi-step investigation: search → compress → summarize → recommend</td>
+              </tr>
+              <tr>
+                <td class="param-name">preflight</td>
+                <td class="param-desc">Pre-task check: recall memory + status + recent changes</td>
+              </tr>
+              <tr>
+                <td class="param-name">validate_compress</td>
+                <td class="param-desc">Batch validate + compress a set of files</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Run a preflight before starting work</span>
+c3_agent(workflow=<span class="str">'preflight'</span>, context=<span class="str">'starting auth refactor'</span>)
+
+<span class="com"># Prepare context for a specific area</span>
+c3_agent(workflow=<span class="str">'prepare_context'</span>, scope=<span class="str">'services/memory.py,services/agents.py'</span>)
+
+<span class="com"># Review what changed recently</span>
+c3_agent(workflow=<span class="str">'review_changes'</span>)
+
+<span class="com"># Deep investigation</span>
+c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="str">'why does session restore fail after compact?'</span>)</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ LEDGER ════════════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Ledger</div>
+
+      <!-- c3_edits -->
+      <div class="tool-card" id="c3_edits">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_edits</span>
+          <div class="tag-row">
+            <span class="badge badge-yellow">ledger</span>
+          </div>
+          <span class="tool-tagline">Edit ledger — history, versions, audit trail</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Access the edit ledger — a persistent append-only log of all file changes made through c3_edit. Provides history, version diffing, stats, and tagging. The ledger is also enriched in the background by the EditLedgerEnricherAgent.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">See action table below</td>
+              </tr>
+              <tr>
+                <td class="param-name">file</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Filter by file path</td>
+              </tr>
+              <tr>
+                <td class="param-name">change_type</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"modified"</td>
+                <td class="param-desc">Change type for <code>log</code> action</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">log</td><td class="param-desc">Manually log an edit to the ledger (normally done automatically by c3_edit)</td></tr>
+              <tr><td class="param-name">history</td><td class="param-desc">Show edit history (optionally filtered by file)</td></tr>
+              <tr><td class="param-name">versions</td><td class="param-desc">Show version history for a specific file</td></tr>
+              <tr><td class="param-name">stats</td><td class="param-desc">Aggregate stats: most-edited files, change frequency</td></tr>
+              <tr><td class="param-name">tag</td><td class="param-desc">Tag an edit entry with a label</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Show recent edit history</span>
+c3_edits(action=<span class="str">'history'</span>)
+
+<span class="com"># Version history for a specific file</span>
+c3_edits(action=<span class="str">'versions'</span>, file=<span class="str">'services/memory.py'</span>)
+
+<span class="com"># Ledger stats</span>
+c3_edits(action=<span class="str">'stats'</span>)</code></pre>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+</body>
+</html>
