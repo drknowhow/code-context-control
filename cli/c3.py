@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-C3 â€” Claude Code Companion
+C3 — Claude Code Companion
 
 A unified local tool that reduces Claude Code token usage through:
 1. AST-based code compression
@@ -30,6 +30,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import tempfile
 import argparse
 import subprocess
@@ -38,6 +39,8 @@ import time
 import html
 import shlex
 from copy import deepcopy
+
+_log = logging.getLogger("c3")
 from pathlib import Path
 
 # Add parent to path for imports
@@ -83,7 +86,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.20.0"
+__version__ = "2.24.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -114,7 +117,7 @@ def load_config(project_path: str = ".") -> dict:
             if isinstance(data, dict):
                 return data
         except Exception:
-            pass
+            _log.debug("Failed to load config from %s", config_path, exc_info=True)
     return {"project_path": str(Path(project_path).resolve())}
 
 
@@ -131,7 +134,7 @@ def save_config(config: dict, project_path: str = "."):
             with open(config_path, encoding="utf-8") as f:
                 existing = json.load(f)
         except Exception:
-            pass
+            _log.debug("Failed to read existing config for merge at %s", config_path, exc_info=True)
 
     merged = {**existing, **config}
     with open(config_path, 'w', encoding="utf-8") as f:
@@ -226,6 +229,250 @@ _C3_INIT_SUBDIRS = [
     "doc_index",
 ]
 
+# ── Permission tier system ─────────────────────────────────────────
+# MCP tools always included in every tier's allow list.
+# Keep in sync with @mcp.tool() registrations in cli/mcp_server.py —
+# tests/test_permissions.py asserts this list matches the server's registry.
+_C3_MCP_ALLOW = [
+    "mcp__c3__c3_read", "mcp__c3__c3_search", "mcp__c3__c3_compress",
+    "mcp__c3__c3_session", "mcp__c3__c3_status", "mcp__c3__c3_filter",
+    "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
+    "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
+    "mcp__c3__c3_impact",
+]
+
+# Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
+# removes these from settings.local.json so accumulated cruft doesn't bloat
+# the allow/deny arrays.
+_STALE_MCP_TOOLS = {
+    "mcp__c3__c3_remember",           # → c3_memory(action='add')
+    "mcp__c3__c3_recall",             # → c3_memory(action='recall')
+    "mcp__c3__c3_sltm_add",           # → c3_memory(action='add')
+    "mcp__c3__c3_file_map",           # → c3_compress(mode='map')
+    "mcp__c3__c3_extract",            # → c3_read
+    "mcp__c3__c3_transcript_search",  # → c3_search(action='transcript')
+    "mcp__c3__c3_session_log",        # → c3_session(action='log')
+    "mcp__c3__c3_convo_log",          # → c3_session(action='convo_log')
+    "mcp__c3__c3_query",              # → c3_memory(action='query')
+    "mcp__c3__c3_budget",             # → c3_status(view='budget')
+}
+
+# Claude Code built-in read/nav tools. Used across multiple tiers.
+_CC_BUILTINS_READ = [
+    "Read(*)", "Glob(*)", "Grep(*)", "LS(*)",
+    "NotebookRead(*)", "WebSearch",
+    "Task",  # subagent launcher
+    "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput",
+    "ExitPlanMode", "EnterPlanMode",
+    "ListMcpResourcesTool", "ReadMcpResourceTool",
+]
+
+# Claude Code built-in edit tools — present in standard/permissive only.
+_CC_BUILTINS_EDIT = [
+    "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)",
+]
+
+# Safe read-only shell commands (navigation + inspection, no writes).
+_BASH_READONLY = [
+    "Bash(cd:*)", "Bash(ls:*)", "Bash(pwd:*)", "Bash(find:*)", "Bash(which:*)",
+    "Bash(where:*)", "Bash(type:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+    "Bash(grep:*)", "Bash(wc:*)", "Bash(stat:*)", "Bash(uname:*)", "Bash(echo:*)",
+    "Bash(printf:*)", "Bash(env:*)", "Bash(export:*)", "Bash(unset:*)",
+    "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
+    "Bash(git show:*)", "Bash(git blame:*)", "Bash(git branch:*)",
+    "Bash(python:*)", "Bash(python3:*)",
+]
+
+# Common development commands safe for the standard tier (adds writes + tooling).
+_BASH_STANDARD = _BASH_READONLY + [
+    # File operations
+    "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(touch:*)", "Bash(rm:*)",
+    "Bash(rsync:*)", "Bash(chmod:*)",
+    # Full git
+    "Bash(git:*)",
+    # Package managers / runtimes
+    "Bash(pip:*)", "Bash(pip3:*)", "Bash(npm:*)", "Bash(node:*)",
+    "Bash(cargo:*)", "Bash(go:*)",
+    # AI CLIs
+    "Bash(claude:*)", "Bash(codex:*)", "Bash(gemini:*)",
+    # Utilities
+    "Bash(timeout:*)", "Bash(time:*)", "Bash(curl:*)", "Bash(gh:*)",
+    "Bash(for:*)", "Bash(do:*)", "Bash(done:*)",
+    # Windows
+    "Bash(cmd:*)", "Bash(cmd.exe:*)", "Bash(powershell:*)", "Bash(powershell.exe:*)",
+]
+
+PERMISSION_TIERS = {
+    "read-only":  "Read files + inspect repo. No writes, safe shell only (ls, cat, git log…)",
+    "c3-strict":  "C3 MCP tools only — deny native Read/Grep/Glob/Edit/Write to enforce c3_* workflow",
+    "standard":   "Full editing + common dev shell (git, python, npm…), block destructive ops (recommended)",
+    "permissive": "Unrestricted — all tools and shell commands pre-approved",
+}
+
+# Accept common variants/aliases when users pass a tier name.
+_TIER_ALIASES = {
+    "unrestricted": "permissive",
+    "restricted":   "read-only",
+    "strict":       "c3-strict",
+    "c3":           "c3-strict",
+    "c3_strict":    "c3-strict",
+    "readonly":     "read-only",
+}
+
+
+def _build_permission_tier(tier: str, include_mcp_wildcard: bool = False) -> dict:
+    """Return a settings-ready permissions dict for the given tier.
+
+    include_mcp_wildcard adds "mcp__*" to the allow list so non-C3 MCP
+    servers (Neon, Playwright, etc.) don't prompt on every call.
+    """
+    tier = _TIER_ALIASES.get(tier, tier)
+    mcp = list(_C3_MCP_ALLOW)
+    if include_mcp_wildcard:
+        mcp.append("mcp__*")
+
+    if tier == "read-only":
+        return {"permissions": {
+            "allow": mcp + _CC_BUILTINS_READ + _BASH_READONLY,
+            "deny":  _CC_BUILTINS_EDIT + [
+                "Bash(rm -rf *)", "Bash(sudo *)", "Bash(eval *)",
+            ],
+        }}
+
+    if tier == "c3-strict":
+        # Enforces c3_* workflow: native file tools denied, c3 MCP tools allowed.
+        # Aligns with hook_pretool_enforce.py mandate — no drift-prone native Read/Grep.
+        strict_allow_builtins = [
+            "WebSearch", "Task",
+            "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput",
+            "ExitPlanMode", "EnterPlanMode",
+            "ListMcpResourcesTool", "ReadMcpResourceTool",
+        ]
+        return {"permissions": {
+            "allow": mcp + strict_allow_builtins + _BASH_READONLY,
+            "deny":  [
+                "Read(*)", "Glob(*)", "Grep(*)", "LS(*)",
+                "Edit(*)", "Write(*)", "MultiEdit(*)",
+                "NotebookRead(*)", "NotebookEdit(*)",
+                "Bash(rm -rf *)", "Bash(sudo *)", "Bash(eval *)",
+            ],
+        }}
+
+    if tier == "standard":
+        return {"permissions": {
+            "allow": mcp + _CC_BUILTINS_READ + _CC_BUILTINS_EDIT + [
+                "WebFetch(*)",
+            ] + _BASH_STANDARD,
+            "deny":  [
+                "Bash(rm -rf *)", "Bash(sudo *)",
+                "Bash(curl * | *)", "Bash(wget * | *)", "Bash(eval *)",
+            ],
+        }}
+
+    # permissive — pre-approve everything, no deny rules
+    return {"permissions": {
+        "allow": mcp + _CC_BUILTINS_READ + _CC_BUILTINS_EDIT + [
+            "Bash(*)", "WebFetch(*)",
+        ],
+        "deny":  [],
+    }}
+
+
+def _detect_current_tier(settings_path) -> str | None:
+    """Detect which permission tier is active in settings_path, or None.
+
+    Matches most-specific signatures first (c3-strict denies native file tools)
+    so overlapping rules don't misclassify. Falls back to MCP-tool-set match for
+    permissive. Tolerates include_mcp_wildcard (extra 'mcp__*' entry).
+    """
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            data = json.load(f)
+        perms = data.get("permissions", {})
+        deny = set(perms.get("deny", []))
+        allow = set(perms.get("allow", []))
+        mcp_present = all(t in allow for t in _C3_MCP_ALLOW)
+
+        # c3-strict: denies native Read/Grep/Glob/Edit/Write but allows c3 MCP
+        strict_markers = {"Read(*)", "Edit(*)", "Write(*)", "Grep(*)"}
+        if mcp_present and strict_markers.issubset(deny):
+            return "c3-strict"
+        # read-only: denies writes but not Read
+        if "Write(*)" in deny and "Edit(*)" in deny and "Read(*)" not in deny:
+            return "read-only"
+        # standard: denies specific destructive ops
+        if any(r.startswith("Bash(rm") for r in deny):
+            return "standard"
+        # permissive: no deny rules, all c3_* allowed
+        if not deny and mcp_present:
+            return "permissive"
+    except Exception:
+        pass
+    return None
+
+
+def _find_stale_tools(settings_path) -> list[str]:
+    """Return list of obsolete c3 MCP tool names present in allow/deny arrays."""
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    perms = data.get("permissions", {})
+    found = []
+    for key in ("allow", "deny"):
+        for tool in perms.get(key, []):
+            if tool in _STALE_MCP_TOOLS:
+                found.append(tool)
+    return found
+
+
+def _clean_stale_tools(settings_path) -> int:
+    """Remove obsolete c3 MCP tool names from settings.local.json. Returns count removed."""
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0
+    perms = data.get("permissions", {})
+    removed = 0
+    for key in ("allow", "deny"):
+        orig = perms.get(key, [])
+        new = [t for t in orig if t not in _STALE_MCP_TOOLS]
+        removed += len(orig) - len(new)
+        perms[key] = new
+    if removed:
+        data["permissions"] = perms
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    return removed
+
+
+def _apply_permission_tier(project_path: str, tier: str,
+                           include_mcp_wildcard: bool = False) -> None:
+    """Write permission tier to .claude/settings.local.json, preserving existing keys."""
+    tier = _TIER_ALIASES.get(tier, tier)
+    settings_path = Path(project_path) / ".claude" / "settings.local.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = _safe_read_json(settings_path, str(settings_path))
+    settings["permissions"] = _build_permission_tier(
+        tier, include_mcp_wildcard=include_mcp_wildcard
+    )["permissions"]
+    # Persist chosen tier in .c3/config.json
+    c3_config_path = Path(project_path) / ".c3" / "config.json"
+    c3_config = _safe_read_json(c3_config_path, str(c3_config_path))
+    c3_config["permission_tier"] = tier
+    if include_mcp_wildcard:
+        c3_config["permission_include_mcp_wildcard"] = True
+    elif "permission_include_mcp_wildcard" in c3_config:
+        del c3_config["permission_include_mcp_wildcard"]
+    with open(c3_config_path, "w", encoding="utf-8") as f:
+        json.dump(c3_config, f, indent=2)
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    suffix = " (+ mcp__* wildcard)" if include_mcp_wildcard else ""
+    print(f"  Permissions: {tier}{suffix} — {PERMISSION_TIERS[tier]}")
+
 
 def _check_c3_health(project_path: str) -> dict:
     """Inspect an existing .c3 installation and return a health report."""
@@ -237,7 +484,7 @@ def _check_c3_health(project_path: str) -> dict:
     config = load_config(project_path)
     info["config_version"] = config.get("version", "unknown")
 
-    # Path change detection â€” project was copied/moved
+    # Path change detection — project was copied/moved
     stored_path = config.get("project_path", "")
     if stored_path and stored_path != project_path:
         issues.append(f"project path changed (was copied/moved from {stored_path})")
@@ -277,7 +524,7 @@ def _check_c3_health(project_path: str) -> dict:
             if info["stale_files"] > 5:
                 issues.append(f"index stale ({info['stale_files']} file changes pending)")
         except Exception:
-            pass
+            _log.debug("Failed to read changes.json", exc_info=True)
 
     # Instructions file
     from core.ide import load_ide_config, get_profile as _get_profile
@@ -292,8 +539,7 @@ def _check_c3_health(project_path: str) -> dict:
     embed_hashes = c3_dir / "embeddings" / "file_hashes.json"
     if embed_hashes.exists():
         try:
-            import json as _json
-            hashes = _json.loads(embed_hashes.read_text(encoding="utf-8"))
+            hashes = json.loads(embed_hashes.read_text(encoding="utf-8"))
             info["embedded_files"] = len(hashes)
         except Exception:
             info["embedded_files"] = 0
@@ -304,8 +550,7 @@ def _check_c3_health(project_path: str) -> dict:
     doc_index_file = c3_dir / "doc_index" / "index.json"
     if doc_index_file.exists():
         try:
-            import json as _json2
-            di_data = _json2.loads(doc_index_file.read_text(encoding="utf-8"))
+            di_data = json.loads(doc_index_file.read_text(encoding="utf-8"))
             info["doc_chunks"] = len(di_data.get("chunks", {}))
         except Exception:
             info["doc_chunks"] = 0
@@ -452,7 +697,39 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
         ],
     )
     mcp_mode = "proxy" if mode_choice and mode_choice.startswith("Proxy") else default_mode
-    _run_install_mcp(project_path, chosen_ide, mcp_mode=mcp_mode)
+
+    # Step 4/4 — Permissions (Claude Code only)
+    chosen_tier = None
+    include_wildcard = False
+    if chosen_ide == "claude-code":
+        print()
+        tier_choice = _prompt_choice(
+            "Step 4/4 — Set a Claude Code permission tier for this project?",
+            [
+                "standard    — full editing + safe shell, block destructive ops (recommended)",
+                "c3-strict   — c3_* MCP tools only, deny native Read/Grep/Glob/Edit/Write",
+                "read-only   — read and C3 tools only, no writes or shell commands",
+                "permissive  — unrestricted, all tools allowed",
+                "Skip        — leave permissions unchanged",
+            ],
+        )
+        if tier_choice and not tier_choice.startswith("Skip"):
+            chosen_tier = tier_choice.split()[0]  # "standard", "c3-strict", "read-only", "permissive"
+            # For tiers with explicit allow lists (not permissive), offer MCP-wildcard
+            # so users with other MCP servers (Neon, Playwright, Context7, …) don't
+            # hit an approval prompt on every call.
+            if chosen_tier != "permissive":
+                wildcard_choice = _prompt_choice(
+                    "Pre-approve other MCP servers (Neon, Playwright, Context7, …)?",
+                    [
+                        "No   — prompt per-call for non-C3 MCP tools (safer)",
+                        "Yes  — add mcp__* wildcard to allow list",
+                    ],
+                )
+                include_wildcard = bool(wildcard_choice and wildcard_choice.startswith("Yes"))
+
+    _run_install_mcp(project_path, chosen_ide, mcp_mode=mcp_mode,
+                     permissions=chosen_tier, include_mcp_wildcard=include_wildcard)
     return chosen_ide, True
 
 
@@ -499,7 +776,7 @@ def _do_init(project_path: str, ide_name: str = None):
         else:
             print("  Embedding index skipped (Ollama not available or model not pulled)")
     except Exception:
-        pass
+        _log.debug("Embedding index build failed", exc_info=True)
 
     # Build doc index for Local RAG Pipeline
     try:
@@ -509,7 +786,7 @@ def _do_init(project_path: str, ide_name: str = None):
         di_result = di.build()
         print(f"  Indexed {di_result['docs_indexed']} docs, {di_result['chunks_created']} chunks")
     except Exception:
-        pass
+        _log.debug("Doc index build failed", exc_info=True)
 
     print("Building compression dictionary...")
     protocol = CompressionProtocol(project_path)
@@ -552,14 +829,47 @@ def cmd_init(args):
         if getattr(args, "force", False):
             if git_requested:
                 _init_local_git_repo(project_path)
-            _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"))
+            _run_install_mcp(
+                project_path, requested_ide,
+                mcp_mode=getattr(args, "mcp_mode", "direct"),
+                permissions=getattr(args, "permissions", None),
+                include_mcp_wildcard=bool(getattr(args, "include_mcp_wildcard", False)),
+            )
         else:
             _prompt_init_steps(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"))
+        # Detect Codex CLI availability
+        try:
+            from cli.tools.delegate import check_codex
+            codex_info = check_codex()
+            if codex_info.get("status") == "ok":
+                print(f"\n  Codex CLI detected: {codex_info.get('version', 'unknown')}")
+                print("  Codex integration: enabled (delegate.codex_enabled=true)")
+            else:
+                detail = codex_info.get('detail', 'not installed')
+                print(f"\n  Codex CLI: not available ({detail})")
+                print("  Install codex CLI to enable cloud delegate backend (GPT-5.x)")
+        except Exception:
+            pass
+
+        # Detect Gemini CLI availability
+        try:
+            from cli.tools.delegate import check_gemini
+            gemini_info = check_gemini()
+            if gemini_info.get("status") == "ok":
+                print(f"  Gemini CLI detected: {gemini_info.get('version', 'unknown')}")
+                print("  Gemini integration: enabled (delegate.gemini_enabled=true)")
+            else:
+                detail = gemini_info.get('detail', 'not installed')
+                print(f"  Gemini CLI: not available ({detail})")
+                print("  Install gemini CLI to enable Gemini delegate backend")
+        except Exception:
+            pass
+
         print("\n[OK] C3 initialized!")
         print("  Use 'c3 --help' for all available commands.")
         return
 
-    # â”€â”€ Existing install â€” run health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ Existing install — run health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print_header(f"C3 already installed: {project_path}")
     health = _check_c3_health(project_path)
 
@@ -575,8 +885,63 @@ def cmd_init(args):
              health["instructions_file"] + " missing" not in " ".join(health["issues"])
              else " [MISSING]"))
 
+    # Permission status (Claude Code only) — surface tier + stale-tool drift
+    try:
+        from core.ide import load_ide_config as _load_ide
+        _ide = _load_ide(project_path)
+        if _ide == "claude-code":
+            _settings = Path(project_path) / ".claude" / "settings.local.json"
+            detected = _detect_current_tier(_settings)
+            _cfg = _safe_read_json(Path(project_path) / ".c3" / "config.json", "config")
+            stored = _cfg.get("permission_tier")
+            wildcard = _cfg.get("permission_include_mcp_wildcard", False)
+            stale_count = len(_find_stale_tools(_settings))
+            parts = [detected or stored or "(none set)"]
+            if detected and stored and detected != stored:
+                parts.append(f"drift vs stored={stored}")
+            if wildcard:
+                parts.append("+mcp__*")
+            if stale_count:
+                parts.append(f"{stale_count} stale — run 'c3 permissions clean'")
+            print(f"  Perms : {', '.join(parts)}")
+    except Exception:
+        pass
+
+    # Delegate backends
+    try:
+        from services.ollama_client import OllamaClient as _OC
+        _oc = _OC()
+        ollama_ok = _oc.is_available()
+        models = _oc.list_models() if ollama_ok else []
+        n = len(models) if models else 0
+        print(f"  Ollama: {'up (' + str(n) + ' models)' if ollama_ok else 'down'}")
+    except Exception:
+        print("  Ollama: unknown")
+    try:
+        from cli.tools.delegate import check_codex
+        ci = check_codex()
+        if ci.get("status") == "ok":
+            ver = ci.get('version', 'detected')
+            print(f"  Codex : {ver} (cloud delegate ready)")
+        else:
+            detail = ci.get('detail', 'not installed')
+            print(f"  Codex : not available ({detail})")
+    except Exception:
+        print("  Codex : unknown")
+    try:
+        from cli.tools.delegate import check_gemini
+        gi = check_gemini()
+        if gi.get("status") == "ok":
+            ver = gi.get('version', 'detected')
+            print(f"  Gemini: {ver} (cloud delegate ready)")
+        else:
+            detail = gi.get('detail', 'not installed')
+            print(f"  Gemini: not available ({detail})")
+    except Exception:
+        print("  Gemini: unknown")
+
     if health["healthy"]:
-        print("\n  Status: healthy â€” no issues detected.")
+        print("\n  Status: healthy — no issues detected.")
     else:
         print(f"\n  Status: {len(health['issues'])} issue(s) found:")
         for issue in health["issues"]:
@@ -629,11 +994,11 @@ def cmd_init(args):
     # â”€â”€ Interactive prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print()
     choices = [
-        "Update  â€” rebuild index & refresh instructions file, keep all data",
-        "Clear   â€” wipe index/cache/sessions, keep facts & memory, then rebuild",
-        "Reset   â€” delete entire .c3 directory and start fresh",
-        "Wipe    â€” remove .c3/ and instruction docs, then exit (no rebuild)",
-        "Cancel  â€” exit without changes",
+        "Update  — rebuild index & refresh instructions file, keep all data",
+        "Clear   — wipe index/cache/sessions, keep facts & memory, then rebuild",
+        "Reset   — delete entire .c3 directory and start fresh",
+        "Wipe    — remove .c3/ and instruction docs, then exit (no rebuild)",
+        "Cancel  — exit without changes",
     ]
     selected = _prompt_choice("What would you like to do?", choices)
 
@@ -1570,416 +1935,6 @@ def _benchmark_session_reality(project_path: Path, scenarios: dict) -> dict:
         "transcript_usage": transcript_usage,
     }
 
-
-def _cmd_benchmark_legacy(args):
-    """Run a local with/without-C3 benchmark for common code-understanding workflows."""
-    config = load_config(args.project_path or ".")
-    project_path = Path(args.project_path or config.get("project_path", ".")).resolve()
-
-    indexer = CodeIndex(str(project_path), str(project_path / ".c3" / "index"))
-    compressor = CodeCompressor(str(project_path / ".c3" / "cache"), project_root=str(project_path))
-    file_memory = FileMemoryStore(str(project_path))
-
-    skip_dirs = set(getattr(indexer, "skip_dirs", set()))
-    code_exts = set(getattr(indexer, "code_exts", set()))
-
-    files = []
-    for fpath in project_path.rglob("*"):
-        if not fpath.is_file():
-            continue
-        if fpath.suffix.lower() not in code_exts:
-            continue
-        if any(skip in fpath.parts for skip in skip_dirs):
-            continue
-        if compressor.is_protected_file(fpath):
-            continue
-        try:
-            content = fpath.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-        files.append((fpath, content, count_tokens(content)))
-
-    if not files:
-        print("Error: no benchmark-eligible files found")
-        return
-
-    sample = sorted([f for f in files if f[2] >= args.min_tokens], key=lambda x: x[2], reverse=True)[:args.sample_size]
-    if not sample:
-        sample = sorted(files, key=lambda x: x[2], reverse=True)[:args.sample_size]
-
-    def _avg(values):
-        return (sum(values) / len(values)) if values else 0.0
-
-    def _pct_delta(current, baseline):
-        if not baseline:
-            return 0.0
-        return ((current - baseline) / baseline) * 100
-
-    def _pct_saved(current, baseline):
-        if not baseline:
-            return 0.0
-        return ((baseline - current) / baseline) * 100
-
-    def _prompt_gain(current, baseline):
-        if not current:
-            return 0.0
-        return baseline / current
-
-    def _rel_path(path: Path) -> str:
-        return str(path.relative_to(project_path)).replace("\\", "/")
-
-    comp_orig = 0
-    comp_comp = 0
-    comp_c3_latencies = []
-    comp_baseline_latencies = []
-
-    for fpath, content, tokens in sample:
-        t_read = time.perf_counter()
-        try:
-            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            raw_content = content
-        comp_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
-
-        t0 = time.perf_counter()
-        result = compressor.compress_file(str(fpath), "smart")
-        comp_c3_latencies.append((time.perf_counter() - t0) * 1000)
-        raw_tokens = count_tokens(raw_content)
-        comp_orig += raw_tokens
-        comp_comp += int(result.get("compressed_tokens", raw_tokens))
-
-    file_map_sample_size = min(len(sample), max(5, min(args.sample_size, 10)))
-    file_map_sample = sample[:file_map_sample_size]
-    file_map_orig = 0
-    file_map_comp = 0
-    file_map_c3_latencies = []
-    file_map_baseline_latencies = []
-    file_map_successes = 0
-
-    for fpath, content, tokens in file_map_sample:
-        rel = _rel_path(fpath)
-
-        t_read = time.perf_counter()
-        try:
-            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            raw_content = content
-        file_map_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
-        file_map_orig += count_tokens(raw_content)
-
-        t0 = time.perf_counter()
-        map_text = file_memory.get_or_build_map(rel)
-        file_map_c3_latencies.append((time.perf_counter() - t0) * 1000)
-        file_map_comp += count_tokens(map_text)
-        if "[file_map] Could not build map" not in map_text and "[file_map:error]" not in map_text:
-            file_map_successes += 1
-
-    queries = [
-        ("compress file and return results endpoint", "cli/server.py"),
-        ("method that blocks protected files from compression", "services/compressor.py"),
-        ("hybrid metrics collector summary", "services/metrics.py"),
-        ("token counting helper", "core/__init__.py"),
-        ("mcp tool c3_compress implementation", "cli/mcp_server.py"),
-        ("IDE profile registry", "core/ide.py"),
-    ]
-
-    stop_terms = {
-        "the", "and", "for", "that", "from", "with", "into", "this",
-        "tool", "api", "implementation", "what", "where",
-    }
-
-    def lexical_top_files(query: str, top_k: int = 5) -> list:
-        terms = [t for t in re.findall(r"[A-Za-z_]+", query.lower()) if len(t) > 2 and t not in stop_terms]
-        scored = []
-        for fpath, content, _ in files:
-            low = content.lower()
-            score = sum(low.count(term) for term in terms)
-            if score > 0:
-                scored.append((score, fpath))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [str(path.relative_to(project_path)).replace("\\", "/") for _, path in scored[:top_k]]
-
-    c3_tokens = []
-    lexical_tokens = []
-    c3_latencies = []
-    lexical_latencies = []
-    c3_hits = 0
-    lexical_hits = 0
-
-    for query, expected_path in queries:
-        t0 = time.perf_counter()
-        results = indexer.search(query, top_k=args.top_k, max_tokens=args.max_tokens)
-        context = indexer.get_context(query, top_k=args.top_k, max_tokens=args.max_tokens)
-        c3_latencies.append((time.perf_counter() - t0) * 1000)
-        c3_tokens.append(count_tokens(context))
-
-        c3_paths = []
-        for item in results:
-            p = item.get("file") or item.get("filepath") or ""
-            if p:
-                c3_paths.append(str(p).replace("\\", "/"))
-        if any(expected_path in p for p in c3_paths):
-            c3_hits += 1
-
-        t1 = time.perf_counter()
-        lex_paths = lexical_top_files(query, top_k=args.top_k)
-        full_context = []
-        for rel in lex_paths:
-            try:
-                full_context.append((project_path / rel).read_text(encoding="utf-8", errors="replace"))
-            except Exception:
-                pass
-        lexical_latencies.append((time.perf_counter() - t1) * 1000)
-        lexical_tokens.append(count_tokens("\n\n".join(full_context)))
-        if any(expected_path in p for p in lex_paths):
-            lexical_hits += 1
-
-    total_c3_tokens = sum(c3_tokens)
-    total_lex_tokens = sum(lexical_tokens)
-    token_reduction = _pct_saved(total_c3_tokens, total_lex_tokens)
-    comp_savings = _pct_saved(comp_comp, comp_orig)
-    file_map_savings = _pct_saved(file_map_comp, file_map_orig)
-
-    overall_c3_tokens = comp_comp + file_map_comp + total_c3_tokens
-    overall_baseline_tokens = comp_orig + file_map_orig + total_lex_tokens
-    overall_c3_latencies = comp_c3_latencies + file_map_c3_latencies + c3_latencies
-    overall_baseline_latencies = comp_baseline_latencies + file_map_baseline_latencies + lexical_latencies
-    overall_hit_rate_c3 = (c3_hits / len(queries) * 100) if queries else 0.0
-    overall_hit_rate_baseline = (lexical_hits / len(queries) * 100) if queries else 0.0
-
-    benchmarked_tools = ["c3_compress", "c3_compress_map", "c3_read", "c3_validate", "c3_search", "c3_filter_file", "c3_filter_text"]
-    if delegate_evaluation.get("status") == "measured":
-        benchmarked_tools.append("c3_delegate")
-
-    optional_tools = {
-        "c3_delegate_route": {
-            "status": route_evaluation.get("status", "unknown"),
-            "reason": route_evaluation.get("reason", "Router quality and latency depend on local Ollama availability and model selection."),
-        },
-        "c3_delegate_summarize": {
-            "status": summarize_evaluation.get("status", "unknown"),
-            "reason": summarize_evaluation.get("reason", "Summarize quality depends on local Ollama availability and summary model quality."),
-        },
-        "c3_memory_recall": {
-            "status": recall_evaluation.get("status", "unknown"),
-            "reason": recall_evaluation.get("reason", "Memory tools need benchmark facts or project history to compare fairly."),
-        },
-    }
-    if delegate_evaluation.get("status") != "measured":
-        optional_tools["c3_delegate"] = {
-            "status": delegate_evaluation.get("status", "unknown"),
-            "reason": delegate_evaluation.get("reason", "Delegate quality and latency depend on local Ollama availability and model selection."),
-        }
-
-    # Scenario: Surgical Reading (c3_read)
-    read_sample_size = min(len(sample), max(5, min(args.sample_size, 10)))
-    read_sample = sample[:read_sample_size]
-    read_orig = 0
-    read_comp = 0
-    read_c3_latencies = []
-    read_baseline_latencies = []
-    read_successes = 0
-
-    for fpath, content, tokens in read_sample:
-        rel = _rel_path(fpath)
-        
-        # Baseline: read full file
-        t_read = time.perf_counter()
-        try:
-            raw_content = fpath.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            raw_content = content
-        read_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
-        read_orig += count_tokens(raw_content)
-
-        # C3: surgical read of symbols
-        t0 = time.perf_counter()
-        record = file_memory.get(rel)
-        if not record or file_memory.needs_update(rel):
-            record = file_memory.update(rel)
-        
-        extracted_text = ""
-        if record and record.get("sections"):
-            # Pick the most relevant single symbol for surgical reading
-            sections = [s for s in record["sections"] if s.get("type") in ("class", "function", "method")][:1]
-            if sections:
-                lines = raw_content.splitlines()
-                for s in sections:
-                    start, end = s["line_start"], s["line_end"]
-                    raw_extracted = "\n".join(lines[start-1:end]) + "\n"
-                    # Apply C3 compression to the surgical read result to maximize savings
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
-                        tmp.write(raw_extracted)
-                        tmp_path = tmp.name
-                    try:
-                        comp_res = compressor.compress_file(tmp_path, mode="smart")
-                        extracted_text += comp_res.get("compressed", raw_extracted)
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                read_successes += 1
-            else:
-                # No symbols, fallback to full text for fair latency comparison if no reduction possible
-                extracted_text = raw_content
-        else:
-            extracted_text = raw_content
-            
-        read_c3_latencies.append((time.perf_counter() - t0) * 1000)
-        read_comp += count_tokens(extracted_text)
-
-    report = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "project_path": str(project_path),
-        "files_considered": len(files),
-        "benchmarked_tools": benchmarked_tools,
-        "categories": ["speed", "token_usage", "performance"],
-        "scorecard": {
-            "token_usage": {
-                "with_c3_total_tokens": overall_c3_tokens + read_comp,
-                "without_c3_total_tokens": overall_baseline_tokens + read_orig,
-                "savings_pct": round(_pct_saved(overall_c3_tokens + read_comp, overall_baseline_tokens + read_orig), 1),
-                "prompt_budget_multiplier": round(_prompt_gain(overall_c3_tokens + read_comp, overall_baseline_tokens + read_orig), 2),
-            },
-            "speed": {
-                "with_c3_avg_latency_ms": round(_avg(overall_c3_latencies + read_c3_latencies), 2),
-                "without_c3_avg_latency_ms": round(_avg(overall_baseline_latencies + read_baseline_latencies), 2),
-                "latency_delta_pct_vs_baseline": round(
-                    _pct_delta(_avg(overall_c3_latencies + read_c3_latencies), _avg(overall_baseline_latencies + read_baseline_latencies)), 1
-                ),
-                "note": "Negative values mean C3 was faster; positive values mean C3 spent extra local time to save prompt tokens.",
-            },
-            "performance": {
-                "metric": "expected-file hit rate in retrieval benchmark",
-                "with_c3_hit_rate": round(overall_hit_rate_c3, 1),
-                "without_c3_hit_rate": round(overall_hit_rate_baseline, 1),
-                "delta_pct_points": round(overall_hit_rate_c3 - overall_hit_rate_baseline, 1),
-            },
-        },
-        "scenarios": {
-            "broad_file_understanding": {
-                "description": "Use c3_compress-style summaries instead of full-file reads for large source files.",
-                "sample_files": len(sample),
-                "with_c3": {
-                    "tool": "c3_compress",
-                    "total_tokens": comp_comp,
-                    "avg_latency_ms": round(_avg(comp_c3_latencies), 2),
-                },
-                "without_c3": {
-                    "approach": "read full files into context",
-                    "total_tokens": comp_orig,
-                    "avg_latency_ms": round(_avg(comp_baseline_latencies), 2),
-                },
-                "token_savings_pct": round(comp_savings, 1),
-                "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(comp_c3_latencies), _avg(comp_baseline_latencies)), 1),
-                "prompt_budget_multiplier": round(_prompt_gain(comp_comp, comp_orig), 2),
-            },
-            "file_navigation": {
-                "description": "Use c3_compress(mode='map') to choose targeted reads instead of opening whole files blindly.",
-                "sample_files": len(file_map_sample),
-                "with_c3": {
-                    "tool": "c3_compress(mode='map')",
-                    "total_tokens": file_map_comp,
-                    "avg_latency_ms": round(_avg(file_map_c3_latencies), 2),
-                    "map_success_rate": round((file_map_successes / len(file_map_sample) * 100), 1) if file_map_sample else 0.0,
-                },
-                "without_c3": {
-                    "approach": "read full files into context",
-                    "total_tokens": file_map_orig,
-                    "avg_latency_ms": round(_avg(file_map_baseline_latencies), 2),
-                },
-                "token_savings_pct": round(file_map_savings, 1),
-                "latency_delta_pct_vs_baseline": round(
-                    _pct_delta(_avg(file_map_c3_latencies), _avg(file_map_baseline_latencies)), 1
-                ),
-                "prompt_budget_multiplier": round(_prompt_gain(file_map_comp, file_map_orig), 2),
-            },
-            "surgical_reading": {
-                "description": "Use c3_read to extract specific symbols instead of reading the whole file.",
-                "sample_files": len(read_sample),
-                "with_c3": {
-                    "tool": "c3_read",
-                    "total_tokens": read_comp,
-                    "avg_latency_ms": round(_avg(read_c3_latencies), 2),
-                    "extraction_success_rate": round((read_successes / len(read_sample) * 100), 1) if read_sample else 0.0,
-                },
-                "without_c3": {
-                    "approach": "read full files into context",
-                    "total_tokens": read_orig,
-                    "avg_latency_ms": round(_avg(read_baseline_latencies), 2),
-                },
-                "token_savings_pct": round(_pct_saved(read_comp, read_orig), 1),
-                "latency_delta_pct_vs_baseline": round(
-                    _pct_delta(_avg(read_c3_latencies), _avg(read_baseline_latencies)), 1
-                ),
-                "prompt_budget_multiplier": round(_prompt_gain(read_comp, read_orig), 2),
-            },
-            "search_retrieval": {
-                "description": "Use c3_search/index context instead of lexical filename/content matching plus full-file reads.",
-                "queries": len(queries),
-                "with_c3": {
-                    "tool": "c3_search",
-                    "avg_context_tokens": round(_avg(c3_tokens), 1),
-                    "avg_latency_ms": round(_avg(c3_latencies), 2),
-                    "hit_rate": round(overall_hit_rate_c3, 1),
-                },
-                "without_c3": {
-                    "approach": "lexical search + full-file context",
-                    "avg_context_tokens": round(_avg(lexical_tokens), 1),
-                    "avg_latency_ms": round(_avg(lexical_latencies), 2),
-                    "hit_rate": round(overall_hit_rate_baseline, 1),
-                },
-                "token_savings_pct": round(token_reduction, 1),
-                "latency_delta_pct_vs_baseline": round(_pct_delta(_avg(c3_latencies), _avg(lexical_latencies)), 1),
-                "performance_delta_pct_points": round(overall_hit_rate_c3 - overall_hit_rate_baseline, 1),
-            },
-        },
-    }
-
-    if args.output:
-        out_path = Path(args.output)
-        if not out_path.is_absolute():
-            out_path = project_path / out_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    if args.json:
-        print(json.dumps(report, indent=2))
-        return
-
-    print_header("C3 Benchmark")
-    print(f"  Files considered: {report['files_considered']}")
-    print("  Categories: speed, token usage, performance")
-    print(
-        f"  Token usage: C3 {report['scorecard']['token_usage']['with_c3_total_tokens']} tok "
-        f"vs baseline {report['scorecard']['token_usage']['without_c3_total_tokens']} tok "
-        f"({report['scorecard']['token_usage']['savings_pct']}% saved, "
-        f"{report['scorecard']['token_usage']['prompt_budget_multiplier']}x prompt budget)"
-    )
-    print(
-        f"  Speed: C3 {report['scorecard']['speed']['with_c3_avg_latency_ms']} ms "
-        f"vs baseline {report['scorecard']['speed']['without_c3_avg_latency_ms']} ms "
-        f"({report['scorecard']['speed']['latency_delta_pct_vs_baseline']}% vs baseline)"
-    )
-    print(
-        f"  Performance: C3 hit rate {report['scorecard']['performance']['with_c3_hit_rate']}% "
-        f"vs baseline {report['scorecard']['performance']['without_c3_hit_rate']}% "
-        f"({report['scorecard']['performance']['delta_pct_points']} pts)"
-    )
-    print("  Scenarios:")
-    print(
-        f"    Broad file understanding: {report['scenarios']['broad_file_understanding']['token_savings_pct']}% token savings "
-        f"using c3_compress"
-    )
-    print(
-        f"    File navigation: {report['scenarios']['file_navigation']['token_savings_pct']}% token savings "
-        f"using c3_compress(mode='map')"
-    )
-    print(
-        f"    Search retrieval: {report['scenarios']['search_retrieval']['token_savings_pct']}% token savings; "
-        f"C3 hit rate {report['scenarios']['search_retrieval']['with_c3']['hit_rate']}%"
-    )
-    if args.output:
-        print(f"  Saved report: {out_path}")
 
 
 def _render_benchmark_html(reports: list[dict]) -> str:
@@ -3897,6 +3852,123 @@ This project uses project-scoped MCP servers. Ensure your `.gemini/settings.json
 """
 
 
+_TERSE_SKILL_CONTENT = """\
+# /terse — Terse Output Mode
+
+Switch to terse output. Strip prose verbosity from responses.
+Technical content (code, commands, paths, URLs, error messages, stack traces) stays exact and unchanged.
+
+## Intensity levels
+
+Usage: `/terse [lite|full|ultra] [turns]`  Default: **lite**, applies to the next **5 turns**
+
+- **lite** — Remove filler words. Keep grammar and complete sentences. (safe default)
+- **full** — Drop articles (a, the), use fragments, cut transitions and preambles.
+- **ultra** — Telegraphic. Abbreviate aggressively. One-line answers where possible.
+
+`turns` is optional; omit or pass `session` to keep it on until explicitly deactivated.
+Counter decrements on each assistant turn; when it reaches 0, auto-revert to normal mode and say so once.
+
+## Activation confirmation
+
+On every `/terse` activation, echo exactly one line before the normal response:
+
+  `terse: <level> for <N> turns — technical exceptions still apply`
+
+For `ultra`, additionally prepend one line:
+
+  `ultra mode — code/paths/commands/warnings preserved verbatim`
+
+## Rules (all levels)
+
+- Code blocks, file paths, commands, URLs, variable names: **unchanged**
+- Preamble suppressed: no "Sure, I'll...", no "I've completed..."
+- Hedging suppressed: no "I think", "it seems", "you might want to"
+- Trailing summaries suppressed: don't restate what was just done
+- If asked to explain something: minimum necessary words only
+
+## Exceptions — do NOT compress these
+
+Terse mode applies to conversational prose only. The following must remain complete and precise:
+
+- **Memory saves** (`c3_memory add/update`): facts must be self-contained and fully worded — abbreviated facts are unsearchable and lose context
+- **Session logs** (`c3_session log`): decisions and reasoning need full detail to be useful in future sessions
+- **CLAUDE.md / instructions files**: rules must be unambiguous — never abbreviate directives
+- **Planning and architecture responses**: user is reviewing for correctness — include all steps and trade-offs
+- **Error diagnosis**: include full error text, file paths, line numbers, and root cause — never abbreviate debugging context
+- **Tool call arguments**: `old_string`, `new_string`, `fact`, `summary` fields must be exact — never truncate
+- **Security / permission advice**: auth, authz, secrets handling, CORS, CSP — never abbreviate
+- **Migration and destructive-action warnings**: data loss, schema changes, irreversible ops — full detail required
+- **API contract descriptions**: request/response shapes, status codes, required headers — complete
+- **Responses containing** `rm`, `rm -rf`, `DROP`, `TRUNCATE`, `force`, `--force`, `--no-verify`, `reset --hard`, `chmod`, `chown`: include full context, caveats, and reversibility notes
+
+## Auto-exit triggers (temporarily revert to normal mode for this turn)
+
+When the user's message is any of the following, respond in normal (non-terse) mode for that turn without consuming a terse turn:
+
+- Planning / architecture questions ("how should we...", "what's the best approach...", "design...")
+- Debugging / root-cause questions ("why is X failing...", "what's causing...", "diagnose...")
+- Security / migration / destructive-action discussions
+- Any request for a code review, audit, or tradeoff analysis
+
+Resume terse mode for subsequent turns until the counter expires.
+
+## Example (full mode)
+
+**Before:** "I've analyzed the issue and it seems like the problem might be related to how
+the authentication middleware handles token expiry. You might want to look at the
+`auth.py` file around line 42."
+
+**After:** "Auth middleware: token expiry bug. See `auth.py:42`."
+
+## Deactivate
+
+Say "normal mode", start a new session, or let the turn counter expire.
+"""
+
+_TERSE_SKILL_MARKER = "# /terse — Terse Output Mode"
+
+
+_TERSE_GEMINI_TOML = (
+    'description = "Terse output mode. Usage: /terse [lite|full|ultra] (default: full)."\n'
+    "prompt = '''\n"
+    + _TERSE_SKILL_CONTENT.replace("'''", "''\\''")
+    + "\n'''\n"
+)
+
+
+def _ensure_terse_skill(ide: str = "claude-code") -> None:
+    """Install the /terse slash command for the given IDE profile.
+
+    claude-code -> ~/.claude/commands/terse.md
+    codex       -> ~/.codex/prompts/terse.md
+    gemini      -> ~/.gemini/commands/terse.toml
+    """
+    home = Path.home()
+    if ide == "codex":
+        skill_path = home / ".codex" / "prompts" / "terse.md"
+        content = _TERSE_SKILL_CONTENT
+    elif ide == "gemini":
+        skill_path = home / ".gemini" / "commands" / "terse.toml"
+        content = _TERSE_GEMINI_TOML
+    else:
+        skill_path = home / ".claude" / "commands" / "terse.md"
+        content = _TERSE_SKILL_CONTENT
+
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if skill_path.exists():
+        existing = skill_path.read_text(encoding="utf-8")
+        if existing.strip() == content.strip():
+            print(f"Kept  {skill_path}  (/terse skill up to date)")
+            return
+        skill_path.write_text(content, encoding="utf-8")
+        print(f"Updated {skill_path}  (refreshed /terse skill)")
+    else:
+        skill_path.write_text(content, encoding="utf-8")
+        print(f"Wrote {skill_path}  (/terse skill installed)")
+
+
 def _toml_escape_str(value: str) -> str:
     """Convert a value to a TOML-safe string.
 
@@ -4011,14 +4083,14 @@ def _ensure_instruction_workflow(instructions_path: Path, template: str, require
 def _ensure_codex_agents_workflow(agents_md_path: Path) -> str:
     """Ensure AGENTS.md contains the mandatory C3 workflow for Codex sessions."""
     required_markers = [
-        "C3 Tooling Mandate (CRITICAL)",
-        "Native IDE search/read tools are fallback-only.",
-        "Required Workflow",
-        "Fallback Rules",
+        "C3 Tools",
+        "MANDATORY",
+        "SEARCH FIRST",
+        "Anti-patterns",
         "c3_search",
         "c3_read",
         "c3_validate",
-        "c3_session",
+        "c3_edit",
         "c3_memory",
         "c3_filter",
     ]
@@ -4028,14 +4100,14 @@ def _ensure_codex_agents_workflow(agents_md_path: Path) -> str:
 def _ensure_vscode_instructions_workflow(instructions_path: Path) -> str:
     """Ensure VS Code Copilot instructions include the latest C3 workflow markers."""
     required_markers = [
-        "C3 Tooling Mandate (CRITICAL)",
-        "Native IDE search/read tools are fallback-only.",
-        "Required Workflow",
-        "Fallback Rules",
+        "C3 Tools",
+        "MANDATORY",
+        "SEARCH FIRST",
+        "Anti-patterns",
         "c3_search",
         "c3_read",
         "c3_validate",
-        "c3_session",
+        "c3_edit",
         "c3_memory",
         "c3_filter",
     ]
@@ -4347,6 +4419,93 @@ def _uninstall_mcp_all(project_path: str):
                 pass
 
 
+_GLOBAL_CLAUDE_MD_CONTENT = """\
+# C3 - Global Enforcement (applies to all projects with C3 installed)
+
+## Tool Discipline
+When C3 MCP tools are available (c3_search, c3_read, c3_compress, c3_edit, c3_validate, etc.),
+you MUST use them instead of native tools (Read, Grep, Glob, Edit, Write).
+
+Native tools are blocked by PreToolUse hooks in C3 projects. Do NOT attempt them without
+a prior c3_* call — they will be denied.
+
+**This applies for the ENTIRE conversation**, not just the first few turns. Do not drift
+back to native tools as the task progresses.
+
+## Quick Reference
+- **Search**: `c3_search(query=..., action='code|files|semantic')` — before Grep/Glob
+- **Read**: `c3_compress(mode='map')` then `c3_read(symbols=...)` — before native Read
+- **Impact**: `c3_impact(target='symbol')` — blast-radius check before editing shared symbols
+- **Edit**: `c3_edit(file_path=..., old_string=..., new_string=...)` — before Edit/Write
+- **Validate**: `c3_validate(file_path=...)` — after every edit (pyright/tsc type check if installed)
+- **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
+- **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
+- **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
+
+## Self-Check
+If you haven't called a c3_* tool in several turns during active development, re-engage
+the C3 workflow. Drift is the most common failure mode.
+"""
+
+
+# C3 marker used to detect whether the global CLAUDE.md was written by C3
+_GLOBAL_CLAUDE_MD_MARKER = "# C3 - Global Enforcement"
+
+
+def _ensure_global_claude_md() -> None:
+    """Write or update ~/.claude/CLAUDE.md with C3 discipline instructions.
+
+    - Creates the file if it doesn't exist.
+    - Updates the C3 section if present but outdated.
+    - Preserves any user-written content outside the C3 section.
+    """
+    global_md = Path.home() / ".claude" / "CLAUDE.md"
+    global_md.parent.mkdir(parents=True, exist_ok=True)
+
+    if not global_md.exists():
+        global_md.write_text(_GLOBAL_CLAUDE_MD_CONTENT, encoding="utf-8")
+        print(f"Wrote {global_md}  (global C3 enforcement)")
+        return
+
+    existing = global_md.read_text(encoding="utf-8")
+
+    if _GLOBAL_CLAUDE_MD_MARKER not in existing:
+        # User has their own CLAUDE.md — append C3 section
+        merged = existing.rstrip() + "\n\n" + _GLOBAL_CLAUDE_MD_CONTENT
+        global_md.write_text(merged, encoding="utf-8")
+        print(f"Updated {global_md}  (appended C3 enforcement)")
+        return
+
+    # C3 section exists — replace it with the latest version
+    # Find the C3 section boundaries: starts at the marker, ends at next # heading or EOF
+    start = existing.index(_GLOBAL_CLAUDE_MD_MARKER)
+    # Find the next top-level heading after the C3 section
+    rest = existing[start + len(_GLOBAL_CLAUDE_MD_MARKER):]
+    lines_after = rest.split("\n")
+    end_offset = len(rest)  # default: to EOF
+    running = 0
+    for line in lines_after:
+        running += len(line) + 1
+        # A top-level heading that's NOT part of C3's sub-headings
+        if line.startswith("# ") and "C3" not in line and "Tool Discipline" not in line:
+            end_offset = running - len(line) - 1
+            break
+
+    end = start + len(_GLOBAL_CLAUDE_MD_MARKER) + end_offset
+    before = existing[:start].rstrip()
+    after = existing[end:].lstrip()
+
+    parts = []
+    if before:
+        parts.append(before)
+    parts.append(_GLOBAL_CLAUDE_MD_CONTENT.strip())
+    if after:
+        parts.append(after)
+
+    global_md.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+    print(f"Updated {global_md}  (refreshed C3 enforcement)")
+
+
 def _instruction_documents_for_project() -> list[tuple[str, str]]:
     """Return the project-local instruction documents C3 should keep in sync."""
     return [
@@ -4370,11 +4529,158 @@ def _sync_project_instruction_docs(project_path: str, sm: SessionManager) -> Non
     print(f"Synced instruction docs: {', '.join(synced)}")
 
 
-def _run_install_mcp(project_path: str, ide_name: str, mcp_mode: str = "direct", banner: str = "Installing MCP tools...") -> None:
+_PERM_ACTIONS = {"show", "preview", "diff", "clean"}
+
+
+def cmd_permissions(args):
+    """Show, preview, diff, clean, or apply a Claude Code permission tier."""
+    raw = getattr(args, "tier", "show")
+    target = getattr(args, "target", None)
+    include_mcp_wildcard = getattr(args, "include_mcp_wildcard", False)
+
+    # Normalize aliases (e.g. "strict" → "c3-strict", "unrestricted" → "permissive")
+    action_or_tier = _TIER_ALIASES.get(raw, raw)
+    if target:
+        target = _TIER_ALIASES.get(target, target)
+
+    project_path = str(Path(".").resolve())
+    settings_path = Path(project_path) / ".claude" / "settings.local.json"
+
+    from core.ide import load_ide_config
+    ide = load_ide_config(project_path)
+    if ide != "claude-code":
+        print(f"  Permissions are only supported for Claude Code (current IDE: {ide}).")
+        print("  Run 'c3 install-mcp --ide claude' first.")
+        return
+
+    if action_or_tier == "show":
+        _cmd_permissions_show(project_path, settings_path)
+        return
+
+    if action_or_tier == "preview":
+        tier = target or _detect_current_tier(settings_path) or "standard"
+        _cmd_permissions_preview(tier, include_mcp_wildcard)
+        return
+
+    if action_or_tier == "diff":
+        tier = target or _safe_read_json(
+            Path(project_path) / ".c3" / "config.json", "config"
+        ).get("permission_tier") or _detect_current_tier(settings_path) or "standard"
+        _cmd_permissions_diff(settings_path, tier, include_mcp_wildcard)
+        return
+
+    if action_or_tier == "clean":
+        _cmd_permissions_clean(settings_path)
+        return
+
+    if action_or_tier not in PERMISSION_TIERS:
+        actions = " | ".join(sorted(_PERM_ACTIONS))
+        tiers = ", ".join(PERMISSION_TIERS)
+        print(f"  Unknown '{raw}'. Actions: {actions}. Tiers: {tiers}.")
+        print("  Aliases: unrestricted→permissive, strict/c3→c3-strict, readonly→read-only")
+        return
+
+    _apply_permission_tier(project_path, action_or_tier, include_mcp_wildcard=include_mcp_wildcard)
+    print(f"  Written: {settings_path}")
+
+
+def _cmd_permissions_show(project_path: str, settings_path: Path) -> None:
+    current = _detect_current_tier(settings_path)
+    c3_cfg = _safe_read_json(Path(project_path) / ".c3" / "config.json", "config")
+    stored = c3_cfg.get("permission_tier")
+    stale = _find_stale_tools(settings_path)
+    print(f"  Current tier : {current or '(none set)'}")
+    if stored and stored != current:
+        print(f"  Stored tier  : {stored}  (drift — re-apply to sync)")
+    if stale:
+        print(f"  Stale tools  : {len(stale)} obsolete c3 MCP name(s). Run 'c3 permissions clean'.")
+    print()
+    for name, desc in PERMISSION_TIERS.items():
+        marker = "* " if name == (current or stored) else "  "
+        print(f"  {marker}{name:<12} — {desc}")
+    print()
+    print("  Usage: c3 permissions <action|tier> [target] [--include-mcp-wildcard]")
+    print("  Actions: show | preview <tier> | diff [tier] | clean")
+    print("  Tiers  : " + ", ".join(PERMISSION_TIERS))
+
+
+def _cmd_permissions_preview(tier: str, include_mcp_wildcard: bool) -> None:
+    if tier not in PERMISSION_TIERS:
+        print(f"  Unknown tier '{tier}'. Choose from: {', '.join(PERMISSION_TIERS)}")
+        return
+    perms = _build_permission_tier(tier, include_mcp_wildcard=include_mcp_wildcard)["permissions"]
+    suffix = " (+ mcp__* wildcard)" if include_mcp_wildcard else ""
+    print(f"  Preview: '{tier}'{suffix} — {PERMISSION_TIERS[tier]}")
+    print(f"  Allow ({len(perms['allow'])}):")
+    for entry in perms["allow"]:
+        print(f"    + {entry}")
+    print(f"  Deny ({len(perms['deny'])}):")
+    for entry in perms["deny"]:
+        print(f"    - {entry}")
+
+
+def _cmd_permissions_diff(settings_path: Path, tier: str, include_mcp_wildcard: bool) -> None:
+    if tier not in PERMISSION_TIERS:
+        print(f"  Unknown target tier '{tier}'. Choose from: {', '.join(PERMISSION_TIERS)}")
+        return
+    current = _safe_read_json(settings_path, str(settings_path))
+    cur_allow = set(current.get("permissions", {}).get("allow", []))
+    cur_deny = set(current.get("permissions", {}).get("deny", []))
+    target_perms = _build_permission_tier(tier, include_mcp_wildcard=include_mcp_wildcard)["permissions"]
+    tgt_allow = set(target_perms["allow"])
+    tgt_deny = set(target_perms["deny"])
+
+    missing_allow = tgt_allow - cur_allow
+    extra_allow = cur_allow - tgt_allow
+    missing_deny = tgt_deny - cur_deny
+    extra_deny = cur_deny - tgt_deny
+
+    print(f"  Diff: current settings vs '{tier}' tier")
+    if missing_allow:
+        print(f"\n  Missing from allow ({len(missing_allow)}) — tier requires:")
+        for e in sorted(missing_allow):
+            print(f"    + {e}")
+    if extra_allow:
+        print(f"\n  Extra in allow ({len(extra_allow)}) — not in tier:")
+        for e in sorted(extra_allow):
+            print(f"    ? {e}")
+    if missing_deny:
+        print(f"\n  Missing from deny ({len(missing_deny)}):")
+        for e in sorted(missing_deny):
+            print(f"    + {e}")
+    if extra_deny:
+        print(f"\n  Extra in deny ({len(extra_deny)}):")
+        for e in sorted(extra_deny):
+            print(f"    ? {e}")
+    if not (missing_allow or extra_allow or missing_deny or extra_deny):
+        print(f"  ✓ Current settings match tier '{tier}' exactly.")
+    else:
+        print(f"\n  Run 'c3 permissions {tier}' to apply this tier exactly.")
+
+
+def _cmd_permissions_clean(settings_path: Path) -> None:
+    stale = _find_stale_tools(settings_path)
+    if not stale:
+        print("  No stale tool names found. Nothing to clean.")
+        return
+    print(f"  Found {len(stale)} stale c3 MCP tool name(s):")
+    for t in sorted(set(stale)):
+        print(f"    - {t}")
+    removed = _clean_stale_tools(settings_path)
+    print(f"  Removed {removed} entries from {settings_path}")
+
+
+def _run_install_mcp(project_path: str, ide_name: str, mcp_mode: str = "direct",
+                     permissions: str | None = None,
+                     include_mcp_wildcard: bool = False,
+                     banner: str = "Installing MCP tools...") -> None:
     """Run install-mcp programmatically with a consistent banner."""
     print(f"\n{banner}")
     from types import SimpleNamespace
-    cmd_install_mcp(SimpleNamespace(project_path=project_path, ide=ide_name, mcp_mode=mcp_mode))
+    cmd_install_mcp(SimpleNamespace(
+        project_path=project_path, ide=ide_name, mcp_mode=mcp_mode,
+        permissions=permissions, include_mcp_wildcard=include_mcp_wildcard,
+    ))
 
 
 def _prompt_install_mcp(project_path: str, ide_name: str, default_mode: str = "direct", banner: str = "Installing MCP tools...") -> bool:
@@ -4564,21 +4870,42 @@ def cmd_install_mcp(args):
         # parse Windows absolute paths containing parentheses (e.g. "(C3)"). Prefix with
         # "cmd /c" so cmd.exe handles path resolution instead of bash.
         _hook_prefix = "cmd /c " if sys.platform == "win32" else ""
-        hook_filter_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_filter.py'))}"
-        hook_read_cmd     = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_read.py'))}"
-        hook_c3read_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
+        hook_filter_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_filter.py'))}"
+        hook_read_cmd      = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_read.py'))}"
+        hook_c3read_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
+        hook_enforce_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_pretool_enforce.py'))}"
+        hook_edit_unlock_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_edit_unlock.py'))}"
+        hook_edit_ledger_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_edit_ledger.py'))}"
+        hook_ghost_files_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_ghost_files.py'))}"
+        hook_session_stats_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_session_stats.py'))}"
+        hook_auto_snapshot_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_auto_snapshot.py'))}"
+        hook_terse_advisor_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_terse_advisor.py'))}"
+        hook_c3_signal_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3_signal.py'))}"
 
         # Tool matcher names differ by IDE: Gemini uses snake_case built-in names.
         if profile.name == "gemini":
-            shell_matcher = "run_shell_command"
-            read_matcher  = "read_file"
+            shell_matcher  = "run_shell_command"
+            read_matcher   = "read_file"
+            grep_matcher   = "grep"
+            glob_matcher   = "find_files"
+            edit_matcher   = "edit_file"
+            write_matcher  = "write_file"
         else:
-            shell_matcher = "Bash"
-            read_matcher  = "Read"
-        desired_hooks = [
+            shell_matcher  = "Bash"
+            read_matcher   = "Read"
+            grep_matcher   = "Grep"
+            glob_matcher   = "Glob"
+            edit_matcher   = "Edit"
+            write_matcher  = "Write"
+
+        # ── PostToolUse hooks ──
+        desired_post_hooks = [
             {
                 "matcher": shell_matcher,
-                "hooks": [{"type": "command", "command": hook_filter_cmd}]
+                "hooks": [
+                    {"type": "command", "command": hook_filter_cmd},
+                    {"type": "command", "command": hook_ghost_files_cmd},
+                ]
             },
             {
                 "matcher": read_matcher,
@@ -4586,21 +4913,140 @@ def cmd_install_mcp(args):
             },
             {
                 "matcher": "mcp__c3__c3_read",
-                "hooks": [{"type": "command", "command": hook_c3read_cmd}]
+                "hooks": [
+                    {"type": "command", "command": hook_c3read_cmd},
+                    {"type": "command", "command": hook_c3_signal_cmd},
+                ]
+            },
+            {
+                "matcher": "mcp__c3__c3_search",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_compress",
+                "hooks": [
+                    {"type": "command", "command": hook_edit_unlock_cmd},
+                    {"type": "command", "command": hook_c3_signal_cmd},
+                ]
+            },
+            {
+                "matcher": "mcp__c3__c3_filter",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_memory",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_validate",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_edit",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_edits",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_impact",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_status",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_delegate",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_session",
+                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
+            },
+            {
+                "matcher": "mcp__c3__c3_agent",
+                "hooks": [
+                    {"type": "command", "command": hook_edit_unlock_cmd},
+                    {"type": "command", "command": hook_c3_signal_cmd},
+                ]
+            },
+            {
+                "matcher": edit_matcher,
+                "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]
+            },
+            {
+                "matcher": write_matcher,
+                "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]
+            },
+        ]
+
+        # ── PreToolUse hooks (enforcement — blocks native tools without prior c3_*) ──
+        desired_pre_hooks = [
+            {
+                "matcher": read_matcher,
+                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
+            },
+            {
+                "matcher": grep_matcher,
+                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
+            },
+            {
+                "matcher": glob_matcher,
+                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
+            },
+            {
+                "matcher": edit_matcher,
+                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
+            },
+            {
+                "matcher": write_matcher,
+                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
             },
         ]
 
         # Merge: replace existing C3 hooks (so re-running install-mcp updates commands),
         # preserve any non-C3 hooks the user may have added.
         hook_event = profile.hook_event
-        c3_matchers = {h.get("matcher") for h in desired_hooks}
-        existing_hooks = [
+        post_matchers = {h.get("matcher") for h in desired_post_hooks}
+        existing_post = [
             h for h in settings.get("hooks", {}).get(hook_event, [])
-            if h.get("matcher") not in c3_matchers
+            if h.get("matcher") not in post_matchers
         ]
-        existing_hooks.extend(desired_hooks)
+        existing_post.extend(desired_post_hooks)
+        settings.setdefault("hooks", {})[hook_event] = existing_post
 
-        settings.setdefault("hooks", {})[hook_event] = existing_hooks
+        # PreToolUse hooks (Claude Code: "PreToolUse", Gemini: "BeforeTool")
+        pre_event = "BeforeTool" if profile.name == "gemini" else "PreToolUse"
+        pre_matchers = {h.get("matcher") for h in desired_pre_hooks}
+        existing_pre = [
+            h for h in settings.get("hooks", {}).get(pre_event, [])
+            if h.get("matcher") not in pre_matchers
+        ]
+        existing_pre.extend(desired_pre_hooks)
+        settings.setdefault("hooks", {})[pre_event] = existing_pre
+
+        # ── Stop hooks (auto-snapshot + session stats on session end / Ctrl+C) ──
+        # Stop hooks fire for both Claude Code ("Stop") and Gemini ("Stop").
+        desired_stop_hooks = [
+            {
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": hook_session_stats_cmd},
+                    {"type": "command", "command": hook_auto_snapshot_cmd},
+                    {"type": "command", "command": hook_terse_advisor_cmd},
+                ]
+            },
+        ]
+        stop_event = "Stop"
+        # Replace any existing C3 stop hooks (matcher=""), keep user-added ones
+        existing_stop = [
+            h for h in settings.get("hooks", {}).get(stop_event, [])
+            if h.get("matcher")  # keep entries with a non-empty matcher
+        ]
+        existing_stop.extend(desired_stop_hooks)
+        settings.setdefault("hooks", {})[stop_event] = existing_stop
 
         # Claude Code only: enable MCP server prompt settings
         if profile.name == "claude-code":
@@ -4609,13 +5055,37 @@ def cmd_install_mcp(args):
             if "c3" not in settings["enabledMcpjsonServers"]:
                 settings["enabledMcpjsonServers"].append("c3")
 
+        # Apply permission tier if requested (Claude Code only)
+        perm_tier = getattr(args, "permissions", None)
+        perm_tier = _TIER_ALIASES.get(perm_tier, perm_tier) if perm_tier else perm_tier
+        include_wildcard = bool(getattr(args, "include_mcp_wildcard", False))
+        if perm_tier and profile.name == "claude-code":
+            if perm_tier in PERMISSION_TIERS:
+                settings["permissions"] = _build_permission_tier(
+                    perm_tier, include_mcp_wildcard=include_wildcard
+                )["permissions"]
+                # Persist tier choice in .c3/config.json
+                _c3cfg = _safe_read_json(c3_config_path, str(c3_config_path))
+                _c3cfg["permission_tier"] = perm_tier
+                if include_wildcard:
+                    _c3cfg["permission_include_mcp_wildcard"] = True
+                elif "permission_include_mcp_wildcard" in _c3cfg:
+                    del _c3cfg["permission_include_mcp_wildcard"]
+                with open(c3_config_path, "w", encoding="utf-8") as f:
+                    json.dump(_c3cfg, f, indent=2)
+
         with open(settings_path, 'w', encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
 
         print(f"Wrote {settings_path}")
-        print(f"  Hooks ({hook_event}): {shell_matcher} (output filter) + {read_matcher} (C3 enforcement) + mcp__c3__c3_read (Edit unlock)")
+        print(f"  Hooks ({hook_event}): {shell_matcher} (filter+ghost) + {read_matcher}/{edit_matcher}/{write_matcher} (ledger) + c3_read/c3_compress/c3_agent (unlock)")
+        print(f"  Hooks ({pre_event}): {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
+        print(f"  Hooks (Stop): session_stats + auto_snapshot")
         if profile.name == "claude-code":
             print("  Claude MCP prompt settings enabled for this project")
+        if perm_tier and profile.name == "claude-code":
+            suffix = " (+ mcp__* wildcard)" if include_wildcard else ""
+            print(f"  Permissions: {perm_tier}{suffix} — {PERMISSION_TIERS.get(perm_tier, '')}")
         if not settings_path.exists():
             raise RuntimeError(f"{profile.display_name} settings file was not created: {settings_path}")
 
@@ -4692,6 +5162,19 @@ def cmd_install_mcp(args):
                 pass
 
     _sync_project_instruction_docs(str(target), sm)
+
+    # ── User-global C3 enforcement ──────────────────────────────
+    try:
+        _ensure_global_claude_md()
+    except Exception as e:
+        print(f"Warning: Could not update global CLAUDE.md: {e}")
+
+    # ── Install /terse skill for supported IDEs ──────────────────
+    if profile.name in ("claude-code", "codex", "gemini"):
+        try:
+            _ensure_terse_skill(profile.name)
+        except Exception as e:
+            print(f"Warning: Could not install /terse skill: {e}")
 
     print(f"IDE: {profile.display_name}")
     print(f"MCP Mode: {mcp_mode}")
@@ -4786,6 +5269,60 @@ def cmd_mcp_remove(args):
     else:
         print(f"Server '{name}' not found in {ide_name} config.")
     return removed
+
+
+def cmd_terse(args):
+    """Manage the terse-advisor nudge state (~/.c3/terse_advisor.json)."""
+    from datetime import datetime, timezone, timedelta
+
+    state_file = Path.home() / ".c3" / "terse_advisor.json"
+
+    def _load():
+        if state_file.exists():
+            try:
+                return json.loads(state_file.read_text("utf-8"))
+            except Exception:
+                pass
+        return {"dismissed": False, "remind_after": None, "last_nudge_session": None}
+
+    def _save(state):
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state, indent=2), "utf-8")
+
+    action = getattr(args, "action", "status") or "status"
+    state = _load()
+
+    if action == "dismiss":
+        state["dismissed"] = True
+        state["remind_after"] = None
+        _save(state)
+        print("[C3] Terse advisor silenced permanently. Run `c3 terse reset` to re-enable.")
+    elif action == "later":
+        until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        state["remind_after"] = until
+        _save(state)
+        print(f"[C3] Terse advisor snoozed for 24h (until {until[:16]} UTC).")
+    elif action == "reset":
+        if state_file.exists():
+            state_file.unlink()
+        print("[C3] Terse advisor state cleared.")
+    else:  # status
+        dismissed = state.get("dismissed", False)
+        remind_after = state.get("remind_after")
+        last_session = state.get("last_nudge_session")
+        print(f"Terse advisor state ({state_file}):")
+        print(f"  dismissed       : {dismissed}")
+        if remind_after:
+            now = datetime.now(timezone.utc)
+            try:
+                until_dt = datetime.fromisoformat(remind_after)
+                snoozed = now < until_dt
+                print(f"  snoozed until   : {remind_after[:16]} UTC  ({'active' if snoozed else 'expired'})")
+            except Exception:
+                print(f"  remind_after    : {remind_after}")
+        else:
+            print(f"  snoozed until   : —")
+        print(f"  last nudge sess : {last_session or '—'}")
 
 
 def cmd_ui(args):
@@ -5041,6 +5578,46 @@ def cmd_benchmark_e2e(args):
     print(f"  Est. time: {min_est}–{max_est} min  ({total_runs} calls x 20–{args.timeout}s each)")
     print()
 
+    # Delegate benchmark mode -- Ollama vs Codex comparison
+    if getattr(args, "delegate_benchmark", False):
+        from services.e2e_benchmark import DelegateBenchmark
+        from services.runtime import build_runtime
+        print("  Running delegate backend comparison (Ollama vs Codex)...\n")
+        rt = build_runtime(str(project_path))
+        delegate_types = None
+        if getattr(args, "delegate_types", None):
+            delegate_types = [t.strip() for t in args.delegate_types.split(",")]
+        dbench = DelegateBenchmark(
+            project_path=str(project_path),
+            svc=rt,
+            verbose=args.verbose,
+            task_types=delegate_types,
+        )
+        dresults = dbench.run_all()
+        dreport = DelegateBenchmark.generate_report(dresults)
+
+        # Print summary
+        print(f"\n  {'=' * 60}")
+        print(f"  DELEGATE BENCHMARK -- {len(dresults)} runs")
+        print(f"  {'=' * 60}")
+        for backend, stats in dreport.get("backends", {}).items():
+            print(f"\n  {backend.upper()}:")
+            print(f"    Success rate: {stats['success_rate']}%  ({stats['successes']}/{stats['tasks_run']})")
+            print(f"    Avg latency:  {stats['avg_latency_s']}s")
+            print(f"    Avg tokens:   {stats['avg_output_tokens']}")
+            print(f"    Models:       {', '.join(stats['models_used'])}")
+
+        # Save JSON report
+        out_dir = project_path / ".c3" / "e2e_benchmark" / "runs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        delegate_json_path = out_dir / f"delegate_{ts}.json"
+        with open(delegate_json_path, "w", encoding="utf-8") as f:
+            json.dump(dreport, f, indent=2)
+        print(f"\n  Report saved: {delegate_json_path}")
+        return
+
     # Dry run — show plan and exit
     if args.dry_run:
         print("  DRY RUN — Tasks that would be executed:\n")
@@ -5058,6 +5635,14 @@ def cmd_benchmark_e2e(args):
     # Run benchmark
     task_workers = getattr(args, "task_workers", 1)
     use_cache = not getattr(args, "no_cache", False)
+    def _progress(completed, total, result):
+        winner = "C3 wins" if result.c3_wins else "Base wins"
+        pct = completed / total * 100
+        print(f"\r  [{completed}/{total}] {pct:.0f}% — {result.task_id}: "
+              f"{winner} ({result.score_delta:+.3f})", end="", flush=True)
+        if completed == total:
+            print()
+
     print(f"  Starting {total_runs} AI calls — grab a coffee...\n")
     bench = E2EBenchmark(
         project_path=str(project_path),
@@ -5067,6 +5652,7 @@ def cmd_benchmark_e2e(args):
         timeout=args.timeout,
         parallel=not args.no_parallel,
         verbose=args.verbose,
+        on_progress=None if args.verbose else _progress,
         task_workers=task_workers,
         cache=use_cache,
         permission_mode=getattr(args, "permission_mode", "bypassPermissions"),
@@ -5200,6 +5786,8 @@ def main():
         "install-mcp": cmd_install_mcp,
         "mcp-install": cmd_install_mcp,
         "mcp-remove": cmd_mcp_remove,
+        "permissions": cmd_permissions,
+        "terse": cmd_terse,
         "ui": cmd_ui,
         "projects": cmd_projects,
         "hub": cmd_hub,
