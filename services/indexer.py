@@ -81,7 +81,7 @@ class CodeIndex:
         self.documents = {}
         self.chunks = {}
         self.symbols = {}
-        self._search_cache = {}
+        self._search_cache: OrderedDict = OrderedDict()
 
         files_indexed = 0
         chunks_created = 0
@@ -688,7 +688,7 @@ class CodeIndex:
                 if "tokens" not in chunk:
                     chunk["tokens"] = count_tokens(chunk.get("content", ""))
                     mutated = True
-            self._search_cache = {}
+            self._search_cache = OrderedDict()
             if mutated:
                 self._save_index()
             return True

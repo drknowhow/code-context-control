@@ -1854,6 +1854,11 @@ def _benchmark_session_reality(project_path: Path, scenarios: dict) -> dict:
     """
     session_mgr = SessionManager(str(project_path))
     thresholds = dict(getattr(session_mgr, "_budget_thresholds", SessionManager.DEFAULT_BUDGET_THRESHOLDS))
+    # Back-compat: older SessionManager used level_1/level_2 keys; current version has a single
+    # `threshold`. Derive missing keys so the benchmark works across both schemas.
+    base = thresholds.get("threshold", 35000)
+    thresholds.setdefault("level_1", base)
+    thresholds.setdefault("level_2", base * 4)
     transcript_usage = session_mgr.parse_claude_session_tokens(str(project_path))
 
     # Measure actual CLAUDE.md size if available
@@ -2194,7 +2199,7 @@ def _render_benchmark_html(reports: list[dict]) -> str:
     <section class="hero">
       <div class="hero-grid">
         <div>
-          <div class="eyebrow">C3 Benchmark Report</div>
+          <div class="eyebrow">C3 Benchmark Report <span style="background:#818cf8;color:#0b1020;padding:0.1rem 0.5rem;border-radius:999px;font-size:0.65rem;font-weight:600;margin-left:0.4rem;vertical-align:middle">Synthetic</span> <a href="../benchmarks/index.html" style="color:#9aa3c7;font-size:0.75rem;margin-left:0.6rem;text-decoration:none">← dashboard</a></div>
           <h1>With C3 vs Without C3</h1>
           <p>Generated on {html.escape(primary.get("timestamp", ""))} for <code>{html.escape(primary.get("project_path", ""))}</code>. This report compares C3-assisted workflows against raw baseline paths across code, logs, structured data, and terminal output. Task-level savings are not the same thing as full-session lifetime; see Session Reality for retained-turn estimates.</p>
           <div class="hero-meta">
@@ -2820,7 +2825,7 @@ def _render_benchmark_html(reports: list[dict]) -> str:
     <section class="hero">
       <div class="hero-grid">
         <div>
-          <div class="eyebrow">C3 Benchmark Report</div>
+          <div class="eyebrow">C3 Benchmark Report <span style="background:#818cf8;color:#0b1020;padding:0.1rem 0.5rem;border-radius:999px;font-size:0.65rem;font-weight:600;margin-left:0.4rem;vertical-align:middle">Synthetic</span> <a href="../benchmarks/index.html" style="color:#9aa3c7;font-size:0.75rem;margin-left:0.6rem;text-decoration:none">← dashboard</a></div>
           <h1>With C3 vs Without C3</h1>
           <p>Generated on {html.escape(primary.get("timestamp", ""))} for <code>{html.escape(primary.get("project_path", ""))}</code>. This report compares C3-assisted workflows against raw baseline paths across code, logs, structured data, and terminal output. Task-level savings are not the same thing as full-session lifetime; see Session Reality for retained-turn estimates.</p>
           <div class="hero-meta">
@@ -3177,6 +3182,8 @@ def _render_benchmark_html(reports: list[dict]) -> str:
 
 def cmd_benchmark(args):
     """Run a local with/without-C3 benchmark for common code-understanding workflows."""
+    if getattr(args, "command", "") == "benchmark":
+        print("[note] `c3 benchmark` is aliased as `c3 bench quick`. Prefer the unified form going forward.")
     config = load_config(args.project_path or ".")
     project_path = Path(args.project_path or config.get("project_path", ".")).resolve()
     runtime_ide_name = ""
@@ -3797,6 +3804,13 @@ def cmd_benchmark(args):
         print(f"  JSON: {out_path}")
     if report["artifacts"]["html_report"]:
         print(f"  HTML: {report['artifacts']['html_report']}")
+
+    try:
+        from services.benchmark_dashboard import generate_dashboard
+        dash = generate_dashboard(str(project_path))
+        print(f"  Dashboard: {dash}")
+    except Exception:
+        pass
 
 
 def cmd_optimize(args):
@@ -5428,6 +5442,8 @@ def cmd_projects(args):
 
 def cmd_session_benchmark(args):
     """Run real-world session workflow benchmark."""
+    if getattr(args, "command", "") == "session-benchmark":
+        print("[note] `c3 session-benchmark` is aliased as `c3 bench session`. Prefer the unified form going forward.")
     from services.session_benchmark import SessionBenchmark, generate_report, render_html, load_session_benchmark_history
 
     project_path = Path(args.project_path or ".").resolve()
@@ -5513,9 +5529,18 @@ def cmd_session_benchmark(args):
     print(f"  JSON: {json_path}")
     print(f"  HTML: {html_path}")
 
+    try:
+        from services.benchmark_dashboard import generate_dashboard
+        dash = generate_dashboard(str(project_path))
+        print(f"  Dashboard: {dash}")
+    except Exception:
+        pass
+
 
 def cmd_benchmark_e2e(args):
     """Run end-to-end AI session benchmark comparing C3-augmented vs baseline workflows."""
+    if getattr(args, "command", "") == "benchmark-e2e":
+        print("[note] `c3 benchmark-e2e` is aliased as `c3 bench e2e` (or `c3 bench delegate`). Prefer the unified form going forward.")
     from services.e2e_benchmark import (
         E2EBenchmark, CLIProvider, detect_providers,
         generate_e2e_report, render_e2e_html,
@@ -5759,6 +5784,302 @@ def cmd_benchmark_e2e(args):
     print(f"  JSON: {json_path}")
     print(f"  HTML: {html_path}")
 
+    try:
+        from services.benchmark_dashboard import generate_dashboard
+        dash = generate_dashboard(str(project_path))
+        print(f"  Dashboard: {dash}")
+    except Exception:
+        pass
+
+
+def cmd_bench(args):
+    """Unified benchmark dispatcher: c3 bench {quick|session|e2e|delegate|all|dashboard}."""
+    from services.benchmark_dashboard import generate_dashboard
+
+    tier = getattr(args, "bench_tier", None)
+    if not tier:
+        print("Usage: c3 bench {quick|session|e2e|delegate|all|dashboard}")
+        print("  quick     Local synthetic benchmark (fastest)")
+        print("  session   Workflow scenarios (6 synthetic workflows)")
+        print("  e2e       End-to-end real AI calls (claude/gemini/codex)")
+        print("  delegate  Ollama vs Codex delegate comparison")
+        print("  all       Run quick + session + e2e + dashboard")
+        print("  dashboard Regenerate unified HTML dashboard")
+        return
+
+    def _default(name, value):
+        if not hasattr(args, name):
+            setattr(args, name, value)
+
+    project_path = Path(args.project_path or ".").resolve()
+
+    if tier == "quick":
+        cmd_benchmark(args)
+    elif tier == "session":
+        cmd_session_benchmark(args)
+    elif tier == "e2e":
+        _default("delegate_benchmark", False)
+        _default("delegate_types", None)
+        cmd_benchmark_e2e(args)
+    elif tier == "delegate":
+        # Map delegate tier onto the existing --delegate-benchmark path
+        args.delegate_benchmark = True
+        _default("providers", None)
+        _default("models", None)
+        _default("tasks", "all")
+        _default("max_tasks", 1)
+        _default("timeout", 120)
+        _default("dry_run", False)
+        _default("html_output", None)
+        _default("no_parallel", True)
+        _default("judge", None)
+        _default("judge_model", None)
+        _default("task_workers", 1)
+        _default("no_cache", True)
+        _default("permission_mode", "bypassPermissions")
+        cmd_benchmark_e2e(args)
+    elif tier == "all":
+        print_header("C3 Benchmark Suite")
+        print(f"  Project: {project_path}")
+        print()
+
+        # quick
+        _default("sample_size", 25)
+        _default("min_tokens", 200)
+        _default("top_k", 5)
+        _default("max_tokens", 4000)
+        _default("json", False)
+        _default("output", None)
+        _default("html_output", None)
+        _default("no_html", False)
+        _default("system_name", "")
+        _default("system_label", "")
+        _default("system_version", "")
+        cmd_benchmark(args)
+
+        # session
+        args.sample_size = 15
+        cmd_session_benchmark(args)
+
+        # e2e (unless skipped)
+        if not getattr(args, "skip_e2e", False):
+            _default("providers", None)
+            _default("models", None)
+            _default("tasks", "all")
+            _default("max_tasks", 1)
+            _default("timeout", 120)
+            _default("dry_run", False)
+            _default("verbose", False)
+            _default("no_parallel", False)
+            _default("judge", None)
+            _default("judge_model", None)
+            _default("task_workers", 1)
+            _default("no_cache", False)
+            _default("permission_mode", "bypassPermissions")
+            _default("delegate_benchmark", False)
+            _default("delegate_types", None)
+            cmd_benchmark_e2e(args)
+
+        # Regenerate unified dashboard
+        out = generate_dashboard(str(project_path))
+        print()
+        print(f"  Dashboard: {out}")
+    elif tier == "dashboard":
+        out = generate_dashboard(str(project_path))
+        print(f"  Dashboard: {out}")
+        if getattr(args, "open", False):
+            import webbrowser
+            webbrowser.open(f"file://{out}")
+    elif tier == "external":
+        _run_external_benchmark(args, project_path)
+    else:
+        print(f"Unknown bench tier: {tier}")
+
+
+def _run_external_benchmark(args, project_path):
+    """Dispatch external benchmark suites (aider-polyglot, future: swe-bench)."""
+    from services.benchmark_dashboard import generate_dashboard
+    suite = getattr(args, "suite", "aider-polyglot")
+    print_header(f"C3 External Benchmark — {suite}")
+    print(f"  Project: {project_path}")
+
+    if suite == "aider-polyglot":
+        from services.bench.external.aider_polyglot import (
+            AiderPolyglotBenchmark, detect_aider, find_polyglot_repo, save_report,
+        )
+
+        aider_path = detect_aider()
+        repo = find_polyglot_repo(getattr(args, "path", None))
+
+        print(f"  Aider CLI:   {aider_path or '(missing — pip install aider-chat)'}")
+        print(f"  Benchmark:   {repo or '(missing — git clone https://github.com/Aider-AI/polyglot-benchmark)'}")
+        print(f"  Languages:   {args.languages}")
+        print(f"  Max/lang:    {args.max_exercises}")
+        print(f"  Model:       {args.model}")
+
+        if getattr(args, "dry_run", False):
+            if not aider_path:
+                print("  [dry-run] aider CLI not found on PATH.")
+            if not repo:
+                print("  [dry-run] polyglot-benchmark repo not found. Set --path or $POLYGLOT_BENCHMARK_PATH.")
+            if aider_path and repo:
+                print("  [dry-run] Setup looks good. Remove --dry-run to execute.")
+            return
+
+        if not aider_path:
+            print("\n  Error: aider CLI not found. Install with: pip install aider-chat")
+            return
+        if not repo:
+            print("\n  Error: polyglot-benchmark repo not found. Clone it with:")
+            print("    git clone https://github.com/Aider-AI/polyglot-benchmark")
+            print("  Then pass --path /path/to/polyglot-benchmark or set $POLYGLOT_BENCHMARK_PATH.")
+            return
+
+        languages = [s.strip() for s in args.languages.split(",") if s.strip()]
+        bench = AiderPolyglotBenchmark(
+            repo_path=repo,
+            project_path=project_path,
+            languages=languages,
+            max_exercises=args.max_exercises,
+            model=args.model,
+            timeout_per_exercise=args.timeout,
+            verbose=args.verbose,
+        )
+        report = bench.run_all()
+        out_path = save_report(project_path, report)
+
+        sc = report.to_dict()["scorecard"]
+        print()
+        print("  Results:")
+        print(f"    Pass rate  (C3): {sc['with_c3_pass_rate']}%  ({sc['with_c3_count']} exercises)")
+        print(f"    Pass rate (base): {sc['baseline_pass_rate']}%  ({sc['baseline_count']} exercises)")
+        print(f"    Delta           : {sc['pass_rate_delta']:+.1f} pp")
+        print(f"    Avg latency (C3 / base): {sc['with_c3_avg_latency_s']}s / {sc['baseline_avg_latency_s']}s")
+        print(f"    Total cost  (C3 / base): ${sc['with_c3_total_cost_usd']} / ${sc['baseline_total_cost_usd']}")
+        print()
+        print(f"  JSON: {out_path}")
+
+        try:
+            dash = generate_dashboard(str(project_path))
+            print(f"  Dashboard: {dash}")
+        except Exception:
+            pass
+    elif suite == "swe-bench-lite":
+        _run_swe_bench_lite(args, project_path)
+    else:
+        print(f"Unknown external suite: {suite}")
+
+
+def _run_swe_bench_lite(args, project_path):
+    """Run the SWE-bench Lite external benchmark."""
+    from services.benchmark_dashboard import generate_dashboard
+    from services.bench.external.swe_bench import (
+        SWEBenchAdapter, load_tasks, evaluate_with_docker,
+        apply_resolution_results, save_report,
+    )
+    from services.bench.external.aider_polyglot import detect_aider
+
+    dataset_arg = getattr(args, "dataset", None) or "princeton-nlp/SWE-bench_Lite"
+    agent = getattr(args, "agent", "aider")
+    aider_path = detect_aider() if agent == "aider" else None
+
+    print(f"  Dataset:     {dataset_arg}")
+    print(f"  Agent:       {agent}")
+    print(f"  Model:       {args.model}")
+    print(f"  Max tasks:   {args.max_tasks}")
+    print(f"  Docker eval: {'yes' if args.docker_eval else 'no (prediction only)'}")
+    if agent == "aider":
+        print(f"  Aider CLI:   {aider_path or '(missing — pip install aider-chat)'}")
+
+    if getattr(args, "dry_run", False):
+        try:
+            tasks = load_tasks(dataset_arg)
+            print(f"  [dry-run] Loaded {len(tasks)} tasks. Sample: {tasks[0].instance_id if tasks else 'none'}")
+        except Exception as e:
+            print(f"  [dry-run] Dataset load failed: {e}")
+        if agent == "aider" and not aider_path:
+            print("  [dry-run] aider CLI missing.")
+        if args.docker_eval:
+            import shutil as _sh
+            if not _sh.which("docker"):
+                print("  [dry-run] docker CLI missing — evaluation will be skipped.")
+            try:
+                import swebench  # noqa: F401
+                print("  [dry-run] swebench package installed.")
+            except ImportError:
+                print("  [dry-run] swebench package missing (pip install swebench).")
+        print("  [dry-run] Remove --dry-run to execute.")
+        return
+
+    if agent == "aider" and not aider_path:
+        print("\n  Error: aider CLI not found. Install: pip install aider-chat")
+        return
+
+    try:
+        tasks = load_tasks(dataset_arg)
+    except Exception as e:
+        print(f"\n  Error loading dataset: {e}")
+        return
+
+    tasks = tasks[: args.max_tasks]
+    if not tasks:
+        print("  Error: dataset is empty.")
+        return
+
+    print(f"\n  Generating patches for {len(tasks)} tasks x 2 modes (baseline + with_c3)...")
+    adapter = SWEBenchAdapter(
+        project_path=project_path,
+        tasks=tasks,
+        agent=agent,
+        model=args.model,
+        timeout_per_task=args.timeout,
+        verbose=args.verbose,
+    )
+    report = adapter.run_all(dataset_label=dataset_arg)
+
+    print()
+    print(f"  Predictions (with C3):  {report.predictions_with_c3}")
+    print(f"  Predictions (baseline): {report.predictions_baseline}")
+
+    if args.docker_eval:
+        print("\n  Running Docker evaluation (slow — minutes per task)...")
+        eval_c3 = evaluate_with_docker(Path(report.predictions_with_c3), dataset_arg)
+        eval_bs = evaluate_with_docker(Path(report.predictions_baseline), dataset_arg)
+        if eval_c3:
+            apply_resolution_results(report, eval_c3, "with_c3")
+        if eval_bs:
+            apply_resolution_results(report, eval_bs, "baseline")
+        report.evaluation_method = "swebench-docker" if (eval_c3 or eval_bs) else "none"
+    else:
+        report.evaluation_method = "none"
+        print("\n  Skipping evaluation (no --docker-eval). To score predictions later:")
+        print(f"    pip install swebench && docker version  # ensure prerequisites")
+        print(f"    python -m swebench.harness.run_evaluation \\\n"
+              f"      --predictions_path {report.predictions_with_c3} \\\n"
+              f"      --dataset_name {dataset_arg} --run_id c3-with --max_workers 4")
+
+    out_path = save_report(project_path, report)
+    sc = report.to_dict()["scorecard"]
+
+    print()
+    print("  Results:")
+    print(f"    Patch generation — C3: {sc['with_c3_patch_rate']}% / base: {sc['baseline_patch_rate']}%")
+    if sc["evaluated"]:
+        print(f"    Resolution rate  — C3: {sc['with_c3_pass_rate']}% / base: {sc['baseline_pass_rate']}%"
+              f"  ({sc['pass_rate_delta']:+.1f} pp)")
+    else:
+        print("    Resolution rate  — (unevaluated; rerun with --docker-eval)")
+    print(f"    Avg latency     — C3: {sc['with_c3_avg_latency_s']}s / base: {sc['baseline_avg_latency_s']}s")
+    print(f"    Total cost      — C3: ${sc['with_c3_total_cost_usd']} / base: ${sc['baseline_total_cost_usd']}")
+    print()
+    print(f"  JSON: {out_path}")
+
+    try:
+        dash = generate_dashboard(str(project_path))
+        print(f"  Dashboard: {dash}")
+    except Exception:
+        pass
+
 
 def main():
     parser = build_parser(__version__, _parse_cli_ide_arg)
@@ -5781,6 +6102,7 @@ def main():
         "benchmark": cmd_benchmark,
         "session-benchmark": cmd_session_benchmark,
         "benchmark-e2e": cmd_benchmark_e2e,
+        "bench": cmd_bench,
         "optimize": cmd_optimize,
         "pipe": cmd_pipe,
         "install-mcp": cmd_install_mcp,

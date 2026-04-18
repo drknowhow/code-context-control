@@ -10,6 +10,7 @@ Mode 2: Full agent with tool access.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -74,10 +75,13 @@ class ToolUsage:
 # Anthropic API pricing ($ per million tokens) — used for cost consistency checks.
 # Keys are model ID substrings; first match wins.
 _MODEL_PRICING = {
+    "claude-opus-4-6":   {"input": 15.0,  "output": 75.0,  "cache_write": 18.75, "cache_read": 1.50},
     "claude-opus-4":     {"input": 15.0,  "output": 75.0,  "cache_write": 18.75, "cache_read": 1.50},
     "claude-opus-3-5":   {"input": 15.0,  "output": 75.0,  "cache_write": 18.75, "cache_read": 1.50},
+    "claude-sonnet-4-6": {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
     "claude-sonnet-4":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
     "claude-sonnet-3-5": {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
+    "claude-haiku-4-5":  {"input": 0.80,  "output": 4.0,   "cache_write": 1.0,   "cache_read": 0.08},
     "claude-haiku-4":    {"input": 0.80,  "output": 4.0,   "cache_write": 1.0,   "cache_read": 0.08},
     "claude-haiku-3-5":  {"input": 0.80,  "output": 4.0,   "cache_write": 1.0,   "cache_read": 0.08},
 }
@@ -911,7 +915,7 @@ def _load_result_cache(project_path: str) -> dict:
         try:
             return json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            logging.getLogger("c3.e2e").debug("Failed to load result cache", exc_info=True)
     return {}
 
 
@@ -921,7 +925,7 @@ def _save_result_cache(project_path: str, cache: dict) -> None:
     try:
         cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
     except Exception:
-        pass
+        logging.getLogger("c3.e2e").debug("Failed to save result cache", exc_info=True)
 
 
 class E2EBenchmark:
@@ -2444,7 +2448,7 @@ def render_e2e_html(report: dict) -> str:
 </head>
 <body>
 <div class="header">
-  <h1>C3 End-to-End Benchmark</h1>
+  <h1>C3 End-to-End Benchmark <span style="background:#34d399;color:#0b1020;padding:0.15rem 0.55rem;border-radius:999px;font-size:0.7rem;font-weight:600;margin-left:0.5rem;vertical-align:middle">Live AI</span> <a href="../benchmarks/index.html" style="color:var(--text-dim,#9aa3c7);font-size:0.8rem;margin-left:0.8rem;text-decoration:none;font-weight:400">← dashboard</a></h1>
   <div class="meta">{timestamp} | {report.get('project_path', '')} | Providers: {', '.join(report.get('providers_tested', []))}</div>
 </div>
 
@@ -2671,3 +2675,208 @@ new Chart(document.getElementById('toolCompChart'), {{
 def _html_escape(text: str) -> str:
     """Minimal HTML escaping for pre blocks."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dual-Provider Delegate Benchmark — Ollama vs Codex
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DELEGATE_BENCH_TASKS = [
+    {"task_type": "review",   "task": "Review this code for bugs and regressions", "difficulty": "medium"},
+    {"task_type": "explain",  "task": "Explain what this code does and how it works", "difficulty": "easy"},
+    {"task_type": "diagnose", "task": "Diagnose the root cause of failures in this code", "difficulty": "hard"},
+    {"task_type": "improve",  "task": "Suggest the most impactful improvement to this code", "difficulty": "medium"},
+    {"task_type": "test",     "task": "Design focused test cases for this code", "difficulty": "medium"},
+    {"task_type": "summarize","task": "Summarize the key points of this code", "difficulty": "easy"},
+]
+
+
+class DelegateBenchmarkResult:
+    """Result of running one delegate task through one backend."""
+
+    def __init__(self, task_type: str, backend: str, difficulty: str = "medium"):
+        self.task_type = task_type
+        self.backend = backend
+        self.difficulty = difficulty
+        self.output: str = ""
+        self.success: bool = False
+        self.latency_s: float = 0.0
+        self.output_tokens: int = 0
+        self.model: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "task_type": self.task_type,
+            "backend": self.backend,
+            "difficulty": self.difficulty,
+            "success": self.success,
+            "latency_s": round(self.latency_s, 1),
+            "output_tokens": self.output_tokens,
+            "model": self.model,
+            "output_preview": (self.output[:200] + "...") if len(self.output) > 200 else self.output,
+        }
+
+
+class DelegateBenchmark:
+    """Compare Ollama vs Codex delegate backends on the same tasks.
+
+    Usage:
+        bench = DelegateBenchmark(project_path, svc)
+        results = bench.run_all()
+        report = bench.generate_report(results)
+    """
+
+    def __init__(self, project_path: str, svc, verbose: bool = False,
+                 task_types: list[str] | None = None):
+        self.project_path = str(Path(project_path).resolve())
+        self.svc = svc
+        self.verbose = verbose
+        self.task_types = task_types  # filter to specific types, or None for all
+
+    def run_all(self) -> list[DelegateBenchmarkResult]:
+        """Run all delegate benchmark tasks through both backends."""
+        from cli.tools.delegate import (
+            handle_delegate, check_codex, _is_codex_on_path,
+            DELEGATE_TASKS, CODEX_MODELS,
+        )
+
+        results = []
+
+        # Build context from project — compress a few key files
+        context = self._build_context()
+
+        tasks = _DELEGATE_BENCH_TASKS
+        if self.task_types:
+            tasks = [t for t in tasks if t["task_type"] in self.task_types]
+
+        backends = ["ollama"]
+        dcfg = self.svc.delegate_config or {}
+        if dcfg.get("codex_enabled", False) and _is_codex_on_path():
+            info = check_codex()
+            if info.get("status") == "ok":
+                backends.append("codex")
+
+        if self.verbose:
+            print(f"  Delegate backends: {', '.join(backends)}")
+            print(f"  Tasks: {len(tasks)} types")
+
+        for task_def in tasks:
+            for backend in backends:
+                result = self._run_single(task_def, backend, context)
+                results.append(result)
+                if self.verbose:
+                    status = "OK" if result.success else "FAIL"
+                    print(f"    {result.task_type:>10} | {backend:>6} | {status} | "
+                          f"{result.latency_s:.1f}s | {result.output_tokens}tok | {result.model}")
+
+        return results
+
+    def _run_single(self, task_def: dict, backend: str,
+                    context: str) -> DelegateBenchmarkResult:
+        """Run a single task through a specific backend."""
+        import time as _time
+        from cli.tools.delegate import handle_delegate
+
+        result = DelegateBenchmarkResult(
+            task_type=task_def["task_type"],
+            backend=backend,
+            difficulty=task_def.get("difficulty", "medium"),
+        )
+
+        captured = {}
+
+        def finalize(name, args, resp, summ):
+            captured["args"] = args
+            captured["response"] = resp
+            captured["summary"] = summ
+            return resp
+
+        t0 = _time.monotonic()
+        try:
+            handle_delegate(
+                task=task_def["task"],
+                task_type=task_def["task_type"],
+                context=context,
+                file_path="",
+                svc=self.svc,
+                finalize=finalize,
+                backend=backend,
+            )
+        except Exception as e:
+            result.output = f"[error] {e}"
+            result.latency_s = round(_time.monotonic() - t0, 1)
+            return result
+
+        result.latency_s = round(_time.monotonic() - t0, 1)
+        result.output = captured.get("response", "")
+        result.model = (captured.get("args") or {}).get("model", "unknown")
+        result.output_tokens = count_tokens(result.output) if result.output else 0
+
+        # Determine success: non-empty, non-error output
+        if result.output and not result.output.startswith("[delegate:error]") \
+                and not result.output.startswith("[codex:error]"):
+            result.success = True
+
+        return result
+
+    def _build_context(self) -> str:
+        """Build representative context from project files."""
+        try:
+            compressor = self.svc.compressor
+            # Find a few representative files
+            indexer = self.svc.indexer
+            files = []
+            for ext in (".py", ".js", ".ts"):
+                hits = indexer.search(f"main function {ext}", top_k=2, include_content=False)
+                files.extend(h["file"] for h in hits)
+            files = list(dict.fromkeys(files))[:3]
+
+            parts = []
+            for f in files:
+                try:
+                    res = compressor.compress_file(
+                        str(Path(self.project_path) / f), "map"
+                    )
+                    if isinstance(res, dict) and res.get("compressed"):
+                        parts.append(f"--- {f} ---\n{res['compressed']}")
+                except Exception:
+                    continue
+            return "\n".join(parts) if parts else "No context available."
+        except Exception:
+            return "No context available."
+
+    @staticmethod
+    def generate_report(results: list[DelegateBenchmarkResult]) -> dict:
+        """Generate a comparison report from benchmark results."""
+        by_backend: dict[str, list] = {}
+        for r in results:
+            by_backend.setdefault(r.backend, []).append(r)
+
+        backend_stats = {}
+        for backend, res_list in by_backend.items():
+            total = len(res_list)
+            successes = sum(1 for r in res_list if r.success)
+            avg_latency = sum(r.latency_s for r in res_list) / total if total else 0
+            avg_tokens = sum(r.output_tokens for r in res_list) / total if total else 0
+
+            backend_stats[backend] = {
+                "tasks_run": total,
+                "successes": successes,
+                "success_rate": round(successes / total * 100, 1) if total else 0,
+                "avg_latency_s": round(avg_latency, 1),
+                "avg_output_tokens": round(avg_tokens),
+                "models_used": list(set(r.model for r in res_list if r.model)),
+            }
+
+        # Per task-type comparison
+        by_type: dict[str, dict] = {}
+        for r in results:
+            by_type.setdefault(r.task_type, {}).setdefault(r.backend, r.to_dict())
+
+        return {
+            "benchmark_type": "delegate_comparison",
+            "backends": backend_stats,
+            "per_task_type": by_type,
+            "total_results": len(results),
+            "all_results": [r.to_dict() for r in results],
+        }
