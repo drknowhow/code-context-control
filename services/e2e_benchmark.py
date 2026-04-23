@@ -102,7 +102,8 @@ def _compute_expected_cost(inp: int, out: int, cw: int, cr: int, model_id: str) 
             cw * rates["cache_write"] + cr * rates["cache_read"]) / 1_000_000
 
 _C3_TOOLS = {"c3_compress", "c3_read", "c3_search", "c3_filter", "c3_validate",
-             "c3_memory", "c3_session", "c3_status", "c3_delegate"}
+             "c3_memory", "c3_session", "c3_status", "c3_delegate", "c3_shell",
+             "c3_impact", "c3_edit", "c3_edits", "c3_agent"}
 
 # Native Claude Code tools
 _NATIVE_TOOLS = {"Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent",
@@ -113,7 +114,7 @@ _TOOL_CATEGORIES = {
     "c3_mcp": list(_C3_TOOLS),
     "file_ops": ["Read", "Write", "Edit", "Glob", "c3_read", "c3_compress"],
     "search": ["Grep", "Glob", "c3_search", "WebSearch"],
-    "execution": ["Bash", "Agent", "c3_delegate"],
+    "execution": ["Bash", "Agent", "c3_delegate", "c3_shell"],
     "analysis": ["c3_validate", "c3_filter", "c3_status"],
     "context": ["c3_memory", "c3_session"],
 }

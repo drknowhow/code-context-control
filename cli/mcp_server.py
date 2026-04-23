@@ -55,6 +55,7 @@ from cli.tools.status import handle_status
 from cli.tools.delegate import handle_delegate
 from cli.tools.agent import handle_agent
 from cli.tools.edit import handle_edit
+from cli.tools.shell import handle_shell
 
 
 def _get_project_path() -> str:
@@ -84,6 +85,7 @@ def _build_instructions(ide_name: str) -> str:
         "  VALIDATE after every edit → c3_validate\n"
         "  BLAST RADIUS before shared-symbol edits → c3_impact\n"
         "  DISTILL terminal/log output >10 lines → c3_filter\n"
+        "  EXECUTE shell (tests/git/build) → c3_shell\n"
         "  RECALL cross-session knowledge → c3_memory(action='recall') (index+fetch for large stores)\n"
         "  SNAPSHOT before /clear → c3_session(action='snapshot')\n"
         "  HEALTH/budget checks → c3_status\n"
@@ -625,6 +627,23 @@ async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
 
     from cli.tools.impact import handle_impact
     return await asyncio.to_thread(handle_impact, target, file_path, mode, svc, finalize)
+
+
+@mcp.tool()
+async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
+                   filter_output: bool = True, log: bool = True,
+                   ctx: Context = None) -> str:
+    """EXECUTE shell command — structured returns, auto-filter, ledger-aware.
+    Use for tests, git, build, scripts. Returns exit_code/stdout/stderr/duration_ms.
+    Auto-filters stdout >30 lines; auto-logs git mutations to the edit ledger.
+    Blocks: rm -rf / or ~, fork bombs. Soft-warns on --force, --no-verify, reset --hard.
+    Native Bash remains the fallback for interactive/TTY commands."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize)
 
 
 if __name__ == "__main__":

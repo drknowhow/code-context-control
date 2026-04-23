@@ -13,6 +13,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 4. **IMPACT** (shared symbols): `c3_impact(target='symbol')` — blast-radius check before editing any function/class used across files
 5. **EDIT via C3**: `c3_edit(file_path, old_string, new_string, summary)` — for ALL edits. Parallel across files; `edits=[]` batch for same file
 6. **FILTER**: `c3_filter(text=...)` — for terminal output >10 lines or log files
+6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Blocks fork bombs and `rm -rf /` or `~`; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands (e.g. `gh pr create` with editor, `ollama run`)
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
@@ -45,9 +46,6 @@ claude-companion - v2/
   requirements.txt
   .claude/
     settings.local.json
-    settings.local.json.tmp.30620.1775727727166
-    settings.local.json.tmp.30620.1775728596812
-    settings.local.json.tmp.30620.1775728686714
   .codex/
     config.toml
   .gemini/
@@ -85,12 +83,12 @@ claude-companion - v2/
     hook_edit_unlock.py
     hook_filter.py
     hook_ghost_files.py
-    hook_ghost_files.py.tmp.30620.1775728414610
     hook_pretool_enforce.py
     hook_read.py
-    ... +13 more
+    hook_session_stats.py
+    ... +9 more
     commands/ (3 files)
-    tools/ (21 files)
+    tools/ (15 files)
     ui/ (5 files)
   commercial/
     info_01_efficiency.json
@@ -130,6 +128,7 @@ claude-companion - v2/
     agent_base.py
     agents.py
     auto_memory.py
+    benchmark_dashboard.py
     claude_md.py
     compressor.py
     context_snapshot.py
@@ -139,9 +138,10 @@ claude-companion - v2/
     e2e_evaluator.py
     e2e_tasks.py
     edit_ledger.py
-    embedding_index.py
-    ... +36 more
+    ... +30 more
+    bench/ (1 files)
   tests/
+    test_aider_polyglot.py
     test_e2e_benchmark.py
     test_enforcement_flip.py
     test_federated_graph.py
@@ -154,8 +154,9 @@ claude-companion - v2/
     test_project_manager.py
     test_session_benchmark.py
     test_session_budget.py
+    test_swe_bench.py
     test_validate.py
-    test_windows_reliability.py
+    ... +1 more
   tui/
     backend.py
     build.bat
@@ -172,11 +173,11 @@ Python
 
 ## Key Files
 
-- `cli/tools/agent.py` — edited in 24 sessions
-- `cli/tools/delegate.py` — edited in 14 sessions
-- `cli/mcp_server.py` — edited in 12 sessions
-- `cli/tools/search.py` — edited in 7 sessions
-- `cli/tools/read.py` — edited in 5 sessions
+- `cli/tools/agent.py` — edited in 17 sessions
+- `cli/mcp_server.py` — edited in 15 sessions
+- `cli/tools/search.py` — edited in 11 sessions
+- `cli/tools/delegate.py` — edited in 8 sessions
+- `cli/c3.py` — edited in 7 sessions
 
 ## Key Facts (use c3_memory for more)
 

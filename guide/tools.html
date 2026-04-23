@@ -94,6 +94,10 @@
       <a href="#c3_impact"   class="sidebar-link"><span class="icon">💥</span> c3_impact</a>
     </div>
     <div class="sidebar-section">
+      <div class="sidebar-label">Execute</div>
+      <a href="#c3_shell"    class="sidebar-link"><span class="icon">⚡</span> c3_shell</a>
+    </div>
+    <div class="sidebar-section">
       <div class="sidebar-label">Write</div>
       <a href="#c3_edit"     class="sidebar-link"><span class="icon">✏️</span> c3_edit</a>
       <a href="#c3_validate" class="sidebar-link"><span class="icon">✅</span> c3_validate</a>
@@ -120,7 +124,7 @@
 
     <div class="page-hero">
       <h1>Tools Reference</h1>
-      <p>Complete reference for all 12 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+      <p>Complete reference for all 14 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
     </div>
 
     <!-- TOC -->
@@ -132,6 +136,7 @@
         <a href="#c3_compress" class="toc-item">c3_compress <span class="cat">Read</span></a>
         <a href="#c3_filter"   class="toc-item">c3_filter   <span class="cat">Utility</span></a>
         <a href="#c3_impact"   class="toc-item">c3_impact   <span class="cat">Analysis</span></a>
+        <a href="#c3_shell"    class="toc-item">c3_shell    <span class="cat">Execute</span></a>
         <a href="#c3_edit"     class="toc-item">c3_edit     <span class="cat">Write</span></a>
         <a href="#c3_validate" class="toc-item">c3_validate <span class="cat">Write</span></a>
         <a href="#c3_session"  class="toc-item">c3_session  <span class="cat">Session</span></a>
@@ -557,6 +562,81 @@ c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
             <span class="callout-icon">💡</span>
             <div class="callout-body">
               Run <code>c3_impact</code> before <code>c3_edit</code> whenever you're renaming, removing, or changing the signature of a shared symbol. A HIGH risk result means you need to update all call sites in the same edit pass.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_shell -->
+      <div class="tool-card" id="c3_shell">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_shell</span>
+          <div class="tag-row">
+            <span class="badge badge-orange">execution</span>
+            <span class="badge badge-blue">ledger-aware</span>
+          </div>
+          <span class="tool-tagline">Structured shell execution — exit codes, auto-filter, git-ledger hooks</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Run a shell command through C3 with structured returns (<code>exit_code</code>, <code>stdout</code>, <code>stderr</code>, <code>duration_ms</code>), hard timeout + <code>taskkill /F /T</code> on Windows, auto-filter of long stdout, and automatic edit-ledger entries for git-mutating commands. Use for tests, git, builds, and one-shot scripts. Native Bash remains the fallback for interactive / TTY commands (<code>gh pr create</code> with editor, <code>ollama run</code>).</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">cmd</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc">Shell command to execute (runs via <code>subprocess.Popen(shell=True)</code>)</td>
+              </tr>
+              <tr>
+                <td class="param-name">cwd</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Working directory. Defaults to the project root</td>
+              </tr>
+              <tr>
+                <td class="param-name">timeout</td>
+                <td class="param-type">int</td>
+                <td class="param-default">60</td>
+                <td class="param-desc">Seconds before the process is killed with <code>taskkill /F /T</code> (Win) or <code>SIGKILL</code>. Capped at 600</td>
+              </tr>
+              <tr>
+                <td class="param-name">filter_output</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">True</td>
+                <td class="param-desc">Auto-route stdout through <code>c3_filter</code> when it exceeds 30 lines</td>
+              </tr>
+              <tr>
+                <td class="param-name">log</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">True</td>
+                <td class="param-desc">Write <code>shell_exec</code> to the activity log and auto-log git-mutating commands to the edit ledger</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Run tests — exit_code propagates, long output is filtered</span>
+c3_shell(cmd=<span class="str">'pytest tests/test_c3_shell.py -v'</span>)
+
+<span class="com"># Git mutation — affected files auto-recorded in the edit ledger</span>
+c3_shell(cmd=<span class="str">'git commit -m "wire c3_shell"'</span>)
+
+<span class="com"># Build with a longer timeout</span>
+c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str">300</span>)</code></pre>
+
+          <h4>Safety classification</h4>
+          <div class="tag-row">
+            <span class="badge badge-red">BLOCKED — rm -rf / or ~, fork bombs</span>
+            <span class="badge badge-yellow">WARN — --force, --no-verify, reset --hard, DROP/TRUNCATE</span>
+            <span class="badge badge-green">OK — everything else</span>
+          </div>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              Prefer <code>c3_shell</code> over native <code>Bash</code> for anything noisy, git-mutating, or long-running. You get structured returns, consistent Windows timeout behaviour, free output filtering, and ledger coupling. Fall back to native <code>Bash</code> only for interactive / TTY commands.
             </div>
           </div>
         </div>

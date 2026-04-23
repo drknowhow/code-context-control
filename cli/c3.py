@@ -238,7 +238,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_session", "mcp__c3__c3_status", "mcp__c3__c3_filter",
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
-    "mcp__c3__c3_impact",
+    "mcp__c3__c3_impact", "mcp__c3__c3_shell",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -4453,6 +4453,7 @@ back to native tools as the task progresses.
 - **Edit**: `c3_edit(file_path=..., old_string=..., new_string=...)` — before Edit/Write
 - **Validate**: `c3_validate(file_path=...)` — after every edit (pyright/tsc type check if installed)
 - **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
+- **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
 - **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
 
