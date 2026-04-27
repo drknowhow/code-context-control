@@ -178,8 +178,6 @@ See [`SECURITY.md`](SECURITY.md) for vulnerability reports, the full hardening g
 - **Pro tier** (planned: license-key activation, hosted team Hub, advanced memory) — separate commercial EULA (see [`EULA-PRO.md`](EULA-PRO.md)).
 - **Third-party deps** — listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
-"Code Context Control" and "C3" are trademarks of Dimitri Tselenchuk.
-
 ---
 
 ## Links
