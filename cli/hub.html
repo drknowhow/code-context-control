@@ -995,6 +995,49 @@
   </div>
 </div>
 
+<!-- Merge Modal -->
+<div class="modal-backdrop hidden" id="merge-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Merge Projects</h3>
+      <button class="modal-close" onclick="closeModal('merge-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <span class="form-label">Merging from</span>
+        <div class="form-path" id="merge-modal-source-path"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="merge-target-select">Merge into</label>
+        <select class="form-input" id="merge-target-select"></select>
+      </div>
+      <div class="form-group">
+        <span class="form-label">After merge</span>
+        <div style="display:flex;flex-direction:column;gap:.4rem;margin-top:.3rem;">
+          <label style="display:flex;align-items:center;gap:.5rem;font-weight:normal;cursor:pointer;">
+            <input type="radio" name="merge-cleanup" value="keep" checked onchange="updateMergeWarning()">
+            <span>Keep source project intact</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:.5rem;font-weight:normal;cursor:pointer;">
+            <input type="radio" name="merge-cleanup" value="clear" onchange="updateMergeWarning()">
+            <span>Clear source (wipe .c3/, MCP configs &amp; instruction docs)</span>
+          </label>
+        </div>
+      </div>
+      <div id="merge-warning" style="display:none;border:1px solid #b13c3c;background:rgba(177,60,60,.1);padding:.6rem .75rem;border-radius:4px;margin-top:.5rem;color:var(--text);font-size:.85rem;">
+        ⚠ The source project's <code>.c3/</code> directory, MCP configs (<code>.mcp.json</code>, <code>.claude/settings.local.json</code>, <code>.codex/</code>) and instruction docs (CLAUDE.md, GEMINI.md, AGENTS.md) will be deleted. The source directory itself stays in place.
+      </div>
+      <p style="font-size:.8rem;color:var(--text-muted);margin-top:.5rem;">
+        Combines memory facts, conversation sessions, and edit-ledger entries into the target. File-memory and indices are not merged.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('merge-modal')">Cancel</button>
+      <button class="btn btn-primary" id="merge-save-btn" onclick="saveMerge()">Merge</button>
+    </div>
+  </div>
+</div>
+
 <!-- Settings Modal -->
 <div class="modal-backdrop hidden" id="settings-modal">
   <div class="modal">
@@ -1186,6 +1229,8 @@ let sessionPollTimer = null;
 let modalPath = null;
 let editPath  = null;
 let transferPath = null;
+let mergeSourcePath = null;
+let mergeSourceName = '';
 let idePath     = null;
 let ideSelected = null;
 let mcpModalPath = null;
@@ -1261,7 +1306,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   );
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      ['mcp-modal','edit-modal','transfer-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
+      ['mcp-modal','edit-modal','transfer-modal','merge-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
         if (!document.getElementById(id).classList.contains('hidden')) closeModal(id);
       });
     }
@@ -1712,6 +1757,7 @@ function projectCard(p) {
   const editBtn     = `<button class="btn btn-xs btn-ghost"  onclick="openEditModal('${jsq(p.path)}','${jsq(p.name)}','${jsq((p.tags||[]).join(','))}')">✏ Edit</button>`;
   const ideBtn      = `<button class="btn btn-xs btn-primary" onclick="openIdeModal('${jsq(p.path)}','${jsq(p.ide)}')">&#9654; IDE</button>`;
   const transferBtn = !active ? `<button class="btn btn-xs btn-ghost"  onclick="openTransferModal('${jsq(p.path)}','${jsq(p.name)}')">Transfer</button>` : '';
+  const mergeBtn    = !active ? `<button class="btn btn-xs btn-ghost"  onclick="openMergeModal('${jsq(p.path)}','${jsq(p.name)}')" title="Merge memory, sessions and edit ledger into another project">⇄ Merge</button>` : '';
   const removeBtn   = !active ? `<button class="btn btn-xs btn-danger"  onclick="removeProject('${jsq(p.path)}','${jsq(p.name)}')">✕ Remove</button>` : '';
 
   const isLaunching = !active && launchingPaths.has(p.path);
@@ -1741,7 +1787,7 @@ function projectCard(p) {
       ${startBtn}${startUiBtn}${openBtn}${restartBtn}${stopBtn}${autostartBtn}${folderBtn}${logBtn}${ledgerBtn}${setupBtn}${ideBtn}
     </div>
     <div class="card-actions-secondary">
-      ${clearNotifBtn}${editBtn}${transferBtn}${removeBtn}
+      ${clearNotifBtn}${editBtn}${transferBtn}${mergeBtn}${removeBtn}
     </div>
   </div>
 </div>`;
@@ -2977,6 +3023,84 @@ async function saveTransfer() {
   }
 }
 
+// ── Merge Modal ───────────────────────────────────────────────────────────
+
+function openMergeModal(path, name) {
+  mergeSourcePath = path;
+  mergeSourceName = name;
+  document.getElementById('merge-modal-source-path').textContent = `${name}  (${path})`;
+  // Populate target dropdown with idle projects (exclude source and active sessions).
+  const sel = document.getElementById('merge-target-select');
+  sel.innerHTML = '';
+  const candidates = (allProjects || []).filter(p => p.path !== path && !p.session_active && p.port == null);
+  if (!candidates.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— No eligible target projects —';
+    sel.appendChild(opt);
+    document.getElementById('merge-save-btn').disabled = true;
+  } else {
+    candidates.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = `${p.name}  (${p.path})`;
+      sel.appendChild(opt);
+    });
+    document.getElementById('merge-save-btn').disabled = false;
+  }
+  // Reset cleanup radio + warning
+  document.querySelectorAll('input[name="merge-cleanup"]').forEach(r => { r.checked = (r.value === 'keep'); });
+  updateMergeWarning();
+  openModal('merge-modal');
+}
+
+function updateMergeWarning() {
+  const cleanup = (document.querySelector('input[name="merge-cleanup"]:checked') || {}).value || 'keep';
+  document.getElementById('merge-warning').style.display = cleanup === 'clear' ? 'block' : 'none';
+}
+
+async function saveMerge() {
+  if (!mergeSourcePath) return;
+  const target = document.getElementById('merge-target-select').value;
+  if (!target) { toast('Pick a target project', 'err'); return; }
+  const cleanup = (document.querySelector('input[name="merge-cleanup"]:checked') || {}).value || 'keep';
+  if (cleanup === 'clear') {
+    const ok = await confirmDialog({
+      title: 'Clear source after merge?',
+      message: `This will permanently delete .c3/, MCP configs and instruction docs from "${mergeSourceName}". The merged data will live on inside the target. Continue?`,
+      confirmText: 'Merge & clear',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  const btn = document.getElementById('merge-save-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects/merge', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({source_path: mergeSourcePath, target_path: target, cleanup}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (!d.merged) throw new Error('Merge did not complete');
+    const s = d.stats || {};
+    const summary = `Merged ${s.facts||0} facts, ${s.sessions||0} sessions, ${s.ledger_entries||0} ledger entries`;
+    toast(summary + (cleanup === 'clear' ? ' — source cleared' : ''), 'ok');
+    if (d.warnings && d.warnings.length) {
+      console.warn('merge warnings:', d.warnings);
+    }
+    closeModal('merge-modal');
+    delete detailsCache[mergeSourcePath];
+    delete detailsCache[target];
+    loadProjects();
+  } catch(e) {
+    toast('Merge error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ── Settings Modal ─────────────────────────────────────────────────────────
 async function openSettings() {
   try {
@@ -3166,11 +3290,12 @@ function closeModal(id) {
   if (id === 'update-modal') { modalPath = null; }
   if (id === 'edit-modal') { editPath = null; }
   if (id === 'transfer-modal') { transferPath = null; }
+  if (id === 'merge-modal') { mergeSourcePath = null; mergeSourceName = ''; }
   if (id === 'c3-setup-modal') { c3SetupPath = null; }
 }
 
 // Close modals on backdrop click
-['mcp-modal','edit-modal','transfer-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
+['mcp-modal','edit-modal','transfer-modal','merge-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target === e.currentTarget) closeModal(id);
   });

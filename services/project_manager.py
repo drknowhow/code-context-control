@@ -577,3 +577,247 @@ class ProjectManager:
 
         self._write_projects(projects)
         return {"transferred": True, "old_path": old_path, "new_path": new_path}
+
+    def merge_projects(self, source_path: str, target_path: str, cleanup: str = "keep") -> dict:
+        """Merge source project's memory/sessions/ledger into target.
+
+        Combines facts (.c3/facts/facts.json), edit-ledger entries
+        (.c3/edit_ledger.jsonl), conversation sessions (.c3/conversations/),
+        and unions registry tags + appends notes. Skips file_memory and
+        indices because their paths reference source files that don't
+        exist in the target.
+
+        Args:
+            source_path: project being merged FROM.
+            target_path: project being merged INTO.
+            cleanup: "keep" leaves source untouched after the merge;
+                     "clear" wipes source's .c3/, MCP configs and
+                     instruction docs (equivalent to ``c3 init --clear``)
+                     and removes its registry entry.
+
+        Returns:
+            ``{"merged": True, "source", "target", "cleanup", "stats": {...}}``
+            on success or ``{"merged": False, "error": "..."}`` on validation
+            failure.
+        """
+        import shutil
+        import uuid
+
+        if cleanup not in ("keep", "clear"):
+            return {"merged": False, "error": "cleanup must be 'keep' or 'clear'"}
+
+        src = Path(source_path).resolve()
+        tgt = Path(target_path).resolve()
+
+        if str(src) == str(tgt):
+            return {"merged": False, "error": "Paths are identical"}
+        if not src.is_dir():
+            return {"merged": False, "error": "Source path does not exist"}
+        if not tgt.is_dir():
+            return {"merged": False, "error": "Target path does not exist"}
+        if not (src / ".c3").is_dir():
+            return {"merged": False, "error": "Source has no .c3 directory"}
+        if not (tgt / ".c3").is_dir():
+            return {"merged": False, "error": "Target has no .c3 directory"}
+
+        projects = self._read_projects()
+        src_entry = next((p for p in projects if p.get("path") == str(src)), None)
+        tgt_entry = next((p for p in projects if p.get("path") == str(tgt)), None)
+        if src_entry is None:
+            return {"merged": False, "error": "Source project not registered"}
+        if tgt_entry is None:
+            return {"merged": False, "error": "Target project not registered"}
+
+        src_name = src_entry.get("name") or src.name
+        slug = "".join(c if c.isalnum() else "_" for c in src_name.lower())[:32] or "merged"
+        merge_tag = f"merged:{slug}"
+        merged_at = datetime.utcnow().isoformat() + "Z"
+
+        stats = {"facts": 0, "ledger_entries": 0, "sessions": 0}
+        warnings: list[str] = []
+
+        # ── Facts ────────────────────────────────────────────────────
+        src_facts_file = src / ".c3" / "facts" / "facts.json"
+        tgt_facts_dir = tgt / ".c3" / "facts"
+        tgt_facts_file = tgt_facts_dir / "facts.json"
+
+        if src_facts_file.exists():
+            try:
+                with open(src_facts_file, encoding="utf-8") as f:
+                    src_facts = json.load(f) or []
+            except Exception as e:
+                src_facts = []
+                warnings.append(f"facts read failed: {e}")
+
+            if src_facts:
+                tgt_facts: list = []
+                if tgt_facts_file.exists():
+                    try:
+                        with open(tgt_facts_file, encoding="utf-8") as f:
+                            tgt_facts = json.load(f) or []
+                    except Exception as e:
+                        warnings.append(f"target facts read failed: {e}")
+                        tgt_facts = []
+                for fact in src_facts:
+                    if not isinstance(fact, dict):
+                        continue
+                    new_fact = dict(fact)
+                    new_id = uuid.uuid4().hex[:12]
+                    new_fact["id"] = new_id
+                    new_fact["vector_id"] = new_id
+                    new_fact["merged_from"] = src_name
+                    new_fact["merged_at"] = merged_at
+                    tgt_facts.append(new_fact)
+                    stats["facts"] += 1
+                tgt_facts_dir.mkdir(parents=True, exist_ok=True)
+                with open(tgt_facts_file, "w", encoding="utf-8") as f:
+                    json.dump(tgt_facts, f, indent=2)
+
+        # ── Edit ledger ──────────────────────────────────────────────
+        src_ledger = src / ".c3" / "edit_ledger.jsonl"
+        tgt_ledger = tgt / ".c3" / "edit_ledger.jsonl"
+        if src_ledger.exists():
+            tgt_ledger.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(tgt_ledger, "a", encoding="utf-8") as out:
+                    for line in src_ledger.read_text(encoding="utf-8").splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        summary = entry.get("summary") or ""
+                        entry["summary"] = f"[merged from {src_name}] {summary}".rstrip()
+                        tags = list(entry.get("tags") or [])
+                        if merge_tag not in tags:
+                            tags.append(merge_tag)
+                        entry["tags"] = tags
+                        entry["merged_from"] = src_name
+                        out.write(json.dumps(entry) + "\n")
+                        stats["ledger_entries"] += 1
+            except Exception as e:
+                warnings.append(f"ledger merge failed: {e}")
+
+        # ── Conversations ────────────────────────────────────────────
+        src_conv = src / ".c3" / "conversations"
+        tgt_conv = tgt / ".c3" / "conversations"
+        if src_conv.is_dir():
+            tgt_conv.mkdir(parents=True, exist_ok=True)
+            renamed: dict[str, str] = {}  # old_id -> new_id
+
+            # Load target sessions index up-front so we know what IDs collide.
+            tgt_sessions: list = []
+            tgt_sessions_file = tgt_conv / "sessions.json"
+            if tgt_sessions_file.exists():
+                try:
+                    with open(tgt_sessions_file, encoding="utf-8") as f:
+                        tgt_sessions = json.load(f) or []
+                except Exception as e:
+                    warnings.append(f"target sessions read failed: {e}")
+                    tgt_sessions = []
+            tgt_ids = {s.get("session_id") for s in tgt_sessions if s.get("session_id")}
+
+            # Copy turn files (rename on collision).
+            for entry_path in src_conv.iterdir():
+                if not entry_path.is_file():
+                    continue
+                if entry_path.name == "sessions.json":
+                    continue
+                if entry_path.name.endswith(".jsonl.gz"):
+                    base = entry_path.name[:-len(".jsonl.gz")]
+                    ext = ".jsonl.gz"
+                elif entry_path.suffix == ".jsonl":
+                    base = entry_path.stem
+                    ext = ".jsonl"
+                else:
+                    continue
+                new_base = base
+                if base in tgt_ids or (tgt_conv / (base + ext)).exists():
+                    new_base = f"{base}_merged_{uuid.uuid4().hex[:6]}"
+                    renamed[base] = new_base
+                try:
+                    shutil.copy2(entry_path, tgt_conv / (new_base + ext))
+                except Exception as e:
+                    warnings.append(f"session copy {entry_path.name} failed: {e}")
+
+            # Merge sessions index.
+            src_sessions_file = src_conv / "sessions.json"
+            if src_sessions_file.exists():
+                try:
+                    with open(src_sessions_file, encoding="utf-8") as f:
+                        src_sessions = json.load(f) or []
+                except Exception as e:
+                    src_sessions = []
+                    warnings.append(f"source sessions read failed: {e}")
+                for s in src_sessions:
+                    if not isinstance(s, dict):
+                        continue
+                    new_s = dict(s)
+                    sid = new_s.get("session_id", "")
+                    if sid in renamed:
+                        new_s["session_id"] = renamed[sid]
+                    elif sid and sid in tgt_ids:
+                        new_s["session_id"] = f"{sid}_merged_{uuid.uuid4().hex[:6]}"
+                    new_s["merged_from"] = src_name
+                    new_s["merged_at"] = merged_at
+                    tgt_sessions.append(new_s)
+                    stats["sessions"] += 1
+                with open(tgt_sessions_file, "w", encoding="utf-8") as f:
+                    json.dump(tgt_sessions, f, ensure_ascii=False, indent=2)
+            else:
+                # No index in source — count copied turn files as sessions.
+                stats["sessions"] = len(list(tgt_conv.iterdir())) - (1 if tgt_sessions_file.exists() else 0)
+
+        # ── Registry tags + notes ────────────────────────────────────
+        for p in projects:
+            if p.get("path") == str(tgt):
+                tags = list(p.get("tags") or [])
+                for t in (src_entry.get("tags") or []):
+                    if t and t not in tags:
+                        tags.append(t)
+                p["tags"] = tags
+                src_notes = (src_entry.get("notes") or "").strip()
+                if src_notes:
+                    tgt_notes = (p.get("notes") or "").strip()
+                    sep = f"--- merged from {src_name} ---"
+                    p["notes"] = f"{tgt_notes}\n\n{sep}\n{src_notes}".strip() if tgt_notes else f"{sep}\n{src_notes}"
+                break
+        self._write_projects(projects)
+
+        # ── Cleanup ──────────────────────────────────────────────────
+        if cleanup == "clear":
+            try:
+                # Lazy import to avoid services -> cli circular import at module load.
+                from cli.c3 import _instruction_documents_for_project, _uninstall_mcp_all
+                try:
+                    _uninstall_mcp_all(str(src))
+                except Exception as e:
+                    warnings.append(f"uninstall_mcp failed: {e}")
+                c3_dir = src / ".c3"
+                if c3_dir.exists():
+                    try:
+                        shutil.rmtree(c3_dir)
+                    except Exception as e:
+                        warnings.append(f"rmtree .c3 failed: {e}")
+                for filename, _ in _instruction_documents_for_project():
+                    doc = src / filename
+                    if doc.exists():
+                        try:
+                            doc.unlink()
+                        except Exception as e:
+                            warnings.append(f"delete {filename} failed: {e}")
+            except Exception as e:
+                warnings.append(f"cleanup helpers unavailable: {e}")
+            self.remove_project(str(src))
+
+        result = {
+            "merged": True,
+            "source": str(src),
+            "target": str(tgt),
+            "cleanup": cleanup,
+            "stats": stats,
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result

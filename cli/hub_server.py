@@ -699,6 +699,29 @@ def api_projects_transfer():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/projects/merge", methods=["POST"])
+def api_projects_merge():
+    """Merge source project's memory/sessions/ledger into target.
+
+    Body: {source_path, target_path, cleanup: 'keep'|'clear'}
+    """
+    data = request.get_json(force=True) or {}
+    src = (data.get("source_path") or "").strip()
+    tgt = (data.get("target_path") or "").strip()
+    cleanup = (data.get("cleanup") or "keep").strip().lower()
+    if not src or not tgt:
+        return jsonify({"error": "source_path and target_path are required"}), 400
+    if cleanup not in ("keep", "clear"):
+        return jsonify({"error": "cleanup must be 'keep' or 'clear'"}), 400
+    try:
+        result = _pm().merge_projects(src, tgt, cleanup=cleanup)
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/projects/details", methods=["POST"])
 def api_projects_details():
     data = request.get_json(force=True) or {}

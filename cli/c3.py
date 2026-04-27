@@ -827,6 +827,11 @@ def cmd_init(args):
     if not c3_dir.exists() or not (c3_dir / "config.json").exists():
         print_header(f"Initializing C3 for: {project_path}")
         _do_init(project_path, ide_name=requested_ide)
+        try:
+            from services.project_manager import ProjectManager
+            ProjectManager().add_project(project_path)
+        except Exception as _e:
+            print(f"  [warn] Could not register project with hub: {_e}")
         if getattr(args, "force", False):
             if git_requested:
                 _init_local_git_repo(project_path)

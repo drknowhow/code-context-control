@@ -6,6 +6,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.29.0] - 2026-04-27
+
+Feature release. Adds project-merge in the hub and auto-registration on
+`c3 init`. Backwards-compatible — existing UIs and integrations continue
+to work unchanged.
+
+### Added
+- **Hub: Merge Projects** — new `⇄ Merge` button on each idle project
+  card opens a modal that combines a source project's accumulated
+  knowledge into a target. Useful when consolidating split repos,
+  retiring an experiment branch, or rolling two side-by-side projects
+  into one.
+  - Merges memory facts (`.c3/facts/facts.json`) with `merged_from` /
+    `merged_at` attribution preserved on every imported fact.
+  - Merges edit-ledger entries (`.c3/edit_ledger.jsonl`) with a
+    `[merged from <name>]` summary prefix and a `merged:<slug>` tag so
+    the imported history stays distinguishable.
+  - Merges conversation sessions (`.c3/conversations/`) — both the
+    `sessions.json` index and per-session turn files. Session IDs that
+    collide with the target are renamed `<id>_merged_<6hex>`.
+  - Unions registry tags and appends source notes to the target with a
+    `--- merged from <name> ---` separator.
+  - Cleanup mode `keep` (default) leaves the source untouched. Cleanup
+    mode `clear` performs the equivalent of `c3 init --clear` on the
+    source: wipes `.c3/`, strips MCP configs (`.mcp.json`,
+    `.claude/settings.local.json`, `.codex/`), removes instruction docs
+    (CLAUDE.md, GEMINI.md, AGENTS.md), and drops the registry entry.
+    The source directory itself is preserved.
+  - Confirm dialog gates the destructive `clear` path; a red warning
+    callout appears in the modal whenever `clear` is selected.
+  - Skipped intentionally: `file_memory/`, code indices, snapshots,
+    notifications, project config — their contents reference
+    source-specific paths that wouldn't apply in the target.
+- **`POST /api/projects/merge`** hub endpoint —
+  body `{source_path, target_path, cleanup: 'keep'|'clear'}`,
+  returns `{merged, source, target, cleanup, stats: {facts,
+  ledger_entries, sessions}, warnings?}`.
+- **`ProjectManager.merge_projects(source, target, cleanup)`** in
+  `services/project_manager.py`. Cleanup branch lazy-imports
+  `cli.c3._uninstall_mcp_all` + `_instruction_documents_for_project` so
+  `services/` keeps its no-`cli`-imports invariant at module load.
+- **Auto-registration on `c3 init`** — the brand-new install branch of
+  `cmd_init` now calls `ProjectManager().add_project(project_path)`
+  immediately after `_do_init()` succeeds. The hub picks the new
+  project up on its next `/api/projects` refresh — no separate
+  `c3 projects add <path>` step required. `add_project` is already
+  idempotent, so re-running init is safe.
+- 6 new unit tests in `tests/test_project_manager_merge.py` covering
+  add-project idempotency, merge-keep, merge-clear, and the validation
+  paths (identical paths, unregistered source, invalid cleanup value).
+  Tests sandbox `~/.c3/` by monkey-patching the module-level
+  `_GLOBAL_C3_DIR` / `_PROJECTS_FILE` / `_REGISTRY_FILE` constants so
+  the user's real registry is never touched.
+
+### Why
+The hub already showed every C3-initialized project on the machine,
+but two gaps were friction points: (1) projects had to be registered
+manually with `c3 projects add` after init, and (2) when two projects
+naturally converged (a fork that came back, an experiment that
+graduated), the accumulated facts, conversation history, and edit
+ledgers stayed siloed with no first-class way to combine them. This
+release closes both gaps without changing any existing surface.
+
 ## [2.28.3] - 2026-04-27
 
 Documentation + assets release. No code changes; behavior unchanged.
