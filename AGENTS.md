@@ -1,9 +1,10 @@
-## C3 Tools — two-mode enforcement
-Read-class native tools (**Read, Grep, Glob**) are **ADVISORY** — they run, but if no c3_* call preceded them the hook injects a hint asking you to prefer c3_search/c3_compress next time. Drift for read-only ops is cheap; a nudge is enough.
+## C3 Tools — MANDATORY (enforced by hooks)
+Native tools (Read, Grep, Glob, Edit, Write) are **blocked by PreToolUse hooks** unless a c3_* tool was called first. Do NOT attempt native tools without prior c3_* usage — they will be denied.
 
-Write-class native tools (**Edit, Write, MultiEdit**) are **HARD-BLOCKED** unless a c3_edit-class tool was used first. The edit ledger depends on c3_edit capturing every mutation; native writes bypass it.
-
-**Prefer c3_* first anyway.** The advisory nudge exists to catch drift, not to license sloppy tool selection. When native is genuinely better (tiny single-file read, c3_* returned insufficient scope), just use it and move on — state your reason in user-facing text if it matters.
+**Native tools are permitted ONLY when:**
+1. The c3_* tool failed or returned an error
+2. The c3_* tool returned insufficient scope for a targeted follow-up
+When falling back, state which c3_* tool was attempted and why it was insufficient.
 
 ## Workflow (follow this order — do not skip steps)
 1. **RECALL**: `c3_memory(action='recall')` — before any multi-step or context-dependent task. Large memory stores: use `index` first (compact list), then `fetch` for specific IDs
@@ -12,6 +13,7 @@ Write-class native tools (**Edit, Write, MultiEdit**) are **HARD-BLOCKED** unles
 4. **IMPACT** (shared symbols): `c3_impact(target='symbol')` — blast-radius check before editing any function/class used across files
 5. **EDIT via C3**: `c3_edit(file_path, old_string, new_string, summary)` — for ALL edits. Parallel across files; `edits=[]` batch for same file
 6. **FILTER**: `c3_filter(text=...)` — for terminal output >10 lines or log files
+6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Blocks fork bombs and `rm -rf /` or `~`; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
@@ -43,45 +45,33 @@ claude-companion - v2/
   .gitignore
   .mcp.json
   AGENTS.md
+  CHANGELOG.md
   CLAUDE.md
+  EULA-PRO.md
   GEMINI.md
+  LICENSE
   README.md
-  benchmark-report.html
-  c.tool_id
+  SECURITY.md
+  THIRD_PARTY_LICENSES.md
   c3.bat
   install.bat
   install.sh
-  landing.html
-  requirements.txt
+  oracle_start.bat
+  ... +1 more
   .claude/
     settings.local.json
-    settings.local.json.tmp.30620.1775727727166
-    settings.local.json.tmp.30620.1775728596812
-    settings.local.json.tmp.30620.1775728686714
   .codex/
     config.toml
   .gemini/
     settings.json
   .github/
     copilot-instructions.md
+    workflows/ (2 files)
   .neoB/
     neo_identity.md
     settings.json
     brain/ (3 files)
     outputs/
-  .pytest_cache/
-    .gitignore
-    CACHEDIR.TAG
-    README.md
-    v/
-  .vscode/
-    mcp.json
-    settings.json
-  Marketing/
-    c3_hub.png
-    c3_hub_ide_modal.png
-    c3_hub_notifications.png
-    c3_ui.png
   cli/
     __init__.py
     _hook_utils.py
@@ -89,18 +79,18 @@ claude-companion - v2/
     docs.html
     edits.html
     hook_auto_snapshot.py
+    hook_c3_signal.py
     hook_c3read.py
     hook_edit_ledger.py
     hook_edit_unlock.py
     hook_filter.py
     hook_ghost_files.py
-    hook_ghost_files.py.tmp.30620.1775728414610
     hook_pretool_enforce.py
     hook_read.py
     hook_session_stats.py
-    ... +11 more
+    ... +9 more
     commands/ (3 files)
-    tools/ (21 files)
+    tools/ (16 files)
     ui/ (5 files)
   commercial/
     info_01_efficiency.json
@@ -116,6 +106,7 @@ claude-companion - v2/
     config.py
     ide.py
   docs/
+    screenshots/ (4 files)
   guide/
     getting-started.html
     index.html
@@ -127,7 +118,7 @@ claude-companion - v2/
     config.py
     oracle.html
     oracle_server.py
-    services/ (12 files)
+    services/ (13 files)
   oracle-guide/
     README.md
     api-reference.md
@@ -140,6 +131,7 @@ claude-companion - v2/
     agent_base.py
     agents.py
     auto_memory.py
+    benchmark_dashboard.py
     claude_md.py
     compressor.py
     context_snapshot.py
@@ -149,17 +141,27 @@ claude-companion - v2/
     e2e_evaluator.py
     e2e_tasks.py
     edit_ledger.py
-    embedding_index.py
-    ... +37 more
+    ... +31 more
+    bench/ (1 files)
   tests/
+    test_aider_polyglot.py
+    test_c3_shell.py
+    test_cli_smoke.py
     test_e2e_benchmark.py
+    test_edit_normalization.py
+    test_enforcement_flip.py
+    test_federated_graph.py
+    test_ghost_files.py
+    test_hub_server_smoke.py
+    test_mcp_server_smoke.py
+    test_memory_graph_api.py
     test_memory_system.py
+    test_notification_discipline.py
     test_output_filter.py
-    test_project_manager.py
-    test_session_benchmark.py
-    test_session_budget.py
-    test_validate.py
+    test_permissions.py
+    ... +6 more
   tui/
+    __init__.py
     backend.py
     build.bat
     build.sh
@@ -171,12 +173,12 @@ claude-companion - v2/
 
 ## Tech Stack
 
-Python
+Python (Modern)
 
 ## Key Files
 
-- `cli/tools/agent.py` — edited in 24 sessions
-- `cli/tools/delegate.py` — edited in 14 sessions
-- `cli/mcp_server.py` — edited in 12 sessions
-- `cli/tools/search.py` — edited in 7 sessions
-- `cli/tools/read.py` — edited in 5 sessions
+- `cli/tools/agent.py` — edited in 17 sessions
+- `cli/mcp_server.py` — edited in 15 sessions
+- `cli/tools/search.py` — edited in 11 sessions
+- `cli/c3.py` — edited in 7 sessions
+- `cli/hook_pretool_enforce.py` — edited in 5 sessions

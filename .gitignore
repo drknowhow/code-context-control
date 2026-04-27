@@ -32,6 +32,9 @@ requirements.txt
 # ── Test cache ───────────────────────────────────────────────────────────────
 .pytest_cache/
 
+# ── Lint cache ───────────────────────────────────────────────────────────────
+.ruff_cache/
+
 # ── Ghost files ──────────────────────────────────────────────────────────────
 # Shell metacharacter artifacts: created when Bash misinterprets Python type
 # annotations (-> dict becomes > dict) or pip specifiers (>=3.0.0 becomes > =3.0.0)

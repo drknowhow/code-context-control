@@ -27,6 +27,8 @@ In plan mode, all c3_* read tools (search, read, compress, filter, validate, sta
 - Reading entire files when c3_compress + c3_read would be more surgical
 - Skipping c3_validate after making edits
 
+---
+
 # Project Context
 
 ```
@@ -34,14 +36,19 @@ claude-companion - v2/
   .gitignore
   .mcp.json
   AGENTS.md
+  CHANGELOG.md
   CLAUDE.md
+  EULA-PRO.md
   GEMINI.md
+  LICENSE
   README.md
+  SECURITY.md
+  THIRD_PARTY_LICENSES.md
   c3.bat
   install.bat
   install.sh
   oracle_start.bat
-  requirements.txt
+  ... +1 more
   .claude/
     settings.local.json
   .codex/
@@ -50,24 +57,12 @@ claude-companion - v2/
     settings.json
   .github/
     copilot-instructions.md
+    workflows/ (2 files)
   .neoB/
     neo_identity.md
     settings.json
     brain/ (3 files)
     outputs/
-  .pytest_cache/
-    .gitignore
-    CACHEDIR.TAG
-    README.md
-    v/
-  .vscode/
-    mcp.json
-    settings.json
-  Marketing/
-    c3_hub.png
-    c3_hub_ide_modal.png
-    c3_hub_notifications.png
-    c3_ui.png
   cli/
     __init__.py
     _hook_utils.py
@@ -102,6 +97,7 @@ claude-companion - v2/
     config.py
     ide.py
   docs/
+    screenshots/ (4 files)
   guide/
     getting-started.html
     index.html
@@ -136,26 +132,27 @@ claude-companion - v2/
     e2e_evaluator.py
     e2e_tasks.py
     edit_ledger.py
-    ... +30 more
+    ... +31 more
     bench/ (1 files)
   tests/
     test_aider_polyglot.py
     test_c3_shell.py
+    test_cli_smoke.py
     test_e2e_benchmark.py
     test_edit_normalization.py
     test_enforcement_flip.py
     test_federated_graph.py
     test_ghost_files.py
+    test_hub_server_smoke.py
+    test_mcp_server_smoke.py
     test_memory_graph_api.py
     test_memory_system.py
     test_notification_discipline.py
     test_output_filter.py
     test_permissions.py
-    test_project_manager.py
-    test_session_benchmark.py
-    test_session_budget.py
-    ... +3 more
+    ... +6 more
   tui/
+    __init__.py
     backend.py
     build.bat
     build.sh
@@ -167,7 +164,7 @@ claude-companion - v2/
 
 ## Tech Stack
 
-Python
+Python (Modern)
 
 ## Key Files
 
@@ -176,11 +173,3 @@ Python
 - `cli/tools/search.py` — edited in 11 sessions
 - `cli/c3.py` — edited in 7 sessions
 - `cli/hook_pretool_enforce.py` — edited in 5 sessions
-
-## Key Facts (use c3_memory for more)
-
-- [architecture] File Memory system: FileMemoryStore in services/file_memory.py provides persistent structural index of so
-- [convention] cmd_install_mcp in c3.py now generates both .mcp.json AND .claude/settings.local.json with PostToolUse hook
-- [ui] Left sidebar and right bar both support hover-to-open + pin. App state: sidebarPinned/rightBarPinned (localStorage 
-- c3_delegate now supports allow_model_fallback/fallback_models and resolves nearest installed Ollama model when the reque
-- ConversationStore sync now supports source='all|claude|imports', and sessions/turns persist normalized source labels for

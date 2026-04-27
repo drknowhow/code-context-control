@@ -408,11 +408,6 @@ class TestE2EBenchmarkWithMocks(unittest.TestCase):
         self.assertIn("Cost Saved", html)
         self.assertIn("Response Comparison", html)
 
-    @unittest.skip(
-        "Pre-existing failure: same root cause as test_report_includes_tool_analysis — "
-        "the bench worktree path zeroes mocked CLIResponse fields when .mcp.json is "
-        "absent. Tracked separately."
-    )
     def test_report_efficiency_summary(self):
         """Verify efficiency calculations in the report."""
         p = self._make_mock_provider("claude")
@@ -425,7 +420,7 @@ class TestE2EBenchmarkWithMocks(unittest.TestCase):
 
         tasks = [E2ETask(id="t1", category="test", query="?",
                          ground_truth=GroundTruth(required_keywords=["answer"]))]
-        bench = E2EBenchmark(".", [p], tasks, Evaluator(), parallel=False)
+        bench = E2EBenchmark(".", [p], tasks, Evaluator(), parallel=False, cache=False)
         results = bench.run_all()
         report = generate_e2e_report(".", results, [p], tasks)
 
@@ -527,12 +522,6 @@ class TestToolUsage(unittest.TestCase):
 
 
 class TestToolAnalysisInReport(unittest.TestCase):
-    @unittest.skip(
-        "Pre-existing failure: bench worktree path zeroes mocked tool_usage when "
-        ".mcp.json is absent from the project root. Fix tracked separately — "
-        "either inject a stub .mcp.json into the test sandbox or refactor "
-        "_run_task to respect pre-populated tool_usage on mocked responses."
-    )
     def test_report_includes_tool_analysis(self):
         """Report generation includes tool_analysis section."""
         p = CLIProvider(name="claude", executable="claude", available=True)
@@ -558,7 +547,7 @@ class TestToolAnalysisInReport(unittest.TestCase):
 
         tasks = [E2ETask(id="t1", category="test", query="?",
                          ground_truth=GroundTruth(required_keywords=["answer"]))]
-        bench = E2EBenchmark(".", [p], tasks, Evaluator(), parallel=False)
+        bench = E2EBenchmark(".", [p], tasks, Evaluator(), parallel=False, cache=False)
         results = bench.run_all()
         report = generate_e2e_report(".", results, [p], tasks)
 
