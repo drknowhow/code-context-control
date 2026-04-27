@@ -11,7 +11,7 @@ def maybe_related_facts(svc, topic: str, top_k: int = 3, width: int = 100) -> st
 # ── Ghost-file path validation ───────────────────────────────────────────────
 
 # Python builtin / typing names that should never be file paths
-_GHOST_NAMES = {
+_PYTHON_TYPE_NAMES = {
     "dict", "str", "int", "float", "bool", "list", "set", "tuple",
     "bytes", "bytearray", "complex", "frozenset", "memoryview",
     "type", "object", "range", "slice", "property", "classmethod",
@@ -19,6 +19,19 @@ _GHOST_NAMES = {
     "Any", "Union", "Optional", "List", "Dict", "Set", "Tuple",
     "Callable", "Iterator", "Generator", "Sequence", "Mapping",
 }
+
+# HEREDOC / here-string end-markers that leak as filenames when Bash or
+# PowerShell misparses a `<<EOF` / `@'...'@` block. Mirror of
+# cli/hook_ghost_files.py:_HEREDOC_MARKERS — kept duplicated to keep the
+# hook script standalone (no cross-module imports).
+_HEREDOC_MARKERS = {
+    "EOF", "EOM", "EOL", "END", "STOP", "DONE",
+    "MARK", "MARKER", "DELIM", "DELIMITER",
+    "INPUT", "OUTPUT", "DATA", "BLOCK", "HEREDOC",
+    "'@", "@'",
+}
+
+_GHOST_NAMES = _PYTHON_TYPE_NAMES | _HEREDOC_MARKERS
 
 
 def validate_file_path(file_path: str) -> str | None:
@@ -43,10 +56,11 @@ def _check_single_path(p: str) -> str | None:
     """Validate a single file path segment."""
     name = Path(p).name
 
-    # Bare Python type name (e.g., file_path="dict")
+    # Bare Python type name or HEREDOC end-marker (e.g., file_path="dict" or "EOF")
     if name in _GHOST_NAMES:
+        kind = "heredoc end-marker" if name in _HEREDOC_MARKERS else "Python type name"
         return (
-            f"Rejected file_path={p!r} — looks like a Python type name, not a file path. "
+            f"Rejected file_path={p!r} — looks like a {kind}, not a file path. "
             f"Pass the actual file path (e.g., 'src/models.py')."
         )
 

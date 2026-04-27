@@ -77,6 +77,25 @@ class TestGhostFileDetection(unittest.TestCase):
     def test_pip_redirect_equals(self):
         self._assert_ghost("=3.0.0")
 
+    def test_heredoc_marker_empty(self):
+        # Empty `EOF` / `END` / `'@` were already covered by the size==0
+        # extensionless fallback, but pin the behavior so it can't regress.
+        self._assert_ghost("EOF")
+        self._assert_ghost("END")
+        self._assert_ghost("'@")
+
+    def test_heredoc_marker_with_content(self):
+        # The actual gap: a HEREDOC end-marker leak can capture body bytes
+        # (e.g., `cat <<EOF >EOF\nbody\nEOF` under cmd.exe / Git Bash).
+        # Non-empty `EOF` was NOT flagged before the size-agnostic check.
+        p = self.root / "EOF"
+        p.write_text("leaked body line\n", encoding="utf-8")
+        self.assertTrue(_is_ghost_file(p))
+
+    def test_safe_eof_with_extension(self):
+        # A real doc named `EOF.md` is not a leak.
+        self._assert_safe("EOF.md")
+
     # Non-ghosts — must NOT be flagged.
     def test_safe_python_file(self):
         self._assert_safe("main.py")
@@ -96,15 +115,17 @@ class TestGhostFileDetection(unittest.TestCase):
         self._make("3.0.0`")
         self._make("parseApiResponse(await")
         self._make("tuple[float")
+        (self.root / "EOF").write_text("body\n", encoding="utf-8")
         scan = scan_ghost_files(self.root)
         by_name = {g["name"]: g for g in scan}
-        self.assertEqual(len(scan), 5)
+        self.assertEqual(len(scan), 6)
         self.assertIn("0-byte", by_name["0"]["reason"])
         self.assertEqual(by_name["str"]["reason"], "Python type name")
         self.assertEqual(by_name["3.0.0`"]["reason"], "shell metacharacter leak")
         self.assertEqual(by_name["parseApiResponse(await"]["reason"],
                          "partial function-call syntax")
         self.assertEqual(by_name["tuple[float"]["reason"], "partial type annotation")
+        self.assertEqual(by_name["EOF"]["reason"], "heredoc end-marker leak")
 
 
 if __name__ == "__main__":

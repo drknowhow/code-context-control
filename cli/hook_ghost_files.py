@@ -35,6 +35,16 @@ _PYTHON_TYPE_NAMES = {
     "Awaitable", "Coroutine", "AsyncIterator", "AsyncGenerator",
 }
 
+# Common heredoc / here-string end-markers that leak as filenames when
+# Bash or PowerShell misparses a `<<EOF` / `@'...'@` block. Match is
+# size-agnostic: a non-empty `EOF` file is still a ghost.
+_HEREDOC_MARKERS = {
+    "EOF", "EOM", "EOL", "END", "STOP", "DONE",
+    "MARK", "MARKER", "DELIM", "DELIMITER",
+    "INPUT", "OUTPUT", "DATA", "BLOCK", "HEREDOC",
+    "'@", "@'",  # PowerShell here-string fragments
+}
+
 # Max file size to consider a ghost (bytes). Genuine files are usually larger.
 _MAX_GHOST_SIZE = 4096
 
@@ -108,6 +118,10 @@ def _is_ghost_file(path: Path) -> bool:
     if name in _PYTHON_TYPE_NAMES:
         return True
 
+    # HEREDOC end-marker leaked as filename (e.g., "EOF", "'@", "END")
+    if name in _HEREDOC_MARKERS and not real_suffix:
+        return True
+
     # Partial type annotation (e.g., "tuple[float", "dict[str")
     if "[" in name and not real_suffix:
         return True
@@ -154,7 +168,9 @@ def scan_ghost_files(project_root: Path) -> list[dict]:
             name = entry.name
 
             # Determine reason
-            if name in _PYTHON_TYPE_NAMES:
+            if name in _HEREDOC_MARKERS:
+                reason = "heredoc end-marker leak"
+            elif name in _PYTHON_TYPE_NAMES:
                 reason = "Python type name"
             elif "[" in name:
                 reason = "partial type annotation"
