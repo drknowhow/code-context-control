@@ -6,6 +6,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.28.3] - 2026-04-27
+
+Documentation + assets release. No code changes; behavior unchanged.
+
+### Added
+- Fresh, comprehensive README with a guided tour of every UI surface:
+  Project Hub (list + grid + IDE picker + settings), per-project
+  Dashboard, Edit Ledger, Memory, Sessions, Instructions, Chat, and
+  Settings. Each section paired with a real screenshot captured from
+  a live install.
+- 11 new high-resolution UI screenshots in `docs/screenshots/`
+  captured directly from the running Hub + per-project UI:
+  `hub_projects.png`, `hub_projects_grid.png`, `hub_ide_config.png`,
+  `hub_settings.png`, `ui_dashboard.png`, `ui_edits.png`,
+  `ui_memory.png`, `ui_sessions.png`, `ui_instructions.png`,
+  `ui_chat.png`, `ui_settings.png`.
+- README MCP-tool table covering all 14 `c3_*` tools with one-line
+  descriptions of each.
+- README PyPI badge linking to the live package page.
+
+### Changed
+- README hero image now uses the per-project Dashboard (richer +
+  more visually striking than the prior screenshot).
+- IDE compatibility list expanded — Antigravity, Cursor, and Custom
+  added to the documented IDE matrix.
+- README `Install` section now starts with the one-liner
+  `pip install code-context-control` (PyPI is live; no clone needed).
+
+### Removed
+- Stale legacy screenshots: `c3_hub.png`, `c3_hub_ide_modal.png`,
+  `c3_hub_notifications.png`, `c3_ui.png`. Superseded by the new
+  high-quality captures listed above.
+
 ## [2.28.2] - 2026-04-27
 
 Documentation-only release. No code changes; no behavior changes; no
