@@ -6,6 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.28.2] - 2026-04-27
+
+Documentation-only release. No code changes; no behavior changes; no
+license change. The current OSS license remains Apache-2.0 for all 2.x
+versions.
+
+### Removed
+- `EULA-PRO.md` deleted. It described a Pro tier that doesn't exist and
+  contained maintainer-side commitments (updates, support, refunds) that
+  shouldn't be on the record before any paid product actually ships. A
+  proper EULA can be drafted later when there's something to govern.
+- All trademark claims removed from `NOTICE` and `LICENSING.md`. No
+  trademarks have been registered for "C3" or "Code Context Control",
+  so claiming them in legal documents created risk without benefit.
+
+### Changed
+- `NOTICE` — rewritten as informational-only. No commitments to
+  introduce a Pro tier, relicense future versions, respond to
+  inquiries, or maintain anything. References `LICENSE` Sections 7–8
+  for the warranty / liability disclaimer.
+- `LICENSING.md` — softened throughout. Every "we will" became "may"
+  or was removed. Added a top-of-file disclaimer that the FAQ is
+  informational only and `LICENSE` governs.
+- `SECURITY.md` — removed all response-time SLAs (3-day acknowledgement,
+  7-day triage, 30-day fix). Now describes the *how* of reporting on a
+  best-effort basis with no committed timeline.
+- `README.md` License section reduced to a minimal pointer to `LICENSE`
+  and `LICENSING.md`. No trademark text. No Pro-tier roadmap.
+
+### Why
+
+Apache-2.0 already provides the strongest possible warranty / liability
+disclaimer. Supplementary docs were adding obligations beyond what the
+license requires (response SLAs, "we will" promises about future
+versions, trademark claims on unregistered names). Stripping those down
+keeps the project's stated obligations exactly equal to what
+Apache-2.0 imposes — no more, no less.
+
 ## [2.28.1] - 2026-04-27
 
 Documentation-only release. No code changes; no behavior changes; no

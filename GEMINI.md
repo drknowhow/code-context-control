@@ -57,7 +57,6 @@ claude-companion - v2/
   AGENTS.md
   CHANGELOG.md
   CLAUDE.md
-  EULA-PRO.md
   GEMINI.md
   LICENSE
   README.md

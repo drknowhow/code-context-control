@@ -1,24 +1,14 @@
 # Security Policy
 
-We take the security of Code Context Control (C3) seriously. This document
-describes how to report vulnerabilities and what to expect in response.
-
-## Supported versions
-
-Only the latest minor release is supported with security fixes. We recommend
-all users upgrade promptly when a security release is published.
-
-| Version | Supported |
-|---|---|
-| 2.28.x | ✅ |
-| < 2.28 | ❌ |
+> **No warranty, no SLA, no obligation.** This project is provided "as is"
+> per `LICENSE` Sections 7–8. The notes below describe how to *get in
+> touch* about security issues, on a best-effort basis. Nothing here
+> creates an obligation, response timeline, or fix commitment.
 
 ## Reporting a vulnerability
 
-**Please do not open public GitHub issues for security vulnerabilities.**
-
-Email reports to **`dtselenc@gmail.com`** with subject line
-`[c3-security]`. Include:
+Please do not open public GitHub issues for security vulnerabilities.
+Email **`dtselenc@gmail.com`** with subject line `[c3-security]`. Include:
 
 - A clear description of the issue and its impact.
 - Steps to reproduce, including any relevant configuration.
@@ -26,19 +16,10 @@ Email reports to **`dtselenc@gmail.com`** with subject line
 - Any proof-of-concept code (please do not exploit beyond what is needed
   to demonstrate the issue).
 
-You should receive an acknowledgement within **3 business days**. We aim
-to provide a substantive response (triage, fix plan, or request for more
-information) within **7 business days**.
-
-## Disclosure timeline
-
-- **Day 0:** report received.
-- **Day ≤ 3:** acknowledgement sent.
-- **Day ≤ 7:** triage complete; severity assigned.
-- **Day ≤ 30:** fix released for high/critical issues; longer windows
-  negotiated case-by-case for low/medium severity.
-- **Day ≤ 30 + 14:** coordinated public disclosure (CVE if applicable),
-  with credit to the reporter unless anonymity is requested.
+The maintainer will look at reports as time permits. No acknowledgement,
+response, triage, or fix timeline is committed. Coordinated disclosure is
+preferred over public dropping of details, but again — no obligation
+runs in either direction.
 
 ## Scope
 

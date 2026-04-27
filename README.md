@@ -172,15 +172,12 @@ See [`SECURITY.md`](SECURITY.md) for vulnerability reports, the full hardening g
 
 ---
 
-## License & project posture
+## License
 
-- **Current OSS license** — Apache License 2.0 ([`LICENSE`](LICENSE)). Free for any use, including commercial. Modify, fork, redistribute — all permitted.
-- **Pro tier** (planned, not yet shipped) — license-key activation will gate new additive features. Existing OSS features stay free. See [`EULA-PRO.md`](EULA-PRO.md).
-- **Future major versions may relicense** to a source-available license (e.g. BSL 1.1 with a 4-year Apache-2.0 conversion) to protect commercialization. Already-published 2.x versions stay Apache-2.0 forever.
-- **Trademarks** — "C3" and "Code Context Control" are trademarks (™) of Dimitri Tselenchuk. Forks must use a distinct name. See [`NOTICE`](NOTICE).
+- **Current OSS license** — Apache License 2.0 ([`LICENSE`](LICENSE)). Free for any use, including commercial. Modify, fork, redistribute — all permitted under Apache-2.0 terms.
 - **Third-party deps** — see [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
-**Building on C3 commercially?** Please email `dtselenc@gmail.com` first. Apache-2.0 grants broad rights to the published 2.x code, but as a courtesy we ask the community not to repackage C3 as a commercial competing product. Full FAQ: [`LICENSING.md`](LICENSING.md).
+The author may introduce a paid offering or relicense future major versions; no commitment either way. Releases already published under Apache-2.0 (including all 2.x versions) keep their Apache-2.0 grant — that grant is irrevocable. Background and FAQ in [`LICENSING.md`](LICENSING.md). No warranty or support obligation; see LICENSE Sections 7–8.
 
 ---
 

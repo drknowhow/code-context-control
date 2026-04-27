@@ -4,41 +4,27 @@ Copyright 2026 Dimitri Tselenchuk
 This product includes software developed by Dimitri Tselenchuk and contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License"). See the LICENSE
-file in the root of this repository for the full text.
+file in the root of this repository for the full text. THE LICENSE FILE IS THE
+AUTHORITATIVE TERMS — anything in this NOTICE that conflicts with LICENSE is
+unintentional and the LICENSE governs.
 
 Third-party dependencies and their licenses are listed in THIRD_PARTY_LICENSES.md.
 
 ----------------------------------------------------------------------------
-Project posture and commercialization plans
+Informational note (not legally binding)
 ----------------------------------------------------------------------------
 
-This project is being developed with the intent to commercialize a paid
-"Pro" tier in future releases. The plan is:
+The author may, in the future, introduce a paid offering or relicense
+future major versions (3.x onwards) under a different license. No specific
+commitment to do so — or not to — is made. Whatever happens, releases
+already published under Apache-2.0 (including all 2.x versions) remain
+under their original Apache-2.0 grant, because Apache-2.0 makes that
+grant irrevocable.
 
-  - The current and prior 2.x releases remain under Apache License 2.0
-    perpetually. Your existing rights to those releases cannot be revoked.
+If you plan to redistribute, repackage, or build a competing commercial
+product using this code, you are within your Apache-2.0 rights; an email
+to dtselenc@gmail.com first would be appreciated as a courtesy but is
+not required.
 
-  - Future releases (3.x and onwards) MAY be relicensed under a
-    source-available license (for example, Business Source License 1.1)
-    that restricts redistribution and competing-service offerings while
-    keeping the source visible and usable.
-
-  - A Pro tier with license-key activation is planned (see EULA-PRO.md).
-    Pro features will be additive — not gated removals from current OSS
-    functionality in already-published versions.
-
-If you are evaluating C3 for commercial use, redistribution, or building a
-hosted service on top of it, please reach out to dtselenc@gmail.com first
-so we can discuss the appropriate arrangement. While Apache-2.0 grants
-broad rights to the published 2.x code, we ask the community as a courtesy
-not to repackage C3 as a commercial competing product.
-
-----------------------------------------------------------------------------
-Trademarks
-----------------------------------------------------------------------------
-
-"Code Context Control" and "C3" are trademarks (TM) of Dimitri Tselenchuk.
-The Apache-2.0 license does not grant permission to use these names, logos,
-or product identity except as required for describing the origin of the
-Work (per Section 6 of Apache-2.0). Forks and derivative works must use a
-distinct name and not present themselves as official C3 distributions.
+No warranty, support, or maintenance obligation of any kind is provided.
+See LICENSE Sections 7 and 8 for the full disclaimer.
