@@ -1,0 +1,14 @@
+{
+  "scene_id": "01_context_chaos",
+  "title": "The Context Wall",
+  "visual_prompt": "Cinematic 8k macro shot of a dark digital void where millions of translucent code lines (The Context Bloat) are stacking up into an insurmountable, glowing wall. The wall is flickering red, signaling 'Token Limit'. Suddenly, a sharp, clean neon-blue geometric pulse (C3) originates from the center, instantly slicing through the wall and leaving behind a perfectly clear path of organized code nodes. Particles of 'excess data' evaporate into blue sparks. Cyberpunk aesthetic, photorealistic.",
+  "camera_movement": "Extreme slow-motion dolly zoom (Vertigo effect) into the red-flickering code wall, followed by a fast backward camera pull as the blue pulse clears the path.",
+  "sound_design": "Low, oppressive glitchy digital hum that builds in tension. A crystalline 'shatter' sound as the pulse hits, transitioning into a pure, resonant electronic bell tone and airy wind.",
+  "overlay_text": ["Context Bloat Kills Productivity", "C3: Prune the Noise"],
+  "veo_settings": {
+    "duration": "6s",
+    "aspect_ratio": "16:9",
+    "motion_score": 8,
+    "quality_preset": "high"
+  }
+}

@@ -9,8 +9,8 @@ import json
 import time
 from pathlib import Path
 
-from core import count_tokens, format_token_count
-from cli.hook_ghost_files import scan_ghost_files, cleanup_ghost_files
+from cli.hook_ghost_files import cleanup_ghost_files, scan_ghost_files
+from core import format_token_count
 
 
 def handle_status(view: str, detailed: bool, svc, finalize) -> str:
@@ -170,6 +170,25 @@ def _health_view(svc, finalize):
                       f"delegate={'on' if wf_cfg.get('delegate_in_workflows', True) else 'off'}")
     else:
         parts.append("[workflows] disabled")
+    # Background agents
+    agents = getattr(svc, "agents", None) or []
+    if agents:
+        enabled = sum(1 for a in agents if getattr(a, "enabled", False))
+        running = sum(
+            1 for a in agents
+            if getattr(a, "_thread", None) and a._thread.is_alive()
+        )
+        backed_off = [
+            a.name for a in agents
+            if getattr(a, "_idle_multiplier", 1) > 1
+        ]
+        line = f"[agents] {len(agents)} total, {enabled} enabled, {running} running"
+        if backed_off:
+            line += f" (idle-backoff: {', '.join(backed_off)})"
+        parts.append(line)
+    else:
+        parts.append("[agents] none")
+
     # .c3/ directory disk usage
     try:
         c3_dir = Path(svc.project_path) / ".c3"

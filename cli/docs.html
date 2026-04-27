@@ -1,0 +1,3178 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C3 Docs â€” Claude Code Companion</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    /* â”€â”€ Theme variables (dark default) â”€â”€ */
+    :root {
+      --bg: #0a0e14;
+      --surface: #0f1319;
+      --surface-alt: #141a22;
+      --border: #1e2733;
+      --border-hover: #2a3544;
+      --text: #c5cdd8;
+      --text-muted: #5c6a7a;
+      --text-dim: #3a4555;
+      --text-heading: #ffffff;
+      --accent: #00e5a0;
+      --accent-dim: #00e5a018;
+      --accent-bg: #00e5a008;
+      --accent-border: #00e5a020;
+      --accent-border-strong: #00e5a040;
+      --blue: #4da6ff;
+      --blue-dim: #4da6ff15;
+      --blue-border: #4da6ff30;
+      --purple: #b38aff;
+      --purple-dim: #b38aff15;
+      --purple-border: #b38aff30;
+      --warn: #ffb224;
+      --warn-dim: #ffb22408;
+      --warn-border: #ffb22420;
+      --scrollbar: #1e2733;
+      --scrollbar-hover: #2a3544;
+    }
+
+    html[data-theme="light"] {
+      --bg: #f0f2f5;
+      --surface: #ffffff;
+      --surface-alt: #e8ebef;
+      --border: #dde2e8;
+      --border-hover: #b8c0cb;
+      --text: #1a2332;
+      --text-muted: #5a6a7a;
+      --text-dim: #9daab8;
+      --text-heading: #0d1520;
+      --accent: #009e72;
+      --accent-dim: #009e7214;
+      --accent-bg: #009e7208;
+      --accent-border: #009e7225;
+      --accent-border-strong: #009e7240;
+      --blue: #1a6fc4;
+      --blue-dim: #1a6fc414;
+      --blue-border: #1a6fc430;
+      --purple: #6b40c4;
+      --purple-dim: #6b40c414;
+      --purple-border: #6b40c430;
+      --warn: #b87000;
+      --warn-dim: #b8700008;
+      --warn-border: #b8700025;
+      --scrollbar: #dde2e8;
+      --scrollbar-hover: #b8c0cb;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', -apple-system, sans-serif;
+      line-height: 1.7;
+      min-height: 100%;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    ::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--scrollbar);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--scrollbar-hover);
+    }
+
+    code,
+    pre {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Layout */
+    .page {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 20px 0;
+    }
+
+    .sidebar-logo {
+      padding: 0 20px 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sidebar-logo .icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent-dim);
+      border: 1px solid var(--accent-border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 14px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .sidebar-logo .text {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .sidebar-logo .text span {
+      color: var(--accent);
+    }
+
+    .sidebar-logo .sub {
+      font-size: 9px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-top: 1px;
+    }
+
+    .theme-toggle {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 7px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .theme-toggle:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .sidebar-section {
+      padding: 8px 16px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-top: 8px;
+    }
+
+    .sidebar a {
+      display: block;
+      padding: 5px 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      transition: all 0.15s;
+      border-left: 2px solid transparent;
+    }
+
+    .sidebar a:hover {
+      color: var(--text);
+      background: var(--surface-alt);
+      text-decoration: none;
+    }
+
+    .sidebar a.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      background: var(--accent-bg);
+    }
+
+    .content {
+      flex: 1;
+      max-width: 860px;
+      padding: 40px 48px 80px;
+    }
+
+    /* Typography */
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-heading);
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+      line-height: 1.2;
+    }
+
+    h1 span {
+      color: var(--accent);
+    }
+
+    .subtitle {
+      font-size: 15px;
+      color: var(--text-muted);
+      margin-bottom: 40px;
+      line-height: 1.6;
+    }
+
+    h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-heading);
+      margin: 48px 0 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: -0.3px;
+    }
+
+    h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      margin: 28px 0 10px;
+    }
+
+    p {
+      margin-bottom: 14px;
+      font-size: 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 14px 20px;
+      font-size: 14px;
+    }
+
+    li {
+      margin-bottom: 4px;
+    }
+
+    li code {
+      font-size: 12px;
+    }
+
+    strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* Code blocks */
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin: 12px 0 18px;
+      overflow-x: auto;
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--text);
+    }
+
+    code {
+      background: var(--surface-alt);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--accent);
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+
+    td {
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    td code {
+      white-space: nowrap;
+    }
+
+    tr:hover td {
+      background: var(--surface-alt);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 12px 0 18px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+
+    .badge-green {
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+    }
+
+    .badge-blue {
+      background: var(--blue-dim);
+      color: var(--blue);
+      border: 1px solid var(--blue-border);
+    }
+
+    .badge-purple {
+      background: var(--purple-dim);
+      color: var(--purple);
+      border: 1px solid var(--purple-border);
+    }
+
+    .badge-warn {
+      background: var(--warn-dim);
+      color: var(--warn);
+      border: 1px solid var(--warn-border);
+    }
+
+    /* Feature grid */
+    .features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0 24px;
+    }
+
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+    }
+
+    .feature-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .feature-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .feature-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Architecture diagram */
+    .arch {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 12px 0 18px;
+      overflow-x: auto;
+    }
+
+    .arch pre {
+      background: transparent;
+      border: none;
+      padding: 0;
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .arch pre strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .arch pre em {
+      color: var(--blue);
+      font-style: normal;
+    }
+
+    /* Steps */
+    .steps {
+      counter-reset: step;
+      margin: 16px 0 24px;
+    }
+
+    .step {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--accent-dim);
+      border: 1px solid var(--accent-border-strong);
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-content {
+      flex: 1;
+    }
+
+    .step-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .step-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .step-desc code {
+      font-size: 12px;
+    }
+
+    /* Tab preview */
+    .tabs-preview {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin: 14px 0 18px;
+    }
+
+    .tab-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .tab-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tab-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Tip boxes */
+    .tip {
+      background: var(--accent-bg);
+      border: 1px solid var(--accent-border);
+      border-left: 3px solid var(--accent);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin: 12px 0 18px;
+      font-size: 13px;
+    }
+
+    .tip-title {
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .warn {
+      background: var(--warn-dim);
+      border: 1px solid var(--warn-border);
+      border-left: 3px solid var(--warn);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin: 12px 0 18px;
+      font-size: 13px;
+    }
+
+    .warn-title {
+      font-weight: 700;
+      color: var(--warn);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .sidebar {
+        display: none;
+      }
+
+      .content {
+        padding: 24px 20px 60px;
+      }
+
+      .features,
+      .tabs-preview {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Back-to-top */
+    .back-top {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-size: 16px;
+      z-index: 100;
+    }
+
+    .back-top:hover {
+      color: var(--accent);
+      border-color: var(--accent-border-strong);
+    }
+
+    /* Sidebar search */
+    .search-wrap {
+      position: relative;
+      padding: 0 12px 14px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .search-input {
+      width: 100%;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 28px 6px 28px;
+      font-size: 12px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-input:focus {
+      border-color: var(--accent-border-strong);
+    }
+
+    .search-input::placeholder {
+      color: var(--text-dim);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 21px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      font-size: 11px;
+      pointer-events: none;
+    }
+
+    .search-clear {
+      position: absolute;
+      right: 20px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      display: none;
+      padding: 0;
+    }
+
+    .search-clear.visible {
+      display: block;
+    }
+
+    .search-clear:hover {
+      color: var(--text);
+    }
+
+    .search-hint {
+      font-size: 9px;
+      color: var(--text-dim);
+      text-align: right;
+      margin-top: 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .search-no-results {
+      padding: 6px 20px 4px;
+      font-size: 12px;
+      color: var(--text-dim);
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-logo">
+        <div class="icon">C3</div>
+        <div>
+          <div class="text">C<span>3</span> Docs</div>
+          <div class="sub">Code Companion</div>
+        </div>
+        <button id="themeToggle" class="theme-toggle" title="Toggle light/dark mode">â˜€</button>
+      </div>
+
+      <div class="search-wrap">
+        <span class="search-icon">âŒ•</span>
+        <input type="search" class="search-input" id="docSearch" placeholder="Search docsâ€¦" autocomplete="off"
+          spellcheck="false">
+        <button class="search-clear" id="searchClear" title="Clear">Ã—</button>
+        <div class="search-hint">/ or Ctrl+K to focus</div>
+      </div>
+      <div class="search-no-results" id="searchNoResults">No results</div>
+
+      <div class="sidebar-section">Getting Started</div>
+      <a href="#overview">Overview</a>
+      <a href="#recent-updates">Recent Updates</a>
+      <a href="#installation">Installation</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="#cross-ide">Cross-IDE Setup</a>
+
+      <div class="sidebar-section">MCP Server</div>
+      <a href="#mcp-tools">MCP Tools</a>
+      <a href="#context-tools">Context Manager</a>
+      <a href="#claudemd-tools">Instructions Tools</a>
+      <a href="#agent-tools">Background Agents</a>
+      <a href="#hybrid-tools">Hybrid Intelligence</a>
+      <a href="#proxy-layer">MCP Proxy</a>
+      <a href="#file-memory">File Memory</a>
+      <a href="#hooks">Hooks</a>
+      <a href="#mcp-behavior">Auto Behavior</a>
+
+      <div class="sidebar-section">Web Dashboard</div>
+      <a href="#dashboard">Launching</a>
+      <a href="#tabs">Dashboard Tabs</a>
+      <a href="#right-sidebar">Right Sidebar</a>
+      <a href="#bottom-drawer">Bottom Drawer</a>
+      <a href="#api">REST API</a>
+
+      <div class="sidebar-section">CLI</div>
+      <a href="#cli-commands">Commands</a>
+      <a href="#cli-examples">Examples</a>
+
+      <div class="sidebar-section">Reference</div>
+      <a href="#architecture">Architecture</a>
+      <a href="#conversations">Conversations</a>
+      <a href="#compression">Compression Modes</a>
+      <a href="#data-layout">Data Layout</a>
+      <a href="#token-savings">Token Savings</a>
+      <a href="#tips">Tips</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="content">
+
+      <!-- â”€â”€â”€ Overview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h1 id="overview">Code <span>Companion</span></h1>
+      <div class="subtitle">
+        A local code intelligence system that reduces AI coding assistant token usage through compression,
+        indexing, and persistent memory. Works with <strong>Claude Code</strong>, <strong>Google Antigravity</strong>,
+        <strong>Gemini CLI</strong>,
+        <strong>VS Code Copilot</strong>, and <strong>Cursor</strong> via MCP. Available as an <strong>MCP
+          server</strong>,
+        <strong>CLI</strong>, and <strong>web dashboard</strong>.
+      </div>
+
+      <div class="features">
+        <div class="feature">
+          <div class="feature-num">01</div>
+          <div class="feature-title">Context Compression</div>
+          <div class="feature-desc">AST-based code summarization with structure, outline, smart, and diff modes</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">02</div>
+          <div class="feature-title">Smart Local Index</div>
+          <div class="feature-desc">TF-IDF retrieval to pre-filter what gets sent to Claude</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">03</div>
+          <div class="feature-title">Session Tracking</div>
+          <div class="feature-desc">Persistent decisions, file changes, and tool call logging across sessions</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">04</div>
+          <div class="feature-title">Compression Protocol</div>
+          <div class="feature-desc">Shorthand encoding/decoding for prompts and responses</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">05</div>
+          <div class="feature-title">Tiered Memory</div>
+          <div class="feature-desc">Durable fact storage with cross-session semantic search</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">06</div>
+          <div class="feature-title">File Watcher</div>
+          <div class="feature-desc">Monitors project changes and triggers automatic index rebuilds</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">07</div>
+          <div class="feature-title">Context Snapshots</div>
+          <div class="feature-desc">Capture/restore working context across session boundaries to reset tokens without
+            losing state</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">08</div>
+          <div class="feature-title">Transcript Search</div>
+          <div class="feature-desc">TF-IDF index over past conversations for cross-session semantic retrieval (Claude
+            Code; other IDEs use c3_memory(action='recall')/c3_memory(action='query'))</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">09</div>
+          <div class="feature-title">Background Agents</div>
+          <div class="feature-desc">Autonomous daemon threads that monitor index staleness, memory health, instructions
+            file drift, and context budget</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">10</div>
+          <div class="feature-title">Output Filter</div>
+          <div class="feature-desc">Two-pass terminal output filtering: deterministic noise removal + optional LLM
+            summarization via Ollama</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">11</div>
+          <div class="feature-title">Adaptive Router</div>
+          <div class="feature-desc">Classifies queries and routes to appropriate local LLMs (gemma3, deepseek-r1,
+            llama3.2) or passes through to Claude</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">12</div>
+          <div class="feature-title">SLTM Vector Memory</div>
+          <div class="feature-desc">Semantic Long-Term Memory with optional ChromaDB vector search, hybrid TF-IDF +
+            cosine similarity scoring</div>
+        </div>
+        <div class="feature">
+          <div class="feature-num">13</div>
+          <div class="feature-title">File Memory</div>
+          <div class="feature-desc">Persistent structural index of source files with line ranges, enabling targeted
+            reads. Background agent maintains maps; Read hook enforces C3 tool usage</div>
+        </div>
+      </div>
+
+      <h2 id="recent-updates">Recent Updates</h2>
+      <div class="card">
+        <div class="card-title">v2.3.3 &mdash; March 6, 2026</div>
+        <ul>
+          <li><strong>Persistent Compression Cache:</strong> Compression and structural mapping results are now globally cached in <code>.c3/cache</code> based on MD5 content hashes and mode, making subsequent reads instantly fast and avoiding redundant AST parsing.</li>
+          <li><strong>Expanded Language Mapping:</strong> Rich AST-based structural support added for <strong>Go, Rust, JSON, and YAML</strong> files, in addition to the existing Python and JS/TS support.</li>
+          <li><strong>Documentation Mapping:</strong> Added structural mapping for <strong>HTML, Markdown, and CSS</strong> files, enabling targeted reads of specific UI components, document headers, and styles.</li>
+          <li><strong>Performance History:</strong> <code>c3 benchmark</code> reports now feature a dedicated <strong>History Tab</strong> with time-series charts (via Chart.js) tracking token savings, quality, and latency across versions.</li>
+          <li><strong>Global Configuration Migration:</strong> <code>c3 init . --force</code> now correctly migrates legacy analytics locations and refreshes instructions files across all supported IDEs.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">v2.3.0 &mdash; March 5, 2026</div>
+        <ul>
+          <li><strong>Tree-sitter Integration:</strong> Migrated from line-based regex to precise AST parsing for core languages, vastly improving map and search precision.</li>
+          <li><strong>Hybrid Vector Search:</strong> Search recall now combines traditional keyword matching with semantic vector distance for higher retrieval grounding.</li>
+          <li><strong>Background Agents:</strong> Autonomous daemon threads now monitor index staleness and context budget in real-time.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Latest Local Benchmark Snapshot</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">
+          Optimized run executed on <strong>March 6, 2026</strong> (v2.3.3) in this repository.
+        </p>
+        <table>
+          <tr>
+            <th>Metric</th>
+            <th>Result</th>
+          </tr>
+          <tr>
+            <td>Overall Token Savings (43 files)</td>
+            <td><strong>94.7%</strong></td>
+          </tr>
+          <tr>
+            <td>Prompt Budget Multiplier</td>
+            <td><strong>18.74x</strong></td>
+          </tr>
+          <tr>
+            <td>Grounding Performance (with C3)</td>
+            <td><strong>100.0%</strong> hit rate</td>
+          </tr>
+          <tr>
+            <td>Avg Local Latency</td>
+            <td>2.05 ms/task</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- â”€â”€â”€ Installation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="installation">Installation</h2>
+
+      <pre><code>cd code-context-control
+pip install .
+
+# Initialize in your project
+c3 init /path/to/your/project</code></pre>
+
+      <p>Platform installers handle dependencies and PATH setup automatically:</p>
+      <ul>
+        <li><strong>Windows:</strong> <code>install.bat</code></li>
+        <li><strong>Linux/macOS:</strong> <code>install.sh</code></li>
+      </ul>
+
+      <!-- â”€â”€â”€ Quick Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="quickstart">Quick Start</h2>
+      <p>The recommended way to use C3 is as an MCP server â€” your IDE calls C3 tools directly with no manual piping.
+      </p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-content">
+            <div class="step-title">Install C3</div>
+            <div class="step-desc"><code>cd code-context-control && pip install .</code></div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-content">
+            <div class="step-title">Initialize C3 in your project</div>
+            <div class="step-desc"><code>python cli/c3.py init /path/to/your/project</code><br>Creates the
+              <code>.c3/</code> directory, builds the code index, and then walks through a guided 3-step setup:
+              choose the IDE profile, optionally run a local <code>git init</code>, and optionally install MCP.
+              When MCP is installed, C3 writes the IDE config plus project-local session files such as
+              <code>.codex/config.toml</code> and <code>.gemini/settings.json</code>. For VS Code, also generates
+              <code>.github/copilot-instructions.md</code> (hard enforcement language) and
+              <code>.vscode/settings.json</code> (Copilot instruction links). For Codex, generates
+              <code>AGENTS.md</code> with the C3 session protocol. Use <code>--ide vscode</code>,
+              <code>--ide cursor</code>, or <code>--ide codex</code> to override IDE detection.
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-content">
+            <div class="step-title">Restart your IDE</div>
+            <div class="step-desc">Open your IDE in the project. For Claude Code, run <code>/mcp</code> to verify C3
+              tools appear. For Google Antigravity and Gemini CLI, the MCP tools will be loaded based on your config.
+              For VS Code, check MCP tools in the Copilot agent panel. For Codex, the <code>.codex/config.toml</code> is
+              picked up automatically on next session start.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- â”€â”€â”€ Cross-IDE Setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="cross-ide">Cross-IDE Setup</h2>
+      <p>C3 works with any MCP-capable IDE. The <code>install-mcp</code> command auto-detects your IDE and generates the
+        correct config format.</p>
+
+      <h3>Supported IDEs</h3>
+      <table>
+        <tr>
+          <th>IDE</th>
+          <th>Config File</th>
+          <th>Instructions File</th>
+          <th>Extra Files</th>
+          <th>Hooks</th>
+          <th>Transcripts</th>
+        </tr>
+        <tr>
+          <td><strong>Claude Code</strong></td>
+          <td><code>.mcp.json</code></td>
+          <td><code>CLAUDE.md</code></td>
+          <td><code>.claude/settings.local.json</code></td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td><strong>VS Code Copilot</strong></td>
+          <td><code>.vscode/mcp.json</code></td>
+          <td><code>.github/copilot-instructions.md</code></td>
+          <td><code>.vscode/settings.json</code></td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td><strong>Cursor</strong></td>
+          <td><code>.cursor/mcp.json</code></td>
+          <td><code>.cursorrules</code></td>
+          <td>â€”</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td><strong>OpenAI Codex</strong></td>
+          <td><code>.codex/config.toml</code></td>
+          <td><code>AGENTS.md</code></td>
+          <td>â€”</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td><strong>Gemini CLI</strong></td>
+          <td><code>.gemini/settings.json</code></td>
+          <td><code>GEMINI.md</code></td>
+          <td>â€”</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td><strong>Google Antigravity</strong></td>
+          <td><code>~/.gemini/antigravity/mcp_config.json</code> <span class="badge badge-warn"
+              style="font-size:10px">global</span></td>
+          <td><code>GEMINI.md</code></td>
+          <td>â€”</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+      </table>
+
+      <h3>IDE-specific Installation</h3>
+      <pre><code># Guided setup (recommended)
+python cli/c3.py init /path/to/project
+
+# Non-interactive setup with local Git + direct MCP
+python cli/c3.py init /path/to/project --force --git --ide codex --mcp-mode direct
+
+# MCP-only setup
+python cli/c3.py install-mcp /path/to/project
+
+# Explicit direct/proxy mode
+python cli/c3.py install-mcp /path/to/project --mcp-mode direct
+python cli/c3.py install-mcp /path/to/project --mcp-mode proxy
+
+# Explicit IDE selection
+python cli/c3.py install-mcp /path/to/project --ide vscode
+python cli/c3.py install-mcp /path/to/project --ide cursor
+python cli/c3.py install-mcp /path/to/project --ide claude
+python cli/c3.py install-mcp /path/to/project --ide codex
+python cli/c3.py install-mcp /path/to/project --ide gemini
+python cli/c3.py install-mcp /path/to/project --ide antigravity
+
+# IDE shorthand when already inside the project directory
+python cli/c3.py install-mcp claude
+python cli/c3.py install-mcp codex
+python cli/c3.py install-mcp . gemini</code></pre>
+
+      <p><code>--git</code> runs a local-only <code>git init</code>. It does not create remotes or connect to GitHub,
+        GitLab, or any other hosted service.</p>
+
+      <p><strong>VS Code Copilot</strong> â€” <code>install-mcp --ide vscode</code> (and
+        <code>c3 init --ide vscode</code>) generate two additional enforcement files:
+      </p>
+      <ul>
+        <li><code>.github/copilot-instructions.md</code> â€” workspace instructions auto-injected by Copilot into every
+          chat. Written with REQUIRED/MANDATORY/NEVER language and a 4-step C3 session checklist. Only created if
+          absent; existing customizations are preserved.</li>
+        <li><code>.vscode/settings.json</code> â€” pins both <code>copilot-instructions.md</code> and
+          <code>CLAUDE.md</code> as instruction context for
+          <code>github.copilot.chat.codeGeneration.instructions</code>, <code>reviewSelection.instructions</code>, and
+          <code>testGeneration.instructions</code>. Merged with existing settings.
+        </li>
+      </ul>
+
+      <p><strong>OpenAI Codex</strong> â€” <code>install-mcp --ide codex</code> (and <code>c3 init --ide codex</code>)
+        write a TOML config and enforce Codex instructions for C3 usage:</p>
+      <ul>
+        <li><code>.codex/config.toml</code> â€” project-scoped Codex MCP config in TOML format with a
+          <code>[mcp_servers.c3]</code> section. C3 writes <code>command</code>, <code>args</code>, and
+          <code>enabled = true</code> so the server is active immediately. The global equivalent is
+          <code>~/.codex/config.toml</code>. Auto-detected when a <code>.codex/</code> directory or
+          <code>.codex/config.toml</code> already exists.
+        </li>
+        <li><code>AGENTS.md</code> â€” Codex reads this file as its instructions context (equivalent to
+          <code>CLAUDE.md</code> for Claude Code). C3 enforces the mandatory workflow: if required C3 markers are
+          missing, it updates <code>AGENTS.md</code> and preserves prior content under an <em>Existing Project
+            Instructions</em> section.
+        </li>
+        <li><strong>Global conflict warning</strong> â€” if <code>~/.codex/config.toml</code> contains
+          <code>[mcp_servers.c3] enabled = false</code>, C3 warns because this commonly makes C3 appear disabled even
+          when project config is correct.
+        </li>
+      </ul>
+
+      <p><strong>Gemini CLI</strong> â€” <code>install-mcp --ide gemini</code> (and <code>c3 init --ide gemini</code>)
+        write a project-scoped JSON config and a GEMINI.md instructions file:</p>
+      <ul>
+        <li><code>.gemini/settings.json</code> â€” project-scoped MCP config under the <code>mcpServers</code> key.
+          Gemini CLI reads both this file and <code>~/.gemini/settings.json</code> (user-global). Merged with existing
+          settings. Auto-detected when a <code>.gemini/</code> directory or <code>.gemini/settings.json</code> already
+          exists.</li>
+        <li><code>GEMINI.md</code> â€” Gemini CLI reads this file as project context (loaded from the project root and
+          parent directories). Generated with REQUIRED/MANDATORY/NEVER language and the 7-step C3 session protocol. Only
+          created if absent.</li>
+      </ul>
+
+      <p><strong>Google Antigravity</strong> â€” <code>install-mcp --ide antigravity</code> writes the MCP config to the
+        user-global Antigravity config and a project-local <code>GEMINI.md</code>:</p>
+      <ul>
+        <li><code>~/.gemini/antigravity/mcp_config.json</code> â€” user-global Antigravity MCP config under the
+          <code>mcpServers</code> key. This is the file managed by Antigravity's <em>Manage MCPs</em> UI. Merged with
+          existing config. Each project still passes <code>--project</code> to the MCP server so C3 indexes the correct
+          directory.
+        </li>
+        <li><code>GEMINI.md</code> â€” Antigravity and Gemini CLI both read <code>GEMINI.md</code> files from the
+          project root. Same content as Gemini CLI profile. Only created if absent.</li>
+        <li>Auto-detected when <code>~/.gemini/antigravity/</code> directory already exists alongside a
+          <code>.gemini/</code> project directory.
+        </li>
+      </ul>
+
+      <h3>Graceful Degradation</h3>
+      <p>All core C3 tools (search, compress, file_map, memory, sessions) work identically in every IDE. Claude-specific
+        features degrade gracefully:</p>
+      <ul>
+        <li><strong>Transcript search</strong> â€” returns a helpful message suggesting <code>c3_memory(action='recall')</code> or
+          <code>c3_memory(action='query')</code> as alternatives
+        </li>
+        <li><strong>Hooks</strong> â€” only installed for Claude Code; VS Code, Cursor, and Codex use hard-language
+          workflow instructions in their instructions file instead</li>
+        <li><strong>Instructions file</strong> â€” <code>c3_claudemd_generate</code> writes to the IDE-appropriate file
+          (CLAUDE.md, copilot-instructions.md, .cursorrules, AGENTS.md, or GEMINI.md). All IDEs use MANDATORY/NEVER
+          language â€” the hook-enforcement note is omitted for non-hook IDEs</li>
+        <li><strong>Snapshot/Restore</strong> â€” works in all IDEs for saving and restoring working context</li>
+      </ul>
+
+      <!-- â”€â”€â”€ MCP Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="mcp-tools">MCP Tools Reference</h2>
+      <p>C3 exposes 9 MCP tools. All core tools work without Ollama; delegate requires it.</p>
+
+      <h3>Discovery &amp; Compression</h3>
+      <table>
+        <tr>
+          <th>Tool</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>c3_search</code></td>
+          <td>Consolidated search for code or transcripts. Actions:
+            <span class="badge badge-blue">code</span> TF-IDF search across indexed codebase.
+            <span class="badge badge-green">exact</span> Exact or regex match across tracked files.
+            <span class="badge badge-purple">files</span> Ranked file discovery with structural metadata.
+            <span class="badge badge-warn">transcript</span> Search past conversations (Claude Code).
+            Params: <code>query</code>, <code>action</code>, <code>top_k</code>, <code>max_tokens</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_compress</code></td>
+          <td>Compresses a source file to a token-efficient summary. Saves 40-70% tokens. Modes:
+            <span class="badge badge-green">map</span> Structural map (classes/functions) with line numbers.
+            <span class="badge badge-blue">dense_map</span> Detailed structural map.
+            <span class="badge badge-purple">smart</span> Intelligent default (auto-selects best mode).
+            <span class="badge badge-warn">diff</span> Changes only (git diff context).
+            Params: <code>file_path</code>, <code>mode</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_read</code></td>
+          <td><strong>Surgically read</strong> specific sections of a file. Resolves symbol names to exact line ranges.
+            Supports multi-file reads (comma-separated paths), multiple <code>symbols</code> (partial/substring match),
+            and manual <code>lines</code> ranges (single int, range, or list of ranges).
+            Params: <code>file_path</code>, <code>symbols</code>, <code>lines</code>, <code>include_docstrings</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_filter</code></td>
+          <td>Filter terminal output or extract from files. Two modes:
+            <strong>text mode</strong>: pass <code>text</code> for terminal output filtering (strips noise, collapses pass/fail).
+            <strong>file mode</strong>: pass <code>file_path</code> to extract from logs/data. Use <code>pattern</code> for regex grep.
+            Depth levels: <span class="badge badge-green">fast</span> regex only,
+            <span class="badge badge-purple">smart</span> regex + heuristics (default),
+            <span class="badge badge-warn">deep</span> regex + heuristics + LLM (requires Ollama).
+            Params: <code>file_path</code>, <code>text</code>, <code>pattern</code>, <code>max_lines</code>, <code>depth</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_validate</code></td>
+          <td>Syntax-check a file using native language parsers &mdash; no AI, no external services.
+            Supports: py&rarr;ast, json&rarr;json.loads, yaml, xml/svg&rarr;ElementTree, toml,
+            js/jsx&rarr;node, ts&rarr;tsc, tsx&rarr;tsc, java&rarr;javac, go&rarr;gofmt, rs&rarr;rustc,
+            r&rarr;Rscript, sh/bash&rarr;bash -n, html&rarr;lxml, css&rarr;tinycss2.
+            Params: <code>file_path</code>.
+          </td>
+        </tr>
+      </table>
+
+      <h3>Session &amp; Memory</h3>
+      <table>
+        <tr>
+          <th>Tool</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>c3_session</code></td>
+          <td>Consolidated session management. Actions:
+            <span class="badge badge-green">start</span> Begin new session.
+            <span class="badge badge-green">save</span> Persist current session.
+            <span class="badge badge-blue">log</span> Record decision or file change (<code>event_type</code>: decision|file_change|auto).
+            <span class="badge badge-blue">plan</span> Store/update a named plan.
+            <span class="badge badge-purple">snapshot</span> Capture work state before /clear.
+            <span class="badge badge-purple">restore</span> Reinstate context after /clear.
+            <span class="badge badge-warn">compact</span> Snapshot + reset budget.
+            <span class="badge badge-warn">convo_log</span> Zero-token turn logger.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_memory</code></td>
+          <td>Consolidated memory management (facts and Semantic LT Memory). Actions:
+            <span class="badge badge-green">add</span> Store a fact with category.
+            <span class="badge badge-blue">recall</span> Search stored facts + semantic memory.
+            <span class="badge badge-purple">query</span> Deep cross-session query (uses vector search with TF-IDF fallback).
+            Params: <code>action</code>, <code>query</code>, <code>fact</code>, <code>category</code>, <code>top_k</code>.
+          </td>
+        </tr>
+      </table>
+
+      <h3>Status &amp; Delegation</h3>
+      <table>
+        <tr>
+          <th>Tool</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>c3_status</code></td>
+          <td>Consolidated status and observability. Views:
+            <span class="badge badge-green">budget</span> Context tokens vs threshold, per-tool breakdown. Use <code>detailed: true</code> for full token accounting.
+            <span class="badge badge-blue">health</span> System diagnostics (Ollama, index, notifications, session, SLTM, memory).
+            <span class="badge badge-purple">notifications</span> List/acknowledge background agent notifications.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_delegate</code></td>
+          <td>Delegate heavy tasks to local Ollama LLMs. <strong>Requires Ollama.</strong>
+            Task types: <code>available</code> (zero-cost status check), <code>auto</code> (infer from content),
+            <code>summarize</code>, <code>explain</code>, <code>docstring</code>, <code>review</code>,
+            <code>ask</code>, <code>test</code>, <code>diagnose</code>, <code>improve</code>.
+            Supports multi-file paths. Returns graceful error with suggestion if Ollama unavailable.
+            Params: <code>task</code>, <code>task_type</code>, <code>context</code>, <code>file_path</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_edits</code></td>
+          <td>AI-tracked edit versioning and audit trail.
+            <span class="badge badge-green">log</span> Record an edit with file, change_type, summary.
+            <span class="badge badge-blue">history</span> Query edit history (optional file filter, limit, since).
+            <span class="badge badge-purple">versions</span> All version entries for a specific file.
+            <span class="badge badge-green">stats</span> Summary: total edits, files, by change_type, most-edited.
+            Auto-logged by PostToolUse hooks on Edit/Write tools.
+            Configurable tracking levels: minimal, standard, detailed.
+            Standalone UI at <code>/edits</code>.
+            Params: <code>action</code>, <code>file</code>, <code>change_type</code>, <code>summary</code>, <code>limit</code>, <code>since</code>, <code>tag</code>.
+          </td>
+        </tr>
+      </table>
+
+      <div class="tip">
+        <div class="tip-title">Snapshot-and-restore workflow</div>
+        When your context window fills up: (1) call <code>c3_session(action='snapshot')</code> with a task description, (2) reset your
+        context (e.g. <code>/clear</code> in Claude Code, or start a new chat in other IDEs), (3) call
+        <code>c3_session(action='restore')</code> to reinstate your working context. Repeat this every 2-3 milestones to bypass the
+        linear snowball effect of session history.
+        When token usage exceeds the budget threshold, C3 nudges the AI to snapshot and restart.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Instructions file management</div>
+        CLAUDE.md management is available via CLI (<code>c3 claudemd generate|save|check</code>), TUI, and REST API.
+        It is no longer exposed as an MCP tool. The <code>ClaudeMdUpdater</code> background agent handles automatic maintenance.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Edit Ledger — automatic edit tracking</div>
+        Every Edit/Write tool call is auto-logged to <code>.c3/edit_ledger.jsonl</code> via PostToolUse hooks.
+        Works on Claude Code and Gemini CLI (IDEs with hook support). Other IDEs can use <code>c3_edits(action='log')</code> manually.
+        Configure tracking level in Settings → Edit Ledger: <strong>minimal</strong> (file + type only),
+        <strong>standard</strong> (+ git info &amp; diffs), or <strong>detailed</strong> (+ code snippets).
+        View the full timeline at <code>/edits</code>.
+      </div>
+
+      <h3 id="agent-tools">Background Agents</h3>
+      <p>C3 runs 9 autonomous daemon threads that perform periodic analysis and surface findings via a notification
+        queue. Notifications are automatically prepended to the next MCP tool response so Claude sees them naturally.
+        Each agent supports optional AI enhancement via local Ollama models &mdash; when AI is unavailable or disabled,
+        agents fall back to heuristic logic.</p>
+
+      <table>
+        <tr>
+          <th>Agent</th>
+          <th>Interval</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>IndexStaleness</code></td>
+          <td>60s</td>
+          <td>Monitors file changes. Warns at 5 pending changes, auto-rebuilds index at 15. <span class="badge-blue"
+              style="font-size:10px">AI: summarizes affected areas after rebuild</span></td>
+        </tr>
+        <tr>
+          <td><code>MemoryPruner</code></td>
+          <td>300s</td>
+          <td>Finds duplicate facts and flags unused facts when store exceeds 10 entries. <span class="badge-blue"
+              style="font-size:10px">AI: embedding cosine similarity + merge suggestions</span> <span class="badge-warn"
+              style="font-size:10px">Fallback: Jaccard similarity &ge; 0.8</span></td>
+        </tr>
+        <tr>
+          <td><code>ClaudeMdDrift</code></td>
+          <td>120s</td>
+          <td>Checks the instructions file for staleness when files have changed. Deduplicates by hashing issues. <span
+              class="badge-blue" style="font-size:10px">AI: actionable update summary</span></td>
+        </tr>
+        <!-- ContextBudget agent removed — budget nudges are now inline -->
+        <tr>
+          <td><code>SessionInsight</code></td>
+          <td>600s</td>
+          <td>Analyzes session activity to surface coaching tips (repeated queries, missing remembers, low compression
+            usage, heavy search without extract). Only re-analyzes after 5+ new tool calls. <span class="badge-blue"
+              style="font-size:10px">AI: contextual coaching tip from session summary</span></td>
+        </tr>
+        <tr>
+          <td><code>AutonomyPlanner</code></td>
+          <td>240s</td>
+          <td>Builds a prioritized autonomous next-step plan from recent tool telemetry (context pressure, repeated
+            read/search loops, terminal failures, and stale-index signals). Uses cooldown + score gating to avoid noise.
+            <span class="badge-blue" style="font-size:10px">AI: rewrites plan into concise prioritized actions</span>
+            <span class="badge-warn" style="font-size:10px">Fallback: deterministic signal scoring</span>
+          </td>
+        </tr>
+        <tr>
+          <td><code>ClaudeMdUpdater</code></td>
+          <td>900s</td>
+          <td>Auto-maintains the instructions file using memory, sessions, and staleness checks. Promotes high-relevance
+            facts, refreshes stale sections, compacts when over the IDE's line limit. Supports <code>auto_apply</code>
+            (default on) or dry-run mode. <span class="badge-blue" style="font-size:10px">AI: generates targeted update
+              plan</span></td>
+        </tr>
+        <tr>
+          <td><code>FileMemory</code></td>
+          <td>120s</td>
+          <td>Maintains persistent structural maps of source files. Processes queued files from the Read hook,
+            re-extracts section maps (classes, functions, line ranges) when files change. <span class="badge-blue"
+              style="font-size:10px">AI: generates 1-2 sentence file summary</span> <span class="badge-warn"
+              style="font-size:10px">Fallback: structural map only, no summary</span></td>
+        </tr>
+        <tr>
+          <td><code>DelegateCoach</code></td>
+          <td>180s</td>
+          <td>Monitors session activity for missed delegation opportunities (large file reads, unhandled tracebacks,
+            heavy compression). Emits actionable notifications with exact <code>c3_delegate</code> commands to use.
+            <span class="badge-blue" style="font-size:10px">AI: suggests targeted delegation tips</span> <span
+              class="badge-warn" style="font-size:10px">Fallback: heuristic rule matching</span>
+          </td>
+        </tr>
+      </table>
+
+      <table>
+        <tr>
+          <th>Tool</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>c3_status(view='notifications')</code></td>
+          <td>List and acknowledge agent notifications. Pass <code>data='ack_all'</code> to acknowledge all pending.</td>
+        </tr>
+      </table>
+
+      <div class="tip">
+        <div class="tip-title">Agent configuration</div>
+        Agents can be enabled/disabled, AI-enhanced, and their intervals adjusted via <code>.c3/config.json</code> or
+        the <strong>Agents</strong> tab in the dashboard:
+        <pre><code>{"agents": {"IndexStaleness": {"enabled": true, "interval": 90, "use_ai": true}, "MemoryPruner": {"enabled": false}}}</code></pre>
+        Each agent accepts <code>enabled</code>, <code>use_ai</code>, <code>interval</code>, and <code>ai_model</code>.
+        AI features require a running Ollama instance.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Notification severity levels</div>
+        <code>critical</code> and <code>warning</code> notifications auto-surface (prepended to the next tool response,
+        max 3, auto-acknowledged). <code>info</code> notifications are only shown via <code>c3_status(view='notifications')</code>.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">AI badge &amp; quick actions</div>
+        Notifications include an <code>ai_enhanced</code> boolean field. When <code>true</code>, the dashboard and
+        bottom drawer display a purple <span class="badge badge-purple" style="font-size:10px">AI</span> badge next to
+        the severity indicator, showing at a glance whether the notification was generated by AI or heuristic
+        logic.<br><br>
+        Each agent's notifications also include contextual quick action buttons in the bottom drawer:
+        <table style="margin-top: 8px;">
+          <tr>
+            <th>Agent</th>
+            <th>Actions</th>
+          </tr>
+          <tr>
+            <td><code>IndexStaleness</code></td>
+            <td><strong>Rebuild Index</strong> &mdash; triggers <code>POST /api/index/rebuild</code></td>
+          </tr>
+          <tr>
+            <td><code>MemoryPruner</code></td>
+            <td><strong>View Facts</strong> &mdash; navigates to Memory tab</td>
+          </tr>
+          <tr>
+            <td><code>ClaudeMdDrift</code></td>
+            <td><strong>Check Staleness</strong> &mdash; fetches <code>GET /api/claudemd/check</code> |
+              <strong>Compact</strong> &mdash; triggers <code>POST /api/claudemd/compact</code>
+            </td>
+          </tr>
+          <!-- ContextBudget notification action removed -->
+          <tr>
+            <td><code>SessionInsight</code></td>
+            <td><strong>View Session</strong> &mdash; navigates to Sessions tab</td>
+          </tr>
+          <tr>
+            <td><code>AutonomyPlanner</code></td>
+            <td><strong>View Activity</strong> &mdash; navigates to Activity Log tab</td>
+          </tr>
+          <tr>
+            <td><code>ClaudeMdUpdater</code></td>
+            <td><strong>Check Staleness</strong> &mdash; fetches <code>GET /api/claudemd/check</code> | <strong>View
+                Instructions</strong> &mdash; navigates to Settings tab</td>
+          </tr>
+          <tr>
+            <td><code>FileMemory</code></td>
+            <td><strong>View Files</strong> &mdash; navigates to Smart Index tab</td>
+          </tr>
+          <tr>
+            <td><code>DelegateCoach</code></td>
+            <td><strong>View Activity</strong> &mdash; navigates to Activity Log tab</td>
+          </tr>
+        </table>
+        API-type actions auto-acknowledge the notification after success.
+      </div>
+
+      <h3 id="hybrid-tools">Hybrid Intelligence</h3>
+      <p>v2.3 adds three tiers of local intelligence: output filtering, query routing, and semantic long-term memory.
+        Each tier can be enabled/disabled independently via feature flags.</p>
+      <table>
+        <tr>
+          <th>Tool</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>c3_route</code></td>
+          <td>Classify and route query to local LLM. Returns routing decision with class and target model. Params:
+            <code>query</code>, <code>context</code>, <code>force_class</code>. Classes: <code>log_summary</code>,
+            <code>simple_qa</code>, <code>complex</code>, <code>passthrough</code>. If a preferred model is missing or
+            times out, router attempts configured fallbacks before returning Claude fallback.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_summarize</code></td>
+          <td>Summarize text via appropriate local model. Params: <code>text</code>, <code>style</code>. Styles:
+            <code>concise</code>, <code>detailed</code>, <code>bullet</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_filter(text=...)</code></td>
+          <td>Filter terminal output. Pass 1: deterministic noise removal. Pass 2: optional LLM summary. Params:
+            <code>text</code>, <code>use_llm</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_memory(action='add')</code></td>
+          <td>Store record in SLTM. Params: <code>text</code>, <code>category</code>, <code>metadata_json</code>.
+            Categories: <code>design_docs</code>, <code>api_contracts</code>, <code>bug_history</code>,
+            <code>terminal_summaries</code>, <code>code_notes</code>, <code>general</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_memory(action='query')</code></td>
+          <td>Hybrid TF-IDF + vector search across SLTM collections. Params: <code>query</code>, <code>category</code>,
+            <code>top_k</code>.
+          </td>
+        </tr>
+        <tr>
+          <td><code>c3_status(view='memory')</code></td>
+          <td>SLTM collection sizes and backend status (ChromaDB, Ollama).</td>
+        </tr>
+        <tr>
+          <td><code>c3_raw</code></td>
+          <td>Show last unfiltered terminal output (before C3 filtering).</td>
+        </tr>
+        <tr>
+          <td><code>c3_why_context</code></td>
+          <td>Show injected memories, filter/router decisions, and metrics.</td>
+        </tr>
+        <tr>
+          <td><code>c3_delegate</code></td>
+          <td>Offload a task to a local Ollama LLM to save Claude API tokens. Params: <code>task</code>,
+            <code>task_type</code> (<code>summarize</code>, <code>explain</code>, <code>docstring</code>,
+            <code>review</code>, <code>ask</code>, <code>test</code>, <code>diagnose</code>, <code>improve</code>,
+            <code>auto</code>), <code>context</code>, <code>file_path</code>, <code>threshold_tokens</code>,
+            <code>force_delegate</code>. Auto-compresses file context and auto-searches index for <code>ask</code> tasks.
+            Supports task-type inference (<code>auto</code>) and optional threshold gating. Returns
+            <code>[delegate:type:model|latency|confidence]</code> header + response. If the required Ollama model is not
+            pulled locally, returns a specific error with the <code>ollama pull &lt;model&gt;</code> command to fix it.
+          </td>
+        </tr>
+      </table>
+
+      <div class="card">
+        <div class="card-title">Configuration</div>
+        <p style="font-size:13px; color:#5c6a7a; margin-bottom:8px;">Configured via <code>.c3/config.json</code> &rarr;
+          <code>"hybrid"</code> key:
+        </p>
+        <table>
+          <tr>
+            <th>Key</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+          <tr>
+            <td><code>sltm_alpha</code></td>
+            <td>0.5</td>
+            <td>TF-IDF weight in hybrid search (1-alpha = vector score weight)</td>
+          </tr>
+          <tr>
+            <td><code>sltm_min_score</code></td>
+            <td>0.3</td>
+            <td>Minimum similarity threshold for VectorStore search. Results below this are discarded.</td>
+          </tr>
+          <tr>
+            <td><code>embed_model</code></td>
+            <td>nomic-embed-text</td>
+            <td>Ollama model used for vector embeddings</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- â”€â”€â”€ Proxy Layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h3 id="proxy-layer">MCP Proxy Layer</h3>
+      <p>The proxy is now an optional advanced mode. The recommended default is direct mode, which points the IDE
+        straight at <code>mcp_server.py</code>. Use proxy mode only if you explicitly want dynamic tool filtering.</p>
+
+      <div class="card">
+        <div class="card-title">Architecture</div>
+        <pre
+          style="font-size:12px; margin:8px 0 0;"><code>IDE &lt;--stdio--&gt; mcp_proxy.py &lt;--subprocess stdio--&gt; mcp_server.py</code></pre>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Proxy Defaults</div>
+        <p style="font-size:13px; color:#5c6a7a; margin-bottom:8px;">When proxy mode is enabled, it defaults to a lean
+          configuration: core tools pinned, filtering enabled, and context injection disabled.</p>
+        <table>
+          <tr>
+            <th>Category</th>
+            <th>Tools</th>
+            <th>Activation</th>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">core</span></td>
+            <td>search, compress, extract, session_log, remember, recall</td>
+            <td>Always visible</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">session</span></td>
+            <td>session_start/save, snapshot, restore, transcript_search</td>
+            <td>Recent use or keyword match</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">memory</span></td>
+            <td>memory_query, sltm_add/search/stats</td>
+            <td>Recent use or keyword match</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-warn">claudemd</span></td>
+            <td>claudemd_generate/check/compact/promote</td>
+            <td>Recent use or keyword match</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">hybrid</span></td>
+            <td>route, summarize, filter_output, raw, why_context, delegate</td>
+            <td>Recent use or keyword match</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">meta</span></td>
+            <td>optimize, token_stats, context_status, notifications</td>
+            <td>Recent use or keyword match</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Context Injection</div>
+        <p style="font-size:13px; color:#5c6a7a;">Disabled by default in proxy mode because it adds recurring response
+          overhead. Enable it only if you have a specific reason to trade tokens for extra continuity hints.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Configuration</div>
+        <p style="font-size:13px; color:#5c6a7a;">Configured via <code>.c3/config.json</code> &rarr;
+          <code>"proxy"</code> key:
+        </p>
+        <table>
+          <tr>
+            <th>Key</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+          <tr>
+            <td><code>enabled</code></td>
+            <td>true</td>
+            <td>Enable proxy features</td>
+          </tr>
+          <tr>
+            <td><code>PROXY_DISABLE</code></td>
+            <td>false</td>
+            <td>When true, proxy is a transparent pipe</td>
+          </tr>
+          <tr>
+            <td><code>filter_tools</code></td>
+            <td>true</td>
+            <td>Enable dynamic tool filtering by category</td>
+          </tr>
+          <tr>
+            <td><code>always_visible</code></td>
+            <td>["core"]</td>
+            <td>Categories always exposed; use <code>["core"]</code> for lean defaults or <code>["all"]</code> to bypass filtering</td>
+          </tr>
+          <tr>
+            <td><code>max_tools</code></td>
+            <td>12</td>
+            <td>Maximum tools visible per turn</td>
+          </tr>
+          <tr>
+            <td><code>use_slm</code></td>
+            <td>true</td>
+            <td>Use local SLM for uncertain classifications</td>
+          </tr>
+          <tr>
+            <td><code>slm_model</code></td>
+            <td>gemma3n:latest</td>
+            <td>Ollama model for SLM classification</td>
+          </tr>
+          <tr>
+            <td><code>context_window_size</code></td>
+            <td>10</td>
+            <td>Rolling window of tracked tool calls</td>
+          </tr>
+          <tr>
+            <td><code>inject_context_summary</code></td>
+            <td>false</td>
+            <td>Append context line to tool responses</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Recommended Setup</div>
+        Use direct mode unless you explicitly want proxy behavior. Install with
+        <code>--mcp-mode direct</code> for the recommended path or <code>--mcp-mode proxy</code> for advanced
+        filtering experiments.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Windows Compatibility</div>
+        The proxy uses a threaded stdin reader instead of <code>asyncio.connect_read_pipe</code>, which does not work on
+        Windows' ProactorEventLoop. This is handled internally â€” no extra configuration is needed.
+      </div>
+
+      <!-- â”€â”€â”€ File Memory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h3 id="file-memory">File Memory System</h3>
+      <p>File Memory maintains a persistent structural index of source files &mdash; classes, functions, imports with
+        exact line ranges &mdash; so Claude can do targeted <code>Read</code> calls with
+        <code>offset</code>/<code>limit</code> instead of reading entire files.
+      </p>
+
+      <div class="card">
+        <div class="card-title">How It Works</div>
+        <ol>
+          <li><code>c3_file_map("services/agents.py")</code> returns a structural map (~50-100 tokens)</li>
+          <li>Claude identifies the section it needs (e.g. <code>check()</code> at lines 115-152)</li>
+          <li><code>Read(file_path, offset=115, limit=38)</code> reads only that section</li>
+        </ol>
+        <p style="margin-top: 8px;">Maps are cached in <code>.c3/file_memory/</code> (one JSON per file, keyed by MD5 of
+          path). The <code>FileMemoryAgent</code> background thread re-extracts sections when files change and
+          optionally generates AI summaries via Ollama.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Supported Languages</div>
+        <p>Rich structural mapping (AST-based) is available for:</p>
+        <div class="grid-2">
+          <ul class="check-list">
+            <li><strong>Python</strong> (.py) - Classes, functions, imports</li>
+            <li><strong>JavaScript/TS</strong> (.js, .ts, .tsx, .jsx) - Classes, methods, arrows</li>
+            <li><strong>HTML/Markdown</strong> (.html, .md) - Headings, IDs</li>
+          </ul>
+          <ul class="check-list">
+            <li><strong>Go/Rust</strong> (.go, .rs) - Functions, traits, structs, impls</li>
+            <li><strong>JSON/YAML</strong> (.json, .yaml) - Top-level keys/properties</li>
+            <li><strong>CSS</strong> (.css) - Rule sets, media queries</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>Example Map Output</h3>
+      <pre><code># services/agents.py (933 lines, python)
+Background agent system with periodic check loop and AI enhancement.
+
+  9-9       import json
+  19-102    class BackgroundAgent
+            Base class for background analysis agents.
+            38-41   ai_available(self)
+            42-51   _ai_generate(self, prompt, system, max_tokens)
+            52-58   start(self)
+            59-64   stop(self)
+  103-152   class IndexStalenessAgent
+            115-152 check(self)
+  ...</code></pre>
+
+      <!-- â”€â”€â”€ Hooks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h3 id="hooks">PostToolUse Hooks <span class="badge badge-blue" style="font-size:10px">Claude Code only</span>
+      </h3>
+      <p>C3 registers two PostToolUse hooks in <code>.claude/settings.local.json</code> that run after Claude executes
+        certain tools. These hooks are only installed for Claude Code &mdash; other IDEs rely on the workflow
+        instructions in their instructions file instead.</p>
+
+      <table>
+        <tr>
+          <th>Hook</th>
+          <th>Trigger</th>
+          <th>Behavior</th>
+        </tr>
+        <tr>
+          <td><code>hook_filter.py</code></td>
+          <td>After <code>Bash</code> tool</td>
+          <td>Filters terminal output through C3's two-pass output filter (deterministic + optional LLM). Replaces the
+            tool result with a compressed version when &gt;10% savings. Injects <code>c3_delegate</code> hints into
+            <code>additionalContext</code> for unhandled tracebacks and long outputs. Stores original for
+            <code>c3_raw</code> retrieval.
+          </td>
+        </tr>
+        <tr>
+          <td><code>hook_read.py</code></td>
+          <td>After <code>Read</code> tool</td>
+          <td><strong>STRICT ENFORCEMENT</strong> of the C3-First workflow. Checks the activity log for recent
+            <code>c3_file_map</code>/<code>c3_search</code>/<code>c3_compress</code> calls targeting the same file. If
+            none found and the file is 30+ lines of code, injects a ⚠️ <code>[c3:enforce]</code> warning via
+            <code>additionalContext</code>. Also queues the file for async indexing by the FileMemory agent.
+          </td>
+        </tr>
+      </table>
+
+      <div class="tip">
+        <div class="tip-title">Enforcement skips</div>
+        The Read hook does not enforce on: files under 30 lines, targeted reads (offset/limit already used), or binary
+        files (images, PDFs). It now monitors most text-based formats including web (HTML/CSS), data (JSON/YAML), and
+        docs (MD). Enforcement checks the last 30 activity log entries for any C3 tool call referencing the same file.
+      </div>
+
+      <!-- â”€â”€â”€ MCP Behavior â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="mcp-behavior">Automatic Behavior</h2>
+
+      <div class="card">
+        <div class="card-title">On Startup</div>
+        <ul>
+          <li>Loads (or builds) the code index</li>
+          <li>Loads (or builds) the transcript index from <code>~/.claude/projects/</code> (Claude Code only; skipped in
+            other IDEs)</li>
+          <li>Starts a new session</li>
+          <li>Begins watching project files for changes</li>
+          <li>Initializes the file memory store for structural file indexing</li>
+          <li>Syncs Claude Code conversation transcripts into the conversation store (Claude Code only)</li>
+          <li>Starts a background thread that re-syncs conversation transcripts every 60 seconds (Claude Code only)</li>
+          <li>Launches background agents (index staleness, memory pruner, instructions file drift, context budget,
+            session insight, instructions file auto-updater, file memory)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">On Shutdown</div>
+        <ul>
+          <li>Stops the background conversation sync thread</li>
+          <li>Stops all background agents</li>
+          <li>Stops the file watcher</li>
+          <li>Saves the current session</li>
+          <li>Performs a final forced sync of Claude Code conversation transcripts to capture the session's last turns
+            (Claude Code only)</li>
+        </ul>
+      </div>
+
+      <h3>Compact Response Format</h3>
+      <p>All MCP tool responses use a terse <code>[tag:value]</code> format instead of markdown prose, reducing response
+        overhead by ~35%. Examples:</p>
+      <pre><code>[search:auth middleware] 3 results, 1200tok
+--- services/auth.py:L10-45 verify_token (function,180tok)
+...code...
+
+[stats] files:18 chunks:142 tokens:24.5k | symbols:89 index:38KB facts:12 calls:7
+
+[logged:decision]
+[nudge:save_facts|calls:25|facts:0]
+
+[remembered:a1b2c3] total:13
+[recall:auth] 3 facts
+[architecture] Auth uses JWT in localStorage
+[convention] All middleware in services/middleware/
+
+[snapshot:20260228_143012] 167tok captured
+[restore:20260228_143012] task:Fix auth flow d:3 f:5
+
+[transcript:auth middleware] 3r,890tok
+--- abc123:t7 [2026-02-27] score:4.2
+...turn text...
+
+[extract:.log] 8500tok->320tok (96% saved)
+[log] 2400 lines | ERROR:12 | WARN:45</code></pre>
+      <p>Claude parses these tags natively â€” no information is lost, but each response uses fewer tokens in the
+        context window.</p>
+
+      <h3>Token counting</h3>
+      <p>C3 uses tiktoken (<code>cl100k_base</code> encoding) for accurate token counts. Falls back to a heuristic
+        estimator if tiktoken is unavailable.</p>
+
+      <h3>Code indexing</h3>
+      <p>The indexer scans project files, splits them into structural chunks (functions, classes, blocks), and builds a
+        TF-IDF index. This lets <code>c3_search</code> find relevant code without sending the entire codebase to Claude.
+      </p>
+      <p><strong>Supported file types (80+):</strong></p>
+      <table>
+        <tr>
+          <th>Category</th>
+          <th>Extensions</th>
+        </tr>
+        <tr>
+          <td>Python</td>
+          <td><code>.py</code> <code>.pyi</code> <code>.pyx</code></td>
+        </tr>
+        <tr>
+          <td>JavaScript / TypeScript</td>
+          <td><code>.js</code> <code>.jsx</code> <code>.ts</code> <code>.tsx</code> <code>.mjs</code> <code>.cjs</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Web</td>
+          <td><code>.html</code> <code>.htm</code> <code>.css</code> <code>.scss</code> <code>.sass</code>
+            <code>.less</code> <code>.vue</code> <code>.svelte</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Data / Config</td>
+          <td><code>.json</code> <code>.yaml</code> <code>.yml</code> <code>.toml</code> <code>.ini</code>
+            <code>.cfg</code> <code>.xml</code> <code>.csv</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Systems</td>
+          <td><code>.c</code> <code>.h</code> <code>.cpp</code> <code>.cxx</code> <code>.cc</code> <code>.hpp</code>
+            <code>.rs</code> <code>.go</code> <code>.java</code> <code>.kt</code> <code>.scala</code> <code>.cs</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Scripting</td>
+          <td><code>.sh</code> <code>.bash</code> <code>.zsh</code> <code>.fish</code> <code>.ps1</code>
+            <code>.bat</code> <code>.rb</code> <code>.pl</code> <code>.lua</code> <code>.php</code> <code>.r</code>
+            <code>.R</code> <code>.jl</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Query / Schema</td>
+          <td><code>.sql</code> <code>.graphql</code> <code>.gql</code> <code>.prisma</code></td>
+        </tr>
+        <tr>
+          <td>Functional</td>
+          <td><code>.hs</code> <code>.ex</code> <code>.exs</code> <code>.erl</code> <code>.clj</code> <code>.elm</code>
+            <code>.ml</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Mobile</td>
+          <td><code>.swift</code> <code>.m</code> <code>.dart</code></td>
+        </tr>
+        <tr>
+          <td>Docs / Markup</td>
+          <td><code>.md</code> <code>.mdx</code> <code>.rst</code> <code>.tex</code> <code>.adoc</code></td>
+        </tr>
+        <tr>
+          <td>DevOps / IaC</td>
+          <td><code>.tf</code> <code>.hcl</code> <code>.dockerfile</code> <code>.nix</code></td>
+        </tr>
+        <tr>
+          <td>Other</td>
+          <td><code>.proto</code> <code>.thrift</code> <code>.zig</code> <code>.nim</code> <code>.v</code>
+            <code>.makefile</code> <code>.cmake</code>
+          </td>
+        </tr>
+      </table>
+      <p><strong>Skipped directories:</strong> <code>node_modules</code> <code>.git</code> <code>__pycache__</code>
+        <code>.c3</code> <code>venv</code> <code>dist</code> <code>build</code> <code>.next</code> <code>.cache</code>
+      </p>
+
+      <h3>File watching</h3>
+      <p>The watcher runs on a background thread and tracks file creates, modifications, deletions, and moves. When
+        enough changes accumulate, the indexer rebuilds the index automatically (or run <code>c3 index</code> manually).</p>
+
+      <!-- â”€â”€â”€ Web Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="dashboard">Web Dashboard</h2>
+
+      <pre><code>c3 ui /path/to/your/project                  # Opens full UI at http://localhost:3333/
+c3 ui /path/to/your/project --nano           # Opens nano mission-control UI at /nano
+c3 ui /path/to/your/project --port 8080      # Custom port
+c3 ui /path/to/your/project --no-browser     # Don't auto-open browser
+c3 ui /path/to/your/project --silent         # Hide API request logs in terminal</code></pre>
+
+      <p>The dashboard provides a visual interface for all C3 capabilities â€” compression, search, sessions, memory,
+        agents, and system settings. The layout is <code>[Left Nav] [Main Content] [Right Sidebar]</code>. Both the left
+        navigation and right sidebar support <strong>hover-to-open</strong>: when collapsed to their icon strip,
+        hovering expands them automatically. Click the <strong>pin icon</strong> (ðŸ“Œ) to keep a panel locked open;
+        click again to unpin and return to hover-only mode. Pin state is saved to <code>localStorage</code> and restored
+        on next load.</p>
+
+      <div class="tip">
+        <div class="tip-title">Multiple project dashboards</div>
+        Each <code>c3 ui</code> launch auto-selects the next free port starting from 3333. Each instance uses
+        <code>window.location.origin</code> for all API calls, so opening a second project at
+        <code>localhost:3334</code> shows only that project's data. The startup banner prints the assigned URL and
+        project path.
+      </div>
+
+      <h2 id="tabs">Dashboard Tabs</h2>
+
+      <div class="tabs-preview">
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-green">1</span> Dashboard</div>
+          <div class="tab-desc">Token savings card (tokens saved, savings rate with progress bar, est. cost &amp; time
+            saved), Claude token usage (input/output/total tokens, est. API cost), file stats, memory, MCP status, agent
+            notifications (with severity and AI badges), recent tool calls.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-blue">2</span> Compressor</div>
+          <div class="tab-desc">Stats row (total files, tokens, avg savings, last compressed), searchable file picker
+            with sort (name/tokens/type) and type-colored badges, mode selector with descriptions, single-file compress
+            with line-numbered output and copy button, batch-all compression with aggregate stats, clickable compression
+            history (last 10), and a collapsible <strong>Compression Dictionary</strong> panel showing all action codes,
+            term codes, and project-specific abbreviations.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-purple">3</span> Smart Index</div>
+          <div class="tab-desc">Stats row (files, chunks, codebase tokens, symbols, index size), search input with
+            configurable top_k (3/5/10/15/20) and max_tokens (2K/4K/8K), collapsible search history (last 10, click to
+            restore), and expandable result cards with line-numbered code, per-chunk copy, copy-all, file-type badges,
+            relevance score bars, and rebuild with success feedback.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-warn">4</span> Sessions</div>
+          <div class="tab-desc">Current Session card (highlighted, with stat mini-boxes for decisions, files, tool
+            calls) at top, Past Sessions list below. Tool call data is backfilled from the activity log when the session
+            file has none.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-purple">5</span> Memory</div>
+          <div class="tab-desc">Store and search facts, view all facts grouped by category, delete facts, stat boxes for
+            totals and recall counts. Auto-refreshes every 5 seconds so facts saved via MCP appear in real time.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-blue">6</span> Activity Log</div>
+          <div class="tab-desc">Live event timeline with type filtering, persistent auto-refresh, expandable detail
+            view. Tool call events show color-coded tool name badges (search=blue, compress=purple, etc.).</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-green">7</span> Conversations</div>
+          <div class="tab-desc">Full conversation history viewer. Displays user and AI turns in a threaded chat layout
+            per session. Features:
+            <ul style="margin: 6px 0 0 0; padding-left: 18px;">
+              <li><strong>Session list</strong> - left panel lists all sessions sorted newest-first. Shows title (first
+                user message), relative date, turn count, and source badge. Each row has direct <strong>Plans</strong>
+                and <strong>Todos</strong> quick-jump buttons.</li>
+              <li><strong>Chat / Plans / Todos views</strong> â€” switch between the full conversation thread, logged
+                decisions/plans (<code>c3_session_log</code> events), and extracted markdown checkbox items; Plans and
+                Todos also load automatically when using the quick-jump buttons</li>
+              <li><strong>Search scope toggle</strong> - explicit <em>All</em> / <em>Session</em> toggle next to the
+                search box. Search is debounced and scope-aware; "Session" is disabled until a conversation is open.
+              </li>
+              <li><strong>Table of Contents</strong> - toggle the <strong>ToC</strong> button to show a collapsible
+                index of user prompts (numbered, 2-line preview). In narrow layouts the ToC is hidden for readability.
+              </li>
+              <li><strong>Pagination</strong> - turns are loaded in pages with a <em>Load more</em> action for long
+                sessions.</li>
+              <li><strong>Session rename</strong> â€” title overrides stored in <code>localStorage</code> (key
+                <code>c3_conv_titles</code>); editable inline in the list or via the Rename button in the session header
+              </li>
+              <li>Gzip compression for old archives; auto-sync from Claude Code transcripts/imports; manual logging via
+                <code>c3_session(action='convo_log', role=..., text=..., session_id?, source?)</code> for other IDEs
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-warn">8</span> Agents</div>
+          <div class="tab-desc">Per-agent configuration: enabled/use_ai toggles, interval input, AI model selector.
+            Agent-specific advanced settings (thresholds, embed model, autonomy planner scoring/cooldown, auto-apply mode).
+            Supports all 9 agents including AutonomyPlanner and DelegateCoach.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-purple">9</span> Hybrid</div>
+          <div class="tab-desc">Three-panel view: Output Filter savings (calls, tokens, savings %) | Router decisions
+            (routes by class, avg latency) | SLTM collections (vector status, record counts). Feature flag toggles to
+            enable/disable each tier independently. Includes Delegate Threshold Policy controls for local AI delegation
+            gating (<code>threshold_enabled</code>, minimum tokens, task-type scopes, and force-delegate task types).</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-warn">10</span> Proxy</div>
+          <div class="tab-desc">Tool Visibility card with "Show All / Filter by Category" mode selector, per-category
+            pin toggles with expandable tool lists, visible/total tool count badge. Reconnect banner when tool
+            visibility changes (prompts to restart session or run <code>/mcp</code>). Proxy settings (enable/disable,
+            context injection, SLM classification, max tools, window size). Live context panel with detected goal,
+            recent files, decisions, and tool calls. Traffic and context injection metrics.</div>
+        </div>
+        <div class="tab-card">
+          <div class="tab-name"><span class="badge badge-green">11</span> Settings</div>
+          <div class="tab-desc">Project info (editable name, tech stack, description), quick actions (rebuild index,
+            save instructions file), project data management (view sizes and item counts per .c3/ category, clear
+            actions), instructions file management, and MCP management: target IDE selector (Claude/Gemini/VS
+            Code/Cursor/Codex/Antigravity), custom MCP add form, installed MCP cards, and per-card trash removal.
+            Removing <code>c3</code> can also clean related IDE files/hooks. Includes IDE selector for C3 MCP
+            installation and optimization suggestions.</div>
+        </div>
+      </div>
+
+      <h3 id="header-bar">Header Bar</h3>
+      <p>A persistent top bar above the main content area. Shows the active tab icon and title, connection status,
+        inline quick stats (savings % and indexed file count), and action buttons:</p>
+      <ul>
+        <li><strong>Connection status</strong> â€” glowing dot with "Live" / "Offline" label. When health data is
+          available, color-coded service badges appear inline: <span style="color:#00e5a0">green</span> for connected,
+          <span style="color:#ff4d6a">red</span> for disconnected. All four services (c3, proxy, ollama, sltm) are
+          always shown so you can see at a glance what is down. The <strong>proxy</strong> badge uses dual-signal
+          detection: green if the MCP config references <code>mcp_proxy.py</code>, OR if
+          <code>.c3/proxy_state.json</code> was written within the last 4 hours (meaning the proxy actively ran in this
+          session).
+        </li>
+        <li><strong>Check connections button</strong> â€” small refresh icon next to the service badges. Clicking it
+          re-calls <code>GET /api/health</code> and updates all badges immediately; the icon spins while the request is
+          in flight. The same button is also present in the left sidebar bottom panel and in the right sidebar Services
+          section.</li>
+        <li><strong>Project switcher</strong> â€” appears automatically when two or more <code>c3 ui</code> instances
+          are running simultaneously. Shows the current project name and a count badge. Click to open a dropdown listing
+          all running sessions; clicking another project navigates to its UI in the same tab. The switcher polls
+          <code>GET /api/registry</code> every 30 seconds and is hidden when only one session is active.
+        </li>
+        <li><strong>Light/dark toggle</strong> â€” sun/moon button switches between dark and light mode. Preference is
+          saved to <code>localStorage</code> and restored on next load.</li>
+        <li><strong>Refresh</strong> â€” manually re-fetch stats and file data from the API</li>
+        <li><strong>Docs</strong> â€” open the documentation page in a new tab</li>
+        <li><strong>Panel pin</strong> â€” pin or unpin the right sidebar. When pinned (icon highlighted), the panel
+          stays open. When unpinned, it collapses to a 40px icon strip and expands on hover.</li>
+      </ul>
+
+      <h3 id="left-nav">Left Navigation</h3>
+      <p>A collapsible vertical tab list on the left edge. Supports two modes:</p>
+      <ul>
+        <li><strong>Pinned open</strong> â€” 210px wide, shows icon + label for each tab. The C3 logo and status panel
+          are visible. Click the <strong>pin icon</strong> in the header to unpin.</li>
+        <li><strong>Hover-only</strong> â€” collapses to a 54px icon strip. Hover over it to expand temporarily; moving
+          the mouse away collapses it again. Click the pin icon while expanded to lock it open.</li>
+      </ul>
+      <p>The bottom of the left nav shows a connection status dot, service badges, and a health refresh button (only
+        visible when expanded).</p>
+
+      <h3 id="right-sidebar">Right Sidebar (Control Bar)</h3>
+      <p>A collapsible right sidebar visible on all tabs. Supports the same hover-open + pin modes as the left nav:</p>
+      <ul>
+        <li><strong>Pinned open</strong> â€” 320px wide, shows full control bar content. Pin icon in the header is
+          highlighted (accent color). Click to unpin.</li>
+        <li><strong>Hover-only</strong> â€” collapses to a 40px icon strip. Hover to expand temporarily. Click the pin
+          icon in the expanded header, or click any icon in the collapsed strip, to lock it open.</li>
+      </ul>
+
+      <div class="card">
+        <div class="card-title">Savings Summary</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">Compact display at the top showing
+          tokens saved, estimated cost, estimated time, and Claude input/output token counts. Only visible when the
+          sidebar is expanded and stats are available.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Quick Settings</div>
+        <ul>
+          <li><strong>Rebuild Index</strong> â€” triggers <code>POST /api/index/rebuild</code></li>
+          <li><strong>Save Instructions</strong> â€” triggers <code>POST /api/claudemd/save</code> (writes to
+            IDE-appropriate file)</li>
+          <li><strong>Auto-refresh toggle</strong> â€” enables 5-second polling for the activity feed</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">Activity Feed</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">Compact view of the last 15 events
+          from <code>/api/activity?limit=15</code>. Each row shows time-ago, a color-coded tool name badge (for tool
+          calls) or event type badge, and a one-line summary. Click "View all" to navigate to the Activity Log tab.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Current Session</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">Shows the live running session from
+          <code>/api/sessions/current</code>, which reconstructs the active MCP session from the activity log. Displays
+          a glowing "Live Session" indicator, session ID, started time, live duration, and counts for decisions, files
+          touched, and tool calls. Falls back to the most recent saved session if no live session is active. Click "View
+          all sessions" to navigate to the Sessions tab.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-title">Services</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">Color-coded badges for the four C3
+          services: <code>c3</code>, <code>proxy</code>, <code>ollama</code>, and <code>sltm</code>. Green = reachable,
+          red = unreachable. A dedicated refresh icon button sits inline with the "Services" label â€” clicking it
+          re-calls <code>GET /api/health</code> and updates all badges with a spin animation. Shows "not checked yet"
+          until the first check completes. The same connection status (with its own refresh button) is mirrored in the
+          header bar and in the left sidebar bottom panel.</p>
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Hover-open &amp; pin</div>
+        Both sidebars start pinned open. Unpin via the pin icon to switch to hover-only mode â€” the panel collapses to
+        an icon strip and expands on mouse enter. Clicking any icon in the collapsed strip (right sidebar) or the pin
+        icon (left nav) re-pins it. Pin state persists across page reloads via <code>localStorage</code>.
+      </div>
+
+      <h3 id="bottom-drawer">Bottom Drawer</h3>
+      <p>A slide-up drawer anchored to the bottom of the main content area. It has two tabs:</p>
+
+      <div class="card">
+        <div class="card-title">Agent Activity</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">
+          Lists all pending agent notifications with severity badge, optional <span class="badge badge-purple"
+            style="font-size:10px">AI</span> badge (when <code>ai_enhanced</code> is true), agent name, title, message,
+          and relative timestamp. Each notification includes contextual quick action buttons that either call an API
+          endpoint (with inline feedback and auto-acknowledge) or navigate to a relevant dashboard tab. Supports
+          individual acknowledge and "Acknowledge All".
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-title">API Console</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">
+          Live tool call timeline from the activity log. Each row shows timestamp, tool name badge, arguments summary,
+          and result preview. Click a row to expand the full args/result JSON.
+        </p>
+      </div>
+
+      <!-- â”€â”€â”€ API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="api">REST API</h2>
+      <p>The web server exposes a full REST API at <code>http://localhost:3333</code>.</p>
+
+      <h3>Core</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/stats</code></td>
+          <td>Comprehensive system stats including <code>claude_tokens</code> (input/output from Claude Code sessions)
+            and <code>total_tool_calls</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/files</code></td>
+          <td>List project files</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/compress</code></td>
+          <td>Compress a file <code>{file, mode}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/compress/batch</code></td>
+          <td>Batch compress all project files <code>{mode}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/compress/protected-files</code></td>
+          <td>List files blocked from compression</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/search</code></td>
+          <td>Search code index <code>{query, top_k, max_tokens}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/index/rebuild</code></td>
+          <td>Rebuild the index</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/index/stats</code></td>
+          <td>Index statistics</td>
+        </tr>
+      </table>
+
+      <h3>Sessions</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/sessions</code></td>
+          <td>List all sessions</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/sessions/current</code></td>
+          <td>Live running session reconstructed from activity log, or latest saved session if ended. Returns
+            <code>live: true</code> when active.
+          </td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/sessions/&lt;id&gt;</code></td>
+          <td>Session detail (includes tool_calls)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/sessions/start</code></td>
+          <td>Start a session <code>{description}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/sessions/save</code></td>
+          <td>Save session <code>{summary}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/sessions/context</code></td>
+          <td>Compressed context from recent sessions</td>
+        </tr>
+      </table>
+
+      <h3>Memory</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/memory/facts</code></td>
+          <td>List all stored facts</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/memory/remember</code></td>
+          <td>Store a fact <code>{fact, category}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/memory/recall</code></td>
+          <td>Search facts <code>{query, top_k}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/memory/query</code></td>
+          <td>Search facts + sessions <code>{query, top_k}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-warn">DEL</span></td>
+          <td><code>/api/memory/facts/&lt;id&gt;</code></td>
+          <td>Delete a fact by ID</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/memory/export?category=</code></td>
+          <td>Export facts as markdown grouped by category <code>{markdown, count}</code></td>
+        </tr>
+      </table>
+
+      <h3>Activity Log</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/activity?limit=100&amp;type=&amp;since=&amp;until=</code></td>
+          <td>Recent activity events, filterable by type and ISO timestamp range (<code>since</code>/<code>until</code>)
+          </td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/activity/stats</code></td>
+          <td>Event counts by type, total, time range</td>
+        </tr>
+      </table>
+
+      <h3>Conversations</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/conversations?limit=100</code></td>
+          <td>List session metadata sorted by most recent first</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/conversations/sync?source=all|claude|imports</code></td>
+          <td>Sync from transcript/import sources - returns <code>{synced, total, by_source, errors?}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/conversations/stats</code></td>
+          <td>Aggregate stats: sessions, turns, user_tokens, assistant_tokens, compressed_sessions</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/conversations/search?q=&amp;limit=30&amp;session_id=</code></td>
+          <td>TF-IDF search across all (or one) session - returns scored turn hits with <code>turn_key</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/conversations/&lt;session_id&gt;?offset=&amp;limit=</code></td>
+          <td>Turn list for one session (paginated; handles .gz archives transparently)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/conversations/&lt;session_id&gt;/turn</code></td>
+          <td>Append a turn manually <code>{role, text, tool_calls?, source?}</code></td>
+        </tr>
+      </table>
+
+      <h3>Notifications</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/notifications?limit=20</code></td>
+          <td>Get unacknowledged agent notifications. Each entry includes: <code>id</code>, <code>agent</code>,
+            <code>severity</code>, <code>title</code>, <code>message</code>, <code>timestamp</code>,
+            <code>acknowledged</code>, <code>ai_enhanced</code>
+          </td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/notifications/ack</code></td>
+          <td>Acknowledge a notification <code>{id}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/notifications/ack-all</code></td>
+          <td>Acknowledge all pending notifications</td>
+        </tr>
+      </table>
+
+      <h3>MCP</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/mcp/status?ide=&lt;profile&gt;</code></td>
+          <td>MCP status for the selected IDE profile (<code>configured</code>, <code>active</code>,
+            <code>server_found</code>, <code>config_path</code>, normalized server list). If <code>ide</code> is
+            omitted, uses the active profile.
+          </td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/mcp/install</code></td>
+          <td>Install MCP configuration for a target IDE <code>{ide}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/mcp/servers</code></td>
+          <td>Add/update custom MCP server for selected IDE <code>{ide, name, command, args, env?, enabled?}</code>.
+            Supports JSON configs and Codex TOML.</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-warn">DELETE</span></td>
+          <td><code>/api/mcp/servers/&lt;name&gt;?ide=&lt;profile&gt;&amp;remove_files=1</code></td>
+          <td>Remove MCP server from selected IDE config. When deleting <code>c3</code> with
+            <code>remove_files=1</code>, also removes related IDE artifacts (instructions file, Claude hooks/settings
+            cleanup).
+          </td>
+        </tr>
+      </table>
+
+      <h3>Protocol</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/encode</code></td>
+          <td>Encode text <code>{text}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/decode</code></td>
+          <td>Decode text <code>{text}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/protocol/header</code></td>
+          <td>Protocol header for system prompts</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/protocol/dictionary</code></td>
+          <td>Full compression dictionary</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/protocol/build-dictionary</code></td>
+          <td>Build project-specific dictionary</td>
+        </tr>
+      </table>
+
+      <h3>Instructions File</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/claudemd</code></td>
+          <td>Get generated instructions file content</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/claudemd/save</code></td>
+          <td>Save instructions file to project (IDE-appropriate path)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/claudemd/check</code></td>
+          <td>Check instructions file for staleness and drift</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/claudemd/compact</code></td>
+          <td>Compact instructions file <code>{target_lines}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/claudemd/promote</code></td>
+          <td>Get promotion candidates for instructions file</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/optimize</code></td>
+          <td>Get optimization suggestions</td>
+        </tr>
+      </table>
+
+      <h3>Hybrid Intelligence</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/hybrid/metrics</code></td>
+          <td>All tier metrics (filter, router, SLTM)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/hybrid/config</code></td>
+          <td>Current hybrid feature flags and config</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">PUT</span></td>
+          <td><code>/api/hybrid/config</code></td>
+          <td>Update hybrid feature flags <code>{key: value}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/delegate/config</code></td>
+          <td>Current delegate/local-AI policy config (including threshold settings)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">PUT</span></td>
+          <td><code>/api/delegate/config</code></td>
+          <td>Update delegate policy <code>{threshold_enabled, threshold_min_total_tokens, ...}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/sltm/stats</code></td>
+          <td>SLTM backend status and collection sizes</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/sltm/search</code></td>
+          <td>Search SLTM <code>{query, category, top_k}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">POST</span></td>
+          <td><code>/api/sltm/add</code></td>
+          <td>Add record to SLTM <code>{text, category, metadata}</code></td>
+        </tr>
+      </table>
+
+      <h3>Proxy</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/proxy/metrics</code></td>
+          <td>Proxy traffic and filtering metrics (written on shutdown)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/proxy/config</code></td>
+          <td>Current proxy configuration</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">PUT</span></td>
+          <td><code>/api/proxy/config</code></td>
+          <td>Update proxy config <code>{key: value}</code></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/proxy/tools</code></td>
+          <td>Full tool inventory with categories, visibility status, and pinned state</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">GET</span></td>
+          <td><code>/api/proxy/state</code></td>
+          <td>Live proxy state (goal, recent files, decisions, tool calls)</td>
+        </tr>
+      </table>
+
+      <!-- â”€â”€â”€ CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="cli-commands">CLI Commands</h2>
+      <p>All commands are run via <code>c3</code> (or <code>python cli/c3.py</code>) from within your project directory.
+      </p>
+
+      <h3>Project Setup</h3>
+          <pre><code>c3 init &lt;project_path&gt; [--ide auto|claude|vscode|cursor|codex|gemini] [--force]
+                                           # Initialize C3: builds index, creates config, generates instructions file,
+                                           # and automatically installs the MCP config for your IDE.
+                                           # Re-running on an existing project now migrates config defaults and
+                                           # refreshes instruction workflow files (Update / Clear / Reset options).
+c3 index [--max-files 500]                 # Rebuild the code index
+c3 install-mcp [project_path] [ide] [--ide auto|claude|vscode|cursor|codex|gemini]  # (Re-)generate MCP config manually
+c3 ui [project_path] [--port 3333] [--nano] [--silent]   # Launch web dashboard (full or nano)</code></pre>
+
+      <h3>Compression &amp; Search</h3>
+      <pre><code>c3 compress &lt;file&gt; [--mode smart] [-o]  # Compress a file (modes: structure, outline, smart, diff)
+c3 context &lt;query&gt; [--top-k 5]        # Get relevant context for a query
+c3 pipe &lt;query&gt; [--top-k 5]           # All-in-one pipeline: index + context + session -> pipe to Claude
+c3 encode &lt;text&gt; [--pipe]             # Encode to compressed format
+c3 decode &lt;text&gt;                      # Decode compressed format</code></pre>
+
+      <h3>Sessions</h3>
+      <pre><code>c3 session start [description]        # Start a new session
+c3 session save [summary]             # Save current session
+c3 session load [session_id]          # Load a session (defaults to latest)
+c3 session list                       # List all sessions
+c3 session context                    # Get session context for prompt</code></pre>
+
+      <h3>Other</h3>
+      <pre><code>c3 stats                              # Show token usage analytics
+c3 benchmark [project] [--sample-size 25] [--json] [--output .c3/benchmark_latest.json]
+                                      # Run local benchmark for compression, retrieval, and grounding proxy metrics
+c3 optimize                           # Show optimization suggestions
+c3 claudemd generate                  # Preview auto-generated instructions file
+c3 claudemd save                      # Write instructions file to project root (IDE-appropriate path)</code></pre>
+
+      <!-- â”€â”€â”€ CLI Examples â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="cli-examples">CLI Examples</h2>
+
+      <pre><code># Pipe compressed context into Claude Code
+c3 context "fix the auth bug" | claude -p -
+
+# Auto-compress before sending
+c3 encode "Read src/Dashboard.tsx and fix the error on line 47" | claude -p -
+
+# All-in-one pipeline
+c3 pipe "fix the metrics calculation" | claude -p -
+
+# Run benchmark and save machine-readable report
+c3 benchmark . --sample-size 25 --output .c3/benchmark_latest.json
+
+# Save session after work
+c3 session save --summary "Fixed auth flow, updated tests"
+
+# Start new session with prior context loaded
+c3 session load | claude --resume</code></pre>
+
+      <!-- â”€â”€â”€ Architecture â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="architecture">Architecture</h2>
+
+      <div class="arch">
+        <pre>
+  <strong>IDE</strong> (Claude Code / VS Code Copilot / Cursor / Codex / Gemini CLI)
+       | MCP Protocol (IDE-specific config file)
+       v
+  <strong>MCP Proxy</strong> â”€â”€â”€â”€ Dynamic tool filtering + context injection (optional, opt-in via MCP config)
+       | Subprocess stdio (NDJSON)
+       v
+  <strong>C3 MCP Server</strong> â”€â”€â”€ 26 tools: search, compress, session, memory, CLAUDE.md, context, hybrid, notifications...
+       |
+       +â”€â”€ <em>Compression</em>      <em>Smart Index</em>
+       |    AST Summary       TF-IDF + Code Structure
+       |    Diff Engine       Chunk Retrieval
+       |    Dedup Cache
+       |
+       +â”€â”€ <em>Session Manager</em>   <em>Tiered Memory</em>
+       |    Decisions          Fact Store (TF-IDF)
+       |    Tool Calls         Cross-Session Search
+       |    Instructions Gen   Category Tagging
+       |
+       +â”€â”€ <em>Instructions Mgr</em>   <em>Protocol</em>
+       |    Generate/Check      Encoder
+       |    Compact/Promote     Dictionary
+       |
+       +â”€â”€ <em>Context Snapshots</em>  <em>Transcript Index</em>
+       |    Capture/Restore     TF-IDF over .jsonl
+       |    Save-and-Restore    Past Conversation Search (Claude Code)
+       |
+       +â”€â”€ <em>File Watcher</em>      <em>File Extractor</em>
+       |    Change Detection    Log/JSONL Pre-filter
+       |    Auto Index Rebuild  Token Savings Tracking
+       |
+       +â”€â”€ <em>Background Agents</em>  <em>Notification Store</em>
+       |    Index Staleness      Thread-safe JSONL Queue
+       |    Memory Pruner        Severity + Dedup
+       |    Instructions Drift   Auto-surface to Claude
+       |    Context Budget       AI-enhanced (Ollama)
+       |    Session Insight      AI Badge + Quick Actions
+       |
+       v
+  <strong>Web Dashboard</strong> (:3333)
+   [Left Nav â‡„ pin] [Dashboard | Compressor | Index | Sessions | Memory | Activity | Hybrid | Agents | Proxy | Settings] [Right Sidebar â‡„ pin]
+   Both sidebars: hover-to-expand (icon strip) or pin to keep open (persisted in localStorage)
+    </pre>
+      </div>
+
+      <!-- â”€â”€â”€ Conversations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="conversations">Conversations</h2>
+      <p>The Conversations module records full user/assistant turns and makes them browsable and searchable in the C3
+        UI. It complements the existing <strong>Sessions</strong> tab (which tracks tool calls and decisions) with the
+        actual dialogue content.</p>
+
+      <h3>Storage</h3>
+      <p>All conversation data lives under <code>.c3/conversations/</code>:</p>
+      <ul>
+        <li><code>sessions.json</code> â€” index of all session metadata (title, started, ended, turn count, token
+          totals, source)</li>
+        <li><code>{session_id}.jsonl</code> â€” one JSON object per line, each a single turn with <code>id</code>,
+          <code>ts</code>, <code>role</code>, <code>text</code>, <code>tokens</code>, and optional
+          <code>tool_calls</code>
+        </li>
+        <li><code>{session_id}.jsonl.gz</code> â€” gzip-compressed archive for sessions older than 30 days (read
+          transparently, no data loss)</li>
+      </ul>
+
+      <h3>Data Sources</h3>
+      <div class="card">
+        <div class="card-title">Claude Code â€” Automatic Sync</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px;">Claude Code transcripts are synced
+          automatically â€” no manual action required:</p>
+        <ul style="font-size:13px;color:var(--text-muted);margin:4px 0 6px 16px;">
+          <li><strong>Startup</strong> â€” initial sync of all transcript files on MCP server start</li>
+          <li><strong>Every 60 seconds</strong> â€” background thread keeps the store current during active sessions
+          </li>
+          <li><strong>Shutdown</strong> â€” forced final sync captures the session's last turns before exit</li>
+        </ul>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:0;">You can also trigger a manual sync via
+          <strong>Sync</strong> in the Conversations tab or <code>GET /api/conversations/sync?source=all</code>. Use
+          <code>source=claude</code> or <code>source=imports</code> to scope it. Sync is incremental â€” only files
+          changed since the last run are reprocessed.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-title">Other IDEs â€” Manual Logging via MCP tool</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px;">Call the
+          <code>c3_session(action='convo_log', role=..., text=..., session_id?, source?)</code> MCP tool to append a turn. If
+          <code>session_id</code> is omitted, the current C3 session ID is used. This allows VS Code Copilot and Cursor
+          users to build up conversation history. The REST endpoint
+          <code>POST /api/conversations/&lt;session_id&gt;/turn</code> provides the same capability programmatically.
+        </p>
+      </div>
+
+      <h3>Conversations UI</h3>
+      <ul>
+        <li><strong>Session list</strong> - left panel lists all sessions sorted newest-first. Shows title (first user
+          message), relative date, turn count, and source badge. Each row has direct <strong>Plans</strong> and
+          <strong>Todos</strong> quick-jump buttons.
+        </li>
+        <li><strong>Thread view</strong> â€” right panel renders the full conversation as a chat thread. User turns show
+          a "You" badge; AI turns show an "AI" badge. Tool call badges appear inline in AI turn headers. A
+          <strong>Rename</strong> button in the session header lets you edit the title in-place. Title overrides are
+          stored in <code>localStorage</code> under the key <code>c3_conv_titles</code>.
+        </li>
+        <li><strong>Chat / Plans / Todos tabs</strong> â€” switch views without leaving the conversation. <em>Plans</em>
+          pulls <code>c3_session_log</code> decision events from the activity log for the session's time range.
+          <em>Todos</em> extracts all markdown checkbox items (<code>- [ ] task</code> / <code>- [x] done</code>) from
+          the thread with links back to the originating turn. Both views load automatically when using the quick-jump
+          buttons in the session list.
+        </li>
+        <li><strong>Table of Contents</strong> - toggle the <strong>ToC</strong> button to show a collapsible index of
+          user prompts (numbered, 2-line preview). In narrow layouts the ToC is hidden for readability.</li>
+        <li><strong>Pagination</strong> - turns are loaded in pages with a <em>Load more</em> action for long sessions.
+        </li>
+        <li><strong>Search scope toggle</strong> - explicit <em>All</em> / <em>Session</em> toggle next to the search
+          box. Search is debounced and scope-aware; "Session" is disabled until a conversation is open.</li>
+        <li><strong>Pagination</strong> - conversation turns are loaded in pages with a <em>Load more</em> action for
+          long sessions.</li>
+        <li><strong>Compression</strong> - sessions older than 30 days are automatically gzip-compressed. The UI reads
+          them transparently; compressed sessions show a "gz" badge in the list and an "archived" label in the header.
+        </li>
+      </ul>
+
+      <div class="tip">
+        <div class="tip-title">Search scope</div>
+        Use the <strong>All / Session</strong> toggle next to the search box to control search scope explicitly. Set it
+        to <em>All</em> to search across every session simultaneously. Switch to <em>Session</em> to narrow results to
+        the open conversation.
+      </div>
+
+      <!-- â”€â”€â”€ Compression Modes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="compression">Compression Modes</h2>
+      <p>When using <code>c3_compress</code> or the CLI <code>compress</code> command:</p>
+
+      <table>
+        <tr>
+          <th>Mode</th>
+          <th>Best For</th>
+          <th>What It Keeps</th>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">structure</span></td>
+          <td>Large files (1000+ tokens)</td>
+          <td>Function/class signatures, imports</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">outline</span></td>
+          <td>Medium files</td>
+          <td>Signatures + first-line docstrings + key comments</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">smart</span></td>
+          <td>General use (default)</td>
+          <td>Adapts based on file size: full text for &lt;100 tokens, outline for &lt;1000, structure for larger</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-warn">diff</span></td>
+          <td>Repeated reads</td>
+          <td>Only the changes since C3 last saw the file (1 line of context)</td>
+        </tr>
+      </table>
+
+      <!-- â”€â”€â”€ Data Layout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="data-layout">Project Data Layout</h2>
+      <p>After initialization, C3 creates this structure in your project:</p>
+
+      <pre><code>.c3/
+  config.json            # project configuration (includes "ide" key for cross-IDE support)
+  dictionary.json        # project-specific compression dictionary
+  index/
+    index.json           # TF-IDF code index
+  cache/                 # file compression cache (for diff mode)
+  sessions/
+    session_*.json       # saved sessions (includes tool_calls, duration)
+    analytics.json       # aggregate session stats
+  facts/
+    facts.json           # persistent fact store
+  snapshots/
+    snap_*.json          # context snapshots for save-and-restore workflow
+  transcript_index/
+    index.json           # TF-IDF index over .jsonl transcripts (Claude Code only)
+    manifest.json        # tracks which transcript files have been indexed
+  file_memory/
+    *.json               # per-file structural maps (classes, functions, line ranges)
+    _queue.txt           # async update queue (from Read hook)
+  activity_log.jsonl     # append-only activity log
+  notifications.jsonl    # agent notification queue
+  proxy_metrics.json     # proxy traffic and filtering metrics (written on shutdown)</code></pre>
+
+      <div class="tip">
+        <div class="tip-title">Privacy</div>
+        All data is local to your project. Nothing is sent to external services.
+      </div>
+
+      <h3>Project Structure</h3>
+      <pre><code>claude-companion/
+  cli/
+    c3.py                # CLI entry point (all commands)
+    mcp_server.py        # MCP server (30 tools via FastMCP)
+    mcp_proxy.py         # Optional advanced MCP proxy (tool filtering)
+    server.py            # Flask web server + REST API
+    ui.html              # Single-page React dashboard
+    docs.html            # Documentation (this page)
+    hook_filter.py       # PostToolUse hook for Bash (output filtering, Claude Code only)
+    hook_read.py         # PostToolUse hook for Read (C3 enforcement + file memory queue, Claude Code only)
+  services/
+    compressor.py        # AST-based code compression
+    indexer.py           # TF-IDF code index
+    session_manager.py   # Session tracking + instructions file generation
+    claude_md.py         # Instructions file lifecycle management (generate/check/compact/promote)
+    memory.py            # Tiered memory with fact storage + search
+    context_snapshot.py  # Context snapshots for save-and-restore workflow
+    transcript_index.py  # TF-IDF index over .jsonl transcripts (Claude Code only)
+    activity_log.py      # Append-only JSONL activity log
+    notifications.py     # Thread-safe notification queue for agents
+    agents.py            # Background analysis agents (7 daemon threads, AI-enhanced)
+    file_memory.py       # Persistent structural file index with line ranges
+    tool_classifier.py   # Tool category classification for proxy filtering
+    proxy_state.py       # Sliding window conversation state tracker
+    watcher.py           # File system change monitoring
+    protocol.py          # Compression protocol encoder/decoder
+  core/
+    __init__.py          # Token counting utilities
+    ide.py               # IDE profile registry (Claude Code, VS Code, Cursor, Codex) + auto-detection
+    config.py            # Hybrid, proxy, delegate, and agent configuration loaders
+  install.bat            # Windows installer
+  install.sh             # Linux/macOS installer
+  pyproject.toml         # Python package metadata + dependencies</code></pre>
+
+      <!-- â”€â”€â”€ Token Savings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="token-savings">Token Savings Estimates</h2>
+
+      <table>
+        <tr>
+          <th>Strategy</th>
+          <th>Estimated Savings</th>
+        </tr>
+        <tr>
+          <td>AST Summarization</td>
+          <td>40-70% on file reads</td>
+        </tr>
+        <tr>
+          <td>Diff-only mode</td>
+          <td>60-90% on edits (1-line context)</td>
+        </tr>
+        <tr>
+          <td>Smart Retrieval</td>
+          <td>50-80% on search operations</td>
+        </tr>
+        <tr>
+          <td>Compact MCP Responses</td>
+          <td>~35% on tool response overhead (terse tags vs prose)</td>
+        </tr>
+        <tr>
+          <td>Session Memory</td>
+          <td>30-50% on repeated context</td>
+        </tr>
+        <tr>
+          <td>Compression Protocol</td>
+          <td>20-40% on prompts</td>
+        </tr>
+        <tr>
+          <td>Delegation to local LLM (<code>c3_delegate</code>)</td>
+          <td>~80% on analysis, summarization, test generation, and code review tasks</td>
+        </tr>
+        <tr>
+          <td>Log/output pre-filtering (<code>c3_filter(file_path=...)</code>, <code>c3_filter(text=...)</code>)</td>
+          <td>50-95% on log files and noisy terminal output</td>
+        </tr>
+        <tr>
+          <td><strong>Combined</strong></td>
+          <td><strong>65-90% overall</strong></td>
+        </tr>
+      </table>
+
+      <div class="card" style="margin-top: 12px;">
+        <div class="card-title">Measured Benchmark (March 5, 2026)</div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">
+          Latest measured values from <code>c3 benchmark</code> in this repository:
+        </p>
+        <ul>
+          <li>Compression: <strong>95.8%</strong> token savings across 25 sampled files</li>
+          <li>Search context: <strong>95.1%</strong> fewer tokens vs naive full-file baseline</li>
+          <li>Grounding proxy hit rate (expected file in top-5): <strong>83.3%</strong> for C3 retrieval (baseline: 66.7%)</li>
+          <li>Delegate offload: measured locally and promoted into the main benchmark scorecard when Ollama is available</li>
+        </ul>
+      </div>
+
+      <!-- â”€â”€â”€ Tips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="tips">Tips</h2>
+
+      <div class="tip">
+        <div class="tip-title">Let Claude use the tools</div>
+        You don't need to tell Claude to call C3 â€” it will use the tools when they're relevant.
+        But you can explicitly ask things like "search the codebase for authentication" or "remember that we use JWT for
+        auth".
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Use remember for conventions</div>
+        Store things like "we use snake_case for Python, camelCase for JS" or "the API gateway is in
+        services/gateway.py". These persist across sessions and surface when relevant.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Memory nudges are automatic</div>
+        C3 nudges Claude to save facts at natural checkpoints â€” after 20+ tool calls with no saves, 3+ decisions with
+        no facts, or every 15 tool calls. Nudges use terse tags like <code>[nudge:save_facts|calls:25|facts:0]</code> to
+        minimize token overhead. Once Claude saves a fact, the nudges calm down.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Use snapshots to manage context</div>
+        When your context gets heavy, call <code>c3_session(action='snapshot')</code> to save your working state. After resetting context
+        (<code>/clear</code> in Claude Code, or starting a new chat in other IDEs), call <code>c3_session(action='restore')</code> to
+        bring back your decisions, files, and notes in a compact briefing â€” much cheaper than replaying the full
+        conversation. When over the budget threshold, C3 nudges the AI to snapshot and restart.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Filter long terminal output</div>
+        If a shell command prints more than ~20 lines, run <code>c3_filter(text="...")</code> before analysis.
+        For log/data files, run <code>c3_filter(file_path=..., pattern?)</code> before reading raw content.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Search past conversations</div>
+        <code>c3_transcript_search</code> indexes your Claude Code transcript history (Claude Code only). In other IDEs,
+        use <code>c3_memory(action='recall')</code> or <code>c3_memory(action='query')</code> to find context from past sessions. These tools work
+        across all IDEs and search stored facts and semantic memory.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Pre-filter large files with extract</div>
+        Before reading a large log, JSONL, or data file, use <code>c3_filter(file_path=...)</code> to get just the relevant parts. For
+        logs it finds errors/warnings; for JSONL it samples entries; for code files it delegates to the compressor.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Delegate heavy analysis to save ~80% tokens</div>
+        Use <code>c3_delegate</code> before doing analysis inline. Mandatory triggers: any file &gt;200 lines you need
+        to understand (not edit) â†’ <code>task_type='summarize'</code> or <code>'explain'</code>; any error traceback
+        â†’ <code>task_type='diagnose'</code>; writing unit tests â†’ <code>task_type='test'</code>; code review â†’
+        <code>task_type='review'</code>; codebase Q&amp;A â†’ <code>task_type='ask'</code>. Responses are cached
+        in-session so repeated calls are instant. You can also use <code>task_type='auto'</code> and set delegation
+        threshold policy in <code>.c3/config.json</code> (<code>delegate.threshold_enabled</code>,
+        <code>delegate.threshold_min_total_tokens</code>, <code>delegate.threshold_task_types</code>).
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Rebuild after big changes</div>
+        If you've added many files or restructured the project, run <code>c3 index</code> from the terminal.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Per-project instances</div>
+        Each project gets its own C3 instance with its own index, sessions, and facts. Run <code>c3 init</code> in each
+        project â€” it handles both initialization and MCP registration in one step.
+      </div>
+
+      <div class="tip">
+        <div class="tip-title">Browse session history</div>
+        Session files in <code>.c3/sessions/</code> are plain JSON. You can read them directly to review past decisions,
+        file changes, and tool calls.
+      </div>
+
+      <!-- â”€â”€â”€ Troubleshooting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <h2 id="troubleshooting">Troubleshooting</h2>
+
+      <div class="warn">
+        <div class="warn-title">Tools don't appear</div>
+        <ul>
+          <li>Make sure the MCP config file exists (<code>.mcp.json</code> for Claude Code,
+            <code>.vscode/mcp.json</code> for VS Code, <code>.cursor/mcp.json</code> for Cursor,
+            <code>.codex/config.toml</code> for Codex)
+          </li>
+          <li>Check that the Python path in the config is correct (<code>"command"</code> field for JSON configs;
+            <code>command</code> key for Codex TOML)
+          </li>
+          <li>For Codex, ensure neither project nor global TOML disables C3
+            (<code>[mcp_servers.c3] enabled = false</code>). Project config should normally be
+            <code>enabled = true</code>.
+          </li>
+          <li>If <code>install-mcp</code> reports permission denied on <code>.codex/config.toml</code>, close
+            IDE/session handles that may lock the file, then re-run.</li>
+          <li>Restart your IDE after generating the MCP config</li>
+          <li>For Claude Code: run <code>/mcp</code> to verify tools; for VS Code: check the Copilot agent panel; for
+            Codex: the TOML is picked up automatically on next session start</li>
+        </ul>
+      </div>
+
+      <div class="warn">
+        <div class="warn-title">"No relevant code found" from c3_search</div>
+        <ul>
+          <li>The index may not be built. Run <code>c3 index</code> from the terminal.</li>
+          <li>Check that your file types are in the supported list</li>
+        </ul>
+      </div>
+
+      <div class="warn">
+        <div class="warn-title">Server fails to start</div>
+        <ul>
+          <li>Run <code>python cli/mcp_server.py --project /path/to/project</code> manually to see error output</li>
+          <li>Verify the install: <code>pip install .</code> (from the C3 source dir)</li>
+        </ul>
+      </div>
+
+      <div class="warn">
+        <div class="warn-title">tiktoken import error</div>
+        <ul>
+          <li>Install it: <code>pip install tiktoken</code></li>
+          <li>C3 falls back to a heuristic counter if tiktoken is unavailable â€” this is not fatal</li>
+        </ul>
+      </div>
+
+      <div class="warn">
+        <div class="warn-title">Second UI shows wrong project's data</div>
+        <ul>
+          <li>Each <code>c3 ui</code> launch finds the next free port from 3333. The UI always calls its
+            <strong>own</strong> port via <code>window.location.origin</code>, so navigating to
+            <code>localhost:3334</code> shows that instance's project.
+          </li>
+          <li>If you see stale or wrong data, verify you're on the correct URL â€” the startup banner prints the
+            assigned URL and project path for each instance.</li>
+          <li>Service badges (proxy, ollama, sltm) may show red on a second instance if those services are not
+            configured for the second project. Use the refresh button in the header or sidebar to re-check.</li>
+        </ul>
+      </div>
+
+      <div
+        style="margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-align: center;">
+        C3 â€” Claude Code Companion &middot; MIT License
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Sidebar active link + search -->
+  <script>
+    // â”€â”€ Theme toggle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const html = document.documentElement;
+    const themeBtn = document.getElementById('themeToggle');
+    const savedTheme = localStorage.getItem('c3-theme') || 'dark';
+    if (savedTheme === 'light') {
+      html.setAttribute('data-theme', 'light');
+      themeBtn.textContent = 'â˜½';
+    }
+    themeBtn.addEventListener('click', () => {
+      const isLight = html.getAttribute('data-theme') === 'light';
+      if (isLight) {
+        html.removeAttribute('data-theme');
+        localStorage.setItem('c3-theme', 'dark');
+        themeBtn.textContent = 'â˜€';
+      } else {
+        html.setAttribute('data-theme', 'light');
+        localStorage.setItem('c3-theme', 'light');
+        themeBtn.textContent = 'â˜½';
+      }
+    });
+
+    const links = document.querySelectorAll('.sidebar a');
+    const sections = [...links].map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+    const sectionDividers = document.querySelectorAll('.sidebar-section');
+    const noResults = document.getElementById('searchNoResults');
+    const searchInput = document.getElementById('docSearch');
+    const searchClear = document.getElementById('searchClear');
+
+    // â”€â”€ Active link tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    function updateActive() {
+      let current = '';
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= 100) current = section.id;
+      }
+      links.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+      });
+    }
+
+    document.querySelector('.content').parentElement.addEventListener('scroll', updateActive);
+    window.addEventListener('scroll', updateActive);
+    updateActive();
+
+    // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    function filterDocs(query) {
+      const q = query.toLowerCase().trim();
+      searchClear.classList.toggle('visible', q.length > 0);
+
+      if (!q) {
+        links.forEach(a => a.style.display = '');
+        sectionDividers.forEach(d => d.style.display = '');
+        noResults.style.display = 'none';
+        return;
+      }
+
+      let anyVisible = false;
+      links.forEach(a => {
+        const match = a.textContent.toLowerCase().includes(q);
+        a.style.display = match ? '' : 'none';
+        if (match) anyVisible = true;
+      });
+
+      // Hide section headers whose children are all hidden
+      sectionDividers.forEach(d => {
+        let next = d.nextElementSibling;
+        let hasVisible = false;
+        while (next && !next.classList.contains('sidebar-section')) {
+          if (next.tagName === 'A' && next.style.display !== 'none') hasVisible = true;
+          next = next.nextElementSibling;
+        }
+        d.style.display = hasVisible ? '' : 'none';
+      });
+
+      noResults.style.display = anyVisible ? 'none' : 'block';
+    }
+
+    searchInput.addEventListener('input', e => filterDocs(e.target.value));
+
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      filterDocs('');
+      searchInput.focus();
+    });
+
+    // Keyboard shortcuts: / or Ctrl+K to focus; Escape to clear
+    document.addEventListener('keydown', e => {
+      if ((e.key === '/' && document.activeElement !== searchInput) ||
+        (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+      if (e.key === 'Escape' && document.activeElement === searchInput) {
+        searchInput.value = '';
+        filterDocs('');
+        searchInput.blur();
+      }
+    });
+
+    // â”€â”€ Back to top â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const btn = document.createElement('a');
+    btn.href = '#overview';
+    btn.className = 'back-top';
+    btn.innerHTML = '&#8593;';
+    document.body.appendChild(btn);
+  </script>
+
+</body>
+
+</html>

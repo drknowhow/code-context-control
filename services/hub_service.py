@@ -13,10 +13,10 @@ Usage:
     svc.start(port=3330)     # start background process now
     svc.stop(port=3330)      # kill process listening on port
 """
+import json
 import os
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 try:
@@ -249,7 +249,7 @@ class HubService:
         reg_installed = _win_reg_registered(self.TASK_NAME)
         startup_installed = self._startup_script_path.exists()
         running = self._is_port_alive(port)
-        
+
         if task_installed:
             method = "Windows Task Scheduler (runs at login, no terminal)"
         elif reg_installed:
@@ -258,7 +258,7 @@ class HubService:
             method = "Windows Startup folder — legacy, consider reinstalling"
         else:
             method = "not installed"
-            
+
         return {
             "installed": task_installed or reg_installed or startup_installed,
             "running": running,
@@ -279,7 +279,6 @@ class HubService:
 
     def _read_hub_config(self) -> dict:
         """Read hub config from ~/.c3/hub_config.json."""
-        import json
         config_path = Path.home() / ".c3" / "hub_config.json"
         if config_path.exists():
             try:

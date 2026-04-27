@@ -8,11 +8,11 @@ from services.bench.external.aider_polyglot import (
 )
 from services.bench.external.swe_bench import (
     SWEBenchAdapter,
-    SWEBenchTask,
-    SWEBenchResult,
     SWEBenchReport,
-    load_tasks,
+    SWEBenchResult,
+    SWEBenchTask,
     evaluate_with_docker,
+    load_tasks,
 )
 
 __all__ = [

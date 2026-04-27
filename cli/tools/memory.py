@@ -281,7 +281,7 @@ def handle_memory(action: str, query: str, fact: str, category: str,
 
         if not pairs and not unused and not verbose and not stale_sessions and not ephemeral:
             lines.append("  No issues found.")
-        lines.append(f"  Actions: consolidate, consolidate_deep, score, graph, ground, trends, lifespan")
+        lines.append("  Actions: consolidate, consolidate_deep, score, graph, ground, trends, lifespan")
         return finalize("c3_memory", {"action": action},
                         "\n".join(lines), f"{total}f")
 
@@ -314,7 +314,7 @@ def handle_memory(action: str, query: str, fact: str, category: str,
                             "[memory:consolidate] auto_memory not available", "skip")
         stats = svc.auto_memory.consolidate()
         lines = [
-            f"[memory:consolidate] done",
+            "[memory:consolidate] done",
             f"  Merged: {stats['merged']} duplicate pairs",
             f"  Archived: {stats['archived']} stale auto-facts",
             f"  Remaining: {stats['total']} facts",
@@ -330,7 +330,7 @@ def handle_memory(action: str, query: str, fact: str, category: str,
         session = svc.session_mgr.current_session
         stats = consolidator.run(current_session=session)
         phases = stats.get("phases", {})
-        lines = [f"[memory:consolidate_deep] 4-phase pipeline complete"]
+        lines = ["[memory:consolidate_deep] 4-phase pipeline complete"]
         for phase_name, phase_stats in phases.items():
             lines.append(f"  {phase_name}: {phase_stats}")
         lines.append(f"  Total active facts: {stats.get('total_facts', '?')}")

@@ -1,0 +1,13 @@
+{
+  "infographic_id": "info_03_memory_flow",
+  "title": "Local Memory Ecosystem",
+  "visual_prompt": "A circular flow diagram infographic with a dark, high-contrast theme. In the center is a glowing 3D 'Local Memory' brain icon. Around it, four nodes are connected by pulsing light-paths: 'Project Codebase' (top), 'Tool Activity' (right), 'User Decisions' (bottom), and 'AI Context' (left). The infographic shows how data is indexed locally and fed back to the AI in a continuous loop. Neon blue and violet gradients. Cinematic lighting.",
+  "color_palette": ["#0F172A", "#7C3AED", "#2DD4BF", "#F8FAFC"],
+  "typography_style": "High-tech futuristic Sans-Serif with subtle glowing effects on titles.",
+  "layout_description": "Circular process loop with a central 'Core' and four 'Input/Output' satellites.",
+  "key_elements": [
+    "Pulsing data-path connections",
+    "Central Local Memory core",
+    "Loop-based knowledge cycle"
+  ]
+}

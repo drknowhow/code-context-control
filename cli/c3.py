@@ -27,17 +27,17 @@ Usage:
     c3 optimize
     c3 pipe <query>    # All-in-one: index + context + encode, pipe to Claude
 """
-import os
-import sys
+import argparse
+import html
 import json
 import logging
-import tempfile
-import argparse
-import subprocess
+import os
 import re
-import time
-import html
 import shlex
+import subprocess
+import sys
+import tempfile
+import time
 from copy import deepcopy
 
 _log = logging.getLogger("c3")
@@ -46,7 +46,6 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import count_tokens, measure_savings, format_token_count
 from cli.commands.common import CommandDeps
 from cli.commands.common import cmd_claudemd as common_cmd_claudemd
 from cli.commands.common import cmd_compress as common_cmd_compress
@@ -60,23 +59,23 @@ from cli.commands.common import cmd_session as common_cmd_session
 from cli.commands.common import cmd_stats as common_cmd_stats
 from cli.commands.common import cmd_ui as common_cmd_ui
 from cli.commands.parser import build_parser
+from core import count_tokens, format_token_count
+from core.config import AGENT_DEFAULTS, DELEGATE_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
+from core.config import DEFAULTS as HYBRID_DEFAULTS
+from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services.compressor import CodeCompressor
-from services.indexer import CodeIndex
 from services.file_memory import FileMemoryStore
+from services.indexer import CodeIndex
 from services.ollama_client import OllamaClient
 from services.output_filter import OutputFilter
-from services.session_manager import SessionManager
 from services.protocol import CompressionProtocol
-from core.ide import get_profile, detect_ide, load_ide_config, PROFILES, normalize_ide_name
-from core.config import DEFAULTS as HYBRID_DEFAULTS, PROXY_DEFAULTS, DELEGATE_DEFAULTS, AGENT_DEFAULTS, load_delegate_config
+from services.session_manager import SessionManager
 
 # Rich for beautiful terminal output
 try:
     from rich.console import Console
-    from rich.table import Table
     from rich.panel import Panel
-    from rich.syntax import Syntax
-    from rich import print as rprint
+    from rich.table import Table
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
@@ -86,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.24.0"
+__version__ = "2.28.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -527,7 +526,8 @@ def _check_c3_health(project_path: str) -> dict:
             _log.debug("Failed to read changes.json", exc_info=True)
 
     # Instructions file
-    from core.ide import load_ide_config, get_profile as _get_profile
+    from core.ide import get_profile as _get_profile
+    from core.ide import load_ide_config
     ide_name = load_ide_config(project_path)
     profile = _get_profile(ide_name)
     instructions_file = profile.instructions_file or "CLAUDE.md"
@@ -761,8 +761,8 @@ def _do_init(project_path: str, ide_name: str = None):
 
     # Build embedding index if Ollama is available (non-blocking on failure)
     try:
-        from services.ollama_client import OllamaClient
         from services.embedding_index import EmbeddingIndex
+        from services.ollama_client import OllamaClient
         config = load_config(project_path)
         ollama_url = config.get("ollama_base_url", "http://localhost:11434")
         ollama = OllamaClient(ollama_url)
@@ -793,7 +793,8 @@ def _do_init(project_path: str, ide_name: str = None):
     new_terms = protocol.build_project_dictionary()
     print(f"  Added {len(new_terms)} project-specific terms")
 
-    from core.ide import load_ide_config, get_profile as _get_profile, detect_ide
+    from core.ide import detect_ide, load_ide_config
+    from core.ide import get_profile as _get_profile
     # Use caller-supplied IDE if given, otherwise detect from disk markers
     if not ide_name or ide_name == "auto":
         ide_name = load_ide_config(project_path)
@@ -950,11 +951,10 @@ def cmd_init(args):
     # â”€â”€ Path-change fast path (project was copied/moved) â”€â”€â”€â”€â”€â”€
     if health.get("path_changed"):
         old_path = health.get("old_path", "?")
-        print(f"\n  [!] Path change detected:")
+        print("\n  [!] Path change detected:")
         print(f"      was : {old_path}")
         print(f"      now : {project_path}")
         print("\n  Updating MCP config and index paths...")
-        from types import SimpleNamespace
         # Clear stale transcript index manifest so it rebuilds with new slug
         ti_manifest = c3_dir / "transcript_index" / "manifest.json"
         if ti_manifest.exists():
@@ -2009,11 +2009,11 @@ def _render_benchmark_html(reports: list[dict]) -> str:
     # Sort scenarios to ensure deterministic chart labels
     sorted_scenario_keys = sorted(scenarios.keys())
     scenario_display_labels = [s.replace('_', ' ').title() for s in sorted_scenario_keys]
-    
+
     scenario_c3_tokens = []
     scenario_base_tokens = []
     scenario_savings = []
-    
+
     for k in sorted_scenario_keys:
         s = scenarios[k]
         c3_tok = s.get('with_c3', {}).get('total_tokens', s.get('with_c3', {}).get('avg_context_tokens', 0))
@@ -2028,7 +2028,7 @@ def _render_benchmark_html(reports: list[dict]) -> str:
         if eval_data.get("status") == "measured":
             m = eval_data.get("with_c3", {}).get("model", "unknown")
             model_counts[m] = model_counts.get(m, 0) + 1
-    
+
     model_labels = list(model_counts.keys())
     model_data = list(model_counts.values())
 
@@ -3317,7 +3317,7 @@ def cmd_benchmark(args):
         record = file_memory.get(rel)
         if not record or file_memory.needs_update(rel):
             record = file_memory.update(rel)
-        
+
         extracted_text = ""
         if record and record.get("sections"):
             # Pick the most relevant single symbol for surgical reading
@@ -3342,7 +3342,7 @@ def cmd_benchmark(args):
                 extracted_text = raw_content
         else:
             extracted_text = raw_content
-            
+
         read_c3_latencies.append((time.perf_counter() - t0) * 1000)
         read_comp += count_tokens(extracted_text)
 
@@ -3557,34 +3557,34 @@ def cmd_benchmark(args):
         if eval_data.get("status") == "measured":
             with_c3 = eval_data.get("with_c3", {})
             without_c3 = eval_data.get("without_c3", {})
-            
+
             # Ensure tokens are available for charts
             c3_tok = with_c3.get("primary_model_prompt_tokens", 0)
             base_tok = without_c3.get("primary_model_prompt_tokens", 0)
-            
+
             # Resolve performance and latency metrics for the HTML charts
             c3_latency = with_c3.get("latency_ms", 0.0)
             base_latency = without_c3.get("latency_ms", 0.0)
-            
+
             # Use confidence as a proxy for performance if no quality metric is provided
             perf_c3 = eval_data.get("quality", {}).get("with_c3")
             if perf_c3 is None:
                 conf = with_c3.get("confidence", "high")
                 perf_c3 = 100.0 if conf == "high" else (70.0 if conf == "medium" else 40.0)
-                
+
             perf_base = eval_data.get("quality", {}).get("without_c3", 100.0)
 
             scenarios[name] = {
                 "description": eval_data.get("description", ""),
                 "performance_metric": eval_data.get("quality", {}).get("metric", "quality proxy"),
                 "with_c3": {
-                    **with_c3, 
+                    **with_c3,
                     "total_tokens": c3_tok,
                     "avg_latency_ms": c3_latency,
                     "performance": perf_c3
                 },
                 "without_c3": {
-                    **without_c3, 
+                    **without_c3,
                     "total_tokens": base_tok,
                     "avg_latency_ms": base_latency,
                     "performance": perf_base
@@ -3669,7 +3669,7 @@ def cmd_benchmark(args):
         runs_dir = project_path / ".c3" / "benchmark" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         out_path = runs_dir / f"benchmark_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     report["artifacts"]["json_report"] = str(out_path)
 
@@ -3683,10 +3683,10 @@ def cmd_benchmark(args):
                 reports.append(json.loads(f.read_text(encoding="utf-8")))
             except Exception:
                 continue
-    
+
     # Sort by timestamp
     reports.sort(key=lambda x: x.get("timestamp", ""))
-    
+
     # If the current run wasn't saved yet, ensure it's in the list for rendering
     if not any(r.get("timestamp") == report["timestamp"] for r in reports):
         reports.append(report)
@@ -4258,9 +4258,10 @@ def _ensure_global_session_fallbacks(server_script: str) -> None:
 
 def _uninstall_mcp_all(project_path: str):
     """Remove C3 MCP server configurations from all supported IDEs."""
-    from core.ide import PROFILES
-    from pathlib import Path
     import shutil
+    from pathlib import Path
+
+    from core.ide import PROFILES
 
     print("\nRemoving C3 MCP server configurations...")
     target = Path(project_path).resolve()
@@ -5095,7 +5096,7 @@ def cmd_install_mcp(args):
         print(f"Wrote {settings_path}")
         print(f"  Hooks ({hook_event}): {shell_matcher} (filter+ghost) + {read_matcher}/{edit_matcher}/{write_matcher} (ledger) + c3_read/c3_compress/c3_agent (unlock)")
         print(f"  Hooks ({pre_event}): {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
-        print(f"  Hooks (Stop): session_stats + auto_snapshot")
+        print("  Hooks (Stop): session_stats + auto_snapshot")
         if profile.name == "claude-code":
             print("  Claude MCP prompt settings enabled for this project")
         if perm_tier and profile.name == "claude-code":
@@ -5142,7 +5143,7 @@ def cmd_install_mcp(args):
         with open(vscode_settings_path, "w", encoding="utf-8") as f:
             json.dump(vscode_settings, f, indent=2)
         print(f"Wrote {vscode_settings_path}")
-        print(f"  Copilot: C3 instructions linked for code gen, review, and test generation")
+        print("  Copilot: C3 instructions linked for code gen, review, and test generation")
 
     # â”€â”€ Codex AGENTS.md enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if profile.name == "codex":
@@ -5288,7 +5289,7 @@ def cmd_mcp_remove(args):
 
 def cmd_terse(args):
     """Manage the terse-advisor nudge state (~/.c3/terse_advisor.json)."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     state_file = Path.home() / ".c3" / "terse_advisor.json"
 
@@ -5336,7 +5337,7 @@ def cmd_terse(args):
             except Exception:
                 print(f"  remind_after    : {remind_after}")
         else:
-            print(f"  snoozed until   : —")
+            print("  snoozed until   : —")
         print(f"  last nudge sess : {last_session or '—'}")
 
 
@@ -5445,7 +5446,12 @@ def cmd_session_benchmark(args):
     """Run real-world session workflow benchmark."""
     if getattr(args, "command", "") == "session-benchmark":
         print("[note] `c3 session-benchmark` is aliased as `c3 bench session`. Prefer the unified form going forward.")
-    from services.session_benchmark import SessionBenchmark, generate_report, render_html, load_session_benchmark_history
+    from services.session_benchmark import (
+        SessionBenchmark,
+        generate_report,
+        load_session_benchmark_history,
+        render_html,
+    )
 
     project_path = Path(args.project_path or ".").resolve()
     print_header("C3 Session Benchmark")
@@ -5543,11 +5549,13 @@ def cmd_benchmark_e2e(args):
     if getattr(args, "command", "") == "benchmark-e2e":
         print("[note] `c3 benchmark-e2e` is aliased as `c3 bench e2e` (or `c3 bench delegate`). Prefer the unified form going forward.")
     from services.e2e_benchmark import (
-        E2EBenchmark, CLIProvider, detect_providers,
-        generate_e2e_report, render_e2e_html,
+        E2EBenchmark,
+        detect_providers,
+        generate_e2e_report,
+        render_e2e_html,
     )
-    from services.e2e_tasks import TaskBuilder
     from services.e2e_evaluator import Evaluator
+    from services.e2e_tasks import TaskBuilder
     from services.file_memory import FileMemoryStore
     from services.indexer import CodeIndex
 
@@ -5720,7 +5728,7 @@ def cmd_benchmark_e2e(args):
     has_trends = trends.get("available", False)
 
     print()
-    print(f"  +- E2E Scorecard ---------------------------------------------------+")
+    print("  +- E2E Scorecard ---------------------------------------------------+")
     wr_str = f"{sc['c3_win_rate']:>5.1f}%"
     if has_trends and sl.get("win_rate_delta", 0) != 0:
         wr_str += f"  ({sl['win_rate_delta']:+.1f}pp)"
@@ -5732,7 +5740,7 @@ def cmd_benchmark_e2e(args):
     print(f"  |  Score Delta     {sc['avg_score_delta']:>+5.3f}")
     if has_trends:
         print(f"  |  Run History     {trends.get('run_count', 0)} runs")
-    print(f"  +------------------------------------------------------------------+")
+    print("  +------------------------------------------------------------------+")
     print()
 
     # Per-provider summary
@@ -5771,7 +5779,7 @@ def cmd_benchmark_e2e(args):
     ins = report.get("insights", {})
     findings = ins.get("findings", [])
     if findings:
-        print(f"\n  Findings:")
+        print("\n  Findings:")
         sev_icon = {"critical": "!!", "warning": " !", "strength": " +", "info": " *"}
         for f in findings:
             icon = sev_icon.get(f.get("severity", "info"), " *")
@@ -5906,7 +5914,10 @@ def _run_external_benchmark(args, project_path):
 
     if suite == "aider-polyglot":
         from services.bench.external.aider_polyglot import (
-            AiderPolyglotBenchmark, detect_aider, find_polyglot_repo, save_report,
+            AiderPolyglotBenchmark,
+            detect_aider,
+            find_polyglot_repo,
+            save_report,
         )
 
         aider_path = detect_aider()
@@ -5973,12 +5984,15 @@ def _run_external_benchmark(args, project_path):
 
 def _run_swe_bench_lite(args, project_path):
     """Run the SWE-bench Lite external benchmark."""
-    from services.benchmark_dashboard import generate_dashboard
-    from services.bench.external.swe_bench import (
-        SWEBenchAdapter, load_tasks, evaluate_with_docker,
-        apply_resolution_results, save_report,
-    )
     from services.bench.external.aider_polyglot import detect_aider
+    from services.bench.external.swe_bench import (
+        SWEBenchAdapter,
+        apply_resolution_results,
+        evaluate_with_docker,
+        load_tasks,
+        save_report,
+    )
+    from services.benchmark_dashboard import generate_dashboard
 
     dataset_arg = getattr(args, "dataset", None) or "princeton-nlp/SWE-bench_Lite"
     agent = getattr(args, "agent", "aider")
@@ -6054,7 +6068,7 @@ def _run_swe_bench_lite(args, project_path):
     else:
         report.evaluation_method = "none"
         print("\n  Skipping evaluation (no --docker-eval). To score predictions later:")
-        print(f"    pip install swebench && docker version  # ensure prerequisites")
+        print("    pip install swebench && docker version  # ensure prerequisites")
         print(f"    python -m swebench.harness.run_evaluation \\\n"
               f"      --predictions_path {report.predictions_with_c3} \\\n"
               f"      --dataset_name {dataset_arg} --run_id c3-with --max_workers 4")
@@ -6083,6 +6097,12 @@ def _run_swe_bench_lite(args, project_path):
 
 
 def main():
+    try:
+        from services import error_reporting
+        error_reporting.init(component="c3-cli", version=__version__)
+    except Exception:
+        pass
+
     parser = build_parser(__version__, _parse_cli_ide_arg)
     args = parser.parse_args()
 

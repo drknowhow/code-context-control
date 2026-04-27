@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C3 Guide — Claude Code Companion</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .hero {
+      background: linear-gradient(135deg, var(--bg-2) 0%, var(--bg-3) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 40px 48px;
+      margin-bottom: 40px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -60px;
+      right: -60px;
+      width: 220px;
+      height: 220px;
+      background: radial-gradient(circle, var(--blue-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 12px;
+    }
+
+    .hero h1 {
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 span { color: var(--blue); }
+
+    .hero p {
+      font-size: 15px;
+      color: var(--text-muted);
+      max-width: 560px;
+      line-height: 1.7;
+      margin-bottom: 24px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 20px;
+      border-radius: var(--radius);
+      font-size: 13.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-decoration: none;
+    }
+
+    .btn:hover { text-decoration: none; }
+
+    .btn-primary {
+      background: var(--blue);
+      color: white;
+    }
+    .btn-primary:hover { background: #2563eb; }
+
+    .btn-secondary {
+      background: var(--bg-3);
+      color: var(--text);
+      border: 1px solid var(--border-2);
+    }
+    .btn-secondary:hover { background: var(--border); }
+
+    /* Nav grid */
+    .nav-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 40px;
+    }
+
+    .nav-card {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: block;
+      text-decoration: none;
+    }
+
+    .nav-card:hover {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 1px var(--blue), var(--shadow);
+      text-decoration: none;
+    }
+
+    .nav-card-icon {
+      font-size: 26px;
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .nav-card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 5px;
+    }
+
+    .nav-card-desc {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Quick ref */
+    .quick-ref {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-bottom: 32px;
+    }
+
+    .quick-ref h2 {
+      margin-top: 0;
+      margin-bottom: 16px;
+      font-size: 16px;
+    }
+
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 10px;
+    }
+
+    .quick-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 12px 14px;
+      background: var(--bg-3);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+
+    .quick-item code {
+      font-size: 12px;
+      color: var(--cyan);
+      background: none;
+      border: none;
+      padding: 0;
+    }
+
+    .quick-item span {
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+
+    /* What is C3 */
+    .what-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+
+    .what-item {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .what-item .label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 8px;
+    }
+
+    .what-item p {
+      font-size: 13px;
+      margin: 0;
+    }
+
+    .what-item.positive .label { color: var(--green); }
+    .what-item.negative .label { color: var(--red); }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html" class="active">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+    </nav>
+    <span class="header-version">v2.x</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Overview</div>
+      <a href="index.html" class="sidebar-link active">
+        <span class="icon">🏠</span> Home
+      </a>
+      <a href="index.html#what-is-c3" class="sidebar-link">
+        <span class="icon">💡</span> What is C3?
+      </a>
+      <a href="index.html#quick-ref" class="sidebar-link">
+        <span class="icon">⚡</span> Quick Reference
+      </a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Guide Sections</div>
+      <a href="getting-started.html" class="sidebar-link">
+        <span class="icon">🚀</span> Getting Started
+      </a>
+      <a href="workflow.html" class="sidebar-link">
+        <span class="icon">🔄</span> Workflow
+      </a>
+      <a href="tools.html" class="sidebar-link">
+        <span class="icon">🔧</span> Tools Reference
+      </a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Key Concepts</div>
+      <a href="index.html#architecture" class="sidebar-link">
+        <span class="icon">🏗️</span> Architecture
+      </a>
+      <a href="index.html#tools-at-a-glance" class="sidebar-link">
+        <span class="icon">🗂️</span> Tools at a Glance
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- Hero -->
+    <div class="hero">
+      <div class="hero-eyebrow">Documentation</div>
+      <h1>Claude Code <span>Companion</span></h1>
+      <p>
+        C3 is a local intelligence layer for Claude Code — adding token-efficient code search, structural file reading, persistent memory, session management, and multi-model delegation directly into your AI coding workflow.
+      </p>
+      <div class="hero-actions">
+        <a href="getting-started.html" class="btn btn-primary">Get Started →</a>
+        <a href="tools.html" class="btn btn-secondary">Tools Reference</a>
+        <a href="workflow.html" class="btn btn-secondary">Workflow Guide</a>
+      </div>
+    </div>
+
+    <!-- Nav Grid -->
+    <div class="nav-grid">
+      <a href="getting-started.html" class="nav-card">
+        <span class="nav-card-icon">🚀</span>
+        <div class="nav-card-title">Getting Started</div>
+        <div class="nav-card-desc">Install C3, configure your IDE, and run your first session</div>
+      </a>
+      <a href="workflow.html" class="nav-card">
+        <span class="nav-card-icon">🔄</span>
+        <div class="nav-card-title">Workflow</div>
+        <div class="nav-card-desc">The mandatory 7-step workflow Claude must follow every session</div>
+      </a>
+      <a href="tools.html" class="nav-card">
+        <span class="nav-card-icon">🔧</span>
+        <div class="nav-card-title">Tools Reference</div>
+        <div class="nav-card-desc">Full reference for all 12 MCP tools — params, examples, notes</div>
+      </a>
+      <a href="tools.html#memory" class="nav-card">
+        <span class="nav-card-icon">🧠</span>
+        <div class="nav-card-title">Memory System</div>
+        <div class="nav-card-desc">Persistent facts across sessions via c3_memory</div>
+      </a>
+      <a href="tools.html#delegation" class="nav-card">
+        <span class="nav-card-icon">🤖</span>
+        <div class="nav-card-title">Delegation</div>
+        <div class="nav-card-desc">Route tasks to Ollama, Codex, or Gemini via c3_delegate</div>
+      </a>
+      <a href="tools.html#session" class="nav-card">
+        <span class="nav-card-icon">📋</span>
+        <div class="nav-card-title">Session Management</div>
+        <div class="nav-card-desc">Snapshots, logs, and context continuity via c3_session</div>
+      </a>
+    </div>
+
+    <!-- What is C3 -->
+    <section class="section" id="what-is-c3">
+      <div class="section-title">
+        <span class="icon">💡</span>
+        What is C3?
+      </div>
+
+      <p>
+        C3 wraps Claude Code with a local MCP server that provides code intelligence tools unavailable in the base product. Every tool call is optimized to minimize token usage — the primary cost driver in long coding sessions.
+      </p>
+
+      <div class="what-grid">
+        <div class="what-item positive">
+          <div class="label">C3 provides</div>
+          <p>TF-IDF + semantic code search, structural file compression (40–70% token savings), persistent cross-session memory, session snapshots, multi-model delegation, edit ledger, and agent workflows.</p>
+        </div>
+        <div class="what-item negative">
+          <div class="label">Without C3</div>
+          <p>Claude reads full files, loses context on /clear, has no persistent memory, and burns tokens on repetitive re-reads of large files.</p>
+        </div>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          <strong>How it works</strong>
+          C3 runs as an MCP (Model Context Protocol) server. Claude Code connects to it via stdio. All C3 tools are available inside Claude Code sessions as <code>c3_*</code> tool calls. The server stores data in a hidden <code>.c3/</code> directory at the project root.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Architecture overview -->
+    <section class="section" id="architecture">
+      <div class="section-title">
+        <span class="icon">🏗️</span>
+        Architecture
+      </div>
+
+      <div class="card">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Location</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>mcp_server.py</code></td>
+              <td><code>cli/</code></td>
+              <td>FastMCP server — exposes all c3_* tools to Claude</td>
+            </tr>
+            <tr>
+              <td><code>c3.py</code></td>
+              <td><code>cli/</code></td>
+              <td>CLI entry point — <code>c3 init</code>, <code>c3 install-mcp</code>, benchmarks</td>
+            </tr>
+            <tr>
+              <td><code>services/</code></td>
+              <td>project root</td>
+              <td>All business logic: memory, compressor, indexer, session, agents…</td>
+            </tr>
+            <tr>
+              <td><code>hub_server.py</code></td>
+              <td><code>cli/</code></td>
+              <td>Flask REST server for the web UI (Hub)</td>
+            </tr>
+            <tr>
+              <td><code>.c3/</code></td>
+              <td>project root</td>
+              <td>Data directory: index, sessions, memory facts, edit ledger</td>
+            </tr>
+            <tr>
+              <td>Hooks</td>
+              <td><code>cli/hook_*.py</code></td>
+              <td>PreToolUse / PostToolUse hooks enforcing c3 discipline</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">🔗</span>
+        <div class="callout-body">
+          <strong>MCP vs REST</strong>
+          The MCP server and Flask REST server run as separate processes. They share state only through the <code>.c3/</code> directory on disk.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Tools at a glance -->
+    <section class="section" id="tools-at-a-glance">
+      <div class="section-title">
+        <span class="icon">🗂️</span>
+        Tools at a Glance
+      </div>
+
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Category</th>
+            <th>One-liner</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>c3_search</code></td>
+            <td><span class="badge badge-blue">Search</span></td>
+            <td>TF-IDF / semantic / file discovery across the codebase</td>
+          </tr>
+          <tr>
+            <td><code>c3_read</code></td>
+            <td><span class="badge badge-blue">Read</span></td>
+            <td>Targeted symbol or line-range reads (not whole files)</td>
+          </tr>
+          <tr>
+            <td><code>c3_compress</code></td>
+            <td><span class="badge badge-blue">Read</span></td>
+            <td>Structural file map — 40–70% token savings</td>
+          </tr>
+          <tr>
+            <td><code>c3_edit</code></td>
+            <td><span class="badge badge-green">Write</span></td>
+            <td>Read + patch + write + log in one atomic step</td>
+          </tr>
+          <tr>
+            <td><code>c3_validate</code></td>
+            <td><span class="badge badge-green">Write</span></td>
+            <td>Syntax-check files after edits</td>
+          </tr>
+          <tr>
+            <td><code>c3_filter</code></td>
+            <td><span class="badge badge-purple">Utility</span></td>
+            <td>Extract signal from noisy terminal output / log files</td>
+          </tr>
+          <tr>
+            <td><code>c3_session</code></td>
+            <td><span class="badge badge-cyan">Session</span></td>
+            <td>Snapshot, restore, log decisions, compact context</td>
+          </tr>
+          <tr>
+            <td><code>c3_memory</code></td>
+            <td><span class="badge badge-cyan">Memory</span></td>
+            <td>Persistent facts across sessions (add / recall / query…)</td>
+          </tr>
+          <tr>
+            <td><code>c3_status</code></td>
+            <td><span class="badge badge-cyan">Status</span></td>
+            <td>Budget, health, notifications, session overview</td>
+          </tr>
+          <tr>
+            <td><code>c3_delegate</code></td>
+            <td><span class="badge badge-orange">AI</span></td>
+            <td>Offload tasks to Ollama / Codex / Gemini</td>
+          </tr>
+          <tr>
+            <td><code>c3_agent</code></td>
+            <td><span class="badge badge-orange">AI</span></td>
+            <td>Multi-step compound workflows (review, investigate…)</td>
+          </tr>
+          <tr>
+            <td><code>c3_edits</code></td>
+            <td><span class="badge badge-yellow">Ledger</span></td>
+            <td>Edit ledger: history, versions, audit trail</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><a href="tools.html">→ Full tools reference with parameters and examples</a></p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Quick reference -->
+    <section class="section" id="quick-ref">
+      <div class="section-title">
+        <span class="icon">⚡</span>
+        Quick Reference
+      </div>
+
+      <div class="quick-ref">
+        <h2>Common CLI Commands</h2>
+        <div class="quick-grid">
+          <div class="quick-item">
+            <code>c3 init</code>
+            <span>Initialize C3 for a project (.c3/, index, CLAUDE.md)</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 install-mcp claude</code>
+            <span>Wire C3 MCP server into Claude Code</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 install-mcp vscode</code>
+            <span>Wire C3 MCP server into VS Code Copilot</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 install-mcp codex</code>
+            <span>Wire C3 MCP server into Codex</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 benchmark</code>
+            <span>Run local token efficiency benchmark</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 hub</code>
+            <span>Launch the Project Hub web dashboard</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 ui</code>
+            <span>Launch the session web UI</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 permissions readonly</code>
+            <span>Apply read-only permission tier</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 terse [dismiss|later|reset|status]</code>
+            <span>Manage the terse-advisor auto-nudge (silence, snooze 24h, or reset)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="quick-ref">
+        <h2>Mandatory Workflow (7 Steps)</h2>
+        <div class="quick-grid">
+          <div class="quick-item">
+            <code>1. c3_memory(action='recall')</code>
+            <span>Recall relevant facts before any multi-step task</span>
+          </div>
+          <div class="quick-item">
+            <code>2. c3_search(action='code|files|semantic')</code>
+            <span>Discover files / content — never start with Grep/Glob</span>
+          </div>
+          <div class="quick-item">
+            <code>3. c3_compress(mode='map') + c3_read(symbols=…)</code>
+            <span>Map then surgically read — never start with native Read</span>
+          </div>
+          <div class="quick-item">
+            <code>4. c3_edit(file, old, new, summary)</code>
+            <span>Atomic read-patch-write-log — never use native Edit</span>
+          </div>
+          <div class="quick-item">
+            <code>5. c3_filter(text=…)</code>
+            <span>Filter terminal output >10 lines or log files</span>
+          </div>
+          <div class="quick-item">
+            <code>6. c3_validate(file_path)</code>
+            <span>Syntax-check after every edit</span>
+          </div>
+          <div class="quick-item">
+            <code>7. c3_session(action='log')</code>
+            <span>Log decisions; snapshot before /clear</span>
+          </div>
+        </div>
+        <p style="margin-top:12px; font-size:13px;">
+          <a href="workflow.html">→ Full workflow guide with examples and anti-patterns</a>
+        </p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+</body>
+</html>

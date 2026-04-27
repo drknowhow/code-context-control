@@ -5,8 +5,9 @@ Saves session state (decisions, files, notes, facts) before /clear,
 provides compact briefings to reinstate context after /clear.
 """
 import json
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
+
 from core import count_tokens
 
 # Max characters per file structural map stored in snapshot

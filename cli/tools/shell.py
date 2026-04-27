@@ -15,8 +15,8 @@ import sys
 import time
 from pathlib import Path
 
-from core import count_tokens
 from cli.tools.filter import handle_filter
+from core import count_tokens
 
 # Commands that mutate repo state — trigger edit-ledger refresh after success.
 _GIT_MUTATING = re.compile(

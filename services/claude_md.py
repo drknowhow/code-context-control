@@ -13,8 +13,8 @@ import json
 import re
 from pathlib import Path
 from typing import Optional
-from core import count_tokens
 
+from core import count_tokens
 
 # Default truncation limit (Claude Code truncates after 200 lines)
 TRUNCATION_LIMIT = 200
@@ -420,7 +420,7 @@ class ClaudeMdManager:
                                     "relevance_count": 1,
                                     "snippet": f"- [PLAN] {plan_text}"
                                 })
-                        
+
                         # Decision keyword extraction (5+ chars)
                         words = set(re.findall(r'[a-zA-Z]{5,}', text.lower()))
                         for w in words:

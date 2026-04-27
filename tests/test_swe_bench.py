@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 from services.bench.external.swe_bench import (
     SWEBenchAdapter,
-    SWEBenchTask,
-    SWEBenchResult,
     SWEBenchReport,
+    SWEBenchResult,
+    SWEBenchTask,
     apply_resolution_results,
     load_tasks,
     save_report,

@@ -7,16 +7,15 @@ Maintains compressed state between Claude Code sessions:
 - Tracks token usage patterns for optimization suggestions
 - Provides session continuity without re-explaining everything
 """
-import os
 import json
-import time
-import hashlib
+import os
 import re
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+
 from core import count_tokens
-from core.ide import load_ide_config, detect_ide
+from core.ide import detect_ide, load_ide_config
 
 
 class SessionManager:
@@ -226,7 +225,7 @@ class SessionManager:
             return {"error": "No active session"}
 
         self.current_session["ended"] = datetime.now(timezone.utc).isoformat()
-        
+
         # Determine summary: user provided > AI generated > Heuristic auto
         if summary:
             self.current_session["summary"] = summary
@@ -442,7 +441,7 @@ class SessionManager:
             template: Optional static instructions to prepend.
         """
         auto_content = self.generate_claude_md()
-        
+
         if template:
             # Merge template with auto-generated context
             content = template.rstrip() + "\n\n---\n\n" + auto_content.lstrip()
@@ -523,7 +522,7 @@ class SessionManager:
             "Recent Activity:\n" + "\n".join(history) + "\n\n"
             "Summary:"
         )
-        
+
         try:
             summary = self.ollama_client.generate(
                 prompt=prompt,

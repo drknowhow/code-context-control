@@ -1,0 +1,14 @@
+{
+  "scene_id": "03_local_intelligence",
+  "title": "Hybrid Intelligence",
+  "visual_prompt": "An abstract 8k visualization of 'Hybrid Intelligence'. A brain-like neural network (Local AI/Ollama) is connected by glowing data-filaments to a sleek laptop. The filaments pulse with golden light, representing 'Auto-Memory' and 'SLTM Search'. The environment is a clean, minimalist home office at dusk, with soft bokeh from the city lights outside. The feeling is one of calm, powerful augmentation.",
+  "camera_movement": "Crane shot starting from the laptop, rising up into the pulsing neural network above, then circling it once to show the complex interconnections.",
+  "sound_design": "Uplifting, organic ambient synth pad. Deep, pulsing bass that feels like a 'heartbeat' of intelligence. Whispers of digital data moving through the air.",
+  "overlay_text": ["Local-First Memory", "Hybrid Intelligence Layer", "Privacy-Preserved Workflow"],
+  "veo_settings": {
+    "duration": "6s",
+    "aspect_ratio": "16:9",
+    "motion_score": 4,
+    "quality_preset": "high"
+  }
+}

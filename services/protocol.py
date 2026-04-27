@@ -11,12 +11,11 @@ Features:
 - Project-specific dictionary building
 - Reversible encoding
 """
-import re
 import json
+import re
 from pathlib import Path
-from typing import Optional
-from core import count_tokens, measure_savings
 
+from core import measure_savings
 
 # Core action dictionary
 ACTION_CODES = {

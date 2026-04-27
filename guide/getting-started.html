@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html" class="active">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+    </nav>
+    <span class="header-version">v2.x</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Getting Started</div>
+      <a href="#prerequisites" class="sidebar-link"><span class="icon">✅</span> Prerequisites</a>
+      <a href="#install" class="sidebar-link"><span class="icon">📦</span> Installation</a>
+      <a href="#init" class="sidebar-link"><span class="icon">🏗️</span> Init a Project</a>
+      <a href="#ide-setup" class="sidebar-link"><span class="icon">🔌</span> IDE Setup</a>
+      <a href="#first-session" class="sidebar-link"><span class="icon">▶️</span> First Session</a>
+      <a href="#permissions" class="sidebar-link"><span class="icon">🔒</span> Permissions</a>
+      <a href="#hub" class="sidebar-link"><span class="icon">🌐</span> Web UI &amp; Hub</a>
+      <a href="#uninstall" class="sidebar-link"><span class="icon">🗑️</span> Uninstall</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Next Steps</div>
+      <a href="workflow.html" class="sidebar-link"><span class="icon">🔄</span> Workflow</a>
+      <a href="tools.html" class="sidebar-link"><span class="icon">🔧</span> Tools</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Getting Started</h1>
+      <p>Install C3, connect it to your IDE, and get your first session running in under 5 minutes.</p>
+    </div>
+
+    <!-- Prerequisites -->
+    <section class="section" id="prerequisites">
+      <div class="section-title"><span class="icon">✅</span> Prerequisites</div>
+
+      <table class="table">
+        <thead>
+          <tr><th>Requirement</th><th>Version</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Python</td>
+            <td>3.10+</td>
+            <td>Used to run the MCP server and CLI</td>
+          </tr>
+          <tr>
+            <td>Claude Code CLI</td>
+            <td>latest</td>
+            <td>Primary IDE C3 is designed for</td>
+          </tr>
+          <tr>
+            <td>pip</td>
+            <td>any</td>
+            <td>For installing Python dependencies</td>
+          </tr>
+          <tr>
+            <td>Git</td>
+            <td>any</td>
+            <td>Optional but strongly recommended</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          <strong>Optional: local AI delegation</strong>
+          To use <code>c3_delegate</code> with local models, install <a href="https://ollama.com">Ollama</a> and pull at least one model (e.g. <code>ollama pull qwen2.5-coder:7b</code>).
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Installation -->
+    <section class="section" id="install">
+      <div class="section-title"><span class="icon">📦</span> Installation</div>
+
+      <h3>1. Clone the repository</h3>
+      <pre><code>git clone https://github.com/your-org/claude-companion.git
+cd claude-companion</code></pre>
+
+      <h3>2. Install C3</h3>
+      <pre><code>pip install .</code></pre>
+
+      <h3>3. Make the CLI available (optional)</h3>
+      <p>On Windows, add the project root to your PATH, or use the provided batch file:</p>
+      <pre><code><span class="com"># Windows — run from the project root</span>
+c3.bat init
+
+<span class="com"># Unix/Mac — install the CLI</span>
+bash install.sh</code></pre>
+
+      <div class="callout callout-tip">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body">
+          <strong>Verify the install</strong>
+          Run <code>python cli/c3.py --help</code> (or <code>c3 --help</code> after PATH setup). You should see a list of all available commands.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Init a project -->
+    <section class="section" id="init">
+      <div class="section-title"><span class="icon">🏗️</span> Initializing a Project</div>
+
+      <p>Run <code>c3 init</code> inside any project you want to use C3 with. This creates the <code>.c3/</code> data directory, builds the code index, and generates the necessary instruction files.</p>
+
+      <pre><code><span class="com"># Navigate to your project</span>
+cd /path/to/my-project
+
+<span class="com"># Initialize C3</span>
+c3 init</code></pre>
+
+      <h3>What init creates</h3>
+
+      <table class="table">
+        <thead>
+          <tr><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>.c3/</code></td>
+            <td>Data directory — index, sessions, memory, edit ledger</td>
+          </tr>
+          <tr>
+            <td><code>.c3/index/</code></td>
+            <td>TF-IDF code search index (rebuilt automatically)</td>
+          </tr>
+          <tr>
+            <td><code>.c3/sessions/</code></td>
+            <td>Session JSON files with decisions and snapshots</td>
+          </tr>
+          <tr>
+            <td><code>.c3/memory.json</code></td>
+            <td>Persistent memory fact store</td>
+          </tr>
+          <tr>
+            <td><code>CLAUDE.md</code></td>
+            <td>Project instructions file (mandatory workflow injected here)</td>
+          </tr>
+          <tr>
+            <td><code>AGENTS.md</code></td>
+            <td>Instructions for Codex sessions</td>
+          </tr>
+          <tr>
+            <td><code>.gemini/settings.json</code></td>
+            <td>Instructions for Gemini sessions</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>Add .c3/ to .gitignore</strong>
+          The <code>.c3/</code> directory contains session data and should generally not be committed. C3 will prompt you about this during init.
+        </div>
+      </div>
+
+      <h3>Re-init / upgrade</h3>
+      <p>Running <code>c3 init</code> on an existing project is safe — it merges new config without overwriting your customizations.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- IDE Setup -->
+    <section class="section" id="ide-setup">
+      <div class="section-title"><span class="icon">🔌</span> IDE Setup</div>
+
+      <p>After init, connect C3 to your IDE. The <code>install-mcp</code> command writes the MCP server configuration for the target IDE.</p>
+
+      <h3>Claude Code (primary)</h3>
+      <pre><code>c3 install-mcp claude</code></pre>
+      <p>This writes to <code>.mcp.json</code> (project scope) and optionally configures PreToolUse / PostToolUse hooks in <code>.claude/settings.local.json</code>.</p>
+
+      <h3>VS Code Copilot</h3>
+      <pre><code>c3 install-mcp vscode</code></pre>
+      <p>Updates <code>.vscode/mcp.json</code> and <code>.github/copilot-instructions.md</code>.</p>
+
+      <h3>Codex</h3>
+      <pre><code>c3 install-mcp codex</code></pre>
+      <p>Updates <code>.codex/config.toml</code> and <code>AGENTS.md</code>.</p>
+
+      <h3>Gemini CLI</h3>
+      <pre><code>c3 install-mcp gemini</code></pre>
+      <p>Updates <code>.gemini/settings.json</code>.</p>
+
+      <h3>All IDEs at once</h3>
+      <pre><code>c3 install-mcp all</code></pre>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">🔗</span>
+        <div class="callout-body">
+          <strong>MCP modes</strong>
+          The default mode is <code>direct</code> (stdio). A <code>proxy</code> mode is also available for environments that require HTTP-based MCP. Pass <code>--mode proxy</code> if needed.
+        </div>
+      </div>
+
+      <h3>Hooks (Claude Code only)</h3>
+      <p>C3 includes several hook scripts that enforce the c3 discipline:</p>
+      <table class="table">
+        <thead><tr><th>Hook</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>hook_pretool_enforce.py</code></td>
+            <td>Blocks native Read/Grep/Glob/Edit if no prior c3_* call</td>
+          </tr>
+          <tr>
+            <td><code>hook_edit_ledger.py</code></td>
+            <td>Logs every edit to the edit ledger (PostToolUse)</td>
+          </tr>
+          <tr>
+            <td><code>hook_ghost_files.py</code></td>
+            <td>Blocks Write to 0-byte or invalid paths (anti-ghost-file)</td>
+          </tr>
+          <tr>
+            <td><code>hook_session_stats.py</code></td>
+            <td>Tracks tool usage and session metrics</td>
+          </tr>
+          <tr>
+            <td><code>hook_read.py</code></td>
+            <td>Intercepts native Read to route through c3_read</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- First Session -->
+    <section class="section" id="first-session">
+      <div class="section-title"><span class="icon">▶️</span> Your First Session</div>
+
+      <p>Once Claude Code is connected, C3 tools appear automatically. Here's a typical session startup sequence:</p>
+
+      <ul class="step-list">
+        <li class="step-item">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <div class="step-title">Recall memory</div>
+            <div class="step-body">
+              Before any work, ask Claude to recall relevant context from previous sessions.
+              <pre><code><span class="com">// Claude will call:</span>
+c3_memory(action='recall', query='your task topic')</code></pre>
+            </div>
+          </div>
+        </li>
+        <li class="step-item">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <div class="step-title">Check status</div>
+            <div class="step-body">
+              See budget remaining, active session, and health.
+              <pre><code>c3_status(view='budget')</code></pre>
+            </div>
+          </div>
+        </li>
+        <li class="step-item">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <div class="step-title">Search and read</div>
+            <div class="step-body">
+              Claude discovers and reads files using c3_search + c3_compress + c3_read — never raw file reads.
+              <pre><code>c3_search(query='auth middleware', action='code')
+c3_compress(file_path='src/auth.py', mode='map')
+c3_read(file_path='src/auth.py', symbols=['AuthMiddleware'])</code></pre>
+            </div>
+          </div>
+        </li>
+        <li class="step-item">
+          <div class="step-num">4</div>
+          <div class="step-content">
+            <div class="step-title">Edit and validate</div>
+            <div class="step-body">
+              All edits go through c3_edit, followed by c3_validate.
+              <pre><code>c3_edit(file_path='src/auth.py', old_string='...', new_string='...', summary='fix token expiry')
+c3_validate(file_path='src/auth.py')</code></pre>
+            </div>
+          </div>
+        </li>
+        <li class="step-item">
+          <div class="step-num">5</div>
+          <div class="step-content">
+            <div class="step-title">Log and snapshot</div>
+            <div class="step-body">
+              Log key decisions. Before ending or running /clear, take a snapshot.
+              <pre><code>c3_session(action='log', data='Fixed auth token expiry bug in AuthMiddleware')
+c3_session(action='snapshot')   <span class="com"># before /clear</span></code></pre>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Permissions -->
+    <section class="section" id="permissions">
+      <div class="section-title"><span class="icon">🔒</span> Permission Tiers</div>
+
+      <p>C3 provides three permission tiers that control what Claude Code is allowed to do. Apply them with:</p>
+      <pre><code>c3 permissions &lt;tier&gt;</code></pre>
+
+      <table class="table">
+        <thead><tr><th>Tier</th><th>Bash access</th><th>Use case</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>readonly</code></td>
+            <td>None</td>
+            <td>Code review, exploration — no writes, no shell</td>
+          </tr>
+          <tr>
+            <td><code>standard</code></td>
+            <td>Safe read-only commands only</td>
+            <td>Normal development — safe git, test runners</td>
+          </tr>
+          <tr>
+            <td><code>unrestricted</code></td>
+            <td>Full bash access</td>
+            <td>Power use — trusted, local-only sessions</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>Default is standard</strong>
+          The <code>standard</code> tier blocks destructive shell commands (rm -rf, git reset --hard, etc.) while allowing safe operations. Upgrade to <code>unrestricted</code> only when needed.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Web UI -->
+    <section class="section" id="hub">
+      <div class="section-title"><span class="icon">🌐</span> Web UI &amp; Hub</div>
+
+      <h3>Session UI</h3>
+      <p>A real-time session dashboard showing tool calls, memory facts, edit ledger, and budget.</p>
+      <pre><code>c3 ui</code></pre>
+      <p>Opens at <code>http://localhost:5000</code> by default.</p>
+
+      <h3>Project Hub</h3>
+      <p>A multi-project dashboard for managing all C3-enabled projects, viewing cross-session stats, and browsing notifications.</p>
+      <pre><code>c3 hub</code></pre>
+      <p>Opens at <code>http://localhost:5001</code> by default.</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          The web UI and Hub run as separate Flask servers from the MCP server. They read shared state from the <code>.c3/</code> directory on disk.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Uninstall -->
+    <section class="section" id="uninstall">
+      <div class="section-title"><span class="icon">🗑️</span> Removing C3</div>
+
+      <p>To remove the MCP configuration from all IDEs without deleting your data:</p>
+      <pre><code>c3 mcp-remove</code></pre>
+
+      <p>To fully remove C3 from a project (including the <code>.c3/</code> directory):</p>
+      <pre><code>rm -rf .c3/ CLAUDE.md AGENTS.md .gemini/settings.json .mcp.json</code></pre>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          Deleting <code>.c3/</code> permanently removes all sessions, memory facts, and edit history for that project.
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,350 @@
+# Oracle API Reference
+
+Base URL: `http://localhost:3331` (configurable via `port` in config)
+
+All endpoints return JSON. POST endpoints accept JSON bodies with `Content-Type: application/json`.
+
+---
+
+## Health & Config
+
+### `GET /api/health`
+
+Returns Oracle status and Ollama cloud availability.
+
+```json
+{
+  "status": "ok",
+  "service": "c3-oracle",
+  "model": "gemma4:31b-cloud",
+  "ollama_available": true
+}
+```
+
+### `GET /api/config`
+
+Returns current Oracle configuration. API key is masked (first 4 chars + `....`).
+
+```json
+{
+  "port": 3331,
+  "ollama_base_url": "https://ollama.com",
+  "ollama_api_key": "sk-1.....",
+  "model": "gemma4:31b-cloud",
+  "hub_url": "http://localhost:3330",
+  "review_interval_seconds": 1800,
+  "review_enabled": true,
+  "auto_open_browser": true,
+  "theme": "dark",
+  "max_facts_per_analysis": 100,
+  "insight_confidence_threshold": 0.5,
+  "log_level": "INFO"
+}
+```
+
+### `POST /api/config`
+
+Update configuration. Send a partial config object — only included keys are updated.
+
+Hot-reloads: `model`, `ollama_api_key`, and `ollama_base_url` take effect immediately on the running OllamaBridge instance.
+
+```json
+// Request
+{ "model": "gemma4:31b-cloud", "review_interval_seconds": 900 }
+
+// Response
+{ "saved": true, "config": { ... } }
+```
+
+---
+
+## Projects
+
+### `GET /api/projects`
+
+List all discovered C3 projects with memory stats and cached health status.
+
+Discovery order: Hub API (`/api/projects`) → fallback to `~/.c3/projects.json`.
+
+```json
+[
+  {
+    "path": "/path/to/project",
+    "name": "my-project",
+    "has_c3": true,
+    "has_facts": true,
+    "fact_count": 47,
+    "facts_mtime": 1712700000.0,
+    "health_status": "ok",
+    "health_issues": 0
+  }
+]
+```
+
+### `POST /api/projects/scan`
+
+Force re-discovery of all projects. Returns fresh scan results.
+
+```json
+// Response
+{ "scanned": 3, "projects": [ ... ] }
+```
+
+### `POST /api/projects/review`
+
+Trigger health check for a project (synchronous) and LLM analysis (background).
+
+```json
+// Request
+{ "path": "/path/to/project" }
+
+// Response — health report
+{
+  "project_path": "/path/to/project",
+  "status": "warning",
+  "structure_ok": true,
+  "fact_stats": {
+    "total": 47,
+    "by_category": { "general": 20, "architecture": 15, "convention": 12 },
+    "by_tier": { "core": 8, "active": 25, "dormant": 10, "ephemeral": 4 },
+    "by_lifecycle": { "active": 43, "archived": 4 }
+  },
+  "graph_stats": {
+    "total_edges": 34,
+    "total_nodes": 28,
+    "edge_types": { "co_recalled": 20, "touches": 14 },
+    "orphaned_edges": 2
+  },
+  "freshness": {
+    "last_fact_timestamp": "2026-04-08T14:30:00+00:00",
+    "days_since_last_fact": 2
+  },
+  "issues": [
+    { "severity": "warning", "message": "2 orphaned graph edges (reference deleted facts)" }
+  ]
+}
+```
+
+### `GET /api/projects/health?path=...`
+
+Get health report for a project. Returns cached report from the review agent if available, otherwise runs a fresh check.
+
+### `GET /api/projects/facts?path=...&limit=50`
+
+Get fact statistics and top facts (sorted by relevance_count descending).
+
+```json
+{
+  "stats": { "total": 47, "by_category": { ... }, "by_tier": { ... }, "by_lifecycle": { ... } },
+  "facts": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "fact": "MCP server and Flask REST server have separate instances",
+      "category": "architecture",
+      "relevance_count": 12,
+      "confidence": 1.0,
+      "lifecycle": "active"
+    }
+  ]
+}
+```
+
+### `GET /api/projects/graph?path=...`
+
+Get memory graph statistics for a project.
+
+```json
+{
+  "total_edges": 34,
+  "total_nodes": 28,
+  "edge_types": { "co_recalled": 20, "touches": 14 },
+  "orphaned_edges": 2
+}
+```
+
+---
+
+## Insights
+
+### `GET /api/insights`
+
+List all cross-project insights (excluding dismissed), stats, and project links.
+
+```json
+{
+  "insights": [
+    {
+      "id": "ins_a1b2c3d4e5f6",
+      "type": "pattern",
+      "text": "Both projects use Flask + CORS with identical setup patterns",
+      "source_projects": ["/path/a", "/path/b"],
+      "source_fact_ids": {},
+      "confidence": 0.85,
+      "created_at": "2026-04-10T12:00:00+00:00",
+      "last_reviewed": "2026-04-10T12:00:00+00:00",
+      "dismissed": false,
+      "tags": ["architecture"]
+    }
+  ],
+  "stats": {
+    "total_insights": 5,
+    "by_type": { "pattern": 3, "risk": 1, "opportunity": 1 },
+    "total_links": 2
+  },
+  "links": [
+    { "src": "/path/a", "dst": "/path/b", "link_type": "pattern", "strength": 3, "insight_ids": ["ins_..."] }
+  ]
+}
+```
+
+**Insight types**: `pattern`, `dependency`, `convention`, `risk`, `opportunity`, `drift`
+
+### `GET /api/insights/project?path=...`
+
+Get insights involving a specific project.
+
+### `POST /api/insights/generate`
+
+Force LLM to generate new cross-project insights. Requires at least 2 projects with facts.
+
+```json
+// Response
+{ "generated": 3, "insights": [ ... ] }
+
+// Error (fewer than 2 projects)
+{ "error": "Need at least 2 projects with facts", "available": 1 }
+```
+
+### `POST /api/insights/dismiss`
+
+Dismiss an insight (marks `dismissed: true`, excluded from future listings).
+
+```json
+// Request
+{ "id": "ins_a1b2c3d4e5f6" }
+
+// Response
+{ "dismissed": true, "id": "ins_a1b2c3d4e5f6" }
+```
+
+---
+
+## Suggestions
+
+Suggestions are write-back recommendations that Oracle generates. They modify project `.c3/facts/facts.json` only when explicitly approved by the user.
+
+**Suggestion types**: `merge_facts`, `archive_facts`, `add_fact`
+
+### `GET /api/suggestions?path=...`
+
+List pending suggestions. Optional `path` query param filters by project.
+
+```json
+[
+  {
+    "id": "sug_a1b2c3d4e5f6",
+    "project_path": "/path/to/project",
+    "type": "merge_facts",
+    "data": { "survivor_id": "abc123", "merge_ids": ["abc123", "def456"], "merged_text": "..." },
+    "status": "pending",
+    "created_at": "2026-04-10T12:00:00+00:00",
+    "resolved_at": null
+  }
+]
+```
+
+### `POST /api/suggestions/approve`
+
+Approve and execute a suggestion. This writes to the target project's `facts.json`.
+
+```json
+// Request
+{ "id": "sug_a1b2c3d4e5f6" }
+
+// Response
+{ "approved": true, "id": "sug_...", "result": { "merged": 1, "survivor_id": "abc123" } }
+```
+
+### `POST /api/suggestions/dismiss`
+
+Dismiss a suggestion without executing it.
+
+```json
+// Request
+{ "id": "sug_a1b2c3d4e5f6" }
+
+// Response
+{ "dismissed": true, "id": "sug_a1b2c3d4e5f6" }
+```
+
+---
+
+## Review Agent
+
+The review agent is a background daemon thread that periodically scans projects, runs health checks, and generates insights/suggestions.
+
+### `GET /api/review/status`
+
+```json
+{
+  "running": true,
+  "last_run": "2026-04-10T12:00:00+00:00",
+  "interval_seconds": 1800,
+  "projects_tracked": 3
+}
+```
+
+### `POST /api/review/start`
+
+Start the background review agent.
+
+### `POST /api/review/stop`
+
+Stop the background review agent.
+
+### `POST /api/review/run-now`
+
+Trigger one immediate review cycle in a background thread (non-blocking).
+
+---
+
+## Ollama
+
+### `GET /api/ollama/status`
+
+Check Ollama cloud availability and list accessible models.
+
+```json
+{
+  "available": true,
+  "models": ["gemma4:31b-cloud", "llama3:8b", "nomic-embed-text"],
+  "current_model": "gemma4:31b-cloud",
+  "has_model": true
+}
+```
+
+### `POST /api/ollama/test`
+
+Test generation with the current model. Sends a simple prompt and returns the response.
+
+```json
+// Response
+{ "response": "Oracle is now online." }
+```
+
+---
+
+## Error Responses
+
+All endpoints return errors as JSON with appropriate HTTP status codes:
+
+```json
+// 400 Bad Request
+{ "error": "path required" }
+
+// 404 Not Found
+{ "error": "not found" }
+
+// 500 Internal Server Error
+{ "error": "not initialized" }
+```

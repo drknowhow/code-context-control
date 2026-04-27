@@ -8,7 +8,6 @@ from typing import Optional
 
 from services.ollama_client import OllamaClient
 
-
 # ── Tool Categories ────────────────────────────────────────
 
 CATEGORIES = {

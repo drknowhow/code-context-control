@@ -25,8 +25,6 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
 
 # Difficulty weights — harder tasks count more in weighted scoring
 DIFFICULTY_WEIGHTS = {

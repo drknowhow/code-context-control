@@ -1,0 +1,18 @@
+Code Context Control (C3)
+Copyright 2026 Dimitri Tselenchuk
+
+This product includes software developed by Dimitri Tselenchuk and contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"). See the LICENSE
+file in the root of this repository for the full text.
+
+Third-party dependencies and their licenses are listed in THIRD_PARTY_LICENSES.md.
+
+The following components require a separate commercial license for use beyond
+personal/evaluation purposes (see EULA-PRO.md):
+  - Pro tier features behind a license-key activation gate (when introduced)
+  - Hosted services operated under the "Code Context Control" name
+
+The "Code Context Control" and "C3" names and logos are trademarks of
+Dimitri Tselenchuk. The Apache-2.0 license does not grant permission to use
+these names except as required for describing the origin of the work.

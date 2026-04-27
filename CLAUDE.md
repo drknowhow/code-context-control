@@ -13,7 +13,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 4. **IMPACT** (shared symbols): `c3_impact(target='symbol')` — blast-radius check before editing any function/class used across files
 5. **EDIT via C3**: `c3_edit(file_path, old_string, new_string, summary)` — for ALL edits. Parallel across files; `edits=[]` batch for same file
 6. **FILTER**: `c3_filter(text=...)` — for terminal output >10 lines or log files
-6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Blocks fork bombs and `rm -rf /` or `~`; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands (e.g. `gh pr create` with editor, `ollama run`)
+6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Blocks fork bombs and `rm -rf /` or `~`; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
@@ -37,11 +37,9 @@ claude-companion - v2/
   CLAUDE.md
   GEMINI.md
   README.md
-  benchmark-report.html
   c3.bat
   install.bat
   install.sh
-  landing.html
   oracle_start.bat
   requirements.txt
   .claude/
@@ -88,7 +86,7 @@ claude-companion - v2/
     hook_session_stats.py
     ... +9 more
     commands/ (3 files)
-    tools/ (15 files)
+    tools/ (16 files)
     ui/ (5 files)
   commercial/
     info_01_efficiency.json
@@ -142,7 +140,9 @@ claude-companion - v2/
     bench/ (1 files)
   tests/
     test_aider_polyglot.py
+    test_c3_shell.py
     test_e2e_benchmark.py
+    test_edit_normalization.py
     test_enforcement_flip.py
     test_federated_graph.py
     test_ghost_files.py
@@ -154,9 +154,7 @@ claude-companion - v2/
     test_project_manager.py
     test_session_benchmark.py
     test_session_budget.py
-    test_swe_bench.py
-    test_validate.py
-    ... +1 more
+    ... +3 more
   tui/
     backend.py
     build.bat
@@ -176,13 +174,13 @@ Python
 - `cli/tools/agent.py` — edited in 17 sessions
 - `cli/mcp_server.py` — edited in 15 sessions
 - `cli/tools/search.py` — edited in 11 sessions
-- `cli/tools/delegate.py` — edited in 8 sessions
 - `cli/c3.py` — edited in 7 sessions
+- `cli/hook_pretool_enforce.py` — edited in 5 sessions
 
 ## Key Facts (use c3_memory for more)
 
 - [architecture] File Memory system: FileMemoryStore in services/file_memory.py provides persistent structural index of so
 - [convention] cmd_install_mcp in c3.py now generates both .mcp.json AND .claude/settings.local.json with PostToolUse hook
 - [ui] Left sidebar and right bar both support hover-to-open + pin. App state: sidebarPinned/rightBarPinned (localStorage 
-- [convention] Codex IDE support: profile config_format="toml", config_path=".codex/config.toml", config_key="mcp_servers"
 - c3_delegate now supports allow_model_fallback/fallback_models and resolves nearest installed Ollama model when the reque
+- ConversationStore sync now supports source='all|claude|imports', and sessions/turns persist normalized source labels for

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C3 — Code Context Control</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.9/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme-dark">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-theme-light" disabled>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body,
+    #root {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: #0a0e14;
+      color: #c5cdd8;
+      font-family: 'DM Sans', -apple-system, sans-serif;
+    }
+
+    ::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #1e2733;
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #2a3544;
+    }
+
+    @keyframes spin {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
+    }
+
+    .fade-up {
+      animation: fadeUp 0.3s ease forwards;
+    }
+
+    input,
+    textarea,
+    select,
+    button {
+      font-family: inherit;
+    }
+
+    pre {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ─── Chat markdown rendering ─── */
+    .chat-md h1,.chat-md h2,.chat-md h3 { margin:.6em 0 .3em; font-family:'DM Sans',sans-serif; }
+    .chat-md h1 { font-size:1.3em; } .chat-md h2 { font-size:1.15em; } .chat-md h3 { font-size:1.05em; }
+    .chat-md p { margin:.4em 0; } .chat-md ul,.chat-md ol { margin:.3em 0; padding-left:1.5em; }
+    .chat-md li { margin:.15em 0; }
+    .chat-md code { font-family:'JetBrains Mono',monospace; font-size:.88em; }
+    .chat-md pre { margin:.5em 0; border-radius:6px; overflow-x:auto; }
+    .chat-md pre code { display:block; padding:12px 14px; line-height:1.5; }
+    .chat-md blockquote { border-left:3px solid; padding-left:12px; margin:.4em 0; opacity:.85; }
+    .chat-md table { border-collapse:collapse; margin:.5em 0; width:100%; }
+    .chat-md th,.chat-md td { border:1px solid; padding:6px 10px; font-size:12px; text-align:left; }
+    .chat-md a { text-decoration:underline; }
+    .chat-md hr { border:none; border-top:1px solid; margin:.8em 0; opacity:.3; }
+
+    .chat-code-block { border-radius:6px; overflow:hidden; margin:.5em 0; }
+    .chat-code-header { display:flex; justify-content:space-between; align-items:center; padding:4px 12px; font-size:11px; font-family:'JetBrains Mono',monospace; }
+    .chat-code-copy { background:none; border:1px solid; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:10px; font-family:'JetBrains Mono',monospace; transition:opacity .15s; }
+    .chat-code-copy:hover { opacity:.7; }
+
+    [data-theme="dark"] .chat-code-block { background:#0d1117; }
+    [data-theme="dark"] .chat-code-header { background:#161b22; color:#8b949e; border-bottom:1px solid #21262d; }
+    [data-theme="dark"] .chat-code-copy { color:#8b949e; border-color:#30363d; }
+    [data-theme="dark"] .chat-md blockquote { border-color:#30363d; }
+    [data-theme="dark"] .chat-md th,[data-theme="dark"] .chat-md td { border-color:#21262d; }
+    [data-theme="dark"] .chat-md hr { border-color:#21262d; }
+    [data-theme="dark"] .chat-md a { color:#58a6ff; }
+
+    [data-theme="light"] .chat-code-block { background:#f6f8fa; }
+    [data-theme="light"] .chat-code-header { background:#eaecef; color:#57606a; border-bottom:1px solid #d0d7de; }
+    [data-theme="light"] .chat-code-copy { color:#57606a; border-color:#d0d7de; }
+    [data-theme="light"] .chat-md blockquote { border-color:#d0d7de; }
+    [data-theme="light"] .chat-md th,[data-theme="light"] .chat-md td { border-color:#d0d7de; }
+    [data-theme="light"] .chat-md hr { border-color:#d0d7de; }
+    [data-theme="light"] .chat-md a { color:#0969da; }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    /* __C3_UI_SCRIPTS__ */
+  </script>
+</body>
+
+</html>

@@ -22,7 +22,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _hook_utils import normalize_tool_name, log_hook_error
+from _hook_utils import log_hook_error, normalize_tool_name
 
 # How many activity-log lines to scan backwards
 LOOKBACK = 20  # Fix 1: increased from 3 — activity log only has c3_* entries

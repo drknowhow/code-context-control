@@ -453,6 +453,13 @@ c3_filter(text=<span class="str">"&lt;webpack build output&gt;"</span>, pattern=
               <strong>old_string must be unique</strong> in the file. If it appears multiple times, c3_edit will fail. Expand the context in old_string to make it unique.
             </div>
           </div>
+
+          <div class="callout callout-info">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              <strong>Unicode lookalikes are matched automatically.</strong> If <code>old_string</code> uses straight quotes but the file has curly quotes (or vice versa), or the two differ only by ASCII vs. unicode dashes (<code>-</code>/<code>–</code>/<code>—</code>) or non-breaking spaces, c3_edit retries with a normalized match and splices your <code>new_string</code> in at the matched offsets — unrelated lookalikes elsewhere are left intact. The response is tagged <code>[unicode-normalized]</code> when the fallback was used.
+            </div>
+          </div>
         </div>
       </div>
 

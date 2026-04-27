@@ -5,13 +5,13 @@ Builds a searchable index of your codebase using TF-IDF and code structure analy
 Retrieves only the most relevant code snippets for a given query, dramatically reducing
 the amount of code Claude needs to read.
 """
-import os
 import json
-import re
 import math
+import os
+import re
+from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Optional
-from collections import defaultdict, Counter, OrderedDict
+
 from core import count_tokens
 
 
@@ -167,7 +167,7 @@ class CodeIndex:
             chunks = self._chunk_by_indent(lines, doc_id, ext)
         elif ext in ('.js', '.ts', '.tsx', '.jsx'):
             chunks = self._chunk_by_braces(lines, doc_id, ext)
-        
+
         # Fallback: fixed-size chunks with overlap
         if not chunks:
             chunks = self._chunk_fixed(lines, doc_id, chunk_size=40, overlap=10)
@@ -177,14 +177,14 @@ class CodeIndex:
     def _chunk_by_ast(self, sections: list, lines: list, doc_id: str) -> list:
         chunks = []
         from core import count_tokens
-        
+
         def process_section(sec, parent_name=""):
             name = sec.get("name", "unnamed")
             full_name = f"{parent_name}.{name}" if parent_name else name
             start = sec["line_start"] - 1 # 0-indexed
             end = sec["line_end"] - 1
             chunk_content = '\n'.join(lines[start:end+1])
-            
+
             if sec.get("type") != "import":
                 chunks.append({
                     "id": f"{doc_id}::{full_name}",
@@ -196,13 +196,13 @@ class CodeIndex:
                     "line_start": start,
                     "line_end": end,
                 })
-            
+
             for child in sec.get("children", []):
                 process_section(child, full_name)
-                
+
         for sec in sections:
             process_section(sec)
-            
+
         return chunks
 
     def _chunk_by_indent(self, lines: list, doc_id: str, ext: str) -> list:

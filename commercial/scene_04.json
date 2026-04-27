@@ -1,0 +1,14 @@
+{
+  "scene_id": "04_call_to_sponsor",
+  "title": "Support the Mission",
+  "visual_prompt": "A macro shot of a high-end designer laptop screen showing the C3 GitHub repository and a glowing 'Sponsor' button. Around the laptop, a community of diverse, translucent digital avatars appears, their 'nodes' connecting to the C3 logo in the center. The lighting is warm and communal, transitioning from blue to a vibrant purple-orange sunset palette. The shot ends on the C3 logo pulsing with light.",
+  "camera_movement": "Slow forward dolly into the 'Sponsor' button, followed by a panoramic pull-back to reveal the interconnected community of developers.",
+  "sound_design": "A resonant, deep chord that resolves into a hopeful, driving electronic beat. A chorus of subtle, layered voices representing a global community.",
+  "overlay_text": ["Open Core. Community Powered.", "Sponsor C3 on GitHub", "Build the Future of AI Coding"],
+  "veo_settings": {
+    "duration": "8s",
+    "aspect_ratio": "16:9",
+    "motion_score": 6,
+    "quality_preset": "high"
+  }
+}

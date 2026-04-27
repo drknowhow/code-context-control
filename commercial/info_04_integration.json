@@ -1,0 +1,13 @@
+{
+  "infographic_id": "info_04_integration",
+  "title": "Omni-IDE Support",
+  "visual_prompt": "A sleek, horizontal infographic showing the C3 logo at the center of a 'Hub' structure. Floating around the hub are the logos of major IDEs and AI tools: Claude Code, Gemini CLI, VS Code, and Codex. Each connection is represented by a solid, clean line labeled 'Unified Instruction Sync'. The design uses soft shadows, subtle gradients, and a light-grey textured background. Professional, 'Enterprise-Ready' look.",
+  "color_palette": ["#F3F4F6", "#374151", "#2563EB", "#D1D5DB"],
+  "typography_style": "Clean, authoritative Sans-Serif with balanced hierarchy.",
+  "layout_description": "Central Hub-and-Spoke diagram showing universal compatibility.",
+  "key_elements": [
+    "Centralized C3 Hub",
+    "Floating IDE icons",
+    "Unified Instruction labeling"
+  ]
+}

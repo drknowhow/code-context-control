@@ -1,11 +1,11 @@
 """c3_agent — Compound workflow agent for multi-step C3 pipelines in a single call."""
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 
 from core import count_tokens
-
 
 # ── Progress logging ─────────────────────────────────────────────────────────
 
@@ -181,7 +181,6 @@ def handle_agent(workflow: str, scope: str, context: str,
 
 def _wf_review_changes(scope, context, svc, steps_log):
     """Review git changes: diff → compress changed files → delegate review."""
-    import subprocess
 
     # Workflow-level deadline: abort if total time exceeds this.
     _workflow_deadline = time.time() + 90  # 90 seconds max for entire workflow
@@ -235,8 +234,8 @@ def _wf_review_changes_inner(scope, context, svc, steps_log,
     dcfg = svc.delegate_config or {}
     gemini_proc = None
     if dcfg.get("enabled", True) and dcfg.get("gemini_enabled", False):
-        from cli.tools.delegate import _is_gemini_on_path, _start_gemini_early, GEMINI_MODELS
         import cli.tools.delegate as _dm
+        from cli.tools.delegate import GEMINI_MODELS, _is_gemini_on_path, _start_gemini_early
         # Prefer cached availability (avoids shutil.which on slow network-path systems)
         _gem_ok = (_dm._gemini_available is True) or (
             _dm._gemini_available is None and _is_gemini_on_path()
@@ -278,7 +277,7 @@ def _wf_review_changes_inner(scope, context, svc, steps_log,
                 idle_timeout=15,
             )
         if ok and output:
-            steps_log.append(f"gemini(review,early_start)")
+            steps_log.append("gemini(review,early_start)")
             delegate_result = output
         else:
             if output and output.startswith("["):
@@ -486,7 +485,7 @@ def _wf_consensus_review(scope, context, svc, steps_log):
 
 def _wf_codex_test_gen(scope, context, svc, steps_log):
     """Generate tests via Codex CLI with workspace-write sandbox."""
-    from cli.tools.delegate import _is_codex_on_path, _run_codex, check_codex, _codex_available
+    from cli.tools.delegate import _codex_available, _run_codex, check_codex
 
     # Verify Codex
     if _codex_available is None:
@@ -544,7 +543,7 @@ def _wf_codex_test_gen(scope, context, svc, steps_log):
 
     parts = [f"--- Test generation for {len(files)} file(s) ---"]
     parts.append(f"Files: {file_list}")
-    parts.append(f"Sandbox: workspace-write")
+    parts.append("Sandbox: workspace-write")
     parts.append(f"Model: {model}")
     if ok:
         parts.append(f"\n--- Codex output ---\n{output}")
@@ -993,8 +992,8 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
             if not dcfg.get("codex_enabled", False):
                 steps_log.append("codex(skipped:disabled)")
                 return ""
-            from cli.tools.delegate import _is_codex_on_path, _run_codex, CODEX_MODELS
             import cli.tools.delegate as _dm
+            from cli.tools.delegate import CODEX_MODELS, _is_codex_on_path, _run_codex
             if not _is_codex_on_path():
                 steps_log.append("codex(skipped:not_on_path)")
                 return ""
@@ -1037,8 +1036,8 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
             if not dcfg.get("gemini_enabled", False):
                 steps_log.append("gemini(skipped:disabled)")
                 return ""
-            from cli.tools.delegate import _is_gemini_on_path, _run_gemini, GEMINI_MODELS
             import cli.tools.delegate as _dm
+            from cli.tools.delegate import GEMINI_MODELS, _is_gemini_on_path, _run_gemini
             if not _is_gemini_on_path():
                 steps_log.append("gemini(skipped:not_on_path)")
                 return ""
@@ -1078,9 +1077,14 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
         _LIGHT_TASKS = {"ask", "explain", "summarize", "docstring"}
         if task_type not in _LIGHT_TASKS:
             import cli.tools.delegate as _dm_auto
-            from cli.tools.delegate import (_is_gemini_on_path, _is_codex_on_path,
-                                            GEMINI_MODELS, CODEX_MODELS,
-                                            _run_gemini, _run_codex)
+            from cli.tools.delegate import (
+                CODEX_MODELS,
+                GEMINI_MODELS,
+                _is_codex_on_path,
+                _is_gemini_on_path,
+                _run_codex,
+                _run_gemini,
+            )
             # Gemini first (prefer; enabled in config for this project)
             _gem_ok = (_dm_auto._gemini_available is True) or (
                 _dm_auto._gemini_available is None and _is_gemini_on_path()
@@ -1125,7 +1129,7 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
         if not ollama or not ollama.is_available():
             return ""
 
-        from cli.tools.delegate import resolve_model_name, _fallback_model_order, DELEGATE_TASKS
+        from cli.tools.delegate import DELEGATE_TASKS, _fallback_model_order, resolve_model_name
 
         tdef = DELEGATE_TASKS.get(task_type)
         if not tdef:

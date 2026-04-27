@@ -5,9 +5,9 @@ and auto-acknowledgement when surfaced to Claude via tool responses.
 """
 import hashlib
 import json
-import uuid
 import threading
-from datetime import datetime, timezone, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # How long to suppress a repeated agent+title after it has been acknowledged.

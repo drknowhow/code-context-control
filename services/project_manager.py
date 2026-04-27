@@ -6,8 +6,8 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -346,7 +346,7 @@ class ProjectManager:
             port = e.get("port", 0)
             if port and self._port_alive(port) and self._verify_c3_session(port):
                 active.append(e)
-        
+
         for project in self.list_projects():
             if project.get("session_active") and not project.get("ui_active"):
                 active.append(

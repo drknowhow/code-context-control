@@ -1,0 +1,13 @@
+{
+  "infographic_id": "info_01_efficiency",
+  "title": "The Efficiency Gap",
+  "visual_prompt": "A modern, minimalist flat-design infographic on a clean white background. Two circular 'Context Windows' are shown side-by-side. Left: 'Standard AI' - filled with a chaotic, pixelated mess of red and grey blocks (representing 100k+ junk tokens), labeled 'Context Bloat'. Right: 'C3 Intelligence' - contains only a few sharp, glowing blue 'data gems' (representing surgical 2k tokens), labeled 'Surgical Precision'. A large arrow between them shows '-98% Token Waste'. Ultra-clean vector style, professional typography.",
+  "color_palette": ["#000000", "#FFFFFF", "#007AFF", "#FF3B30"],
+  "typography_style": "Geometric Sans-Serif (Inter/Roboto style), bold headings, light body text.",
+  "layout_description": "Horizontal comparison layout with centralized stats and a clear 'Value Proposition' footer.",
+  "key_elements": [
+    "Context Window visual comparison",
+    "Data waste percentage metric",
+    "Surgical retrieval 'Gem' metaphor"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "infographic_id": "info_02_hierarchy",
+  "title": "The C3 Power Stack",
+  "visual_prompt": "A stylish isometric 3D infographic showing the C3 tools as translucent glass building blocks stacked vertically. The base block is 'c3_search' (Search), above it is 'c3_compress' (Map), followed by 'c3_read' (Extract), and capped with 'c3_memory' (Learn). Each block has a small, minimalist icon and a soft inner glow. The background is a sophisticated dark-grey gradient. High-end tech startup aesthetic.",
+  "color_palette": ["#1A1A1A", "#333333", "#00C7BE", "#5E5CE6"],
+  "typography_style": "Modern Monospace for tool names, sleek Sans-Serif for descriptions.",
+  "layout_description": "Vertical isometric stack with call-out lines explaining the 'Purpose' of each layer.",
+  "key_elements": [
+    "Isometric tool stack",
+    "Glassmorphism textures",
+    "Functional layer descriptions"
+  ]
+}

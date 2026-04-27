@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C3 Edit Ledger</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.9/babel.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+    body { font-family: 'DM Sans', -apple-system, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { border-radius: 3px; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-up { animation: fadeUp 0.25s ease forwards; }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+    // ─── Theme ───
+    const DARK = {
+      bg: "#0a0e14", surface: "#0f1720", surfaceAlt: "#141e2b", border: "#1e2733",
+      text: "#c5cdd8", dim: "#6b7d95", accent: "#36d7b7", blue: "#65a9ff",
+      warn: "#ffbf57", error: "#ff6f7a", ok: "#50e39f", purple: "#b38aff",
+      created: "#22c55e", modified: "#3b82f6", deleted: "#ef4444", renamed: "#f59e0b",
+    };
+    const LIGHT = {
+      bg: "#edf2f8", surface: "#ffffff", surfaceAlt: "#f7f9fd", border: "#cfd9e8",
+      text: "#172436", dim: "#5e738f", accent: "#008a76", blue: "#1f6ed4",
+      warn: "#b07a00", error: "#c6374b", ok: "#1f9d5b", purple: "#7c5cbf",
+      created: "#16a34a", modified: "#2563eb", deleted: "#dc2626", renamed: "#d97706",
+    };
+
+    const API = window.location.origin;
+    const api = async (path) => {
+      const r = await fetch(`${API}${path}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    };
+
+    const timeAgo = (iso) => {
+      if (!iso) return "";
+      const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+      return `${Math.floor(s / 86400)}d ago`;
+    };
+
+    const fmtDate = (iso) => {
+      if (!iso) return "";
+      return iso.slice(0, 19).replace("T", " ");
+    };
+
+    const extOf = (path) => {
+      const m = path.match(/\.(\w+)$/);
+      return m ? m[1] : "";
+    };
+
+    const dirOf = (path) => {
+      const i = path.lastIndexOf("/");
+      return i > 0 ? path.slice(0, i) : ".";
+    };
+
+    // ─── Tiny Components ───
+    const Badge = ({ color, children, style, title }) =>
+      React.createElement("span", {
+        className: "mono", title,
+        style: { display: "inline-block", padding: "2px 7px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: `${color}20`, color, ...style }
+      }, children);
+
+    const StatCard = ({ label, value, sub, color, T }) =>
+      React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "14px 18px", minWidth: 110, flex: "1 1 110px" }
+      },
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: color || T.accent } }, value),
+        React.createElement("div", { style: { fontSize: 11, color: T.dim, marginTop: 4, fontWeight: 500 } }, label),
+        sub && React.createElement("div", { className: "mono", style: { fontSize: 9, color: T.dim, marginTop: 2 } }, sub)
+      );
+
+    const Pill = ({ color, children, T, active, onClick }) =>
+      React.createElement("button", {
+        onClick,
+        style: {
+          padding: "4px 10px", borderRadius: 12, fontSize: 10, fontWeight: 600, cursor: "pointer",
+          border: `1px solid ${active ? color : T.border}`,
+          background: active ? `${color}18` : "transparent",
+          color: active ? color : T.dim, transition: "all 0.15s ease",
+        }
+      }, children);
+
+    // ─── Diff Renderer (VSCode/Claude unified style) ───
+    const renderDiff = (oldStr, newStr, T) => {
+      const oldLines = (oldStr || "").split("\n");
+      const newLines = (newStr || "").split("\n");
+
+      const makeLines = (lines, prefix, color, startNum) =>
+        lines.map((line, i) =>
+          React.createElement("div", {
+            key: `${prefix}${i}`,
+            style: { display: "flex", minHeight: 18, background: `${color}0f` }
+          },
+            React.createElement("span", {
+              className: "mono",
+              style: {
+                display: "inline-block", minWidth: 36, textAlign: "right",
+                paddingRight: 6, paddingLeft: 4, color: `${color}55`, fontSize: 10,
+                userSelect: "none", flexShrink: 0, borderRight: `2px solid ${color}30`
+              }
+            }, startNum + i),
+            React.createElement("span", {
+              className: "mono",
+              style: {
+                display: "inline-block", width: 18, textAlign: "center",
+                color, fontWeight: 700, fontSize: 11, flexShrink: 0
+              }
+            }, prefix),
+            React.createElement("span", {
+              className: "mono",
+              style: {
+                flex: 1, paddingLeft: 4, paddingRight: 8, color,
+                fontSize: 10, whiteSpace: "pre-wrap", wordBreak: "break-all",
+                lineHeight: 1.6
+              }
+            }, line || " ")
+          )
+        );
+
+      const rows = [];
+      if (oldStr) rows.push(...makeLines(oldLines, "−", T.error, 1));
+      if (oldStr && newStr) rows.push(
+        React.createElement("div", {
+          key: "sep",
+          style: { height: 1, background: T.border, margin: "0" }
+        })
+      );
+      if (newStr) rows.push(...makeLines(newLines, "+", T.ok, 1));
+      return rows;
+    };
+
+    // ─── Timeline Entry ───
+    const TimelineEntry = ({ entry, T, isLast, onFileClick, expanded, onToggle }) => {
+      const c = T[entry.change_type] || T.dim;
+      const isAuto = entry.tags?.includes("auto");
+      const ext = extOf(entry.file || "");
+      return React.createElement("div", {
+        className: "fade-up",
+        style: { display: "flex", gap: 16, position: "relative", minHeight: 56 }
+      },
+        // Timeline line + dot
+        React.createElement("div", {
+          style: { display: "flex", flexDirection: "column", alignItems: "center", width: 20, flexShrink: 0 }
+        },
+          React.createElement("div", {
+            style: { width: 10, height: 10, borderRadius: "50%", background: c, border: `2px solid ${T.bg}`, boxShadow: `0 0 6px ${c}60`, flexShrink: 0, marginTop: 4 }
+          }),
+          !isLast && React.createElement("div", {
+            style: { width: 1, flex: 1, background: `${T.border}`, marginTop: 2 }
+          })
+        ),
+        // Content
+        React.createElement("div", {
+          style: { flex: 1, paddingBottom: 14 }
+        },
+          // Header row
+          React.createElement("div", {
+            style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }
+          },
+            React.createElement("span", {
+              className: "mono",
+              style: { fontSize: 12, fontWeight: 600, color: T.accent, cursor: "pointer", textDecoration: "underline", textDecorationColor: `${T.accent}40`, textUnderlineOffset: 2 },
+              onClick: () => onFileClick(entry.file),
+              title: "Show file versions"
+            }, entry.file),
+            React.createElement(Badge, { color: T.purple }, entry.version || "v?"),
+            React.createElement(Badge, { color: c }, entry.change_type),
+            ext && React.createElement(Badge, { color: T.dim, style: { fontSize: 9 } }, `.${ext}`),
+            entry.diff_summary && React.createElement(Badge, { color: T.blue, style: { fontSize: 9 }, title: "Git diff summary" }, entry.diff_summary),
+            entry.git?.commit && React.createElement("span", {
+              className: "mono", style: { fontSize: 10, color: T.dim, cursor: "default" },
+              title: entry.git.subject || ""
+            }, entry.git.commit.slice(0, 7)),
+            isAuto
+              ? React.createElement(Badge, { color: T.ok, style: { fontSize: 8 }, title: "Auto-captured by PostToolUse hook" }, "HOOK")
+              : React.createElement(Badge, { color: T.warn, style: { fontSize: 8 }, title: "Manually logged via c3_edits" }, "MANUAL"),
+          ),
+          // Summary
+          entry.summary && React.createElement("div", {
+            style: { fontSize: 12, color: T.text, marginTop: 4, lineHeight: 1.5 }
+          }, entry.summary),
+          // Detail (old/new strings for Edit tool)
+          entry.detail && React.createElement("button", {
+            onClick: onToggle,
+            className: "mono",
+            style: { fontSize: 10, color: T.blue, background: "none", border: "none", cursor: "pointer", marginTop: 4, padding: 0 }
+          }, expanded ? "Hide diff" : "Show diff"),
+          expanded && entry.detail && React.createElement("div", {
+            style: {
+              marginTop: 6, border: `1px solid ${T.border}`, borderRadius: 6,
+              overflow: "auto", maxHeight: 400, background: T.surfaceAlt
+            }
+          },
+            ...renderDiff(entry.detail.old_string, entry.detail.new_string, T)
+          ),
+          // Tags
+          entry.tags?.length > 0 && React.createElement("div", {
+            style: { display: "flex", gap: 4, marginTop: 4 }
+          }, entry.tags.filter(t => t !== "auto").map((tag, i) =>
+            React.createElement(Badge, { key: i, color: T.warn }, tag)
+          )),
+          // Footer: timestamp + session
+          React.createElement("div", {
+            style: { display: "flex", alignItems: "center", gap: 10, marginTop: 4 }
+          },
+            React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim } },
+              `${fmtDate(entry.timestamp)} \u00b7 ${timeAgo(entry.timestamp)}`
+            ),
+            entry.session_id && React.createElement(Badge, {
+              color: T.blue, style: { fontSize: 8 }, title: `Session: ${entry.session_id}`
+            }, `session:${entry.session_id.slice(-6)}`)
+          )
+        )
+      );
+    };
+
+    // ─── File Version Tree ───
+    const FileVersionPanel = ({ file, versions, T, onClose }) => {
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 20, marginBottom: 16 }
+      },
+        React.createElement("div", {
+          style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }
+        },
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+            React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Version History"),
+            React.createElement("span", { className: "mono", style: { fontSize: 13, color: T.accent } }, file),
+            React.createElement(Badge, { color: T.purple }, `${versions.length} versions`)
+          ),
+          React.createElement("button", {
+            onClick: onClose,
+            style: { background: "none", border: "none", color: T.dim, cursor: "pointer", fontSize: 18, padding: "2px 6px" }
+          }, "\u2715")
+        ),
+        React.createElement("div", {
+          style: { display: "flex", flexDirection: "column", gap: 0 }
+        },
+          versions.map((v, i) => {
+            const c = T[v.change_type] || T.dim;
+            return React.createElement("div", {
+              key: v.id || i,
+              style: { display: "flex", alignItems: "flex-start", gap: 12, position: "relative", minHeight: 44 }
+            },
+              React.createElement("div", {
+                style: { display: "flex", flexDirection: "column", alignItems: "center", width: 50, flexShrink: 0 }
+              },
+                React.createElement("div", {
+                  className: "mono",
+                  style: { fontSize: 12, fontWeight: 700, color: T.purple, background: `${T.purple}15`, padding: "3px 8px", borderRadius: 4, width: 40, textAlign: "center" }
+                }, v.version),
+                i < versions.length - 1 && React.createElement("div", { style: { width: 1, height: 16, background: T.border } })
+              ),
+              React.createElement("div", { style: { flex: 1, paddingBottom: 10 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                  React.createElement(Badge, { color: c }, v.change_type),
+                  v.diff_summary && React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim } }, v.diff_summary),
+                  v.git?.commit && React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim } }, v.git.commit.slice(0, 7))
+                ),
+                v.summary && React.createElement("div", { style: { fontSize: 12, color: T.text, marginTop: 3 } }, v.summary),
+                React.createElement("div", { className: "mono", style: { fontSize: 10, color: T.dim, marginTop: 2 } },
+                  fmtDate(v.timestamp)
+                )
+              )
+            );
+          })
+        )
+      );
+    };
+
+    // ─── Activity Heatmap ───
+    const ActivityHeatmap = ({ edits, T }) => {
+      const days = useMemo(() => {
+        const map = {};
+        edits.forEach(e => {
+          const d = e.timestamp?.slice(0, 10);
+          if (d) map[d] = (map[d] || 0) + 1;
+        });
+        const result = [];
+        const now = new Date();
+        for (let i = 29; i >= 0; i--) {
+          const dt = new Date(now);
+          dt.setDate(dt.getDate() - i);
+          const key = dt.toISOString().slice(0, 10);
+          result.push({ date: key, count: map[key] || 0 });
+        }
+        return result;
+      }, [edits]);
+
+      const max = Math.max(1, ...days.map(d => d.count));
+
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px", marginBottom: 16 }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "30-Day Activity"),
+        React.createElement("div", {
+          style: { display: "flex", gap: 3, alignItems: "flex-end", height: 60 }
+        },
+          days.map((d) => {
+            const h = Math.max(4, (d.count / max) * 56);
+            const opacity = d.count === 0 ? 0.1 : 0.3 + (d.count / max) * 0.7;
+            return React.createElement("div", {
+              key: d.date,
+              title: `${d.date}: ${d.count} edits`,
+              style: {
+                flex: 1, height: h, borderRadius: 2,
+                background: T.accent, opacity,
+                transition: "height 0.3s ease, opacity 0.3s ease",
+                cursor: "default",
+              }
+            });
+          })
+        ),
+        React.createElement("div", {
+          style: { display: "flex", justifyContent: "space-between", marginTop: 4 }
+        },
+          React.createElement("span", { className: "mono", style: { fontSize: 9, color: T.dim } }, days[0]?.date),
+          React.createElement("span", { className: "mono", style: { fontSize: 9, color: T.dim } }, days[days.length - 1]?.date)
+        )
+      );
+    };
+
+    // ─── Hourly Activity Chart ───
+    const HourlyChart = ({ edits, T }) => {
+      const hours = useMemo(() => {
+        const bins = Array(24).fill(0);
+        edits.forEach(e => {
+          if (!e.timestamp) return;
+          const h = new Date(e.timestamp).getHours();
+          if (!isNaN(h)) bins[h]++;
+        });
+        return bins;
+      }, [edits]);
+
+      const max = Math.max(1, ...hours);
+
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px" }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "Edits by Hour"),
+        React.createElement("div", {
+          style: { display: "flex", gap: 2, alignItems: "flex-end", height: 50 }
+        },
+          hours.map((count, h) => {
+            const ht = Math.max(3, (count / max) * 46);
+            return React.createElement("div", {
+              key: h,
+              title: `${String(h).padStart(2, "0")}:00 \u2013 ${count} edits`,
+              style: {
+                flex: 1, height: ht, borderRadius: 2,
+                background: T.blue, opacity: count === 0 ? 0.1 : 0.3 + (count / max) * 0.7,
+                cursor: "default",
+              }
+            });
+          })
+        ),
+        React.createElement("div", {
+          style: { display: "flex", justifyContent: "space-between", marginTop: 4 }
+        },
+          React.createElement("span", { className: "mono", style: { fontSize: 9, color: T.dim } }, "00:00"),
+          React.createElement("span", { className: "mono", style: { fontSize: 9, color: T.dim } }, "12:00"),
+          React.createElement("span", { className: "mono", style: { fontSize: 9, color: T.dim } }, "23:00")
+        )
+      );
+    };
+
+    // ─── Most Edited Bar Chart ───
+    const MostEditedChart = ({ data, T }) => {
+      if (!data?.length) return null;
+      const max = Math.max(1, data[0]?.count || 1);
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px" }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "Most Edited Files"),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+          data.slice(0, 10).map((m, i) =>
+            React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 10 } },
+              React.createElement("span", { className: "mono", style: { fontSize: 11, color: T.accent, width: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 } }, m.file),
+              React.createElement("div", {
+                style: { flex: 1, height: 14, background: T.surfaceAlt, borderRadius: 3, overflow: "hidden" }
+              },
+                React.createElement("div", {
+                  style: { height: "100%", width: `${(m.count / max) * 100}%`, background: `linear-gradient(90deg, ${T.accent}, ${T.blue})`, borderRadius: 3, transition: "width 0.5s ease" }
+                })
+              ),
+              React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim, width: 30, textAlign: "right" } }, m.count)
+            )
+          )
+        )
+      );
+    };
+
+    // ─── Type Distribution ───
+    const TypeDistribution = ({ byType, total, T }) => {
+      if (!byType || !total) return null;
+      const types = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px" }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "Change Types"),
+        React.createElement("div", {
+          style: { display: "flex", height: 20, borderRadius: 4, overflow: "hidden", marginBottom: 10 }
+        },
+          types.map(([type, count]) =>
+            React.createElement("div", {
+              key: type,
+              title: `${type}: ${count}`,
+              style: { width: `${(count / total) * 100}%`, background: T[type] || T.dim, transition: "width 0.5s ease" }
+            })
+          )
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } },
+          types.map(([type, count]) =>
+            React.createElement("div", { key: type, style: { display: "flex", alignItems: "center", gap: 5 } },
+              React.createElement("div", { style: { width: 8, height: 8, borderRadius: 2, background: T[type] || T.dim } }),
+              React.createElement("span", { style: { fontSize: 11, color: T.text } }, type),
+              React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim } }, `${count} (${Math.round(count / total * 100)}%)`)
+            )
+          )
+        )
+      );
+    };
+
+    // ─── Directory Breakdown ───
+    const DirectoryBreakdown = ({ edits, T }) => {
+      const dirs = useMemo(() => {
+        const map = {};
+        edits.forEach(e => {
+          const d = dirOf(e.file || "");
+          map[d] = (map[d] || 0) + 1;
+        });
+        return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      }, [edits]);
+
+      if (!dirs.length) return null;
+      const max = Math.max(1, dirs[0][1]);
+
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px" }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "Directories"),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 5 } },
+          dirs.map(([dir, count]) =>
+            React.createElement("div", { key: dir, style: { display: "flex", alignItems: "center", gap: 10 } },
+              React.createElement("span", { className: "mono", style: { fontSize: 11, color: T.purple, width: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 } }, dir),
+              React.createElement("div", {
+                style: { flex: 1, height: 12, background: T.surfaceAlt, borderRadius: 3, overflow: "hidden" }
+              },
+                React.createElement("div", {
+                  style: { height: "100%", width: `${(count / max) * 100}%`, background: `linear-gradient(90deg, ${T.purple}80, ${T.blue}80)`, borderRadius: 3 }
+                })
+              ),
+              React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim, width: 30, textAlign: "right" } }, count)
+            )
+          )
+        )
+      );
+    };
+
+    // ─── Insights Panel ───
+    const InsightsPanel = ({ edits, stats, T }) => {
+      const insights = useMemo(() => {
+        const result = [];
+        if (!edits.length) return result;
+
+        // Auto vs manual
+        const autoCount = edits.filter(e => e.tags?.includes("auto")).length;
+        const manualCount = edits.length - autoCount;
+        if (autoCount > 0 || manualCount > 0) {
+          result.push({ label: "Capture source", value: `${autoCount} auto-hook, ${manualCount} manual`, color: T.blue });
+        }
+
+        // Edit velocity (edits per session)
+        const sessions = new Set(edits.map(e => e.session_id).filter(Boolean));
+        if (sessions.size > 0) {
+          const rate = (edits.length / sessions.size).toFixed(1);
+          result.push({ label: "Edit velocity", value: `${rate} edits/session across ${sessions.size} sessions`, color: T.accent });
+        }
+
+        // Extensions breakdown
+        const exts = {};
+        edits.forEach(e => {
+          const ex = extOf(e.file || "");
+          if (ex) exts[ex] = (exts[ex] || 0) + 1;
+        });
+        const topExts = Object.entries(exts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        if (topExts.length) {
+          result.push({ label: "Top languages", value: topExts.map(([e, c]) => `.${e}: ${c}`).join(", "), color: T.purple });
+        }
+
+        // Most active hour
+        const hours = Array(24).fill(0);
+        edits.forEach(e => {
+          if (!e.timestamp) return;
+          const h = new Date(e.timestamp).getHours();
+          if (!isNaN(h)) hours[h]++;
+        });
+        const peakHour = hours.indexOf(Math.max(...hours));
+        if (Math.max(...hours) > 0) {
+          result.push({ label: "Peak hour", value: `${String(peakHour).padStart(2, "0")}:00 (${hours[peakHour]} edits)`, color: T.warn });
+        }
+
+        // Last edit
+        const last = edits[edits.length - 1];
+        if (last) {
+          result.push({ label: "Latest edit", value: `${last.file} ${last.version} \u2013 ${timeAgo(last.timestamp)}`, color: T.ok });
+        }
+
+        return result;
+      }, [edits, T]);
+
+      if (!insights.length) return null;
+
+      return React.createElement("div", {
+        style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 18px", marginBottom: 16 }
+      },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 } }, "Insights"),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+          insights.map((ins, i) =>
+            React.createElement("div", {
+              key: i,
+              style: { display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: T.surfaceAlt, borderRadius: 6, border: `1px solid ${T.border}` }
+            },
+              React.createElement("span", { style: { fontSize: 11, fontWeight: 600, color: ins.color, width: 120, flexShrink: 0 } }, ins.label),
+              React.createElement("span", { className: "mono", style: { fontSize: 11, color: T.text } }, ins.value)
+            )
+          )
+        )
+      );
+    };
+
+    // ─── Empty State ───
+    const EmptyState = ({ T }) =>
+      React.createElement("div", {
+        style: { textAlign: "center", padding: "60px 20px", color: T.dim }
+      },
+        React.createElement("div", { style: { fontSize: 40, marginBottom: 16, opacity: 0.3 } }, "\ud83d\udcdd"),
+        React.createElement("div", { style: { fontSize: 16, fontWeight: 600, color: T.text, marginBottom: 8 } }, "No edits recorded yet"),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.7, maxWidth: 480, margin: "0 auto" } },
+          "Edits appear here automatically when the PostToolUse hook captures Edit and Write tool calls. ",
+          "You can also log edits manually with ",
+          React.createElement("code", { className: "mono", style: { fontSize: 11, color: T.accent, background: `${T.accent}15`, padding: "2px 5px", borderRadius: 3 } },
+            "c3_edits(action='log', file='...', summary='...')"
+          ),
+          "."
+        ),
+        React.createElement("div", {
+          style: { marginTop: 20, padding: "12px 16px", background: T.surfaceAlt, borderRadius: 8, border: `1px solid ${T.border}`, display: "inline-block", textAlign: "left" }
+        },
+          React.createElement("div", { className: "mono", style: { fontSize: 10, color: T.dim, marginBottom: 6 } }, "Hook setup in .claude/settings.local.json:"),
+          React.createElement("code", { className: "mono", style: { fontSize: 10, color: T.text, lineHeight: 1.6 } },
+            '"PostToolUse": [{ "matcher": "Edit", "hooks": [{ "type": "command", "command": "python hook_edit_ledger.py" }] }]'
+          )
+        )
+      );
+
+    // ─── App ───
+    const App = () => {
+      const [darkMode, setDarkMode] = useState(() => localStorage.getItem("c3-edits-theme") !== "light");
+      const [edits, setEdits] = useState([]);
+      const [stats, setStats] = useState(null);
+      const [view, setView] = useState("timeline"); // timeline | stats | files
+      const [filter, setFilter] = useState("");
+      const [typeFilter, setTypeFilter] = useState("all");
+      const [sourceFilter, setSourceFilter] = useState("all"); // all | auto | manual
+      const [selectedFile, setSelectedFile] = useState(null);
+      const [fileVersions, setFileVersions] = useState([]);
+      const [autoRefresh, setAutoRefresh] = useState(true);
+      const [lastUpdate, setLastUpdate] = useState(null);
+      const [expandedIds, setExpandedIds] = useState(new Set());
+      const scrollRef = useRef(null);
+
+      useEffect(() => {
+        localStorage.setItem("c3-edits-theme", darkMode ? "dark" : "light");
+      }, [darkMode]);
+
+      const T = darkMode ? DARK : LIGHT;
+
+      const load = useCallback(async () => {
+        try {
+          const [e, s] = await Promise.all([
+            api("/api/edits?limit=500"),
+            api("/api/edits/stats"),
+          ]);
+          setEdits(Array.isArray(e) ? e : []);
+          setStats(s);
+          setLastUpdate(new Date());
+        } catch {}
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+      useEffect(() => {
+        if (!autoRefresh) return;
+        const iv = setInterval(load, 10000);
+        return () => clearInterval(iv);
+      }, [autoRefresh, load]);
+
+      const openFileVersions = useCallback(async (file) => {
+        try {
+          const v = await api(`/api/edits/versions/${encodeURIComponent(file)}`);
+          setFileVersions(Array.isArray(v) ? v : []);
+          setSelectedFile(file);
+        } catch { setFileVersions([]); }
+      }, []);
+
+      const toggleExpand = useCallback((id) => {
+        setExpandedIds(prev => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      }, []);
+
+      // Filtered edits
+      const filtered = useMemo(() => {
+        let list = edits;
+        if (filter) list = list.filter(e =>
+          e.file?.toLowerCase().includes(filter.toLowerCase()) ||
+          e.summary?.toLowerCase().includes(filter.toLowerCase()) ||
+          e.tags?.some(t => t.toLowerCase().includes(filter.toLowerCase()))
+        );
+        if (typeFilter !== "all") list = list.filter(e => e.change_type === typeFilter);
+        if (sourceFilter === "auto") list = list.filter(e => e.tags?.includes("auto"));
+        if (sourceFilter === "manual") list = list.filter(e => !e.tags?.includes("auto"));
+        return list;
+      }, [edits, filter, typeFilter, sourceFilter]);
+
+      const reversed = useMemo(() => [...filtered].reverse(), [filtered]);
+
+      // Unique files
+      const fileGroups = useMemo(() => {
+        const map = {};
+        edits.forEach(e => {
+          if (!map[e.file]) map[e.file] = { file: e.file, edits: [], latestVersion: "v0", types: new Set(), ext: extOf(e.file || "") };
+          map[e.file].edits.push(e);
+          map[e.file].latestVersion = e.version || map[e.file].latestVersion;
+          map[e.file].types.add(e.change_type);
+        });
+        return Object.values(map).sort((a, b) => b.edits.length - a.edits.length);
+      }, [edits]);
+
+      const typeOptions = useMemo(() => {
+        const types = new Set(edits.map(e => e.change_type));
+        return ["all", ...types];
+      }, [edits]);
+
+      const btnStyle = (active) => ({
+        padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+        border: `1px solid ${active ? T.accent : T.border}`,
+        background: active ? `${T.accent}18` : "transparent",
+        color: active ? T.accent : T.dim,
+        transition: "all 0.15s ease",
+      });
+
+      return React.createElement("div", {
+        style: { width: "100%", height: "100%", background: T.bg, color: T.text, display: "flex", flexDirection: "column", overflow: "hidden" }
+      },
+        // ─── Header ───
+        React.createElement("div", {
+          style: { padding: "12px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }
+        },
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14 } },
+            React.createElement("span", { style: { fontSize: 18, fontWeight: 700 } },
+              React.createElement("span", { style: { color: T.text } }, "C"),
+              React.createElement("span", { style: { color: T.accent } }, "3"),
+              React.createElement("span", { style: { color: T.text } }, " Edit Ledger")
+            ),
+            stats && React.createElement(Badge, { color: T.accent }, `${stats.total || 0} edits`),
+            stats && React.createElement(Badge, { color: T.blue }, `${stats.files || 0} files`),
+            lastUpdate && React.createElement("span", { className: "mono", style: { fontSize: 10, color: T.dim } },
+              `Updated ${lastUpdate.toLocaleTimeString()}`
+            ),
+            autoRefresh && React.createElement("div", {
+              style: { width: 6, height: 6, borderRadius: "50%", background: T.ok, animation: "pulse 2s infinite" }
+            })
+          ),
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            React.createElement("button", {
+              className: "mono",
+              onClick: async () => {
+                try { const h = await api("/api/hub/info"); window.location.href = h.url; }
+                catch { window.location.href = "http://localhost:3330"; }
+              },
+              style: { height: 26, padding: "0 10px", borderRadius: 6, border: `1px solid ${T.warn}40`, background: `${T.warn}12`, color: T.warn, fontSize: 11, fontWeight: 600, cursor: "pointer" }
+            }, "Hub"),
+            React.createElement("a", {
+              href: "/", className: "mono",
+              style: { height: 26, padding: "0 10px", borderRadius: 6, border: `1px solid ${T.accent}40`, background: `${T.accent}12`, color: T.accent, fontSize: 11, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }
+            }, "Full UI"),
+            React.createElement("a", {
+              href: "/nano", className: "mono",
+              style: { height: 26, padding: "0 10px", borderRadius: 6, border: `1px solid ${T.blue}40`, background: `${T.blue}12`, color: T.blue, fontSize: 11, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }
+            }, "Nano"),
+            React.createElement("button", {
+              onClick: () => setAutoRefresh(!autoRefresh),
+              style: { ...btnStyle(autoRefresh), padding: "4px 10px", fontSize: 11 }
+            }, autoRefresh ? "Live" : "Paused"),
+            React.createElement("button", {
+              onClick: () => setDarkMode(!darkMode),
+              style: { background: "none", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: T.dim, fontSize: 11 }
+            }, darkMode ? "Light" : "Dark")
+          )
+        ),
+
+        // ─── Toolbar ───
+        React.createElement("div", {
+          style: { padding: "10px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, flexWrap: "wrap", gap: 8 }
+        },
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            ["timeline", "stats", "files"].map(v =>
+              React.createElement("button", { key: v, onClick: () => setView(v), style: btnStyle(view === v) },
+                v.charAt(0).toUpperCase() + v.slice(1)
+              )
+            )
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+            // Source filter pills
+            React.createElement("div", { style: { display: "flex", gap: 4 } },
+              ["all", "auto", "manual"].map(s =>
+                React.createElement(Pill, {
+                  key: s, T, color: s === "auto" ? T.ok : s === "manual" ? T.warn : T.dim,
+                  active: sourceFilter === s,
+                  onClick: () => setSourceFilter(s)
+                }, s === "all" ? "All sources" : s === "auto" ? "Hook" : "Manual")
+              )
+            ),
+            React.createElement("select", {
+              value: typeFilter,
+              onChange: (e) => setTypeFilter(e.target.value),
+              style: {
+                padding: "5px 8px", borderRadius: 6, fontSize: 11, border: `1px solid ${T.border}`,
+                background: T.surface, color: T.text, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer"
+              }
+            }, typeOptions.map(t => React.createElement("option", { key: t, value: t }, t === "all" ? "All types" : t))),
+            React.createElement("input", {
+              type: "text", placeholder: "Search files, summaries, tags...", value: filter,
+              onChange: (e) => setFilter(e.target.value),
+              style: {
+                width: 260, padding: "6px 12px", borderRadius: 6, fontSize: 12,
+                border: `1px solid ${T.border}`, background: T.surface, color: T.text,
+                fontFamily: "'JetBrains Mono', monospace"
+              }
+            }),
+            filtered.length !== edits.length && React.createElement("span", {
+              className: "mono", style: { fontSize: 10, color: T.dim }
+            }, `${filtered.length}/${edits.length}`)
+          )
+        ),
+
+        // ─── Content ───
+        React.createElement("div", {
+          ref: scrollRef,
+          style: { flex: 1, overflow: "auto", padding: 24 }
+        },
+          // File version panel (overlay)
+          selectedFile && React.createElement(FileVersionPanel, {
+            file: selectedFile, versions: fileVersions, T,
+            onClose: () => { setSelectedFile(null); setFileVersions([]); }
+          }),
+
+          // ─── Timeline View ───
+          view === "timeline" && React.createElement("div", null,
+            // Quick stats row
+            stats && React.createElement("div", {
+              style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }
+            },
+              React.createElement(StatCard, { T, label: "Total Edits", value: stats.total || 0, color: T.accent }),
+              React.createElement(StatCard, { T, label: "Files Tracked", value: stats.files || 0, color: T.blue }),
+              ...(stats.by_type ? Object.entries(stats.by_type).map(([k, v]) =>
+                React.createElement(StatCard, { key: k, T, label: k, value: v, color: T[k] || T.dim })
+              ) : [])
+            ),
+            // Activity heatmap
+            edits.length > 0 && React.createElement(ActivityHeatmap, { edits, T }),
+            // Insights
+            edits.length > 0 && React.createElement(InsightsPanel, { edits, stats, T }),
+            // Timeline
+            React.createElement("div", { style: { marginTop: 8 } },
+              reversed.length === 0
+                ? React.createElement(EmptyState, { T })
+                : reversed.map((e, i) =>
+                    React.createElement(TimelineEntry, {
+                      key: e.id || i, entry: e, T,
+                      isLast: i === reversed.length - 1,
+                      onFileClick: openFileVersions,
+                      expanded: expandedIds.has(e.id),
+                      onToggle: () => toggleExpand(e.id)
+                    })
+                  )
+            )
+          ),
+
+          // ─── Stats View ───
+          view === "stats" && stats && React.createElement("div", {
+            style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }
+          },
+            React.createElement("div", { style: { gridColumn: "1 / -1" } },
+              React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 } },
+                React.createElement(StatCard, { T, label: "Total Edits", value: stats.total || 0, color: T.accent }),
+                React.createElement(StatCard, { T, label: "Files Tracked", value: stats.files || 0, color: T.blue }),
+                ...(stats.by_type ? Object.entries(stats.by_type).map(([k, v]) =>
+                  React.createElement(StatCard, { key: k, T, label: k, value: v, color: T[k] || T.dim })
+                ) : [])
+              )
+            ),
+            React.createElement("div", { style: { gridColumn: "1 / -1" } },
+              edits.length > 0 && React.createElement(InsightsPanel, { edits, stats, T })
+            ),
+            React.createElement(TypeDistribution, { byType: stats.by_type, total: stats.total, T }),
+            React.createElement(MostEditedChart, { data: stats.most_edited, T }),
+            React.createElement(DirectoryBreakdown, { edits, T }),
+            React.createElement(HourlyChart, { edits, T }),
+            React.createElement("div", { style: { gridColumn: "1 / -1" } },
+              React.createElement(ActivityHeatmap, { edits, T })
+            )
+          ),
+
+          // ─── Files View ───
+          view === "files" && React.createElement("div", {
+            style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 12 }
+          },
+            fileGroups.length === 0 && React.createElement(EmptyState, { T }),
+            fileGroups.map(fg =>
+              React.createElement("div", {
+                key: fg.file,
+                onClick: () => openFileVersions(fg.file),
+                style: {
+                  background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8,
+                  padding: "12px 16px", cursor: "pointer", transition: "border-color 0.15s",
+                }
+              },
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                  React.createElement("span", { className: "mono", style: { fontSize: 12, color: T.accent, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 } }, fg.file),
+                  React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0, marginLeft: 8 } },
+                    React.createElement(Badge, { color: T.purple }, fg.latestVersion),
+                    React.createElement(Badge, { color: T.blue }, `${fg.edits.length} edits`),
+                    fg.ext && React.createElement(Badge, { color: T.dim }, `.${fg.ext}`)
+                  )
+                ),
+                // Change type badges
+                React.createElement("div", { style: { display: "flex", gap: 4, marginTop: 6 } },
+                  [...fg.types].map(type =>
+                    React.createElement(Badge, { key: type, color: T[type] || T.dim }, type)
+                  )
+                ),
+                fg.edits.length > 0 && React.createElement("div", {
+                  style: { fontSize: 11, color: T.dim, marginTop: 6 }
+                }, `Last: ${fg.edits[fg.edits.length - 1].summary || fg.edits[fg.edits.length - 1].change_type} \u00b7 ${timeAgo(fg.edits[fg.edits.length - 1].timestamp)}`)
+              )
+            )
+          )
+        )
+      );
+    };
+
+    ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>

@@ -9,10 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.bench.external.aider_polyglot import (
-    AiderPolyglotBenchmark,
-    AiderPolyglotResult,
-    AiderPolyglotReport,
     LANGUAGE_TEST_COMMANDS,
+    AiderPolyglotBenchmark,
+    AiderPolyglotReport,
+    AiderPolyglotResult,
     _parse_aider_tokens_cost,
     _to_int,
     detect_aider,

@@ -6,41 +6,30 @@ Serves both the API endpoints and the single-page React dashboard.
 Launch with: c3 ui [--port 3333]
 """
 import atexit
-import os
-import sys
+import csv
 import json
-import time
-import glob
-import re
-import threading
 import logging
+import os
+import re
 import signal
 import subprocess
-import csv
-from pathlib import Path
+import sys
+import threading
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file, Response
+from flask import Flask, Response, jsonify, request, send_file
 
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import count_tokens, measure_savings, format_token_count
-from services.compressor import CodeCompressor
-from services.indexer import CodeIndex
-from services.session_manager import SessionManager
+from core import count_tokens
+from core.config import load_delegate_config, load_mcp_config, load_proxy_config
+from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services.protocol import CompressionProtocol
-from services.memory import MemoryStore
-from services.claude_md import ClaudeMdManager
-from services.activity_log import ActivityLog
-from services.notifications import NotificationStore
-from services.vector_store import VectorStore
-from services.output_filter import OutputFilter
-from services.router import ModelRouter
-from services.metrics import MetricsCollector
 from services.runtime import build_runtime, stop_runtime
-from core.config import load_hybrid_config, load_proxy_config, load_delegate_config, load_mcp_config
-from core.ide import load_ide_config, get_profile, detect_ide, PROFILES, normalize_ide_name
+from services.session_manager import SessionManager
 
 app = Flask(__name__)
 
@@ -594,7 +583,7 @@ def _last_weekly_reset(now, reset_weekday: int, reset_hour: int):
     reset_weekday: 0=Mon … 6=Sun (default 4=Fri)
     reset_hour:    hour in UTC (default 22 = Fri 6PM US-Eastern / UTC-4)
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import timedelta
     # Walk back from now to find the previous reset
     candidate = now.replace(minute=0, second=0, microsecond=0, hour=reset_hour)
     for days_back in range(8):
@@ -613,8 +602,7 @@ def _compute_global_usage_windows(weekly_reset_weekday: int = 4, weekly_reset_ho
     weekly_reset_weekday: 0=Mon … 6=Sun, default 4 (Friday)
     weekly_reset_hour_utc: UTC hour of the weekly reset, default 22 (= 6 PM US Eastern / UTC-4)
     """
-    from datetime import datetime, timezone, timedelta
-    import re
+    from datetime import datetime, timedelta, timezone
 
     home = Path.home()
     projects_dir = home / ".claude" / "projects"
@@ -1903,7 +1891,6 @@ def api_hybrid_config_put():
 @app.route('/api/budget/config', methods=['GET'])
 def api_budget_config_get():
     """Get current context budget threshold."""
-    from services.session_manager import SessionManager
     config_path = PROJECT_PATH / ".c3" / "config.json"
     config = {}
     if config_path.exists():
@@ -1955,7 +1942,6 @@ def api_budget_config_put():
     except Exception:
         pass
 
-    from services.session_manager import SessionManager
     defaults = SessionManager.DEFAULT_BUDGET_THRESHOLDS
     merged_budget = config.get("context_budget", {})
     return jsonify({
@@ -2208,10 +2194,10 @@ def api_delegate():
     task_type = data.get("task_type", "ask")
     file_path = data.get("file_path", "")
     stream = bool(data.get("stream", False))
-    
+
     if not task:
         return jsonify({"error": "No task specified"}), 400
-        
+
     if not router:
         return jsonify({"error": "Router not initialized"}), 503
 
@@ -2220,7 +2206,7 @@ def api_delegate():
             result = router.route(task, force_class=task_type)
             # If router didn't return a generator, it means it's a non-streaming result or error
             response_gen = result.get("response")
-            
+
             # Metadata chunk
             meta = {
                 "model": result.get("model"),
@@ -2229,15 +2215,15 @@ def api_delegate():
                 "is_meta": True
             }
             yield f"data: {json.dumps(meta)}\n\n"
-            
+
             if isinstance(response_gen, str):
                 yield f"data: {json.dumps({'text': response_gen})}\n\n"
             elif response_gen:
                 for chunk in response_gen:
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
-            
+
             yield "data: [DONE]\n\n"
-            
+
         return Response(generate_sse(), mimetype='text/event-stream')
 
     # Non-streaming path
@@ -2252,10 +2238,10 @@ def api_summarize():
     text = data.get("text", "").strip()
     style = data.get("style", "concise")
     stream = bool(data.get("stream", False))
-    
+
     if not text:
         return jsonify({"error": "No text specified"}), 400
-        
+
     if not router:
         return jsonify({"error": "Router not initialized"}), 503
 
@@ -2265,22 +2251,22 @@ def api_summarize():
             # Update: router.summarize needs to handle streaming too
             # For now, let's just wrap the result if it's not a generator
             summary = result.get("summary")
-            
+
             meta = {
                 "model": result.get("model"),
                 "style": result.get("style"),
                 "is_meta": True
             }
             yield f"data: {json.dumps(meta)}\n\n"
-            
+
             if isinstance(summary, str):
                 yield f"data: {json.dumps({'text': summary})}\n\n"
             elif summary:
                 for chunk in summary:
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
-            
+
             yield "data: [DONE]\n\n"
-            
+
         return Response(generate_sse(), mimetype='text/event-stream')
 
     result = router.summarize(text, style=style)
@@ -2683,8 +2669,9 @@ def api_mcp_install():
         data = request.get_json(silent=True) or {}
         ide_name = data.get('ide', 'auto')
         mcp_mode = data.get('mcp_mode', 'direct')
-        from cli.c3 import cmd_install_mcp
         from types import SimpleNamespace
+
+        from cli.c3 import cmd_install_mcp
         args = SimpleNamespace(project_path=str(PROJECT_PATH), ide=ide_name, mcp_mode=mcp_mode)
         result = cmd_install_mcp(args)
         return jsonify({"success": True, "result": str(result)})

@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workflow — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .workflow-step {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .workflow-step-header {
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .step-badge {
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      border-radius: 50%;
+      background: var(--blue-dim);
+      border: 2px solid var(--blue);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--blue);
+    }
+
+    .step-info { flex: 1; }
+
+    .step-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 2px;
+    }
+
+    .step-subtitle {
+      font-size: 12.5px;
+      color: var(--text-muted);
+    }
+
+    .step-tool {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--cyan);
+      background: var(--cyan-dim);
+      border: 1px solid var(--border);
+      padding: 3px 10px;
+      border-radius: 20px;
+    }
+
+    .workflow-step-body {
+      padding: 18px 20px;
+    }
+
+    /* Context decision tree */
+    .decision {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .decision-q {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .decision-a {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+    }
+
+    .decision-label {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 7px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    .label-yes { background: var(--green-dim); color: var(--green); }
+    .label-no  { background: var(--red-dim);   color: var(--red);   }
+
+    /* Comparison blocks */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 12px 0;
+    }
+
+    .compare-block {
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      font-size: 12.5px;
+    }
+
+    .compare-bad  { background: var(--red-dim);  border: 1px solid #7f1d1d; }
+    .compare-good { background: var(--green-dim); border: 1px solid #14532d; }
+
+    .compare-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 6px;
+    }
+
+    .compare-bad  .compare-label { color: var(--red); }
+    .compare-good .compare-label { color: var(--green); }
+
+    .compare-block pre {
+      margin: 0;
+      padding: 0;
+      background: none;
+      border: none;
+      font-size: 11.5px;
+      white-space: pre-wrap;
+    }
+
+    .compare-block code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: 11.5px;
+    }
+
+    /* Plan mode box */
+    .plan-mode-box {
+      background: var(--purple-dim);
+      border: 1px solid var(--purple);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin-bottom: 24px;
+    }
+
+    .plan-mode-box .title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--purple);
+      margin-bottom: 6px;
+    }
+
+    .plan-mode-box p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    /* ── Excalidraw diagram frames ───────────────────────── */
+    .exc-frame {
+      height: 540px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: #0d1117;
+      position: relative;
+    }
+
+    .exc-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-family: var(--mono);
+      pointer-events: none;
+    }
+
+    .exc-loading .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border-2);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: exc-spin 0.8s linear infinite;
+    }
+
+    @keyframes exc-spin { to { transform: rotate(360deg); } }
+
+    .exc-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 8px;
+      font-family: var(--font);
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html" class="active">Workflow</a>
+      <a href="tools.html">Tools</a>
+    </nav>
+    <span class="header-version">v2.x</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Workflow</div>
+      <a href="#workflow-diagram" class="sidebar-link"><span class="icon">📊</span> Diagram</a>
+      <a href="#overview" class="sidebar-link"><span class="icon">🗺️</span> Overview</a>
+      <a href="#step1" class="sidebar-link"><span class="icon">🧠</span> 1. Recall</a>
+      <a href="#step2" class="sidebar-link"><span class="icon">🔍</span> 2. Search</a>
+      <a href="#step3" class="sidebar-link"><span class="icon">📄</span> 3. Map + Read</a>
+      <a href="#step4" class="sidebar-link"><span class="icon">✏️</span> 4. Edit</a>
+      <a href="#step5" class="sidebar-link"><span class="icon">🔎</span> 5. Filter</a>
+      <a href="#step6" class="sidebar-link"><span class="icon">✅</span> 6. Validate</a>
+      <a href="#step7" class="sidebar-link"><span class="icon">📋</span> 7. Log</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Guidance</div>
+      <a href="#antipatterns" class="sidebar-link"><span class="icon">🚫</span> Anti-patterns</a>
+      <a href="#plan-mode" class="sidebar-link"><span class="icon">📐</span> Plan Mode</a>
+      <a href="#session-restart" class="sidebar-link"><span class="icon">🔄</span> Session Restart</a>
+      <a href="#terse-skill" class="sidebar-link"><span class="icon">⚡</span> /terse Skill</a>
+      <a href="#native-fallback" class="sidebar-link"><span class="icon">⚠️</span> Native Fallback</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Workflow</h1>
+      <p>The mandatory 7-step order Claude must follow every session. Hooks enforce this — skipping steps will cause tool denials.</p>
+    </div>
+
+    <!-- ═══ Excalidraw: 7-step flowchart ═══════════════════════ -->
+    <section class="section" id="workflow-diagram">
+      <div class="section-title"><span class="icon">📊</span> Visual Overview</div>
+      <p class="muted text-sm" style="margin-bottom: 14px;">
+        Scroll inside the diagram to zoom · drag to pan · built with Excalidraw
+      </p>
+      <div id="exc-workflow" class="exc-frame" style="height: 970px;">
+        <div class="exc-loading">
+          <div class="spinner"></div>
+          Loading diagram…
+          <span class="exc-hint">requires internet connection (CDN)</span>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Overview -->
+    <section class="section" id="overview">
+      <div class="section-title"><span class="icon">🗺️</span> Overview</div>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>Enforced by hooks</strong>
+          Native tools (Read, Grep, Glob, Edit, Write) are blocked by PreToolUse hooks unless a c3_* tool was called first. Violating the workflow order causes immediate tool denials — not warnings.
+        </div>
+      </div>
+
+      <table class="table">
+        <thead>
+          <tr><th>#</th><th>Step</th><th>Tool</th><th>When</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-blue">1</span></td>
+            <td><strong>Recall</strong></td>
+            <td><code>c3_memory(action='recall')</code></td>
+            <td>Before any multi-step or context-dependent task</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">2</span></td>
+            <td><strong>Search</strong></td>
+            <td><code>c3_search(action='code|files|semantic')</code></td>
+            <td>Before ANY file discovery or content search</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">3</span></td>
+            <td><strong>Map + Read</strong></td>
+            <td><code>c3_compress(mode='map')</code> → <code>c3_read(symbols=…)</code></td>
+            <td>Before reading any file content</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-yellow">4</span></td>
+            <td><strong>Impact</strong></td>
+            <td><code>c3_impact(target='symbol')</code></td>
+            <td>Before editing shared symbols — check blast radius</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">5</span></td>
+            <td><strong>Edit</strong></td>
+            <td><code>c3_edit(file, old, new, summary)</code></td>
+            <td>All file modifications</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">6</span></td>
+            <td><strong>Filter</strong></td>
+            <td><code>c3_filter(text=…)</code></td>
+            <td>Terminal output &gt;10 lines or log files</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">7</span></td>
+            <td><strong>Validate</strong></td>
+            <td><code>c3_validate(file_path)</code></td>
+            <td>After every edit; type check auto-runs if pyright/tsc installed</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-cyan">8</span></td>
+            <td><strong>Log</strong></td>
+            <td><code>c3_session(action='log')</code></td>
+            <td>After decisions; snapshot before /clear</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Step 1 -->
+    <section class="section" id="step1">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">1</div>
+          <div class="step-info">
+            <div class="step-name">Recall Memory</div>
+            <div class="step-subtitle">Recover context from previous sessions before doing anything</div>
+          </div>
+          <span class="step-tool">c3_memory</span>
+        </div>
+        <div class="workflow-step-body">
+          <p>The first thing Claude should do at the start of any non-trivial task. This loads relevant facts from the persistent memory store — architecture decisions, conventions, ongoing work, gotchas discovered in prior sessions.</p>
+
+          <pre><code>c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'authentication system refactor'</span>)</code></pre>
+
+          <h4>When to recall</h4>
+          <ul>
+            <li>Start of any multi-step task</li>
+            <li>When the task touches a system you've worked on before</li>
+            <li>When you suspect there are architecture decisions or gotchas to be aware of</li>
+          </ul>
+
+          <h4>When you can skip</h4>
+          <ul>
+            <li>Trivial one-off tasks (rename a variable, fix a typo)</li>
+            <li>Brand new projects with no prior sessions</li>
+          </ul>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              Use a specific query matching your task — "recall" pulls the top-k most relevant facts by semantic similarity. A vague query returns less useful results.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 2 -->
+    <section class="section" id="step2">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">2</div>
+          <div class="step-info">
+            <div class="step-name">Search First</div>
+            <div class="step-subtitle">Always discover files and code via c3_search — never Grep/Glob directly</div>
+          </div>
+          <span class="step-tool">c3_search</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Use case</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">code</td>
+                <td class="param-desc">TF-IDF code search — find functions, classes, patterns by content</td>
+              </tr>
+              <tr>
+                <td class="param-name">files</td>
+                <td class="param-desc">File discovery — find files by name, extension, path pattern</td>
+              </tr>
+              <tr>
+                <td class="param-name">semantic</td>
+                <td class="param-desc">Embedding-based similarity search — find conceptually related code</td>
+              </tr>
+              <tr>
+                <td class="param-name">exact</td>
+                <td class="param-desc">Regex-based exact search — when you know the literal string</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="compare">
+            <div class="compare-block compare-bad">
+              <div class="compare-label">❌ Wrong</div>
+              <pre><code><span class="com"># Never start with native tools</span>
+Grep(pattern='AuthMiddleware')
+Glob(pattern='**/*.py')</code></pre>
+            </div>
+            <div class="compare-block compare-good">
+              <div class="compare-label">✅ Correct</div>
+              <pre><code>c3_search(query=<span class="str">'AuthMiddleware'</span>, action=<span class="str">'code'</span>)
+c3_search(query=<span class="str">'*.py auth'</span>, action=<span class="str">'files'</span>)</code></pre>
+            </div>
+          </div>
+
+          <h4>prefetch=True</h4>
+          <p>Pass <code>prefetch=True</code> to auto-compress the top result files in parallel, saving a round-trip:</p>
+          <pre><code>c3_search(query=<span class="str">'session manager'</span>, action=<span class="str">'code'</span>, prefetch=<span class="val">True</span>)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3 -->
+    <section class="section" id="step3">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">3</div>
+          <div class="step-info">
+            <div class="step-name">Map then Read</div>
+            <div class="step-subtitle">Get a structural overview first, then read only what you need</div>
+          </div>
+          <span class="step-tool">c3_compress + c3_read</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p>Reading a whole file wastes tokens. The correct pattern is: <strong>compress to get the map</strong>, then <strong>read only the specific symbols or lines</strong> you need.</p>
+
+          <div class="compare">
+            <div class="compare-block compare-bad">
+              <div class="compare-label">❌ Wrong</div>
+              <pre><code><span class="com"># Reading entire files</span>
+Read(file_path=<span class="str">'services/session_manager.py'</span>)</code></pre>
+            </div>
+            <div class="compare-block compare-good">
+              <div class="compare-label">✅ Correct</div>
+              <pre><code><span class="com"># Map → targeted read</span>
+c3_compress(file_path=<span class="str">'services/session_manager.py'</span>, mode=<span class="str">'map'</span>)
+c3_read(file_path=<span class="str">'services/session_manager.py'</span>, symbols=[<span class="str">'SessionManager.save'</span>])</code></pre>
+            </div>
+          </div>
+
+          <h4>Compress modes</h4>
+          <table class="params-table">
+            <thead><tr><th>Mode</th><th>Output</th><th>Best for</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">map</td>
+                <td class="param-desc">Line-range map of all symbols (functions, classes, constants)</td>
+                <td class="param-desc">Understanding file structure before reading</td>
+              </tr>
+              <tr>
+                <td class="param-name">dense_map</td>
+                <td class="param-desc">Same as map but with docstrings included</td>
+                <td class="param-desc">When you need a bit more context per symbol</td>
+              </tr>
+              <tr>
+                <td class="param-name">smart</td>
+                <td class="param-desc">Adaptive compression — keeps important sections</td>
+                <td class="param-desc">General-purpose read when map is insufficient</td>
+              </tr>
+              <tr>
+                <td class="param-name">diff</td>
+                <td class="param-desc">Show what changed recently (git diff aware)</td>
+                <td class="param-desc">Reviewing recent changes</td>
+              </tr>
+              <tr>
+                <td class="param-name">bug_scan</td>
+                <td class="param-desc">Highlight suspicious patterns</td>
+                <td class="param-desc">Quick bug-hunting pass</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Batch compress</h4>
+          <pre><code><span class="com"># Compress multiple files in one call</span>
+c3_compress(file_path=<span class="str">'services/memory.py,services/agents.py'</span>, mode=<span class="str">'map'</span>)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 4 — Impact -->
+    <section class="section" id="step4">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">4</div>
+          <div class="step-info">
+            <div class="step-name">Impact Check</div>
+            <div class="step-subtitle">Know the blast radius before editing shared symbols</div>
+          </div>
+          <span class="step-tool">c3_impact</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p>Before renaming, removing, or changing the signature of any function or class used across files, run <code>c3_impact</code> to find every call site. A HIGH risk result means all those files need updating in the same edit pass — skipping this step is how silent breakages happen.</p>
+
+          <pre><code><span class="com"># Check blast radius before renaming a shared function</span>
+c3_impact(target=<span class="str">'handle_memory'</span>, file_path=<span class="str">'cli/tools/memory.py'</span>)
+
+<span class="com"># Check what's affected AND has uncommitted changes</span>
+c3_impact(target=<span class="str">'MemoryStore'</span>, mode=<span class="str">'unstaged'</span>)</code></pre>
+
+          <h4>When to skip</h4>
+          <p>Skip <code>c3_impact</code> when editing purely local symbols (private helpers, inner functions, one-off scripts). Use it for anything in a shared service, public API, or imported across files.</p>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              A <strong>HIGH</strong> risk result (7+ files) means the edit isn't isolated — plan to update all call sites in the same session before reporting done.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 5 — Edit -->
+    <section class="section" id="step5">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">5</div>
+          <div class="step-info">
+            <div class="step-name">Edit via C3</div>
+            <div class="step-subtitle">Atomic read-patch-write-log — always c3_edit, never native Edit</div>
+          </div>
+          <span class="step-tool">c3_edit</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p><code>c3_edit</code> does read + patch + write + edit ledger log in one step. It also validates the old_string match before writing. If the literal match fails but the strings differ only by unicode lookalikes (curly quotes, em/en-dashes, NBSP), c3_edit retries with a 1:1 normalized match and tags the response <code>[unicode-normalized]</code>.</p>
+
+          <pre><code>c3_edit(
+  file_path=<span class="str">'services/auth.py'</span>,
+  old_string=<span class="str">'return token.expiry &gt; now'</span>,
+  new_string=<span class="str">'return token.expiry &gt; now + timedelta(seconds=CLOCK_SKEW)'</span>,
+  summary=<span class="str">'Add clock skew buffer to token expiry check'</span>
+)</code></pre>
+
+          <h4>Batching edits to the same file</h4>
+          <p>Use the <code>edits=[]</code> parameter to apply multiple patches to one file in one call:</p>
+          <pre><code>c3_edit(
+  file_path=<span class="str">'src/config.py'</span>,
+  edits=[
+    {<span class="str">"old_string"</span>: <span class="str">"DEBUG = True"</span>,  <span class="str">"new_string"</span>: <span class="str">"DEBUG = False"</span>},
+    {<span class="str">"old_string"</span>: <span class="str">"HOST = 'localhost'"</span>, <span class="str">"new_string"</span>: <span class="str">"HOST = '0.0.0.0'"</span>}
+  ],
+  summary=<span class="str">'Production config hardening'</span>
+)</code></pre>
+
+          <h4>Parallel edits across files</h4>
+          <pre><code><span class="com"># Call c3_edit for multiple files in parallel (same message, different files)</span>
+c3_edit(file_path=<span class="str">'src/a.py'</span>, old_string=<span class="str">'...'</span>, new_string=<span class="str">'...'</span>, summary=<span class="str">'...'</span>)
+c3_edit(file_path=<span class="str">'src/b.py'</span>, old_string=<span class="str">'...'</span>, new_string=<span class="str">'...'</span>, summary=<span class="str">'...'</span>)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 6 -->
+    <section class="section" id="step6">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">6</div>
+          <div class="step-info">
+            <div class="step-name">Filter Output</div>
+            <div class="step-subtitle">Extract signal from noisy terminal output and log files</div>
+          </div>
+          <span class="step-tool">c3_filter</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p>Any terminal output longer than ~10 lines should be passed through <code>c3_filter</code> to extract only the relevant signal before including it in context.</p>
+
+          <pre><code><span class="com"># Filter raw terminal output</span>
+c3_filter(text=<span class="str">"&lt;long test output here&gt;"</span>)
+
+<span class="com"># Filter a log file</span>
+c3_filter(file_path=<span class="str">".c3/sessions/session_001.json"</span>, pattern=<span class="str">"error|warning"</span>)</code></pre>
+
+          <div class="callout callout-info">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              c3_filter is especially useful after running tests, build commands, or any operation that produces verbose output. It strips noise and returns structured signal.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 7 -->
+    <section class="section" id="step7">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">7</div>
+          <div class="step-info">
+            <div class="step-name">Validate</div>
+            <div class="step-subtitle">Syntax + type check every edited file before reporting done</div>
+          </div>
+          <span class="step-tool">c3_validate</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p>Always call <code>c3_validate</code> after edits. Never report "done" without validation. A syntax error introduced silently is worse than no change at all. If <code>pyright</code> (Python) or <code>tsc</code> (TypeScript) is on your PATH, C3 also runs a deep type check automatically and surfaces type errors as advisory warnings alongside the PASS result.</p>
+
+          <pre><code><span class="com"># Single file</span>
+c3_validate(file_path=<span class="str">'services/auth.py'</span>)
+
+<span class="com"># Batch — comma-separated (runs in parallel internally)</span>
+c3_validate(file_path=<span class="str">'services/auth.py,services/session.py,cli/c3.py'</span>)</code></pre>
+
+          <h4>Supported languages</h4>
+          <div class="tag-row">
+            <span class="badge badge-blue">Python (.py)</span>
+            <span class="badge badge-cyan">JavaScript (.js .mjs)</span>
+            <span class="badge badge-cyan">TypeScript (.ts .tsx)</span>
+            <span class="badge badge-green">HTML (.html)</span>
+            <span class="badge badge-green">CSS (.css)</span>
+            <span class="badge badge-yellow">JSON (.json)</span>
+            <span class="badge badge-yellow">TOML (.toml)</span>
+            <span class="badge badge-purple">YAML (.yml .yaml)</span>
+            <span class="badge badge-orange">Bash (.sh)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 8 -->
+    <section class="section" id="step8">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">8</div>
+          <div class="step-info">
+            <div class="step-name">Log &amp; Snapshot</div>
+            <div class="step-subtitle">Persist decisions and context so the next session starts informed</div>
+          </div>
+          <span class="step-tool">c3_session</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <h4>Log a decision</h4>
+          <pre><code>c3_session(action=<span class="str">'log'</span>, data=<span class="str">'Chose JWT over session cookies — easier horizontal scaling'</span>)</code></pre>
+
+          <h4>Snapshot before /clear</h4>
+          <p>Always snapshot before running <code>/clear</code>. This saves the full session state so the next session can restore it.</p>
+          <pre><code>c3_session(action=<span class="str">'snapshot'</span>)
+<span class="com"># Then in Claude Code: /clear</span></code></pre>
+
+          <h4>Auto-snapshot on session end</h4>
+          <p>C3 automatically captures a snapshot when a session ends — including <kbd>Ctrl+C</kbd>, natural stop, and max-turn exits. This is handled by a <strong>Stop hook</strong> (<code>hook_auto_snapshot.py</code>) that fires after Claude's last response.</p>
+          <div class="info-box" style="margin: 12px 0;">
+            <strong>How it works:</strong> The Stop hook checks if the C3 UI server is running. If so, it calls <code>POST /api/auto-snapshot</code> which captures a full snapshot with live session state (decisions, files touched, memory facts, budget). If the server isn't running, it falls back to a lightweight file-based snapshot from persisted session data on disk.
+          </div>
+          <p><strong>Installation:</strong> Stop hooks are registered automatically by <code>c3 install-mcp</code>. For existing projects, re-run <code>c3 install-mcp</code> to add them. No manual configuration needed.</p>
+          <table class="info-table" style="width: 100%; margin: 12px 0; border-collapse: collapse;">
+            <thead><tr><th style="text-align:left; padding: 6px 10px; border-bottom: 1px solid var(--border);">Event</th><th style="text-align:left; padding: 6px 10px; border-bottom: 1px solid var(--border);">Auto-snapshot?</th><th style="text-align:left; padding: 6px 10px; border-bottom: 1px solid var(--border);">Notes</th></tr></thead>
+            <tbody>
+              <tr><td style="padding: 6px 10px;">Natural session end</td><td style="padding: 6px 10px;">Yes</td><td style="padding: 6px 10px;">Stop hook fires reliably</td></tr>
+              <tr><td style="padding: 6px 10px;">Ctrl+C (graceful)</td><td style="padding: 6px 10px;">Yes</td><td style="padding: 6px 10px;">Stop hook fires before exit</td></tr>
+              <tr><td style="padding: 6px 10px;">Ctrl+C (hard kill)</td><td style="padding: 6px 10px;">Partial</td><td style="padding: 6px 10px;">May not fire if process killed instantly</td></tr>
+              <tr><td style="padding: 6px 10px;">/clear</td><td style="padding: 6px 10px;">Indirect</td><td style="padding: 6px 10px;">Session ends first, triggering the hook</td></tr>
+            </tbody>
+          </table>
+          <p>Manual snapshots are still recommended before <code>/clear</code> for maximum reliability, but the auto-snapshot serves as a safety net.</p>
+
+          <h4>Restore in new session</h4>
+          <pre><code>c3_session(action=<span class="str">'restore'</span>)</code></pre>
+
+          <h4>Compact (one-step restart)</h4>
+          <pre><code><span class="com"># Snapshot + summary + restore instruction in one step</span>
+c3_session(action=<span class="str">'compact'</span>)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Anti-patterns -->
+    <section class="section" id="antipatterns">
+      <div class="section-title"><span class="icon">🚫</span> Anti-patterns</div>
+
+      <p>These will cause hook denials or waste significant tokens:</p>
+
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Starting with native file search/read</strong> — always use c3_search or c3_compress first, even for "quick" lookups.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Using native Edit when c3_edit is available</strong> — c3_edit validates, logs to ledger, and is atomic. Native Edit does none of this.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Reading entire files with native Read</strong> — always compress first, then read only the symbols you need.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Skipping c3_validate after edits</strong> — you will silently introduce syntax errors that break the next session.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Running /clear without a snapshot</strong> — the auto-snapshot Stop hook provides a safety net, but a manual snapshot before <code>/clear</code> captures richer context (task description, working files). Don't rely solely on auto-snapshot.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Dumping long terminal output directly into context</strong> — always filter first with c3_filter.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Skipping recall at session start</strong> — you'll rediscover decisions and conventions already documented in memory.</div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Plan mode -->
+    <section class="section" id="plan-mode">
+      <div class="section-title"><span class="icon">📐</span> Plan Mode</div>
+
+      <div class="plan-mode-box">
+        <div class="title">Plan Mode — Read-only tools only</div>
+        <p>In plan mode, all c3_* read tools work normally: <code>c3_search</code>, <code>c3_read</code>, <code>c3_compress</code>, <code>c3_filter</code>, <code>c3_validate</code>, <code>c3_status</code>, <code>c3_memory(recall/query)</code>. Skip edit and delegate steps in plan mode.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Session restart -->
+    <section class="section" id="session-restart">
+      <div class="section-title"><span class="icon">🔄</span> Session Restart Cycle</div>
+
+      <div id="exc-restart" class="exc-frame" style="height: 340px; margin-bottom: 28px;">
+        <div class="exc-loading">
+          <div class="spinner"></div>
+          Loading diagram…
+        </div>
+      </div>
+
+      <h3>Option A — Compact (one step)</h3>
+      <pre><code>c3_session(action=<span class="str">'compact'</span>)
+<span class="com"># → Claude gives you a restore command to paste after /clear</span>
+<span class="com"># → Run /clear</span>
+<span class="com"># → Paste the restore command</span></code></pre>
+
+      <h3>Option B — Manual (two steps)</h3>
+      <pre><code><span class="com"># Step 1: Before /clear</span>
+c3_session(action=<span class="str">'snapshot'</span>)
+
+<span class="com"># Step 2: After /clear, in new session</span>
+c3_session(action=<span class="str">'restore'</span>)</code></pre>
+
+      <h4>What's preserved across restarts</h4>
+      <ul>
+        <li>Memory facts (always persistent — not affected by /clear)</li>
+        <li>Session decisions and context notes (from snapshot)</li>
+        <li>Edit ledger (always persistent)</li>
+        <li>Code index (always persistent)</li>
+      </ul>
+
+      <h4>What's lost on /clear</h4>
+      <ul>
+        <li>Conversation history (by design)</li>
+        <li>In-flight reasoning (must be re-derived)</li>
+        <li>Unsnapshot session state</li>
+      </ul>
+    </section>
+
+    <hr class="divider">
+
+    <!-- /terse skill -->
+    <section class="section" id="terse-skill">
+      <div class="section-title"><span class="icon">⚡</span> /terse — Terse Output Mode</div>
+
+      <p>Installed by <code>c3 install-mcp</code> into <code>~/.claude/commands/terse.md</code>. Available in every Claude Code project after C3 setup. Reduces output token usage by stripping prose verbosity while leaving all technical content (code, paths, commands, URLs) unchanged.</p>
+
+      <div class="callout callout-tip">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          Complements C3's input-token compression (<code>c3_compress</code>, <code>c3_filter</code>). Those shrink what Claude <em>reads</em>; terse mode shrinks what Claude <em>writes</em>.
+        </div>
+      </div>
+
+      <h4>Intensity levels</h4>
+      <table class="table">
+        <thead><tr><th>Level</th><th>Effect</th><th>Example output</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>/terse lite</code></td>
+            <td>Remove filler, keep grammar intact</td>
+            <td>"Auth middleware handles token expiry at <code>auth.py:42</code>."</td>
+          </tr>
+          <tr>
+            <td><code>/terse</code> (full)</td>
+            <td>Drop articles, use fragments, cut transitions</td>
+            <td>"Auth middleware: token expiry. See <code>auth.py:42</code>."</td>
+          </tr>
+          <tr>
+            <td><code>/terse ultra</code></td>
+            <td>Telegraphic, maximum abbreviation</td>
+            <td>"Token expiry → <code>auth.py:42</code>"</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>What gets suppressed</h4>
+      <ul>
+        <li>Preamble: "Sure, I'll...", "I've completed..."</li>
+        <li>Hedging: "I think", "it seems", "you might want to"</li>
+        <li>Trailing summaries that restate the diff</li>
+        <li>Filler conjunctions and transitional phrases</li>
+      </ul>
+
+      <h4>What stays exact</h4>
+      <ul>
+        <li>All code blocks, inline code, file paths, commands, URLs</li>
+        <li>Error messages and stack traces</li>
+        <li>Variable names, function names, type signatures</li>
+      </ul>
+
+      <h4>Exceptions — do not compress these</h4>
+      <p>Terse mode applies to conversational prose only. The following must remain complete and precise regardless of terse level:</p>
+      <ul>
+        <li><strong>Memory saves</strong> (<code>c3_memory add/update</code>) — facts must be self-contained and fully worded; abbreviated facts are unsearchable</li>
+        <li><strong>Session logs</strong> (<code>c3_session log</code>) — decisions need full reasoning to be useful in future sessions</li>
+        <li><strong>CLAUDE.md / instructions files</strong> — rules must be unambiguous; never abbreviate directives</li>
+        <li><strong>Planning and architecture responses</strong> — user reviews for correctness; include all steps and trade-offs</li>
+        <li><strong>Error diagnosis</strong> — include full error text, file paths, line numbers, root cause</li>
+        <li><strong>Tool call arguments</strong> — <code>old_string</code>, <code>new_string</code>, <code>fact</code>, <code>summary</code> must be exact; never truncate</li>
+      </ul>
+
+      <h4>Deactivate</h4>
+      <p>Say "normal mode" or start a new session.</p>
+
+      <h4>Terse Advisor — automatic nudge</h4>
+      <p>C3 installs a <strong>Stop hook</strong> (<code>hook_terse_advisor.py</code>) that fires after each response turn. When a verbose response is detected and <code>/terse</code> is not already active, it prints a one-time nudge per session:</p>
+
+      <pre><code>────────────────────────────────────────────────────
+[C3] Verbose response (~950 chars). /terse saves ~50% output tokens.
+     Type /terse to activate.
+     Silence: c3 terse dismiss  |  Snooze 24h: c3 terse later
+────────────────────────────────────────────────────</code></pre>
+
+      <p>The advisor checks the transcript for recent <code>/terse</code> activations and skips if terse mode is already in use. Nudge state is stored in <code>~/.c3/terse_advisor.json</code>.</p>
+
+      <table class="table">
+        <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>c3 terse dismiss</code></td><td>Silence the advisor permanently</td></tr>
+          <tr><td><code>c3 terse later</code></td><td>Snooze nudges for 24 hours</td></tr>
+          <tr><td><code>c3 terse reset</code></td><td>Clear all advisor state</td></tr>
+          <tr><td><code>c3 terse status</code></td><td>Show current advisor state</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Native fallback -->
+    <section class="section" id="native-fallback">
+      <div class="section-title"><span class="icon">⚠️</span> When Native Tools Are Permitted</div>
+
+      <p>Native tools (Read, Grep, Glob, Edit) are allowed <strong>only</strong> as fallback when a c3_* tool failed or returned insufficient scope:</p>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>State which c3_* tool was attempted and why it failed</strong><br>
+          Example: "c3_search returned no results for 'XYZ' — falling back to Grep for exact match."
+        </div>
+      </div>
+
+      <table class="table">
+        <thead><tr><th>Situation</th><th>Permitted fallback</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>c3_search returned empty results</td>
+            <td>Grep with exact pattern</td>
+          </tr>
+          <tr>
+            <td>c3_compress failed (file too short / binary)</td>
+            <td>Read with limited lines</td>
+          </tr>
+          <tr>
+            <td>c3_edit failed (old_string not found after multiple retries)</td>
+            <td>Read to confirm exact content, then retry c3_edit</td>
+          </tr>
+          <tr>
+            <td>c3_validate doesn't support the file type</td>
+            <td>Run native syntax check via Bash</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════════
+//  C3 Guide — Excalidraw Diagrams
+//  Workflow page: 7-step flowchart + session restart cycle
+// ═══════════════════════════════════════════════════════════════
+// exportToSvg renders to a static SVG — no React component, no iframes.
+// Works correctly under file:// protocol (no cross-origin iframe issue).
+import { exportToSvg } from 'https://esm.sh/@excalidraw/excalidraw?deps=react@18,react-dom@18';
+
+// ── Element builders ───────────────────────────────────────────
+const _s = () => Math.floor(Math.random() * 1e8);
+let _n = 0;
+const uid = () => `el${++_n}`;
+
+const BASE = {
+  angle: 0, roughness: 1, opacity: 100,
+  isDeleted: false, boundElements: null,
+  updated: Date.now(), link: null, locked: false,
+  fillStyle: 'solid', strokeWidth: 2, strokeStyle: 'solid',
+};
+
+const mkRect = (x, y, w, h, o = {}) => ({
+  ...BASE, id: uid(), type: 'rectangle', x, y, width: w, height: h,
+  strokeColor: '#e6edf3', backgroundColor: 'transparent',
+  seed: _s(), version: 1, versionNonce: _s(), ...o,
+});
+
+const mkTxt = (x, y, text, o = {}) => ({
+  ...BASE, id: uid(), type: 'text', x, y,
+  width: o.width ?? Math.max(text.length * 8, 30), height: o.h ?? 20,
+  text, originalText: text,
+  fontSize: o.fontSize ?? 14, fontFamily: o.fontFamily ?? 3,
+  textAlign: o.textAlign ?? 'left', verticalAlign: 'top',
+  containerId: null, lineHeight: 1.25,
+  strokeColor: '#e6edf3', backgroundColor: 'transparent',
+  fillStyle: 'solid', strokeWidth: 1,
+  seed: _s(), version: 1, versionNonce: _s(), ...o,
+});
+
+const mkArrow = (x1, y1, x2, y2, o = {}) => ({
+  ...BASE, id: uid(), type: 'arrow',
+  x: x1, y: y1,
+  width: Math.abs(x2 - x1) || 1, height: Math.abs(y2 - y1) || 1,
+  points: [[0, 0], [x2 - x1, y2 - y1]],
+  startArrowhead: null, endArrowhead: 'arrow',
+  strokeColor: '#484f58', backgroundColor: 'transparent',
+  fillStyle: 'solid', strokeWidth: 2,
+  startBinding: null, endBinding: null,
+  seed: _s(), version: 1, versionNonce: _s(), ...o,
+});
+
+const mkEllipse = (x, y, w, h, o = {}) => ({
+  ...BASE, id: uid(), type: 'ellipse', x, y, width: w, height: h,
+  strokeColor: '#30363d', backgroundColor: '#161b22',
+  seed: _s(), version: 1, versionNonce: _s(), ...o,
+});
+
+// ── Diagram 1: 7-Step Workflow Flowchart ───────────────────────
+function workflowScene() {
+  const els = [];
+
+  const STEPS = [
+    { n: 1, label: 'RECALL',         tool: "c3_memory(action='recall')",                          s: '#3b82f6', bg: '#0d1e42' },
+    { n: 2, label: 'SEARCH',         tool: "c3_search(action='code | files | semantic')",          s: '#3b82f6', bg: '#0d1e42' },
+    { n: 3, label: 'MAP + READ',     tool: "c3_compress(mode='map')  →  c3_read(symbols=[...])",   s: '#3b82f6', bg: '#0d1e42' },
+    { n: 4, label: 'IMPACT',         tool: "c3_impact(target='symbol')   ← shared symbols only",  s: '#f59e0b', bg: '#1f1300', dash: true },
+    { n: 5, label: 'EDIT',           tool: "c3_edit(file_path, old_string, new_string, summary)",  s: '#22c55e', bg: '#0a2618' },
+    { n: 6, label: 'FILTER',         tool: "c3_filter(text=...)    ← only if output > 10 lines",  s: '#a78bfa', bg: '#1a0a3a', dash: true },
+    { n: 7, label: 'VALIDATE',       tool: "c3_validate(file_path)",                               s: '#22c55e', bg: '#0a2618' },
+    { n: 8, label: 'LOG + SNAPSHOT', tool: "c3_session(action='log' | 'snapshot')",                s: '#22d3ee', bg: '#041820' },
+  ];
+
+  const BX = 90, BW = 570, BH = 82, BY0 = 90, GAP = 122;
+  const CX = BX + BW / 2;
+
+  // Start oval
+  els.push(mkEllipse(CX - 82, BY0 - 62, 164, 40, { strokeWidth: 1.5, roughness: 1 }));
+  els.push(mkTxt(CX - 62, BY0 - 53, 'SESSION START', {
+    fontSize: 11, fontFamily: 1, strokeColor: '#7d8590', width: 130, h: 16, textAlign: 'center',
+  }));
+  els.push(mkArrow(CX, BY0 - 22, CX, BY0, { strokeColor: '#30363d', strokeWidth: 1.5 }));
+
+  STEPS.forEach((step, i) => {
+    const y = BY0 + i * GAP;
+
+    // Box
+    els.push(mkRect(BX, y, BW, BH, {
+      strokeColor: step.s,
+      backgroundColor: step.bg,
+      strokeStyle: step.dash ? 'dashed' : 'solid',
+      strokeWidth: 2.5,
+      roughness: 1,
+    }));
+
+    // Step number
+    els.push(mkTxt(BX + 16, y + 20, String(step.n), {
+      fontSize: 30, fontFamily: 3, strokeColor: step.s, width: 24, h: 36, textAlign: 'center',
+    }));
+
+    // Thin separator strip
+    els.push(mkRect(BX + 56, y + 12, 2, BH - 24, {
+      strokeColor: step.s, backgroundColor: step.s,
+      strokeWidth: 0, roughness: 0, opacity: 28,
+    }));
+
+    // Label
+    els.push(mkTxt(BX + 68, y + 14, step.label, {
+      fontSize: 19, fontFamily: 3, strokeColor: step.s, width: BW - 84, h: 26,
+    }));
+
+    // Tool name
+    els.push(mkTxt(BX + 68, y + 46, step.tool, {
+      fontSize: 12, fontFamily: 3, strokeColor: '#6a7480', width: BW - 84, h: 18,
+    }));
+
+    // Arrow to next
+    if (i < STEPS.length - 1) {
+      els.push(mkArrow(CX, y + BH, CX, y + GAP, { strokeColor: '#30363d', strokeWidth: 2 }));
+    }
+
+    // "optional" badge (step 5 only)
+    if (step.dash) {
+      els.push(mkRect(BX + BW + 14, y + 28, 100, 28, {
+        strokeColor: '#a78bfa', backgroundColor: '#1a0a3a',
+        strokeStyle: 'dotted', strokeWidth: 1.5, roughness: 1,
+      }));
+      els.push(mkTxt(BX + BW + 24, y + 35, 'optional', {
+        fontSize: 12, fontFamily: 1, strokeColor: '#a78bfa', width: 80, h: 16,
+      }));
+    }
+  });
+
+  // End oval
+  const EY = BY0 + STEPS.length * GAP;
+  els.push(mkArrow(CX, EY - GAP + BH, CX, EY, { strokeColor: '#30363d', strokeWidth: 1.5 }));
+  els.push(mkEllipse(CX - 72, EY, 144, 40, { strokeWidth: 1.5, roughness: 1 }));
+  els.push(mkTxt(CX - 44, EY + 12, 'NEXT TASK', {
+    fontSize: 12, fontFamily: 1, strokeColor: '#7d8590', width: 96, h: 16, textAlign: 'center',
+  }));
+
+  return {
+    type: 'excalidraw', version: 2, elements: els,
+    appState: { viewBackgroundColor: '#0d1117', theme: 'dark' },
+    files: {},
+  };
+}
+
+// ── Diagram 2: Session Restart Cycle ──────────────────────────
+function restartScene() {
+  const els = [];
+
+  // Layout:
+  //  Row 1 (y=50):  [Active Session] ──→ [snapshot] ──→ [/clear]
+  //                                                         │
+  //  Row 2 (y=210): [New Session]    ←── [restore]  ←──────┘
+  //
+  //  Floating note: "🧠 c3_memory facts survive /clear"
+
+  const BW = 185, BH = 70, R1Y = 50, R2Y = 210;
+  const C = [36, 274, 512]; // column X positions
+
+  const row1 = [
+    { label: 'Active Session',       sub: '(working context)',        s: '#22d3ee', bg: '#041820' },
+    { label: 'c3_session snapshot',  sub: 'saves state to .c3/',      s: '#3b82f6', bg: '#0d1e42' },
+    { label: '/clear',               sub: 'wipes conversation',       s: '#f87171', bg: '#300a0a' },
+  ];
+  const row2 = [
+    { label: 'New Session',          sub: 'fully restored context',   s: '#22c55e', bg: '#0a2618' },
+    { label: 'c3_session restore',   sub: 'loads last snapshot',      s: '#3b82f6', bg: '#0d1e42' },
+  ];
+
+  // Draw all boxes
+  row1.forEach((n, i) => {
+    els.push(mkRect(C[i], R1Y, BW, BH, { strokeColor: n.s, backgroundColor: n.bg, strokeWidth: 2.5, roughness: 1 }));
+    els.push(mkTxt(C[i] + 12, R1Y + 10, n.label, { fontSize: 13, fontFamily: 3, strokeColor: n.s, width: BW - 24, h: 20 }));
+    els.push(mkTxt(C[i] + 12, R1Y + 36, n.sub, { fontSize: 10, fontFamily: 1, strokeColor: '#6a7480', width: BW - 24, h: 16 }));
+  });
+  row2.forEach((n, i) => {
+    els.push(mkRect(C[i], R2Y, BW, BH, { strokeColor: n.s, backgroundColor: n.bg, strokeWidth: 2.5, roughness: 1 }));
+    els.push(mkTxt(C[i] + 12, R2Y + 10, n.label, { fontSize: 13, fontFamily: 3, strokeColor: n.s, width: BW - 24, h: 20 }));
+    els.push(mkTxt(C[i] + 12, R2Y + 36, n.sub, { fontSize: 10, fontFamily: 1, strokeColor: '#6a7480', width: BW - 24, h: 16 }));
+  });
+
+  // Row 1 arrows (→)
+  const R1MY = R1Y + BH / 2;
+  els.push(mkArrow(C[0] + BW, R1MY, C[1], R1MY));
+  els.push(mkArrow(C[1] + BW, R1MY, C[2], R1MY));
+
+  // /clear bottom → bend → restore right (L-shaped)
+  const clearCX = C[2] + BW / 2;
+  const R2MY   = R2Y + BH / 2;
+  const bendY  = R2MY;
+  const restoreRX = C[1] + BW;
+  els.push({
+    ...BASE, id: uid(), type: 'arrow',
+    x: clearCX, y: R1Y + BH,
+    width: Math.abs(restoreRX - clearCX), height: Math.abs(bendY - (R1Y + BH)),
+    points: [[0, 0], [0, bendY - (R1Y + BH)], [restoreRX - clearCX, bendY - (R1Y + BH)]],
+    startArrowhead: null, endArrowhead: 'arrow',
+    strokeColor: '#484f58', backgroundColor: 'transparent',
+    fillStyle: 'solid', strokeWidth: 2,
+    startBinding: null, endBinding: null,
+    seed: _s(), version: 1, versionNonce: _s(),
+  });
+
+  // restore → new session (←)
+  els.push(mkArrow(C[1], R2MY, C[0] + BW, R2MY, { strokeColor: '#22c55e', strokeWidth: 2 }));
+
+  // "memory persists" floating note (between rows)
+  const totalW = C[2] + BW - C[0];
+  const noteX = C[0] + (totalW - 296) / 2;
+  const noteY = R1Y + BH + 12;
+  els.push(mkRect(noteX, noteY, 296, 32, {
+    strokeColor: '#a78bfa', backgroundColor: '#150830',
+    strokeStyle: 'dotted', strokeWidth: 1.5, roughness: 0,
+  }));
+  els.push(mkTxt(noteX + 12, noteY + 9, '🧠  c3_memory facts survive  /clear', {
+    fontSize: 11, fontFamily: 1, strokeColor: '#a78bfa', width: 274, h: 16, textAlign: 'center',
+  }));
+
+  return {
+    type: 'excalidraw', version: 2, elements: els,
+    appState: { viewBackgroundColor: '#0d1117', theme: 'dark' },
+    files: {},
+  };
+}
+
+// ── Render ─────────────────────────────────────────────────────
+// exportToSvg: pure SVG output, no React mount, no iframes.
+async function renderDiagram(containerId, scene) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  try {
+    const svg = await exportToSvg({
+      elements: scene.elements,
+      appState: { ...scene.appState, exportWithDarkMode: true, exportBackground: true },
+      files: {},
+      exportPadding: 28,
+    });
+    svg.style.width  = '100%';
+    svg.style.height = '100%';
+    el.innerHTML = '';
+    el.appendChild(svg);
+  } catch (err) {
+    console.error('[C3 Guide] diagram render failed:', err);
+    el.innerHTML = '<div class="exc-loading">Diagram unavailable</div>';
+  }
+}
+
+renderDiagram('exc-workflow', workflowScene());
+renderDiagram('exc-restart', restartScene());
+</script>
+
+</body>
+</html>

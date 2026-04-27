@@ -1,0 +1,3764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C3 Project Hub</title>
+<style>
+  :root {
+    --bg:      #0a0a0b;
+    --bg2:     #141416;
+    --bg3:     #1c1c1f;
+    --border:  #27272a;
+    --accent:  #3b82f6;
+    --green:   #22c55e;
+    --red:     #ef4444;
+    --yellow:  #eab308;
+    --purple:  #a855f7;
+    --muted:   #3f3f46;
+    --text:    #fafafa;
+    --text2:   #71717a;
+  }
+  body[data-theme="light"] {
+    --bg:      #fafafa;
+    --bg2:     #ffffff;
+    --bg3:     #f4f4f5;
+    --border:  #e4e4e7;
+    --accent:  #2563eb;
+    --green:   #16a34a;
+    --red:     #dc2626;
+    --yellow:  #ca8a04;
+    --purple:  #9333ea;
+    --muted:   #d4d4d8;
+    --text:    #09090b;
+    --text2:   #71717a;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; font-size: 14px; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ── Header ── */
+  header {
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 0 24px; height: 48px; display: flex; align-items: center;
+    justify-content: space-between; position: sticky; top: 0; z-index: 10;
+  }
+  .logo { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: .5px; }
+  .logo small { color: var(--text2); font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .header-right { display: flex; align-items: center; gap: 6px; }
+  .hub-version { font-size: 11px; color: var(--text2); padding: 3px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 9999px; }
+  .hub-port    { font-size: 11px; color: var(--accent); padding: 3px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 9999px; cursor: default; }
+  .badge { background: var(--bg3); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 12px; font-size: 12px; color: var(--text2); }
+  .badge .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
+  .badge.has-active .dot { background: var(--green); }
+
+  /* ── Buttons ── */
+  .btn { border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all .15s ease; white-space: nowrap; }
+  .btn:hover:not(:disabled) { opacity: .85; }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn-xs { padding: 4px 10px; font-size: 11px; }
+  .btn-sm { padding: 5px 12px; font-size: 12px; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-danger  { background: transparent; border: 1px solid var(--red); color: var(--red); }
+  .btn-danger:hover:not(:disabled) { background: var(--red); color: #fff; opacity: 1; }
+  .btn-ghost   { background: transparent; border: 1px solid var(--border); color: var(--text2); }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); opacity: 1; }
+  .btn-green   { background: transparent; border: 1px solid var(--green); color: var(--green); }
+  .btn-green:hover:not(:disabled) { background: var(--green); color: #fff; opacity: 1; }
+  .btn-yellow  { background: transparent; border: 1px solid var(--yellow); color: var(--yellow); }
+  .btn-yellow:hover:not(:disabled) { background: var(--yellow); color: #000; opacity: 1; }
+  .btn-purple  { background: transparent; border: 1px solid var(--purple); color: var(--purple); }
+  .btn-purple:hover:not(:disabled) { background: var(--purple); color: #fff; opacity: 1; }
+  .btn-refresh { background: transparent; border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; transition: all .15s ease; }
+  .btn-refresh:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-restart { background: transparent; border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; transition: all .15s ease; }
+  .btn-restart:hover { border-color: var(--yellow); color: var(--yellow); }
+  .btn-restart:disabled { opacity: .4; cursor: default; }
+  .btn-settings { background: transparent; border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer; transition: all .15s ease; }
+  .btn-settings:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-view, .btn-theme { background: transparent; border: 1px solid var(--border); color: var(--text2); border-radius: 9999px; padding: 4px 10px; font-size: 12px; cursor: pointer; transition: all .15s ease; }
+  .btn-view.active, .btn-view:hover, .btn-theme:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Sidebar ── */
+  main { display: flex; margin: 0; padding: 0; }
+  .main-content { flex: 1; min-width: 0; max-width: 1100px; margin: 0 auto; padding: 20px 24px; }
+  body.with-session-drawer .main-content { padding-bottom: 320px; }
+
+  .sidebar { width: 220px; min-width: 220px; background: var(--bg2); border-right: 1px solid var(--border); height: calc(100vh - 48px); position: sticky; top: 48px; overflow-y: auto; transition: width .2s ease, min-width .2s ease, opacity .2s ease; flex-shrink: 0; }
+  main.sidebar-collapsed .sidebar { width: 0; min-width: 0; overflow: hidden; border-right: none; opacity: 0; }
+  .sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 10px; border-bottom: 1px solid var(--border); }
+  .sidebar-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; }
+  .sidebar-toggle { background: transparent; border: none; color: var(--text2); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; transition: all .15s ease; }
+  .sidebar-toggle:hover { color: var(--accent); background: var(--bg3); }
+  .sidebar-expand { display: none; position: fixed; left: 0; top: 56px; background: var(--bg2); border: 1px solid var(--border); border-left: none; border-radius: 0 6px 6px 0; color: var(--text2); cursor: pointer; padding: 6px 8px; font-size: 12px; z-index: 5; transition: all .15s ease; }
+  .sidebar-expand:hover { color: var(--accent); border-color: var(--accent); }
+  main.sidebar-collapsed .sidebar-expand { display: block; }
+  .sidebar-nav { padding: 8px 0; }
+  .sidebar-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 14px; font-size: 12px; color: var(--text2); cursor: pointer; transition: all .12s ease; border-left: 2px solid transparent; user-select: none; }
+  .sidebar-item:hover { background: var(--bg3); color: var(--text); }
+  .sidebar-item.active { background: var(--bg3); color: var(--accent); border-left-color: var(--accent); }
+  .sidebar-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-item-count { font-size: 10px; color: var(--text2); background: var(--bg3); border: 1px solid var(--border); border-radius: 9999px; padding: 1px 7px; flex-shrink: 0; margin-left: 6px; }
+  .sidebar-item.active .sidebar-item-count { color: var(--accent); border-color: rgba(59,130,246,.25); background: rgba(59,130,246,.08); }
+  .sidebar-divider { height: 1px; background: var(--border); margin: 6px 14px; }
+  .sidebar-item[data-depth="1"] { padding-left: 28px; }
+  .sidebar-item[data-depth="2"] { padding-left: 42px; }
+  .sidebar-item[data-depth="3"] { padding-left: 56px; }
+  .sidebar-folder-toggle { display: inline-flex; align-items: center; justify-content: center; width: 14px; font-size: 9px; margin-right: 3px; color: var(--text2); flex-shrink: 0; cursor: pointer; }
+  @media (max-width: 900px) { .sidebar { position: fixed; left: 0; top: 48px; z-index: 15; box-shadow: 4px 0 16px rgba(0,0,0,.2); } }
+  @media (max-width: 640px) { .sidebar { width: 0; min-width: 0; overflow: hidden; border-right: none; opacity: 0; } }
+
+  /* ── Add card ── */
+  .add-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 16px 20px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .add-card h2 { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px; }
+  .add-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .add-row input { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 7px 12px; font-size: 13px; outline: none; transition: border-color .15s ease; }
+  .add-row input:focus { border-color: var(--accent); }
+  .input-path { flex: 1; min-width: 220px; }
+  .input-name { width: 160px; }
+
+  /* ── Summary bar ── */
+  .summary-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .summary-bar h1 { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; }
+  .search-input { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 12px; font-size: 12px; outline: none; width: 200px; transition: border-color .15s ease; }
+  .search-input:focus { border-color: var(--accent); }
+  .filter-row { display: flex; gap: 4px; }
+  .filter-btn { background: transparent; border: 1px solid var(--border); border-radius: 9999px; color: var(--text2); padding: 4px 14px; font-size: 12px; cursor: pointer; transition: all .15s ease; }
+  .filter-btn.active, .filter-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .view-row { display: flex; gap: 4px; }
+
+  /* ── Project cards ── */
+  #projects-grid { display: flex; flex-direction: column; gap: 10px; }
+  #projects-grid.grid-view { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+
+  .project-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; transition: all .15s ease; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .project-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.1); border-color: color-mix(in srgb, var(--border) 70%, var(--accent)); }
+  #projects-grid.grid-view .project-card { height: 100%; }
+  .project-card.is-active { border-left: 3px solid var(--green); }
+  .project-card.is-launching { border-left: 3px solid var(--yellow); }
+  .project-card.is-launching .status-pill.stopped { color: var(--yellow); border-color: rgba(234,179,8,.35); background: rgba(234,179,8,.07); }
+
+  /* Zone 1: Identity */
+  .card-zone-identity { padding: 14px 18px 10px; }
+  .project-name-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+  .project-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .status-pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; letter-spacing: .3px; flex-shrink: 0; }
+  .status-pill.active  { background: rgba(34,197,94,.1); color: var(--green); border: 1px solid rgba(34,197,94,.25); }
+  .status-pill.stopped { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+  body[data-theme="light"] .status-pill.active { background: rgba(22,163,74,.08); border-color: rgba(22,163,74,.2); }
+
+  .ver-badge { font-size: 10px; padding: 1px 7px; border-radius: 9999px; border: 1px solid var(--border); color: var(--text2); background: var(--bg3); flex-shrink: 0; }
+  .ver-badge.outdated { border-color: var(--yellow); color: var(--yellow); background: rgba(234,179,8,.08); }
+  .ver-badge.uninit   { border-color: var(--red);    color: var(--red);    background: rgba(239,68,68,.08); }
+  body[data-theme="light"] .ver-badge.outdated { background: rgba(202,138,4,.06); }
+  body[data-theme="light"] .ver-badge.uninit { background: rgba(220,38,38,.06); }
+
+  .mcp-badge { font-size: 10px; padding: 1px 7px; border-radius: 9999px; flex-shrink: 0; }
+  .mcp-badge.ok   { background: rgba(59,130,246,.08); border: 1px solid rgba(59,130,246,.2); color: var(--accent); }
+  .mcp-badge.none { background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
+  body[data-theme="light"] .mcp-badge.ok { background: rgba(37,99,235,.06); border-color: rgba(37,99,235,.15); }
+
+  .budget-badge { font-size: 10px; padding: 1px 8px; border-radius: 9999px; border: 1px solid var(--border); color: var(--text2); background: var(--bg3); display: flex; align-items: center; gap: 6px; }
+  .budget-bar { width: 36px; height: 4px; background: var(--muted); border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .budget-fill { height: 100%; background: var(--green); transition: width .3s ease; }
+  .budget-fill.warning { background: var(--yellow); }
+  .budget-fill.critical { background: var(--red); }
+
+  .project-path { font-size: 11px; color: var(--text2); font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 680px; }
+  #projects-grid.grid-view .project-path { white-space: normal; word-break: break-word; max-width: none; }
+
+  .tags-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 16px; }
+  .tag-chip { font-size: 10px; padding: 1px 7px; border-radius: 9999px; background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
+  .note-icon { font-size: 12px; cursor: default; color: var(--yellow); }
+
+  /* Zone 2: Metadata */
+  .card-zone-meta { padding: 8px 18px; border-top: 1px solid var(--border); }
+  .info-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  #projects-grid.grid-view .info-row { gap: 10px 12px; }
+  .info-item { font-size: 11px; color: var(--text2); display: flex; gap: 3px; align-items: center; }
+  .info-label { color: var(--text2); opacity: .6; }
+  .port-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .mcp-expand-link { color: var(--text2); cursor: pointer; font-size: 11px; text-decoration: none; border: none; background: transparent; padding: 0; }
+  .mcp-expand-link:hover { color: var(--accent); }
+
+  /* Zone 3: Actions */
+  .card-zone-actions { display: flex; gap: 5px; flex-wrap: wrap; padding: 10px 18px; border-top: 1px solid var(--border); align-items: center; }
+  .card-actions-primary { display: flex; gap: 5px; flex: 1; flex-wrap: wrap; }
+  .card-actions-secondary { display: flex; gap: 5px; flex-wrap: wrap; }
+
+  /* ── MCP Expand ── */
+  .expand-cfg-path { font-size: 10px; font-family: monospace; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+  .mcp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .mcp-table th { color: var(--muted); font-weight: 600; text-align: left; padding: 3px 8px 5px 0; border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 10px; letter-spacing: .4px; }
+  .mcp-table td { color: var(--text2); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
+  .mcp-table td:first-child { color: var(--accent); font-weight: 600; }
+  .no-mcp-msg { font-size: 12px; color: var(--text2); }
+
+  /* ── Empty state ── */
+  .empty-state { text-align: center; padding: 50px 20px; color: var(--text2); }
+  .empty-state .icon { font-size: 40px; margin-bottom: 10px; }
+  .empty-state p { font-size: 13px; }
+
+  /* ── Modal ── */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+  .modal-backdrop.hidden { display: none; }
+  .modal-backdrop.modal-visible { opacity: 1; pointer-events: auto; }
+  .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; width: 100%; max-width: 580px; display: flex; flex-direction: column; max-height: 90vh; box-shadow: 0 16px 48px rgba(0,0,0,.2); transform: scale(.95); opacity: 0; transition: transform .15s ease, opacity .15s ease; }
+  .modal-backdrop.modal-visible .modal { transform: scale(1); opacity: 1; }
+  .modal.modal-lg { max-width: 1080px; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .modal-header h3 { font-size: 15px; font-weight: 600; color: var(--text); }
+  .modal-close { background: transparent; border: none; color: var(--text2); cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 6px; transition: all .15s ease; }
+  .modal-close:hover { color: var(--text); background: var(--bg3); }
+  .modal-body { padding: 18px 20px; flex: 1; overflow-y: auto; }
+  .modal-footer { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
+
+  .form-group { margin-bottom: 13px; }
+  .form-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .4px; display: block; margin-bottom: 5px; }
+  .form-input, .form-select, .form-textarea {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 7px 12px; font-size: 13px; outline: none; width: 100%; transition: border-color .15s ease;
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent); }
+  .form-textarea { resize: vertical; min-height: 80px; font-family: inherit; }
+  .form-path { font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; color: var(--text2); background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; word-break: break-all; }
+
+  .cmd-output { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 12px; color: var(--text); padding: 12px; min-height: 120px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; margin-top: 10px; }
+  .cmd-output.hidden { display: none; }
+  .cmd-output.success { border-color: rgba(34,197,94,.3); }
+  .cmd-output.failure { border-color: var(--red); }
+  /* ── MCP Modal — Tabbed Layout ── */
+  .mcp-header-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .mcp-header-path { font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; color: var(--text2); background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-header-pills { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+
+  .mcp-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .mcp-tab { padding: 8px 16px; font-size: 12px; font-weight: 500; color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s ease; background: transparent; border-top: none; border-left: none; border-right: none; white-space: nowrap; }
+  .mcp-tab:hover { color: var(--text); }
+  .mcp-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .mcp-tab-panel { display: none; }
+  .mcp-tab-panel.active { display: block; }
+
+  .mcp-section { border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); padding: 14px; margin-bottom: 14px; }
+  .mcp-section:last-child { margin-bottom: 0; }
+  .mcp-section h4 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .mcp-section-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+  .mcp-section-subtitle { font-size: 12px; color: var(--text2); }
+
+  /* Status overview — compact key-value pairs */
+  .mcp-status-row { display: flex; gap: 20px; flex-wrap: wrap; padding: 4px 0; }
+  .mcp-status-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .mcp-status-label { color: var(--text2); }
+  .mcp-status-value { color: var(--text); font-weight: 500; }
+  .mcp-status-value.mono { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 11px; }
+  .mcp-config-path { font-size: 11px; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; color: var(--text2); margin-top: 8px; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; word-break: break-all; }
+
+  .mcp-pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mcp-pill { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg2); color: var(--text2); }
+  .mcp-pill.ok { color: var(--green); border-color: rgba(34,197,94,.25); }
+  .mcp-pill.warn { color: var(--yellow); border-color: rgba(234,179,8,.3); }
+  .mcp-pill.c3 { color: var(--accent); border-color: rgba(59,130,246,.25); }
+
+  /* Controls */
+  .mcp-inline-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .mcp-actions-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .mcp-helper { font-size: 11px; color: var(--text2); line-height: 1.45; margin-top: 8px; }
+
+  /* Server list */
+  .mcp-server-list { display: flex; flex-direction: column; gap: 8px; }
+  .mcp-server-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); padding: 12px; transition: border-color .15s ease; }
+  .mcp-server-card:hover { border-color: color-mix(in srgb, var(--border) 60%, var(--accent)); }
+  .mcp-server-card.is-c3 { border-left: 3px solid var(--accent); }
+  .mcp-server-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 6px; }
+  .mcp-server-name { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; }
+  .mcp-server-name .c3-tag { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 9999px; background: rgba(59,130,246,.1); color: var(--accent); border: 1px solid rgba(59,130,246,.2); letter-spacing: .3px; }
+  .mcp-server-meta { display: grid; grid-template-columns: 80px 1fr; gap: 3px 10px; font-size: 12px; color: var(--text2); }
+  .mcp-server-meta dt { color: var(--text2); opacity: .7; }
+  .mcp-server-meta dd { color: var(--text); font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
+  .mcp-server-empty { text-align: center; padding: 24px 16px; color: var(--text2); font-size: 13px; }
+  .mcp-server-empty-icon { font-size: 28px; margin-bottom: 8px; opacity: .5; }
+  .mcp-server-empty-cta { margin-top: 10px; }
+
+  /* Add server — collapsible */
+  .mcp-add-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); cursor: pointer; background: transparent; border: 1px dashed var(--border); border-radius: 6px; padding: 10px 14px; width: 100%; text-align: left; transition: all .15s ease; }
+  .mcp-add-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .mcp-add-form { border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); padding: 14px; margin-top: 8px; }
+  .mcp-add-form.hidden { display: none; }
+
+  /* CLI Preview */
+  .mcp-cli-list { display: flex; flex-direction: column; gap: 10px; }
+  .mcp-cli-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); padding: 10px; }
+  .mcp-cli-card h5 { font-size: 12px; color: var(--accent); margin-bottom: 6px; }
+  .mcp-cli-card p { font-size: 12px; color: var(--text2); margin-bottom: 8px; }
+  .mcp-cli-preview { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; position: relative; cursor: pointer; transition: border-color .15s ease; }
+  .mcp-cli-preview:hover { border-color: var(--accent); }
+  .mcp-cli-preview::after { content: 'Click to copy'; position: absolute; top: 6px; right: 8px; font-size: 10px; color: var(--text2); opacity: 0; transition: opacity .15s ease; }
+  .mcp-cli-preview:hover::after { opacity: 1; }
+  .mcp-cli-preview.copied::after { content: 'Copied!'; color: var(--green); opacity: 1; }
+
+  /* Tool categories */
+  .mcp-tool-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mcp-tool-badge { font-size: 11px; color: var(--text2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; background: var(--bg2); }
+  .mcp-tool-cat { margin-bottom: 12px; }
+  .mcp-tool-cat:last-child { margin-bottom: 0; }
+
+  /* Config tab — health grid + component list */
+  .config-health-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .config-health-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); font-size: 12px; }
+  .config-health-label { color: var(--text2); }
+  .config-health-value { color: var(--text); font-weight: 500; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 11px; }
+  .config-health-value.ok { color: var(--green); }
+  .config-health-value.warn { color: var(--yellow); }
+  .config-health-value.err { color: var(--red); }
+  .config-health-loading { grid-column: 1 / -1; text-align: center; color: var(--text2); font-size: 12px; padding: 12px; }
+  .config-health-issues { grid-column: 1 / -1; padding: 8px 12px; border: 1px solid rgba(239,68,68,.2); border-radius: 6px; background: rgba(239,68,68,.04); font-size: 12px; color: var(--red); }
+  .config-health-issues ul { margin: 4px 0 0 16px; padding: 0; }
+  .config-health-issues li { margin-bottom: 2px; }
+
+  .config-component-list { display: flex; flex-direction: column; gap: 6px; }
+  .config-component-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); transition: border-color .15s ease; }
+  .config-component-row:hover { border-color: color-mix(in srgb, var(--border) 60%, var(--accent)); }
+  .config-component-row.running { opacity: .7; pointer-events: none; }
+  .config-component-info { display: flex; flex-direction: column; gap: 2px; }
+  .config-component-name { font-size: 13px; font-weight: 500; color: var(--text); }
+  .config-component-desc { font-size: 11px; color: var(--text2); }
+  .mcp-tool-cat-name { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+
+  /* Output area */
+  .mcp-output-area { margin-top: 14px; }
+
+  .hidden-row { display: none !important; }
+  @media (max-width: 900px) {
+    .mcp-inline-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .mcp-inline-grid, .mcp-server-meta { grid-template-columns: 1fr; }
+  }
+
+  /* Session drawer */
+  .session-drawer {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+    background: var(--bg2); border-top: 1px solid var(--border);
+    box-shadow: 0 -8px 24px rgba(0,0,0,.3); transform: translateY(calc(100% - 44px));
+    transition: transform .22s ease;
+  }
+  .session-drawer.open { transform: translateY(0); }
+  .session-drawer.hidden { display: none; }
+  .session-drawer-header {
+    display: flex; align-items: center; gap: 10px; min-height: 44px;
+    padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--bg2);
+    cursor: pointer; user-select: none;
+  }
+  .session-drawer-header:hover { background: var(--bg3); }
+  .session-drawer-title { font-size: 12px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+  .session-drawer-chevron { color: var(--text2); font-size: 14px; transition: transform .22s ease; }
+  .session-drawer.open .session-drawer-chevron { transform: rotate(180deg); }
+  .session-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 10px 14px 0; }
+  .session-tab {
+    display: inline-flex; align-items: center; gap: 8px; max-width: 220px;
+    padding: 8px 10px; border: 1px solid var(--border); border-bottom: none;
+    border-radius: 8px 8px 0 0; background: var(--bg3); color: var(--text2); cursor: pointer;
+  }
+  .session-tab.active { background: var(--bg2); color: var(--text); border-color: var(--accent); }
+  .session-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-tab-status { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .session-tab-status.live { background: var(--green); box-shadow: 0 0 0 4px rgba(163,190,140,.12); }
+  .session-tab-close {
+    border: none; background: transparent; color: var(--text2); cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;
+  }
+  .session-tab-close:hover { color: var(--red); }
+  .session-drawer-body { padding: 0 14px 14px; }
+  .session-panel {
+    display: none; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 0 8px 8px 8px; min-height: 220px; max-height: 42vh; overflow: hidden;
+  }
+  .session-panel.active { display: flex; flex-direction: column; }
+  .session-panel-header {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .session-panel-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .session-panel-meta { font-size: 11px; color: var(--text2); display: flex; gap: 10px; flex-wrap: wrap; }
+  .session-live-pill {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+    border: 1px solid var(--border); color: var(--muted); background: var(--bg3);
+  }
+  .session-live-pill.live { color: var(--green); border-color: rgba(34,197,94,.25); background: rgba(34,197,94,.1); }
+  .session-event-list { flex: 1; overflow-y: auto; padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .session-event-empty { color: var(--muted); font-size: 12px; padding: 16px 4px; }
+  .session-event {
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg3);
+    padding: 10px 12px;
+  }
+  .session-event-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .session-event-type {
+    font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase;
+    letter-spacing: .45px;
+  }
+  .session-event-time { font-size: 11px; color: var(--muted); }
+  .session-event-summary { font-size: 12px; color: var(--text); line-height: 1.45; }
+  .session-event-detail {
+    margin-top: 7px; font-size: 11px; color: var(--text2); font-family: Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Notification badge on project cards */
+  .notif-badge {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
+    background: var(--yellow); color: var(--bg); display: inline-flex; align-items: center; gap: 3px;
+    vertical-align: middle; margin-left: 4px;
+  }
+  .notif-badge.critical { background: var(--red); color: #fff; }
+
+  /* Session panel sub-tabs (Logs / Notifications) */
+  .session-subtabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 0; }
+  .session-subtab {
+    font-size: 11px; font-weight: 600; padding: 6px 14px; cursor: pointer;
+    color: var(--text2); border-bottom: 2px solid transparent; transition: all .12s;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .session-subtab:hover { color: var(--text); }
+  .session-subtab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .session-subtab-badge {
+    font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 8px; min-width: 16px;
+    text-align: center; background: var(--yellow); color: var(--bg); line-height: 16px;
+  }
+  .session-notif-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 4px; }
+  .session-notif-clear { font-size: 11px; cursor: pointer; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; transition: all .12s; }
+  .session-notif-clear:hover { color: var(--red); border-color: var(--red); }
+  .session-notif-item {
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg3);
+    padding: 8px 12px; font-size: 12px;
+  }
+  .session-notif-item .notif-severity {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+    padding: 1px 6px; border-radius: 4px; margin-right: 6px;
+  }
+  .session-notif-item .notif-severity.warning { background: rgba(234,179,8,.15); color: var(--yellow); }
+  .session-notif-item .notif-severity.critical { background: rgba(239,68,68,.12); color: var(--red); }
+  .session-notif-item .notif-severity.info { background: rgba(96,165,250,.12); color: var(--accent); }
+  .session-notif-item .notif-agent { font-size: 10px; color: var(--text2); margin-left: 4px; }
+  .session-notif-item .notif-title { color: var(--text); margin-top: 4px; line-height: 1.4; }
+  .session-notif-item .notif-time { font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+  .settings-info { font-size: 12px; color: var(--text2); background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
+  .settings-warning { font-size: 12px; color: var(--yellow); margin-top: 8px; padding: 6px 10px; background: rgba(234,179,8,.08); border: 1px solid rgba(234,179,8,.2); border-radius: 6px; display: none; }
+  .section-divider { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; border-top: 1px solid var(--border); padding-top: 14px; margin: 14px 0 10px; }
+  .svc-badge { font-size: 11px; padding: 2px 10px; border-radius: 20px; font-weight: 600; }
+  .svc-ok      { background: rgba(34,197,94,.1); color: var(--green);  border: 1px solid rgba(34,197,94,.25); }
+  .svc-stopped { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+  .svc-unknown { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+  .svc-error   { background: rgba(239,68,68,.08); color: var(--red);    border: 1px solid rgba(239,68,68,.2); }
+  .check-row { display: flex; align-items: center; gap: 8px; }
+  .check-row input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+  .check-row label { font-size: 13px; color: var(--text2); cursor: pointer; }
+
+  /* ── Toast ── */
+  .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; }
+  .toast-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px; max-width: 380px; min-width: 260px; box-shadow: 0 4px 24px rgba(0,0,0,.25); display: flex; align-items: center; gap: 10px; transform: translateX(120%); opacity: 0; transition: all .2s ease; pointer-events: auto; }
+  .toast-item.show { transform: translateX(0); opacity: 1; }
+  .toast-item.removing { transform: translateX(120%); opacity: 0; }
+  .toast-icon { font-size: 15px; flex-shrink: 0; line-height: 1; }
+  .toast-msg { flex: 1; line-height: 1.35; }
+  .toast-close { background: transparent; border: none; color: var(--text2); cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px; flex-shrink: 0; transition: color .15s; }
+  .toast-close:hover { color: var(--text); }
+  .toast-item.ok   { border-left: 3px solid var(--green); }
+  .toast-item.err  { border-left: 3px solid var(--red); }
+  .toast-item.info { border-left: 3px solid var(--accent); }
+  .toast-item.warn { border-left: 3px solid var(--yellow); }
+  .toast-progress { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--accent); border-radius: 0 0 0 8px; transition: width .3s ease; }
+  .toast-item { position: relative; overflow: hidden; }
+
+  /* Legacy single toast (hidden, replaced by container) */
+  #toast { display: none; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin .7s linear infinite; display: inline-block; }
+  @media (max-width: 760px) {
+    .session-panel { max-height: 50vh; }
+    .session-tabs { padding-top: 8px; }
+    .session-tab { max-width: 160px; }
+  }
+
+  /* ── IDE Picker ── */
+  .ide-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 8px; margin-top: 4px; }
+  .ide-option { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 12px 8px 10px; background: var(--bg3); border: 2px solid var(--border); border-radius: 6px; cursor: pointer; text-align: center; transition: all .15s ease; user-select: none; }
+  .ide-option:hover { border-color: var(--accent); background: var(--bg2); }
+  .ide-option.selected { border-color: var(--accent); background: var(--bg2); box-shadow: 0 0 0 1px var(--accent); }
+  .ide-icon { font-size: 22px; line-height: 1; }
+  .ide-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .ide-cmd  { font-size: 10px; color: var(--text2); font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
+
+  /* ── Confirm Dialog ── */
+  .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); backdrop-filter: blur(4px); z-index: 300; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .confirm-dialog { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 16px 48px rgba(0,0,0,.2); }
+  .confirm-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .confirm-message { font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 20px; }
+  .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* ── Batch Progress ── */
+  .batch-progress-bar { width: 100%; height: 4px; background: var(--bg3); border-radius: 4px; overflow: hidden; margin-bottom: 14px; }
+  .batch-progress-fill { height: 100%; background: var(--accent); transition: width .3s ease; border-radius: 4px; }
+  .batch-item { display: flex; justify-content: space-between; align-items: center; background: var(--bg3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); }
+  .batch-item-name { font-weight: 600; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .batch-item-path { font-size: 10px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
+  .batch-item-status { font-size: 10px; font-weight: 700; flex-shrink: 0; padding: 2px 8px; border-radius: 9999px; }
+  .batch-status-pending { color: var(--text2); background: var(--bg); }
+  .batch-status-running { color: var(--accent); background: rgba(59,130,246,.1); }
+  .batch-status-done { color: var(--green); background: rgba(34,197,94,.1); }
+  .batch-status-failed { color: var(--red); background: rgba(239,68,68,.1); }
+  .batch-status-cancelled { color: var(--yellow); background: rgba(234,179,8,.1); }
+  .batch-summary { font-size: 13px; color: var(--text); padding: 12px; background: var(--bg3); border-radius: 6px; border: 1px solid var(--border); margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">C3 <small>Project Hub</small></div>
+  <div class="header-right">
+    <span class="hub-version" id="hub-version">v…</span>
+    <span class="hub-port" id="hub-port-badge" title="Configured hub port">:…</span>
+    <div class="badge" id="session-badge"><span class="dot"></span><span id="session-count">0 active</span></div>
+    <button class="btn-theme" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark mode">Theme: Dark</button>
+    <a class="btn-settings" id="oracle-link" href="#" target="_blank" title="Oracle Memory Agent" style="display:none;text-decoration:none">Oracle</a>
+    <button class="btn-settings" onclick="openSettings()" title="Hub Settings">⚙ Settings</button>
+    <button class="btn-restart" onclick="restartHub()" title="Restart hub server">↺ Restart</button>
+    <button class="btn-refresh" onclick="refreshHub()">⟳ Refresh</button>
+    <button class="btn-refresh" onclick="location.reload()" title="Full page reload">⟳ Reload</button>
+  </div>
+</header>
+
+<main>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Groups</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="Collapse sidebar">◀</button>
+    </div>
+    <nav class="sidebar-nav" id="sidebar-nav"></nav>
+  </aside>
+  <button class="sidebar-expand" onclick="toggleSidebar()" title="Show sidebar">▶</button>
+  <div class="main-content">
+  <!-- Add Project -->
+  <div class="add-card">
+    <h2>Register Project</h2>
+    <div class="add-row">
+      <input class="input-path" id="add-path" type="text" placeholder="Absolute path  (e.g. C:/projects/myapp)">
+      <input class="input-name" id="add-name" type="text" placeholder="Name (optional)">
+      <button class="btn btn-primary" id="add-btn" onclick="addProject()">+ Add</button>
+    </div>
+  </div>
+
+  <!-- Summary bar -->
+  <div class="summary-bar">
+    <h1 id="project-count">Projects</h1>
+    <button class="btn btn-xs btn-yellow" id="update-all-btn" onclick="updateAllProjects()" style="display:none; margin-right: 12px; font-weight: 700;">🚀 Update All Outdated</button>
+    <button class="btn btn-xs btn-ghost" onclick="loadProjects()" style="margin-right: 12px;" title="Manual Refresh">🔄 Refresh</button>
+    <input class="search-input" id="search-input" type="text" placeholder="🔍 Search name / path / IDE…" oninput="renderProjects()">
+    <div class="view-row">
+      <button class="btn-view active" id="view-list-btn" onclick="setProjectsView('list')">List</button>
+      <button class="btn-view" id="view-grid-btn" onclick="setProjectsView('grid')">Grid</button>
+    </div>
+    <div class="filter-row">
+      <button class="filter-btn active" onclick="setFilter('all',   this)">All</button>
+      <button class="filter-btn"        onclick="setFilter('active', this)">Active</button>
+      <button class="filter-btn"        onclick="setFilter('idle',   this)">Idle</button>
+    </div>
+  </div>
+
+  <div id="projects-grid"></div>
+  </div><!-- .main-content -->
+</main>
+
+<div class="session-drawer hidden" id="session-drawer">
+  <div class="session-drawer-header" onclick="toggleSessionDrawer()">
+    <div class="session-drawer-title">Session Log</div>
+    <span class="session-drawer-chevron">▲</span>
+  </div>
+  <div class="session-tabs" id="session-tabs"></div>
+  <div class="session-drawer-body" id="session-drawer-body"></div>
+</div>
+
+<!-- Project Setup Modal (Init + MCP combined) -->
+<div class="modal-backdrop hidden" id="mcp-modal">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>MCP Manager</h3>
+      <button class="btn btn-xs btn-ghost" onclick="refreshMcpModal(true)" style="margin-left:auto; margin-right:8px;">Refresh</button>
+      <button class="modal-close" onclick="closeModal('mcp-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <!-- Compact header: path + status pills -->
+      <div class="mcp-header-bar">
+        <div class="mcp-header-path" id="mcp-modal-path" title=""></div>
+        <div class="mcp-header-pills" id="mcp-status-pills"></div>
+      </div>
+
+      <!-- Tab navigation -->
+      <div class="mcp-tabs" id="mcp-tabs">
+        <button class="mcp-tab active" onclick="setMcpTab('servers')">Servers</button>
+        <button class="mcp-tab" onclick="setMcpTab('setup')">C3 Setup</button>
+        <button class="mcp-tab" onclick="setMcpTab('config')">Config</button>
+        <button class="mcp-tab" onclick="setMcpTab('reference')">Reference</button>
+      </div>
+
+      <!-- Tab: Servers (overview + server list + add) -->
+      <div class="mcp-tab-panel active" id="mcp-tab-servers">
+        <!-- Status overview -->
+        <div class="mcp-section">
+          <div class="mcp-status-row" id="mcp-status-row"></div>
+          <div class="mcp-config-path" id="mcp-config-path-display" style="display:none;"></div>
+        </div>
+
+        <!-- Server list -->
+        <div id="mcp-server-list" class="mcp-server-list" style="margin-top:10px;">
+          <div class="mcp-server-empty"><div class="mcp-server-empty-icon">&#9741;</div>Loading servers…</div>
+        </div>
+
+        <!-- Add server toggle + collapsible form -->
+        <button class="mcp-add-toggle" id="mcp-add-toggle" onclick="toggleMcpAddForm()" style="margin-top:10px;">+ Add or update a server</button>
+        <div class="mcp-add-form hidden" id="mcp-add-form">
+          <div class="mcp-inline-grid">
+            <div class="form-group">
+              <label class="form-label" for="mcp-custom-name">Server Name</label>
+              <input class="form-input" id="mcp-custom-name" placeholder="my-server">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="mcp-custom-command">Command</label>
+              <input class="form-input" id="mcp-custom-command" placeholder="python">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="mcp-custom-args">Args</label>
+            <textarea class="form-textarea" id="mcp-custom-args" style="min-height:56px;" placeholder='One argument per line, or JSON array like [&quot;cli/mcp_server.py&quot;,&quot;--project&quot;,&quot;.&quot;]'></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="mcp-custom-env">Env</label>
+            <textarea class="form-textarea" id="mcp-custom-env" style="min-height:48px;" placeholder='Optional JSON object, e.g. {&quot;FOO&quot;:&quot;bar&quot;}'></textarea>
+          </div>
+          <div class="form-group hidden-row" id="mcp-custom-enabled-row">
+            <label class="checkbox-row" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="mcp-custom-enabled" checked>
+              <span>Enabled</span>
+            </label>
+          </div>
+          <div class="mcp-actions-row" style="margin-top:8px;">
+            <button class="btn btn-primary" id="mcp-custom-save-btn" onclick="saveCustomMcpServer()">Save Server</button>
+            <button class="btn btn-ghost" onclick="toggleMcpAddForm()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: C3 Setup (Init + MCP combined) -->
+      <div class="mcp-tab-panel" id="mcp-tab-setup">
+        <!-- Shared IDE / Mode selectors -->
+        <div class="mcp-section">
+          <h4>Target Configuration</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:12px;">These settings apply to both Init and MCP actions below.</div>
+          <div class="mcp-inline-grid">
+            <div class="form-group">
+              <label class="form-label" for="mcp-modal-ide">IDE</label>
+              <select class="form-select" id="mcp-modal-ide" onchange="handleMcpSelectionChange()">
+                <option value="">— keep current —</option>
+                <option value="claude-code">Claude Code CLI</option>
+                <option value="claude-app">Claude Code App</option>
+                <option value="vscode">VS Code Copilot</option>
+                <option value="cursor">Cursor</option>
+                <option value="codex">OpenAI Codex</option>
+                <option value="gemini">Gemini CLI</option>
+                <option value="antigravity">Antigravity</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="mcp-modal-mode">MCP Mode</label>
+              <select class="form-select" id="mcp-modal-mode" onchange="handleMcpSelectionChange()">
+                <option value="">— keep current —</option>
+                <option value="direct">direct</option>
+                <option value="proxy">proxy</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Init controls -->
+        <div class="mcp-section">
+          <h4>Initialize / Update Project</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:12px;">Rebuild index, refresh instruction files, update MCP tool definitions, ensure C3 subdirectories.</div>
+          <div class="mcp-inline-grid">
+            <div class="form-group">
+              <label class="form-label" for="setup-init-mode">Init Action</label>
+              <select class="form-select" id="setup-init-mode" onchange="syncSetupInitOptions()">
+                <option value="force">Update / Repair C3 files</option>
+                <option value="clear">Wipe C3 project files only</option>
+              </select>
+            </div>
+            <div class="form-group" id="setup-git-row">
+              <label class="form-label">&nbsp;</label>
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:var(--text2); padding:7px 0;">
+                <input type="checkbox" id="setup-git" style="width:15px;height:15px;accent-color:var(--accent);">
+                <span>Init Git repo if needed</span>
+              </label>
+            </div>
+          </div>
+          <div class="mcp-actions-row" style="margin-top:4px;">
+            <button class="btn btn-primary" id="setup-init-btn" onclick="runSetupInit()">Run Init</button>
+          </div>
+        </div>
+
+        <!-- MCP controls -->
+        <div class="mcp-section">
+          <h4>MCP Server (C3)</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:8px;">Install or remove the C3 MCP entry. Other servers in the config are preserved.</div>
+          <div id="mcp-install-status" style="display:none; margin-bottom:10px; font-size:12px; align-items:center; gap:8px;">
+            <span id="mcp-install-state-badge" class="mcp-pill"></span>
+            <span id="mcp-install-cfg-path" style="color:var(--muted); font-family:monospace; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+          </div>
+          <div class="mcp-actions-row" style="margin-top:0;">
+            <button class="btn btn-primary" id="mcp-install-btn" onclick="runMcpInstall()">Install C3</button>
+            <button class="btn btn-danger" id="mcp-remove-btn" onclick="runMcpRemove('c3')" style="display:none;">Remove C3</button>
+          </div>
+        </div>
+
+        <!-- Inline output for this tab -->
+        <div class="mcp-output-area">
+          <pre class="cmd-output hidden" id="mcp-output"></pre>
+        </div>
+      </div>
+
+      <!-- Tab: Config (health + component updates) -->
+      <div class="mcp-tab-panel" id="mcp-tab-config">
+        <div class="mcp-section">
+          <h4>Project Health</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:10px;">Current state of C3 configuration components.</div>
+          <div id="config-health-status" class="config-health-grid">
+            <div class="config-health-loading">Checking…</div>
+          </div>
+        </div>
+
+        <div class="mcp-section">
+          <h4>Budget & Session Settings</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:12px;">Single budget threshold and guidance toggles for this project.</div>
+          <div id="budget-settings-container" style="display:flex;flex-direction:column;gap:12px;">
+            <div style="display:grid;grid-template-columns:1fr;gap:8px;max-width:220px;">
+              <div class="form-group" style="margin-bottom:0">
+                <label class="form-label" style="font-size:11px;">Budget Threshold</label>
+                <input class="form-input" type="number" id="budget-threshold" min="1000" step="5000" placeholder="35000">
+                <span style="font-size:9px;color:var(--muted)">Nudge AI to restart when C3 tokens exceed this</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <div class="check-row">
+                <input type="checkbox" id="budget-nudges-toggle">
+                <label for="budget-nudges-toggle">Budget Nudges — append warning when over threshold</label>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="budget-alerts-toggle">
+                <label for="budget-alerts-toggle">Agent Alerts — inline critical alerts on every response</label>
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-primary btn-sm" onclick="saveBudgetSettings()">Save Budget Settings</button>
+              <span id="budget-save-msg" style="font-size:11px;color:var(--muted);align-self:center;"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mcp-section" id="perm-section">
+          <h4>Permissions (Claude Code)</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:12px;">Claude Code permission tier for this project. C3 MCP tools are always allowed.</div>
+          <div id="perm-settings-container" style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:11px;color:var(--muted)">Current tier:</span>
+              <span id="perm-current-badge" class="badge" style="font-size:11px;font-weight:600;">—</span>
+              <span id="perm-rule-counts" style="font-size:10px;color:var(--muted)"></span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;" id="perm-tier-list"></div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span id="perm-save-msg" style="font-size:11px;color:var(--muted);"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mcp-section">
+          <h4>Update Components</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:12px;">Selectively rebuild or refresh individual components instead of running a full init.</div>
+          <div class="config-component-list">
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Code Index</span>
+                <span class="config-component-desc">Rebuild file index and search chunks</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('index')">Rebuild</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Embedding Index</span>
+                <span class="config-component-desc">Rebuild semantic search embeddings (requires Ollama)</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('embeddings')">Rebuild</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Doc Index (RAG)</span>
+                <span class="config-component-desc">Rebuild doc/config/docstring index for session pre-loading</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('doc_index')">Rebuild</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Compression Dictionary</span>
+                <span class="config-component-desc">Regenerate project-specific compression terms</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('dictionary')">Rebuild</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Instruction Docs</span>
+                <span class="config-component-desc">Sync CLAUDE.md, AGENTS.md, GEMINI.md to current templates</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('instructions')">Sync</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">Config &amp; Directories</span>
+                <span class="config-component-desc">Refresh config.json and ensure .c3/ subdirectories</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('config')">Refresh</button>
+            </div>
+            <div class="config-component-row">
+              <div class="config-component-info">
+                <span class="config-component-name">MCP Server</span>
+                <span class="config-component-desc">Reinstall C3 MCP entry for the current IDE</span>
+              </div>
+              <button class="btn btn-xs btn-ghost" onclick="runComponentUpdate('mcp')">Reinstall</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mcp-section" style="margin-top:8px;">
+          <div class="mcp-actions-row">
+            <button class="btn btn-primary btn-sm" onclick="runComponentUpdate('all')">Update All Components</button>
+          </div>
+        </div>
+
+        <div class="mcp-output-area">
+          <pre class="cmd-output hidden" id="config-output"></pre>
+        </div>
+      </div>
+
+      <!-- Tab: Reference (CLI + tools) -->
+      <div class="mcp-tab-panel" id="mcp-tab-reference">
+        <div class="mcp-section">
+          <h4>CLI Commands</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:10px;">Click a command to copy it.</div>
+          <div class="mcp-cli-list" id="mcp-cli-preview-list"></div>
+        </div>
+
+        <div class="mcp-section">
+          <h4>C3 Tool Categories</h4>
+          <div class="mcp-section-subtitle" style="margin-bottom:10px;">Tool groups exposed by C3 via MCP.</div>
+          <div id="mcp-tool-categories"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('mcp-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- C3 Setup Modal -->
+<div class="modal-backdrop hidden" id="c3-setup-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Set Up C3 for This Project</h3>
+      <button class="modal-close" onclick="closeModal('c3-setup-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="mcp-section" style="margin-bottom:0;">
+        <div class="mcp-header-bar" style="margin-bottom:12px;">
+          <div class="mcp-header-path" id="c3-setup-path" title=""></div>
+        </div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">
+          This project does not have a C3 system yet. Initialize it now to enable
+          code intelligence, MCP tools, and session tracking.
+        </p>
+        <div class="mcp-inline-grid" style="margin-bottom:16px;">
+          <div class="form-group">
+            <label class="form-label" for="c3-setup-ide">IDE / Agent</label>
+            <select class="form-select" id="c3-setup-ide">
+              <option value="">— auto-detect —</option>
+              <option value="claude-code">Claude Code CLI</option>
+              <option value="claude-app">Claude Code App</option>
+              <option value="vscode">VS Code Copilot</option>
+              <option value="cursor">Cursor</option>
+              <option value="codex">OpenAI Codex</option>
+              <option value="gemini">Gemini CLI</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="c3-setup-mcp-mode">MCP Mode</label>
+            <select class="form-select" id="c3-setup-mcp-mode">
+              <option value="">— auto —</option>
+              <option value="direct">direct</option>
+              <option value="proxy">proxy</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="c3-setup-step1-badge" class="mcp-pill" style="min-width:22px;text-align:center;">1</span>
+            <div style="flex:1;">
+              <div style="font-size:13px;font-weight:600;color:var(--text1);">Initialize C3</div>
+              <div style="font-size:11px;color:var(--muted);">Builds code index, config, instruction docs, and .c3 directory</div>
+            </div>
+            <button class="btn btn-primary btn-sm" id="c3-setup-init-btn" onclick="c3SetupRunInit()">Initialize</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="c3-setup-step2-badge" class="mcp-pill" style="min-width:22px;text-align:center;">2</span>
+            <div style="flex:1;">
+              <div style="font-size:13px;font-weight:600;color:var(--text1);">Install MCP Server</div>
+              <div style="font-size:11px;color:var(--muted);">Register the C3 MCP server in the IDE config so tools are available</div>
+            </div>
+            <button class="btn btn-xs btn-ghost" id="c3-setup-mcp-btn" onclick="c3SetupRunMcp()" disabled>Install MCP</button>
+          </div>
+        </div>
+        <div class="mcp-output-area">
+          <pre class="cmd-output hidden" id="c3-setup-output"></pre>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('c3-setup-modal')">Skip for now</button>
+      <button class="btn btn-primary" id="c3-setup-done-btn" onclick="closeModal('c3-setup-modal')" disabled>Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Project Modal -->
+<div class="modal-backdrop hidden" id="edit-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>✏ Edit Project</h3>
+      <button class="modal-close" onclick="closeModal('edit-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <span class="form-label">Path</span>
+        <div class="form-path" id="edit-modal-path"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit-name">Name</label>
+        <input class="form-input" type="text" id="edit-name">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit-tags">Tags <span style="font-weight:400;text-transform:none;letter-spacing:0">(comma-separated)</span></label>
+        <input class="form-input" type="text" id="edit-tags" placeholder="frontend, python, client">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit-notes">Notes</label>
+        <textarea class="form-textarea" id="edit-notes" placeholder="Any notes about this project…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('edit-modal')">Cancel</button>
+      <button class="btn btn-primary" id="edit-save-btn" onclick="saveEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Transfer Modal -->
+<div class="modal-backdrop hidden" id="transfer-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Transfer Project</h3>
+      <button class="modal-close" onclick="closeModal('transfer-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <span class="form-label">Current Path</span>
+        <div class="form-path" id="transfer-modal-old-path"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="transfer-new-path">New Path</label>
+        <input class="form-input" type="text" id="transfer-new-path" placeholder="/new/location/of/project">
+      </div>
+      <p style="font-size:.8rem;color:var(--text-muted);margin-top:.5rem;">
+        Copy your project folder first, then enter the new location here. The new path must contain a .c3/ directory.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('transfer-modal')">Cancel</button>
+      <button class="btn btn-primary" id="transfer-save-btn" onclick="saveTransfer()">Transfer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-backdrop hidden" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>⚙ Settnigs</h3>
+      <button class="modal-close" onclick="closeModal('settings-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-info" id="settings-running-info">Hub is running on port …</div>
+      <div class="form-group">
+        <label class="form-label" for="settings-port">Dedicated Port</label>
+        <input class="form-input" type="number" id="settings-port" min="1024" max="65535" placeholder="3330">
+      </div>
+      <div class="form-group">
+        <div class="check-row">
+          <input type="checkbox" id="settings-auto-browser">
+          <label for="settings-auto-browser">Auto-open browser when hub starts</label>
+        </div>
+      </div>
+      <div class="settings-warning" id="settings-port-warning"></div>
+
+      <!-- Session Mode section -->
+      <div class="section-divider">Session Mode</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span id="session-mode-badge" class="svc-badge svc-unknown">checking…</span>
+        <span id="session-mode-label" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <button class="btn btn-ghost" id="detach-terminal-btn" onclick="detachFromTerminal()" style="display:none;">
+        ⎋ Detach from Terminal
+      </button>
+      <div id="session-mode-info" style="font-size:11px;color:var(--muted);margin-top:6px;display:none;">
+        Restarts hub as a background process with no terminal window — same as when Windows starts it automatically.
+      </div>
+
+      <!-- Service section -->
+      <div class="section-divider">Startup Service</div>
+      <div class="settings-info" id="svc-info">
+        Run C3 Hub automatically on login — no terminal required.
+      </div>
+      <div id="svc-status-row" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span id="svc-status-badge" class="svc-badge svc-unknown">checking…</span>
+        <span id="svc-method" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+        <button class="btn btn-green"  id="svc-install-btn"   onclick="svcAction('install')">↓ Install Service</button>
+        <button class="btn btn-ghost"  id="svc-start-btn"     onclick="svcAction('start')">▶ Start Now</button>
+        <button class="btn btn-ghost"  id="svc-stop-btn"      onclick="svcAction('stop')">■ Stop Hub</button>
+        <button class="btn btn-danger" id="svc-uninstall-btn" onclick="svcAction('uninstall')">✕ Uninstall</button>
+      </div>
+      <div id="svc-log-row" style="font-size:11px;color:var(--muted);display:none;">
+        Log: <span id="svc-log-path" style="font-family:monospace;color:var(--text2)"></span>
+      </div>
+      <pre class="cmd-output hidden" id="svc-output" style="min-height:50px;max-height:120px;margin-top:8px;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('settings-modal')">Close</button>
+      <button class="btn btn-primary" id="settings-save-btn" onclick="saveSettings()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- Update Project Modal -->
+<div class="modal-backdrop hidden" id="update-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🚀 Update Project C3 Version</h3>
+      <button class="modal-close" onclick="closeModal('update-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <span class="form-label">Project</span>
+        <div class="form-path" id="update-modal-path"></div>
+      </div>
+      <div class="settings-info" style="margin-bottom: 15px;">
+        <p>This will update the project's C3 configuration and instruction files to match the current hub version (<b>v<span id="update-modal-version">…</span></b>).</p>
+        <ul style="margin-left: 20px; margin-top: 8px; font-size: 12px; color: var(--text2);">
+          <li>Rebuilds the code index</li>
+          <li>Refreshes instruction files (CLAUDE.md, etc.)</li>
+          <li>Updates MCP tool definitions</li>
+          <li>Ensures C3 subdirectories exist</li>
+        </ul>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="update-modal-ide">Target IDE</label>
+        <select class="form-select" id="update-modal-ide">
+          <option value="auto">Auto-detect from markers</option>
+          <option value="claude-code">Claude Code CLI</option>
+          <option value="claude-app">Claude Code App</option>
+          <option value="vscode">VS Code Copilot</option>
+          <option value="cursor">Cursor</option>
+          <option value="codex">OpenAI Codex</option>
+          <option value="gemini">Gemini CLI</option>
+          <option value="antigravity">Antigravity</option>
+        </select>
+      </div>
+      <pre class="cmd-output hidden" id="update-cmd-output" style="max-height: 300px;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('update-modal')">Cancel</button>
+      <button class="btn btn-primary" id="update-run-btn" onclick="runUpdate()">Confirm Update</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch Update Modal -->
+<div class="modal-backdrop hidden" id="batch-update-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Batch Update Projects</h3>
+      <button class="modal-close" onclick="closeModal('batch-update-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-info" id="batch-update-info">
+        Updating all outdated projects to <b>v<span id="batch-update-version">…</span></b>.
+        This runs <code>c3 init --force</code> for each project.
+      </div>
+      <div class="batch-progress-bar" id="batch-progress-bar" style="display:none;">
+        <div class="batch-progress-fill" id="batch-progress-fill" style="width:0%"></div>
+      </div>
+      <div id="batch-update-list" style="display:flex; flex-direction:column; gap:6px; margin-top:10px;"></div>
+      <div id="batch-summary" class="batch-summary" style="display:none;"></div>
+      <pre class="cmd-output hidden" id="batch-update-log" style="max-height: 200px; font-size: 11px;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="batch-update-cancel" onclick="cancelBatchUpdate()">Cancel</button>
+      <button class="btn btn-danger" id="batch-cancel-running" onclick="cancelBatchUpdate()" style="display:none;">Cancel Update</button>
+      <button class="btn btn-primary" id="batch-update-run-btn" onclick="runBatchUpdate()">Start Batch Update</button>
+      <button class="btn btn-yellow" id="batch-retry-btn" onclick="retryFailedBatch()" style="display:none;">Retry Failed</button>
+    </div>
+  </div>
+</div>
+
+<!-- IDE Launcher Modal -->
+<div class="modal-backdrop hidden" id="ide-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Open in IDE / CLI</h3>
+      <button class="modal-close" onclick="closeModal('ide-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <span class="form-label">Project</span>
+        <div class="form-path" id="ide-modal-path"></div>
+      </div>
+      <div class="form-group">
+        <span class="form-label">Choose IDE / CLI</span>
+        <div class="ide-picker" id="ide-picker"></div>
+      </div>
+      <div class="form-group" id="ide-custom-row" style="display:none">
+        <label class="form-label" for="ide-custom-cmd">Custom command</label>
+        <input class="form-input" type="text" id="ide-custom-cmd" placeholder="e.g. nvim" style="font-family:monospace">
+      </div>
+      <pre class="cmd-output hidden" id="ide-cmd-output" style="min-height:auto; padding:8px 10px;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('ide-modal')">Cancel</button>
+      <button class="btn btn-primary" id="ide-launch-btn" onclick="launchIde()">&#9654; Launch</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div class="toast-container" id="toast-container"></div>
+<div id="confirm-root"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let allProjects = [];
+let hubRestarting = false;
+let currentFilter = 'all';
+let currentGroup = 'all';
+let sidebarCollapsed = false;
+let collapsedFolders = new Set();
+let currentTheme = 'dark';
+let currentProjectsView = 'list';
+const BUILD_TIME = "2026-03-10 07:22";
+let hubVersion = '?';
+let hubDedicatedPort = null;
+let hubRunningPort = location.port || 3330;
+let pollTimer = null;
+let detailsCache = {};
+const launchingPaths = new Set();
+let sessionDrawerOpen = true;
+let sessionDrawerTabs = [];
+let activeSessionTab = null;
+let sessionPollTimer = null;
+
+// Modal state
+let modalPath = null;
+let editPath  = null;
+let transferPath = null;
+let idePath     = null;
+let ideSelected = null;
+let mcpModalPath = null;
+let c3SetupPath = null;
+let mcpCapabilities = null;
+
+const IDE_LABELS = {
+  'claude-code': 'Claude Code CLI',
+  'claude-app': 'Claude Code App',
+  'vscode': 'VS Code',
+  'cursor': 'Cursor',
+  'codex': 'Codex CLI',
+  'gemini': 'Gemini CLI',
+  'antigravity': 'Antigravity',
+};
+
+const IDE_OPTIONS = [
+  { id: 'claude-code',  name: 'Claude Code CLI', icon: '\u{1F916}', cmd: 'claude'      },
+  { id: 'claude-app',   name: 'Claude Code App', icon: '\u{1F4D0}', cmd: 'claude-app'  },
+  { id: 'codex',        name: 'Codex CLI',     icon: '\u{1F9E0}', cmd: 'codex'       },
+  { id: 'gemini',       name: 'Gemini CLI',    icon: '\u{1F48E}', cmd: 'gemini'      },
+  { id: 'antigravity',  name: 'Antigravity',   icon: '\u{1F680}', cmd: 'antigravity' },
+  { id: 'vscode',       name: 'VS Code',       icon: '\u{1F4BB}', cmd: 'code'        },
+  { id: 'cursor',       name: 'Cursor',        icon: '\u26A1',    cmd: 'cursor'      },
+  { id: 'custom',       name: 'Custom',        icon: '\u2328',    cmd: '...'         },
+];
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const r = await fetch('/api/version');
+    const d = await r.json();
+    hubVersion = d.c3_version || '?';
+    document.getElementById('hub-version').textContent = 'C3 v' + hubVersion + ' · ' + BUILD_TIME;
+  } catch(e) {}
+
+  try {
+    const r = await fetch('/api/hub/config');
+    const d = await r.json();
+    hubDedicatedPort = d.port || 3330;
+    currentTheme = d.theme || 'dark';
+    currentProjectsView = d.projects_view || 'list';
+    currentGroup = d.sidebar_group || 'all';
+    sidebarCollapsed = !!d.sidebar_collapsed;
+    if (sidebarCollapsed) document.querySelector('main').classList.add('sidebar-collapsed');
+    document.getElementById('hub-port-badge').textContent = ':' + hubDedicatedPort;
+    applyTheme(currentTheme);
+    syncProjectsViewButtons();
+    // Oracle link detection
+    const oracleUrl = d.oracle_url || 'http://localhost:3331';
+    if (oracleUrl) {
+      fetch(oracleUrl + '/api/health', {signal: AbortSignal.timeout(2000)})
+        .then(r => r.json())
+        .then(h => { if (h.service === 'c3-oracle') { const el = document.getElementById('oracle-link'); el.href = oracleUrl; el.style.display = ''; }})
+        .catch(() => {});
+    }
+  } catch(e) {}
+
+  applyTheme(currentTheme);
+  syncProjectsViewButtons();
+
+  loadProjects();
+  schedulePoll();
+  renderSessionDrawer();
+
+  try {
+    const r = await fetch('/api/projects/mcp-capabilities');
+    mcpCapabilities = await r.json();
+  } catch(e) {}
+
+  ['add-path','add-name'].forEach(id =>
+    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') addProject(); })
+  );
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      ['mcp-modal','edit-modal','transfer-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
+        if (!document.getElementById(id).classList.contains('hidden')) closeModal(id);
+      });
+    }
+  });
+});
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => { loadProjects(); schedulePoll(); }, 5000);
+}
+
+function scheduleSessionPoll() {
+  clearTimeout(sessionPollTimer);
+  if (!sessionDrawerTabs.length) return;
+  sessionPollTimer = setTimeout(async () => {
+    await refreshSessionDrawerTabs();
+    scheduleSessionPoll();
+  }, 4000);
+}
+
+// ── Data ───────────────────────────────────────────────────────────────────
+async function loadProjects() {
+  try {
+    const r = await fetch('/api/projects?ts=' + Date.now(), {cache: 'no-store'});
+    allProjects = await r.json();
+    detailsCache = {};
+    renderSidebar();
+    renderProjects();
+  } catch(e) {
+    if (!hubRestarting) toast('Failed to load projects', 'err');
+  }
+}
+
+async function refreshHub() {
+  await loadProjects();
+  await refreshSessionDrawerTabs();
+  toast('Projects refreshed', 'ok');
+}
+
+async function restartHub() {
+  const btn = document.querySelector('.btn-restart');
+  btn.disabled = true;
+  hubRestarting = true;
+  toast('Restarting hub…', 'info');
+  try {
+    await fetch('/api/hub/restart', {method: 'POST'});
+  } catch(e) {}
+  // Poll until the hub is confirmed back up (checks service identity to avoid
+  // a false positive against a different server on this port)
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/api/health', {cache: 'no-store'});
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (d.service === 'c3-hub') {
+          clearInterval(poll);
+          btn.disabled = false;
+          hubRestarting = false;
+          toast('Hub restarted', 'ok');
+          loadProjects();
+          return;
+        }
+      }
+    } catch(e) {}
+    if (attempts > 40) {
+      clearInterval(poll);
+      btn.disabled = false;
+      hubRestarting = false;
+      toast('Hub restart timed out — reload the page manually', 'err');
+    }
+  }, 500);
+}
+
+async function detachFromTerminal() {
+  const btn = document.getElementById('detach-terminal-btn');
+  const ok = await confirmDialog({ title: 'Detach from Terminal', message: 'Restart hub as a background process? The terminal window will be freed.', confirmText: 'Detach' });
+  if (!ok) return;
+  btn.disabled = true;
+  hubRestarting = true;
+  closeModal('settings-modal');
+  toast('Detaching from terminal…', 'info');
+  try {
+    await fetch('/api/hub/restart', {method: 'POST'});
+  } catch(e) {}
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/api/health', {cache: 'no-store'});
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (d.service === 'c3-hub') {
+          clearInterval(poll);
+          hubRestarting = false;
+          toast('Hub running in background (no terminal)', 'ok');
+          loadProjects();
+          return;
+        }
+      }
+    } catch(e) {}
+    if (attempts > 40) {
+      clearInterval(poll);
+      hubRestarting = false;
+      toast('Hub restart timed out — reload the page manually', 'err');
+    }
+  }, 500);
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function setFilter(f, el) {
+  currentFilter = f;
+  if (currentGroup === '_active' || currentGroup === '_idle') {
+    currentGroup = 'all';
+    renderSidebar();
+  }
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderProjects();
+}
+
+function applyTheme(theme) {
+  currentTheme = theme === 'light' ? 'light' : 'dark';
+  document.body.setAttribute('data-theme', currentTheme);
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = 'Theme: ' + (currentTheme === 'light' ? 'Light' : 'Dark');
+}
+
+async function toggleTheme() {
+  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
+  await saveHubPrefs({theme: currentTheme});
+}
+
+function syncProjectsViewButtons() {
+  document.getElementById('view-list-btn').classList.toggle('active', currentProjectsView === 'list');
+  document.getElementById('view-grid-btn').classList.toggle('active', currentProjectsView === 'grid');
+}
+
+async function setProjectsView(mode) {
+  currentProjectsView = mode === 'grid' ? 'grid' : 'list';
+  syncProjectsViewButtons();
+  renderProjects();
+  await saveHubPrefs({projects_view: currentProjectsView});
+}
+
+async function saveHubPrefs(patch) {
+  try {
+    await fetch('/api/hub/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(patch),
+    });
+  } catch (e) {}
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+
+function buildTagTree(projects) {
+  // Build a tree from tags like "clients/acme" → { clients: { acme: {} } }
+  // Each node: { display, total, active, children: {} }
+  const root = { display: '', total: 0, active: 0, children: {} };
+  let untaggedTotal = 0, untaggedActive = 0;
+
+  projects.forEach(p => {
+    const tags = Array.isArray(p.tags) ? p.tags : [];
+    if (tags.length === 0) {
+      untaggedTotal++;
+      if (p.active) untaggedActive++;
+      return;
+    }
+    tags.forEach(tag => {
+      const parts = tag.split('/').filter(Boolean);
+      let node = root;
+      for (let i = 0; i < parts.length; i++) {
+        const seg = parts[i];
+        const key = seg.toLowerCase();
+        if (!node.children[key]) {
+          node.children[key] = { display: seg, total: 0, active: 0, children: {} };
+        }
+        node.children[key].total++;
+        if (p.active) node.children[key].active++;
+        node = node.children[key];
+      }
+    });
+  });
+
+  return { root, untaggedTotal, untaggedActive };
+}
+
+function renderTreeItems(children, depth, pathPrefix) {
+  let h = '';
+  const keys = Object.keys(children).sort((a, b) => a.localeCompare(b));
+  keys.forEach(key => {
+    const node = children[key];
+    const fullPath = pathPrefix ? pathPrefix + '/' + node.display : node.display;
+    const hasKids = Object.keys(node.children).length > 0;
+    const collapsed = collapsedFolders.has(fullPath.toLowerCase());
+    const isActive = currentGroup.toLowerCase() === fullPath.toLowerCase();
+    const cnt = node.active > 0 ? node.active + '/' + node.total : '' + node.total;
+
+    let toggleHtml = '';
+    if (hasKids) {
+      toggleHtml = '<span class="sidebar-folder-toggle" onclick="event.stopPropagation();toggleFolder(\'' + esc(fullPath).replace(/'/g,"\\'") + '\')">'
+        + (collapsed ? '▸' : '▾') + '</span>';
+    }
+
+    h += '<div class="sidebar-item' + (isActive ? ' active' : '') + '" data-depth="' + depth + '" '
+      + 'onclick="selectGroup(\'' + esc(fullPath).replace(/'/g,"\\'") + '\')" '
+      + 'title="' + esc(fullPath) + ' (' + node.total + ' projects)">'
+      + toggleHtml
+      + '<span class="sidebar-item-label">' + esc(node.display) + '</span>'
+      + '<span class="sidebar-item-count">' + cnt + '</span></div>';
+
+    if (hasKids && !collapsed) {
+      h += renderTreeItems(node.children, depth + 1, fullPath);
+    }
+  });
+  return h;
+}
+
+function renderSidebar() {
+  const nav = document.getElementById('sidebar-nav');
+  if (!nav) return;
+
+  const { root, untaggedTotal, untaggedActive } = buildTagTree(allProjects);
+  const totalActive = allProjects.filter(p => p.active).length;
+  let h = '';
+
+  // Fixed items
+  h += sidebarFixedItem('all', 'All Projects', allProjects.length, totalActive);
+  h += '<div class="sidebar-divider"></div>';
+  h += sidebarFixedItem('_active', 'Active', totalActive, totalActive);
+  h += sidebarFixedItem('_idle', 'Idle', allProjects.length - totalActive, 0);
+
+  // Tag tree
+  if (Object.keys(root.children).length > 0 || untaggedTotal > 0) {
+    h += '<div class="sidebar-divider"></div>';
+    h += renderTreeItems(root.children, 0, '');
+    if (untaggedTotal > 0) {
+      h += sidebarFixedItem('untagged', 'Untagged', untaggedTotal, untaggedActive);
+    }
+  }
+
+  nav.innerHTML = h;
+}
+
+function sidebarFixedItem(key, label, total, active) {
+  const isActive = currentGroup.toLowerCase() === key.toLowerCase();
+  const cnt = active > 0 ? active + '/' + total : '' + total;
+  return '<div class="sidebar-item' + (isActive ? ' active' : '') + '" onclick="selectGroup(\'' + esc(key).replace(/'/g,"\\'") + '\')" title="' + esc(label) + ' (' + total + ' projects)">'
+    + '<span class="sidebar-item-label">' + esc(label) + '</span>'
+    + '<span class="sidebar-item-count">' + cnt + '</span></div>';
+}
+
+function selectGroup(group) {
+  currentGroup = group;
+  if (group === '_active') {
+    currentFilter = 'active';
+    syncFilterButtons();
+  } else if (group === '_idle') {
+    currentFilter = 'idle';
+    syncFilterButtons();
+  } else {
+    currentFilter = 'all';
+    syncFilterButtons();
+  }
+  renderSidebar();
+  renderProjects();
+  saveHubPrefs({ sidebar_group: currentGroup });
+}
+
+function toggleFolder(path) {
+  const key = path.toLowerCase();
+  if (collapsedFolders.has(key)) collapsedFolders.delete(key);
+  else collapsedFolders.add(key);
+  renderSidebar();
+}
+
+function syncFilterButtons() {
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    const f = b.textContent.trim().toLowerCase();
+    b.classList.toggle('active', f === currentFilter);
+  });
+}
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  document.querySelector('main').classList.toggle('sidebar-collapsed', sidebarCollapsed);
+  saveHubPrefs({ sidebar_collapsed: sidebarCollapsed });
+}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+function renderProjects() {
+  const query = (document.getElementById('search-input').value || '').toLowerCase().trim();
+  let list = allProjects.filter(p => {
+    // Group filter
+    if (currentGroup === 'untagged') {
+      if (Array.isArray(p.tags) && p.tags.length > 0) return false;
+    } else if (currentGroup === '_active') {
+      if (!p.active) return false;
+    } else if (currentGroup === '_idle') {
+      if (p.active) return false;
+    } else if (currentGroup !== 'all') {
+      const tags = (Array.isArray(p.tags) ? p.tags : []).map(t => t.toLowerCase());
+      const g = currentGroup.toLowerCase();
+      // Prefix match: selecting "clients" shows "clients", "clients/acme", etc.
+      const match = tags.some(t => t === g || t.startsWith(g + '/'));
+      if (!match) return false;
+    }
+    // Status filter (skip if group already handles status)
+    if (currentGroup !== '_active' && currentGroup !== '_idle') {
+      if (currentFilter === 'active' && !p.active) return false;
+      if (currentFilter === 'idle'   &&  p.active) return false;
+    }
+    if (query) {
+      const hay = ((p.name||'') + ' ' + (p.path||'') + ' ' + ((p.tags||[]).join(' ')) + ' ' + (p.ide||'')).toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+  const active = allProjects.filter(p => p.active).length;
+
+  // Show/hide batch update button
+  const outdatedCount = allProjects.filter(p => p.c3_version && p.c3_version !== hubVersion).length;
+  const updateAllBtn = document.getElementById('update-all-btn');
+  if (updateAllBtn) {
+    updateAllBtn.style.display = outdatedCount > 1 ? 'inline-block' : 'none';
+    updateAllBtn.textContent = `🚀 Update All (${outdatedCount})`;
+  }
+
+  document.getElementById('session-count').textContent = active + ' active';
+  document.getElementById('session-badge').classList.toggle('has-active', active > 0);
+  document.getElementById('project-count').textContent =
+    `${allProjects.length} Project${allProjects.length !== 1 ? 's' : ''}` +
+    (list.length !== allProjects.length ? `  ·  ${list.length} shown` : '');
+
+  const grid = document.getElementById('projects-grid');
+  grid.classList.toggle('grid-view', currentProjectsView === 'grid');
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="empty-state"><div class="icon">${currentFilter === 'all' && !query ? '📂' : '🔍'}</div><p>${currentFilter === 'all' && !query ? 'No projects yet. Add one above.' : 'No matching projects.'}</p></div>`;
+    return;
+  }
+  grid.innerHTML = list.map(projectCard).join('');
+}
+
+function cardId(path) {
+  return 'c' + btoa(encodeURIComponent(path)).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
+}
+
+function projectCard(p) {
+  const active = !!p.active || !!p.session_active;
+  const cid = cardId(p.path);
+  const accessible = p.accessible !== false;
+
+  // Accessibility badge
+  let accessBadge = '';
+  if (!accessible) {
+    accessBadge = `<span class="ver-badge outdated" title="Project path not accessible — drive may not be mounted yet">⚠ offline</span>`;
+  }
+
+  // Version badge
+  let verBadge = '';
+  if (!p.initialized && p.c3_version == null) {
+    verBadge = `<span class="ver-badge uninit" title="Project not initialized with C3">not initialized</span>`;
+  } else if (p.c3_version) {
+    const outdated = hubVersion !== '?' && p.c3_version !== hubVersion;
+    let upBtn = outdated ? `<button class="btn-sm btn-update-project" style="margin-left: 5px; color: var(--yellow); border-color: var(--yellow); background: transparent;" onclick="updateProject('${jsq(p.path)}')">update</button>` : '';
+    verBadge = `<span class="ver-badge ${outdated ? 'outdated' : ''}" title="${outdated ? 'Hub is v' + hubVersion + ', project is v' + p.c3_version : 'v' + p.c3_version}">v${esc(p.c3_version)}${outdated ? ' ⚠' : ''}</span>${upBtn}`;
+  }
+
+  // MCP badge
+  let mcpBadge = '';
+  if (p.mcp_installed === true) {
+    const mode = p.mcp_mode ? ` · ${p.mcp_mode}` : '';
+    mcpBadge = `<span class="mcp-badge ok">MCP${esc(mode)}</span>`;
+  } else if (p.mcp_installed === false) {
+    mcpBadge = `<span class="mcp-badge none">no MCP</span>`;
+  }
+
+  // Budget badge (active only)
+  let budgetBadge = '';
+  if (active && p.budget) {
+    const b = p.budget;
+    const tokens = b.response_tokens || 0;
+    const threshold = b.threshold || 35000;
+
+    const pct = Math.min(100, Math.round((tokens / threshold) * 100));
+    const cls = tokens >= threshold ? 'critical' : '';
+    const label = tokens > 1000 ? Math.round(tokens/1000) + 'k' : tokens;
+
+    budgetBadge = `
+      <div class="budget-badge" title="Context Budget: ${tokens.toLocaleString()} / ${threshold.toLocaleString()} tokens">
+        <span class="budget-bar"><div class="budget-fill ${cls}" style="width: ${pct}%"></div></span>
+        <span>${label}</span>
+      </div>`;
+  }
+
+  // Notification badge
+  const nc = p.notification_count || 0;
+  const notifBadge = nc > 0
+    ? `<span class="notif-badge${nc >= 10 ? ' critical' : ''}" title="${nc} notification${nc !== 1 ? 's' : ''}">🔔 ${nc}</span>`
+    : '';
+  const clearNotifBtn = nc > 0
+    ? `<button class="btn btn-xs btn-ghost" onclick="event.stopPropagation();clearSessionNotifications('${jsq(p.path)}')" title="Clear ${nc} notification${nc !== 1 ? 's' : ''}">🔕 Clear</button>`
+    : '';
+
+  const statusPill = active
+    ? `<span class="status-pill active">● ACTIVE</span>`
+    : `<span class="status-pill stopped">○ idle</span>`;
+
+  const portVal = active && p.port != null
+    ? `<span class="port-link" onclick="openSession(${p.port})" title="Open C3 UI">:${p.port}</span>`
+    : active && p.session_active ? `<span title="Active MCP session (no UI server)">MCP</span>`
+    : `—`;
+
+  // Tags + notes
+  const tags = Array.isArray(p.tags) ? p.tags : [];
+  const tagChips = tags.map(t => `<span class="tag-chip">${esc(t)}</span>`).join('');
+  const noteIcon = p.notes ? `<span class="note-icon" title="${esc(p.notes)}">📝</span>` : '';
+  const hasTags = tagChips || noteIcon;
+
+  const last    = formatProjectLastSession(p.last_session);
+  const added   = p.added_at ? p.added_at.slice(0,10) : '?';
+  const pathDisplay = p.path.length > 70 ? '…' + p.path.slice(-67) : p.path;
+  const ide     = IDE_LABELS[p.ide] || p.ide || '?';
+
+  const mcpSummary = p.mcp_installed
+    ? `${p.mcp_mode || 'direct'} · ${Array.isArray(p.mcp_servers) ? p.mcp_servers.length : '...'} server(s)`
+    : 'not installed';
+
+  // Action buttons
+  const startBtn    = !active && accessible ? `<button class="btn btn-xs btn-green"   onclick="startSession('${jsq(p.path)}')">▶ Start</button>` : '';
+  // When active via MCP session but no UI server running, offer to launch the UI
+  const startUiBtn  = active && p.port == null && accessible ? `<button class="btn btn-xs btn-primary" onclick="startSession('${jsq(p.path)}')">↗ Open</button>` : '';
+  const openBtn     = active && p.port != null ? `<button class="btn btn-xs btn-primary" onclick="openSession(${p.port})">↗ Open</button>` : '';
+  const restartBtn  = active && p.port != null ? `<button class="btn btn-xs btn-ghost"   onclick="restartSession('${jsq(p.path)}',${p.port})" title="Restart UI server">↺ Restart</button>` : '';
+  const stopBtn     = active && p.port != null ? `<button class="btn btn-xs btn-ghost"   onclick="stopSession(${p.port})">■ Stop</button>`
+                    : active && p.session_active ? `<button class="btn btn-xs btn-ghost" onclick="endMcpSession('${jsq(p.path)}')">■ Stop</button>`
+                    : '';
+  const autostartOn = !!p.autostart_ui;
+  const autostartBtn = accessible ? `<button class="btn btn-xs ${autostartOn ? 'btn-green' : 'btn-ghost'}" onclick="toggleAutostart('${jsq(p.path)}',${autostartOn})" title="${autostartOn ? 'Autostart on (click to disable)' : 'Autostart off (click to enable)'}">⚡ Auto</button>` : '';
+  const folderBtn   = `<button class="btn btn-xs btn-ghost" onclick="openFolder('${jsq(p.path)}')">📂 Folder</button>`;
+  const logBtn      = `<button class="btn btn-xs btn-ghost"  onclick="addSessionViewer('${jsq(p.path)}','${jsq(p.name)}')">≡ Session Log</button>`;
+  const ledgerBtn   = active && p.port != null ? `<button class="btn btn-xs btn-ghost" onclick="window.open('http://localhost:${p.port}/edits','_blank')">📋 Ledger</button>` : '';
+  const setupBtn    = `<button class="btn btn-xs btn-ghost" onclick="openMcpModal('${jsq(p.path)}','${jsq(p.ide)}','${jsq(p.mcp_mode||'')}')">⚙ Setup</button>`;
+  const editBtn     = `<button class="btn btn-xs btn-ghost"  onclick="openEditModal('${jsq(p.path)}','${jsq(p.name)}','${jsq((p.tags||[]).join(','))}')">✏ Edit</button>`;
+  const ideBtn      = `<button class="btn btn-xs btn-primary" onclick="openIdeModal('${jsq(p.path)}','${jsq(p.ide)}')">&#9654; IDE</button>`;
+  const transferBtn = !active ? `<button class="btn btn-xs btn-ghost"  onclick="openTransferModal('${jsq(p.path)}','${jsq(p.name)}')">Transfer</button>` : '';
+  const removeBtn   = !active ? `<button class="btn btn-xs btn-danger"  onclick="removeProject('${jsq(p.path)}','${jsq(p.name)}')">✕ Remove</button>` : '';
+
+  const isLaunching = !active && launchingPaths.has(p.path);
+  return `
+<div class="project-card ${active ? 'is-active' : ''} ${isLaunching ? 'is-launching' : ''}" id="${cid}-wrap">
+  <div class="card-zone-identity">
+    <div class="project-name-row">
+      <span class="project-name">${esc(p.name)}</span>
+      ${statusPill}
+      ${accessBadge}
+      ${verBadge}
+      ${mcpBadge}
+      ${notifBadge}
+    </div>
+    <div class="project-path" title="${esc(p.path)}">${esc(pathDisplay)}</div>
+    ${hasTags || budgetBadge ? `<div class="tags-row">${tagChips}${budgetBadge}${noteIcon}</div>` : ''}
+  </div>
+  <div class="card-zone-meta">
+    <div class="info-row">
+      <span class="info-item"><span class="info-label">IDE</span>&nbsp;${esc(ide)}</span>
+      <span class="info-item"><span class="info-label">Port</span>&nbsp;${portVal}</span>
+      <span class="info-item"><span class="info-label">Last</span>&nbsp;${last}</span>
+    </div>
+  </div>
+  <div class="card-zone-actions">
+    <div class="card-actions-primary">
+      ${startBtn}${startUiBtn}${openBtn}${restartBtn}${stopBtn}${autostartBtn}${folderBtn}${logBtn}${ledgerBtn}${setupBtn}${ideBtn}
+    </div>
+    <div class="card-actions-secondary">
+      ${clearNotifBtn}${editBtn}${transferBtn}${removeBtn}
+    </div>
+  </div>
+</div>`;
+}
+
+function toggleSessionDrawer(forceOpen = null) {
+  if (!sessionDrawerTabs.length) return;
+  sessionDrawerOpen = forceOpen == null ? !sessionDrawerOpen : !!forceOpen;
+  renderSessionDrawer();
+}
+
+function addSessionViewer(path, name) {
+  const existing = sessionDrawerTabs.find(tab => tab.path === path);
+  if (existing) {
+    activeSessionTab = path;
+    sessionDrawerOpen = true;
+    renderSessionDrawer();
+    refreshSessionViewer(path);
+    return;
+  }
+
+  sessionDrawerTabs.push({
+    path,
+    name,
+    events: [],
+    latestTimestamp: null,
+    active: false,
+    port: null,
+    loading: true,
+    notifications: [],
+    notifLoading: false,
+    subTab: 'logs',
+  });
+  activeSessionTab = path;
+  sessionDrawerOpen = true;
+  renderSessionDrawer();
+  refreshSessionViewer(path);
+  refreshSessionNotifications(path);
+  scheduleSessionPoll();
+}
+
+function closeSessionViewer(path) {
+  sessionDrawerTabs = sessionDrawerTabs.filter(tab => tab.path !== path);
+  if (activeSessionTab === path) {
+    activeSessionTab = sessionDrawerTabs.length ? sessionDrawerTabs[sessionDrawerTabs.length - 1].path : null;
+  }
+  if (!sessionDrawerTabs.length) {
+    sessionDrawerOpen = true;
+  }
+  renderSessionDrawer();
+  scheduleSessionPoll();
+}
+
+function setActiveSessionViewer(path) {
+  activeSessionTab = path;
+  sessionDrawerOpen = true;
+  renderSessionDrawer();
+}
+
+function getSessionTab(path) {
+  return sessionDrawerTabs.find(tab => tab.path === path);
+}
+
+async function refreshSessionDrawerTabs() {
+  await Promise.all(sessionDrawerTabs.map(tab => refreshSessionViewer(tab.path, true)));
+  // Refresh notifications for the active tab
+  if (activeSessionTab) {
+    const tab = getSessionTab(activeSessionTab);
+    if (tab && tab.subTab === 'notifications') refreshSessionNotifications(activeSessionTab);
+  }
+}
+
+async function refreshSessionViewer(path, incremental = false) {
+  const tab = getSessionTab(path);
+  if (!tab) return;
+
+  const payload = {path, limit: incremental ? 60 : 120};
+  if (incremental && tab.latestTimestamp) payload.since = tab.latestTimestamp;
+
+  try {
+    const r = await fetch('/api/projects/activity', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    const incoming = Array.isArray(d.events) ? d.events.slice().reverse() : [];
+    tab.name = d.project?.name || tab.name;
+    tab.active = !!d.project?.active;
+    tab.port = d.project?.port || null;
+    tab.latestTimestamp = d.latest_timestamp || tab.latestTimestamp;
+    tab.loading = false;
+    tab.error = null;
+
+    if (!incremental || !tab.events.length) {
+      tab.events = incoming;
+    } else if (incoming.length) {
+      const seen = new Set(tab.events.map(ev => `${ev.timestamp}|${ev.type}|${JSON.stringify(ev)}`));
+      incoming.forEach(ev => {
+        const key = `${ev.timestamp}|${ev.type}|${JSON.stringify(ev)}`;
+        if (!seen.has(key)) tab.events.push(ev);
+      });
+      if (tab.events.length > 200) tab.events = tab.events.slice(-200);
+    }
+
+    renderSessionDrawer();
+  } catch (e) {
+    tab.loading = false;
+    tab.error = e.message;
+    renderSessionDrawer();
+  }
+}
+
+async function refreshSessionNotifications(path) {
+  const tab = getSessionTab(path);
+  if (!tab) return;
+  tab.notifLoading = true;
+  try {
+    const r = await fetch('/api/projects/notifications', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path, limit: 50}),
+    });
+    const d = await r.json();
+    tab.notifications = Array.isArray(d.notifications) ? d.notifications : [];
+    tab.notifLoading = false;
+    renderSessionDrawer();
+  } catch(e) {
+    tab.notifLoading = false;
+  }
+}
+
+async function clearSessionNotifications(path) {
+  try {
+    await fetch('/api/projects/notifications/clear', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path}),
+    });
+    const tab = getSessionTab(path);
+    if (tab) tab.notifications = [];
+    renderSessionDrawer();
+    loadProjects();  // refresh badge counts on cards
+    toast('Notifications cleared', 'ok');
+  } catch(e) {
+    toast('Failed to clear notifications', 'err');
+  }
+}
+
+function setSessionSubTab(path, subTab) {
+  const tab = getSessionTab(path);
+  if (!tab) return;
+  tab.subTab = subTab;
+  if (subTab === 'notifications' && !tab.notifications.length && !tab.notifLoading) {
+    refreshSessionNotifications(path);
+  }
+  renderSessionDrawer();
+}
+
+function renderSessionDrawer() {
+  const drawer = document.getElementById('session-drawer');
+  const tabsEl = document.getElementById('session-tabs');
+  const bodyEl = document.getElementById('session-drawer-body');
+
+  if (!sessionDrawerTabs.length) {
+    drawer.classList.add('hidden');
+    document.body.classList.remove('with-session-drawer');
+    tabsEl.innerHTML = '';
+    bodyEl.innerHTML = '';
+    clearTimeout(sessionPollTimer);
+    return;
+  }
+
+  drawer.classList.remove('hidden');
+  document.body.classList.add('with-session-drawer');
+  drawer.classList.toggle('open', sessionDrawerOpen);
+
+  if (!activeSessionTab || !sessionDrawerTabs.some(tab => tab.path === activeSessionTab)) {
+    activeSessionTab = sessionDrawerTabs[0].path;
+  }
+
+  tabsEl.innerHTML = sessionDrawerTabs.map(tab => `
+    <div class="session-tab ${tab.path === activeSessionTab ? 'active' : ''}" onclick="setActiveSessionViewer('${jsq(tab.path)}')">
+      <span class="session-tab-status ${tab.active ? 'live' : ''}"></span>
+      <span class="session-tab-name" title="${esc(tab.path)}">${esc(tab.name || tab.path)}</span>
+      <button class="session-tab-close" title="Close session viewer" onclick="event.stopPropagation(); closeSessionViewer('${jsq(tab.path)}')">×</button>
+    </div>
+  `).join('');
+
+  bodyEl.innerHTML = sessionDrawerTabs.map(tab => {
+    const meta = [];
+    meta.push(`<span>${tab.active ? 'Active session' : 'Idle project'}</span>`);
+    if (tab.port) meta.push(`<span>Port <a class="port-link" href="http://localhost:${tab.port}" target="_blank" rel="noopener">:${tab.port}</a></span>`);
+    meta.push(`<span title="${esc(tab.path)}">${esc(tab.path.length > 90 ? '…' + tab.path.slice(-87) : tab.path)}</span>`);
+
+    const subTab = tab.subTab || 'logs';
+    const nc = (tab.notifications || []).length;
+    const notifBadge = nc > 0 ? `<span class="session-subtab-badge">${nc}</span>` : '';
+
+    // Logs content
+    let logsContent = '<div class="session-event-empty">Loading session activity…</div>';
+    if (tab.error) {
+      logsContent = `<div class="session-event-empty">Failed to load activity: ${esc(tab.error)}</div>`;
+    } else if (!tab.loading && !tab.events.length) {
+      logsContent = '<div class="session-event-empty">No activity captured yet for this project.</div>';
+    } else if (tab.events.length) {
+      logsContent = tab.events.slice().reverse().map(renderSessionEvent).join('');
+    }
+
+    // Notifications content
+    let notifContent = '';
+    if (tab.notifLoading) {
+      notifContent = '<div class="session-event-empty">Loading notifications…</div>';
+    } else if (!nc) {
+      notifContent = '<div class="session-event-empty">No pending notifications.</div>';
+    } else {
+      notifContent = tab.notifications.map(n => `
+        <div class="session-notif-item">
+          <div>
+            <span class="notif-severity ${esc(n.severity || 'info')}">${esc(n.severity || 'info')}</span>
+            <span class="notif-agent">${esc(n.agent || '')}</span>
+          </div>
+          <div class="notif-title">${esc(n.title || n.message || '')}</div>
+          <div class="notif-time">${esc(formatTimestamp(n.timestamp))}</div>
+        </div>
+      `).join('');
+    }
+
+    const notifHeader = subTab === 'notifications' && nc > 0
+      ? `<div class="session-notif-header"><span>${nc} notification${nc !== 1 ? 's' : ''}</span><button class="session-notif-clear" onclick="clearSessionNotifications('${jsq(tab.path)}')">Clear All</button></div>`
+      : '';
+
+    return `
+      <div class="session-panel ${tab.path === activeSessionTab ? 'active' : ''}">
+        <div class="session-panel-header">
+          <div class="session-panel-title">${esc(tab.name || tab.path)}</div>
+          <div class="session-live-pill ${tab.active ? 'live' : ''}">${tab.active ? 'LIVE' : 'IDLE'}</div>
+          <div class="session-panel-meta">${meta.join('')}</div>
+        </div>
+        <div class="session-subtabs">
+          <div class="session-subtab ${subTab === 'logs' ? 'active' : ''}" onclick="setSessionSubTab('${jsq(tab.path)}','logs')">Logs</div>
+          <div class="session-subtab ${subTab === 'notifications' ? 'active' : ''}" onclick="setSessionSubTab('${jsq(tab.path)}','notifications')">Notifications ${notifBadge}</div>
+        </div>
+        ${notifHeader}
+        <div class="session-event-list" style="${subTab !== 'logs' ? 'display:none' : ''}">${logsContent}</div>
+        <div class="session-event-list" style="${subTab !== 'notifications' ? 'display:none' : ''}">${notifContent}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderSessionEvent(event) {
+  const detail = Object.entries(event || {})
+    .filter(([key]) => key !== 'timestamp' && key !== 'type')
+    .slice(0, 8)
+    .map(([key, value]) => `${key}: ${formatEventValue(value)}`)
+    .join('\n');
+
+  return `
+    <div class="session-event">
+      <div class="session-event-head">
+        <span class="session-event-type">${esc(event.type || 'event')}</span>
+        <span class="session-event-time">${esc(formatTimestamp(event.timestamp))}</span>
+      </div>
+      <div class="session-event-summary">${esc(summarizeEvent(event))}</div>
+      ${detail ? `<div class="session-event-detail">${esc(detail)}</div>` : ''}
+    </div>
+  `;
+}
+
+function summarizeEvent(event) {
+  if (!event) return 'Unknown event';
+  if (event.type === 'tool_call' && event.tool_name) return `Tool call: ${event.tool_name}`;
+  if (event.type === 'decision' && event.reasoning) return event.reasoning;
+  if (event.type === 'file_change' && event.path) return `Changed ${event.path}`;
+  if (event.type === 'fact_stored' && event.fact) return `Stored fact: ${event.fact}`;
+  if (event.type === 'session_start') return 'Session started';
+  if (event.type === 'session_save') return 'Session saved';
+  return event.summary || event.message || event.note || `Recorded ${event.type || 'event'}`;
+}
+
+function formatEventValue(value) {
+  if (value == null) return 'null';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function formatTimestamp(value) {
+  if (!value) return 'unknown time';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return dt.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+
+function formatProjectLastSession(value) {
+  if (!value) return 'never';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return String(value).slice(0, 10);
+  const dayText = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 86400000));
+  return `${dt.toISOString().slice(0, 10)} (${dayText} day${dayText === 1 ? '' : 's'})`;
+}
+
+async function fetchProjectDetails(path, force = false) {
+  if (!force && detailsCache[path]) return detailsCache[path];
+  const ide = mcpModalPath === path ? (document.getElementById('mcp-modal-ide')?.value?.trim() || null) : null;
+  const r = await fetch('/api/projects/details', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path, ide}),
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error);
+  detailsCache[path] = d;
+  return d;
+}
+
+async function updateProject(path) {
+  const project = allProjects.find(p => p.path === path) || {path, ide: 'auto'};
+  document.getElementById('update-modal-path').textContent = path;
+  document.getElementById('update-modal-version').textContent = hubVersion;
+  document.getElementById('update-modal-ide').value = project.ide || 'auto';
+  
+  const out = document.getElementById('update-cmd-output');
+  out.textContent = '';
+  out.className = 'cmd-output hidden';
+  
+  const runBtn = document.getElementById('update-run-btn');
+  runBtn.disabled = false;
+  runBtn.textContent = 'Confirm Update';
+  
+  modalPath = path;
+  openModal('update-modal');
+}
+
+async function runUpdate() {
+  const path = modalPath;
+  const ide = document.getElementById('update-modal-ide').value;
+  const runBtn = document.getElementById('update-run-btn');
+  const out = document.getElementById('update-cmd-output');
+  
+  runBtn.disabled = true;
+  runBtn.innerHTML = '<span class="spin">⟳</span> Updating…';
+  out.textContent = 'Starting update...\n';
+  out.className = 'cmd-output';
+  
+  try {
+    const r = await fetch('/api/projects/run-init', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path, init_mode: 'force', ide: ide === 'auto' ? null : ide}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    
+    out.textContent = d.output || '(no output)';
+    out.className = 'cmd-output ' + (d.success ? 'success' : 'failure');
+    toast(d.success ? 'Project updated' : 'Update failed', d.success ? 'ok' : 'err');
+    if (d.success) loadProjects();
+  } catch(e) {
+    out.textContent += '\nError: ' + e.message;
+    out.className = 'cmd-output failure';
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = 'Confirm Update';
+  }
+}
+
+function normalizeCliIde(ide, fallbackIde = 'claude-code') {
+  const value = (ide || '').trim();
+  return value || fallbackIde || 'claude-code';
+}
+
+function getSelectedMcpIde() {
+  const details = mcpModalPath ? detailsCache[mcpModalPath] : null;
+  const selected = document.getElementById('mcp-modal-ide')?.value?.trim() || '';
+  return normalizeCliIde(selected, details?.ide || 'claude-code');
+}
+
+function getSelectedMcpMode() {
+  const details = mcpModalPath ? detailsCache[mcpModalPath] : null;
+  const selected = document.getElementById('mcp-modal-mode')?.value?.trim() || '';
+  return selected || details?.mcp_mode || 'direct';
+}
+
+function resetMcpOutput() {
+  const out = document.getElementById('mcp-output');
+  out.textContent = '';
+  out.className = 'cmd-output hidden';
+}
+
+function setMcpOutput(text, kind = '') {
+  const out = document.getElementById('mcp-output');
+  out.textContent = text || '(no output)';
+  out.className = 'cmd-output' + (kind ? ` ${kind}` : '');
+}
+
+function renderMcpToolCategories() {
+  const host = document.getElementById('mcp-tool-categories');
+  if (!mcpCapabilities?.tool_categories?.length) {
+    host.innerHTML = '<div style="font-size:12px;color:var(--text2);">Capability metadata unavailable.</div>';
+    return;
+  }
+  host.innerHTML = mcpCapabilities.tool_categories.map(category => `
+    <div class="mcp-tool-cat">
+      <div class="mcp-tool-cat-name">${esc(category.name)}</div>
+      <div class="mcp-tool-badges">${(category.tools || []).map(tool => `<span class="mcp-tool-badge">${esc(tool)}</span>`).join('')}</div>
+    </div>
+  `).join('');
+}
+
+let mcpActiveTab = 'servers';
+function setMcpTab(tab) {
+  mcpActiveTab = tab;
+  const tabKeywords = {servers:'server', setup:'setup', config:'config', reference:'ref'};
+  document.querySelectorAll('#mcp-tabs .mcp-tab').forEach(el => {
+    const txt = el.textContent.toLowerCase();
+    el.classList.toggle('active', txt.includes(tabKeywords[tab] || tab));
+  });
+  ['servers', 'setup', 'config', 'reference'].forEach(t => {
+    const panel = document.getElementById('mcp-tab-' + t);
+    if (panel) panel.classList.toggle('active', t === tab);
+  });
+  if (tab === 'reference') syncMcpCommandPreview();
+  if (tab === 'config') { loadConfigHealth(); loadBudgetSettings(); loadPermissions(); }
+}
+
+function toggleMcpAddForm() {
+  const form = document.getElementById('mcp-add-form');
+  const toggle = document.getElementById('mcp-add-toggle');
+  const showing = form.classList.contains('hidden');
+  form.classList.toggle('hidden');
+  toggle.style.display = showing ? 'none' : '';
+  if (showing) {
+    document.getElementById('mcp-custom-name').focus();
+  }
+}
+
+function copyCliCommand(el) {
+  const text = el.textContent.trim();
+  navigator.clipboard.writeText(text).then(() => {
+    el.classList.add('copied');
+    setTimeout(() => el.classList.remove('copied'), 1500);
+  }).catch(() => {});
+}
+
+function renderMcpStatus(details) {
+  // Header pills — compact status indicators
+  const pills = document.getElementById('mcp-status-pills');
+  const statusPills = [
+    `<span class="mcp-pill ${details.mcp_installed ? 'ok' : 'warn'}">${details.mcp_installed ? 'configured' : 'not configured'}</span>`,
+    `<span class="mcp-pill">${esc(details.mcp_mode || 'direct')}</span>`,
+  ];
+  const serverCount = (details.mcp_servers || []).length;
+  if (serverCount > 0) statusPills.push(`<span class="mcp-pill">${serverCount} server${serverCount !== 1 ? 's' : ''}</span>`);
+  pills.innerHTML = statusPills.join('');
+
+  // Compact status row in Servers tab
+  const row = document.getElementById('mcp-status-row');
+  const activeIdeLabel = IDE_LABELS[details.ide] || details.ide || 'unknown';
+  row.innerHTML = `
+    <div class="mcp-status-item"><span class="mcp-status-label">IDE</span> <span class="mcp-status-value">${esc(activeIdeLabel)}</span></div>
+    <div class="mcp-status-item"><span class="mcp-status-label">Mode</span> <span class="mcp-status-value">${esc(details.mcp_mode || 'direct')}</span></div>
+    <div class="mcp-status-item"><span class="mcp-status-label">Servers</span> <span class="mcp-status-value">${serverCount}</span></div>
+    <div class="mcp-status-item"><span class="mcp-status-label">C3</span> <span class="mcp-status-value">v${esc(details.hub_c3_version || hubVersion || '?')}</span></div>
+  `;
+
+  // Config path display
+  const cfgEl = document.getElementById('mcp-config-path-display');
+  if (details.mcp_config_path) {
+    cfgEl.textContent = details.mcp_config_path;
+    cfgEl.style.display = '';
+  } else {
+    cfgEl.style.display = 'none';
+  }
+}
+
+function renderMcpServers(details) {
+  const host = document.getElementById('mcp-server-list');
+  if (!details.mcp_installed) {
+    host.innerHTML = `<div class="mcp-server-empty">
+      <div class="mcp-server-empty-icon">&#128268;</div>
+      MCP is not installed for this project yet.
+      <div class="mcp-server-empty-cta"><button class="btn btn-primary btn-sm" onclick="setMcpTab('setup')">Set up C3 MCP</button></div>
+    </div>`;
+    return;
+  }
+  if (!details.mcp_servers || !details.mcp_servers.length) {
+    host.innerHTML = `<div class="mcp-server-empty">
+      <div class="mcp-server-empty-icon">&#9741;</div>
+      No servers defined in the active config.
+      <div class="mcp-server-empty-cta"><button class="btn btn-ghost btn-sm" onclick="toggleMcpAddForm()">+ Add a server</button></div>
+    </div>`;
+    return;
+  }
+  // Sort: c3 first, then alphabetical
+  const sorted = [...details.mcp_servers].sort((a, b) => {
+    if (a.name === 'c3') return -1;
+    if (b.name === 'c3') return 1;
+    return a.name.localeCompare(b.name);
+  });
+  host.innerHTML = sorted.map(server => {
+    const isC3 = server.name === 'c3';
+    const args = (server.args || []).join(' ');
+    const envKeys = (server.env_keys || []).join(', ');
+    return `
+      <div class="mcp-server-card ${isC3 ? 'is-c3' : ''}">
+        <div class="mcp-server-card-head">
+          <div class="mcp-server-name">${esc(server.name)}${isC3 ? ' <span class="c3-tag">C3</span>' : ''}</div>
+          <div style="display:flex; gap:4px;">
+            <button class="btn btn-xs btn-ghost" onclick="prefillMcpServer('${jsq(server.name)}','${jsq(server.command || '')}','${jsq(JSON.stringify(server.args || []))}','${jsq(JSON.stringify(server.env_keys || []))}')" title="Edit this server">Edit</button>
+            <button class="btn btn-xs btn-danger" onclick="runMcpRemove('${jsq(server.name)}')" title="Remove this server">Remove</button>
+          </div>
+        </div>
+        <dl class="mcp-server-meta">
+          <dt>Command</dt><dd>${esc(server.command || '—')}</dd>
+          <dt>Args</dt><dd title="${esc(args)}">${esc(args || '(none)')}</dd>
+          ${envKeys ? `<dt>Env</dt><dd>${esc(envKeys)}</dd>` : ''}
+        </dl>
+      </div>
+    `;
+  }).join('');
+}
+
+function buildMcpCliPreview(path, ide, mode) {
+  const qPath = `"${path}"`;
+  const qIde = ide ? ` --ide ${ide}` : '';
+  const qMode = mode ? ` --mcp-mode ${mode}` : '';
+  return [
+    { title: 'Install / Update C3', description: 'Set up or refresh the C3 MCP server for this project.', command: `c3 install-mcp ${qPath}${qIde}${qMode}`.trim() },
+    { title: 'Remove C3', description: 'Removes only the C3 MCP entry from IDE config.', command: `c3 mcp-remove c3 ${qPath}${qIde}`.trim() },
+  ];
+}
+
+function syncMcpCommandPreview() {
+  const host = document.getElementById('mcp-cli-preview-list');
+  const enabledRow = document.getElementById('mcp-custom-enabled-row');
+  if (enabledRow) enabledRow.classList.toggle('hidden-row', getSelectedMcpIde() !== 'codex');
+  if (!mcpModalPath) {
+    host.innerHTML = '<div style="font-size:12px;color:var(--text2);">Open a project to see CLI previews.</div>';
+    return;
+  }
+  const previews = buildMcpCliPreview(mcpModalPath, getSelectedMcpIde(), getSelectedMcpMode());
+  host.innerHTML = previews.map(item => `
+    <div class="mcp-cli-card">
+      <h5>${esc(item.title)}</h5>
+      <p>${esc(item.description)}</p>
+      <div class="mcp-cli-preview" onclick="copyCliCommand(this)">${esc(item.command)}</div>
+    </div>
+  `).join('');
+}
+
+function handleMcpSelectionChange() {
+  syncMcpCommandPreview();
+  if (mcpModalPath) refreshMcpModal(true);
+}
+
+function prefillMcpServer(name, command, argsJson, envKeysJson) {
+  document.getElementById('mcp-custom-name').value = name || '';
+  document.getElementById('mcp-custom-command').value = command || '';
+  try {
+    const args = JSON.parse(argsJson || '[]');
+    document.getElementById('mcp-custom-args').value = Array.isArray(args) ? args.join('\n') : '';
+  } catch(e) {
+    document.getElementById('mcp-custom-args').value = '';
+  }
+  try {
+    const envKeys = JSON.parse(envKeysJson || '[]');
+    const env = {};
+    (Array.isArray(envKeys) ? envKeys : []).forEach(key => { env[key] = ''; });
+    document.getElementById('mcp-custom-env').value = Object.keys(env).length ? JSON.stringify(env, null, 2) : '';
+  } catch(e) {
+    document.getElementById('mcp-custom-env').value = '';
+  }
+  // Ensure add form is visible
+  const form = document.getElementById('mcp-add-form');
+  if (form.classList.contains('hidden')) {
+    form.classList.remove('hidden');
+    document.getElementById('mcp-add-toggle').style.display = 'none';
+  }
+  // Scroll form into view
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function openMcpModal(path, ide, mcpMode, initialTab) {
+  mcpModalPath = path;
+  const pathEl = document.getElementById('mcp-modal-path');
+  pathEl.textContent = path;
+  pathEl.title = path;
+  document.getElementById('mcp-modal-ide').value = ide || '';
+  document.getElementById('mcp-modal-mode').value = mcpMode || '';
+  document.getElementById('mcp-custom-name').value = '';
+  document.getElementById('mcp-custom-command').value = '';
+  document.getElementById('mcp-custom-args').value = '';
+  document.getElementById('mcp-custom-env').value = '';
+  document.getElementById('mcp-custom-enabled').checked = true;
+  document.getElementById('mcp-custom-enabled-row').classList.toggle('hidden-row', getSelectedMcpIde() !== 'codex');
+  // Reset init controls
+  document.getElementById('setup-init-mode').value = 'force';
+  document.getElementById('setup-git').checked = false;
+  syncSetupInitOptions();
+  // Reset add form to collapsed
+  document.getElementById('mcp-add-form').classList.add('hidden');
+  document.getElementById('mcp-add-toggle').style.display = '';
+  // Set initial tab
+  setMcpTab(initialTab || 'servers');
+  resetMcpOutput();
+  renderMcpToolCategories();
+  syncMcpCommandPreview();
+  openModal('mcp-modal');
+  await refreshMcpModal(true);
+}
+
+async function refreshMcpModal(force = false) {
+  if (!mcpModalPath) return;
+  try {
+    const details = await fetchProjectDetails(mcpModalPath, force);
+    renderMcpStatus(details);
+    renderMcpServers(details);
+    updateMcpInstallSection(details);
+    document.getElementById('mcp-custom-enabled-row').classList.toggle('hidden-row', getSelectedMcpIde() !== 'codex');
+    if (mcpActiveTab === 'reference') syncMcpCommandPreview();
+  } catch (e) {
+    setMcpOutput('Error: ' + e.message, 'failure');
+    // Switch to setup tab to show the error
+    setMcpTab('setup');
+  }
+}
+
+function updateMcpInstallSection(details) {
+  const c3Server = (details.mcp_servers || []).find(s => s.name === 'c3');
+  const isInstalled = !!c3Server;
+
+  // Status badge
+  const badge = document.getElementById('mcp-install-state-badge');
+  const statusRow = document.getElementById('mcp-install-status');
+  const cfgPath = document.getElementById('mcp-install-cfg-path');
+  badge.textContent = isInstalled ? 'installed' : 'not installed';
+  badge.className = 'mcp-pill ' + (isInstalled ? 'ok' : 'warn');
+  cfgPath.textContent = details.mcp_config_path || '';
+  cfgPath.title = details.mcp_config_path || '';
+  statusRow.style.display = 'flex';
+
+  // Install button label
+  document.getElementById('mcp-install-btn').textContent = isInstalled ? 'Update C3' : 'Install C3';
+
+  // Remove button only shown when installed
+  document.getElementById('mcp-remove-btn').style.display = isInstalled ? '' : 'none';
+}
+
+async function removeMcpServer(path, name, ide) {
+  const ok = await confirmDialog({ title: 'Remove MCP Server', message: `Remove "${name}" from ${ide || 'target IDE'} config?`, confirmText: 'Remove', danger: true });
+  if (!ok) return;
+  toast('Removing MCP server…', 'info');
+  try {
+    const r = await fetch('/api/projects/run-mcp-remove', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path, name, ide}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    toast(d.success ? 'MCP server removed' : 'Removal failed', d.success ? 'ok' : 'err');
+    if (d.success) {
+      delete detailsCache[path];
+      if (mcpModalPath === path) await refreshMcpModal(true);
+      await loadProjects();
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+    throw e;
+  }
+}
+
+async function runMcpInstall() {
+  if (!mcpModalPath) return;
+  const btn = document.getElementById('mcp-install-btn');
+  const payload = {
+    path: mcpModalPath,
+    ide: document.getElementById('mcp-modal-ide').value.trim() || null,
+    mcp_mode: document.getElementById('mcp-modal-mode').value.trim() || null,
+  };
+  btn.disabled = true;
+  setMcpOutput('Running install-mcp…');
+  try {
+    const r = await fetch('/api/projects/run-mcp', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    setMcpOutput(d.output || '(no output)', d.success ? 'success' : 'failure');
+    toast(d.success ? 'MCP updated' : 'MCP update failed', d.success ? 'ok' : 'err');
+    if (d.success) {
+      delete detailsCache[mcpModalPath];
+      await loadProjects();
+      await refreshMcpModal(true);
+    }
+  } catch (e) {
+    setMcpOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runMcpRemove(name) {
+  if (!mcpModalPath) return;
+  try {
+    await removeMcpServer(mcpModalPath, name, getSelectedMcpIde());
+    setMcpOutput(`Removed MCP server "${name}".`, 'success');
+  } catch (e) {}
+}
+
+function parseArgsInput(raw) {
+  const text = (raw || '').trim();
+  if (!text) return [];
+  if (text.startsWith('[')) {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error('Args JSON must be an array.');
+    return parsed.map(item => String(item));
+  }
+  return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
+
+function parseEnvInput(raw) {
+  const text = (raw || '').trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Env must be a JSON object.');
+  }
+  return parsed;
+}
+
+async function saveCustomMcpServer() {
+  if (!mcpModalPath) return;
+  const btn = document.getElementById('mcp-custom-save-btn');
+  try {
+    const payload = {
+      path: mcpModalPath,
+      ide: document.getElementById('mcp-modal-ide').value.trim() || null,
+      name: document.getElementById('mcp-custom-name').value.trim(),
+      command: document.getElementById('mcp-custom-command').value.trim(),
+      args: parseArgsInput(document.getElementById('mcp-custom-args').value),
+      env: parseEnvInput(document.getElementById('mcp-custom-env').value),
+      enabled: !!document.getElementById('mcp-custom-enabled').checked,
+    };
+    if (!payload.name || !payload.command) throw new Error('Server name and command are required.');
+    btn.disabled = true;
+    setMcpOutput(`Saving MCP server "${payload.name}"…`);
+    const r = await fetch('/api/projects/mcp-server-add', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    setMcpOutput(`Saved MCP server "${payload.name}" to ${d.config_path || 'config'}.`, 'success');
+    toast('MCP server saved', 'ok');
+    delete detailsCache[mcpModalPath];
+    // Collapse add form and clear fields
+    document.getElementById('mcp-add-form').classList.add('hidden');
+    document.getElementById('mcp-add-toggle').style.display = '';
+    document.getElementById('mcp-custom-name').value = '';
+    document.getElementById('mcp-custom-command').value = '';
+    document.getElementById('mcp-custom-args').value = '';
+    document.getElementById('mcp-custom-env').value = '';
+    await loadProjects();
+    await refreshMcpModal(true);
+  } catch (e) {
+    setMcpOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderMcpDetails(body, d) {
+  if (!d.mcp_installed) {
+    body.innerHTML = '<div class="no-mcp-msg">MCP not installed for this project.</div>';
+    return;
+  }
+  const cfgPath = d.mcp_config_path ? `<div class="expand-cfg-path">${esc(d.mcp_config_path)}</div>` : '';
+  if (!d.mcp_servers || d.mcp_servers.length === 0) {
+    body.innerHTML = cfgPath + '<div class="no-mcp-msg">No servers defined in config.</div>';
+    return;
+  }
+  const rows = d.mcp_servers.map(s => {
+    const args    = (s.args || []).join(' ');
+    const envKeys = (s.env_keys || []).join(', ');
+    const isManaged = s.name === 'c3';
+    return `<tr>
+      <td>${esc(s.name)}</td>
+      <td>${esc(s.command)}</td>
+      <td>${esc(args)}</td>
+      <td>${esc(envKeys)}</td>
+      <td style="text-align: right; white-space: nowrap;">
+        <button class="btn btn-xs btn-ghost" onclick="openMcpModal('${jsq(d.path)}','${jsq(d.ide)}','${jsq(d.mcp_mode||'direct')}','setup')">Update</button>
+        <button class="btn btn-xs btn-danger" onclick="removeMcpServer('${jsq(d.path)}', '${jsq(s.name)}', '${jsq(d.ide)}')">Remove</button>
+      </td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = cfgPath + `<table class="mcp-table">
+    <thead><tr><th>Name</th><th>Command</th><th>Args</th><th>Env Keys</th><th style="text-align:right">Actions</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ── Setup Init (inside MCP modal's C3 Setup tab) ───────────────────────────
+function syncSetupInitOptions() {
+  const initMode = document.getElementById('setup-init-mode').value || 'force';
+  document.getElementById('setup-git-row').style.display = initMode === 'force' ? '' : 'none';
+}
+
+async function runSetupInit() {
+  if (!mcpModalPath) return;
+  const btn = document.getElementById('setup-init-btn');
+  const ide = document.getElementById('mcp-modal-ide').value.trim() || null;
+  const initMode = document.getElementById('setup-init-mode').value.trim() || 'force';
+  const mcpMode = document.getElementById('mcp-modal-mode').value.trim() || null;
+  const git = !!document.getElementById('setup-git').checked;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> Running…';
+  setMcpOutput('Running init…');
+
+  try {
+    const r = await fetch('/api/projects/run-init', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: mcpModalPath, ide, mcp_mode: mcpMode, init_mode: initMode, git}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    setMcpOutput(d.output || '(no output)', d.success ? 'success' : 'failure');
+    toast(d.success ? 'Project initialized' : 'Init finished with errors', d.success ? 'ok' : 'err');
+    if (d.success) {
+      delete detailsCache[mcpModalPath];
+      await loadProjects();
+      await refreshMcpModal(true);
+    }
+  } catch(e) {
+    setMcpOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Init';
+  }
+}
+
+// ── Config Tab: Health + Component Updates ─────────────────────────────────
+async function loadConfigHealth() {
+  if (!mcpModalPath) return;
+  const host = document.getElementById('config-health-status');
+  host.innerHTML = '<div class="config-health-loading">Checking…</div>';
+  try {
+    const r = await fetch('/api/projects/health', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: mcpModalPath}),
+    });
+    const h = await r.json();
+    if (h.error) { host.innerHTML = `<div class="config-health-loading" style="color:var(--red)">${esc(h.error)}</div>`; return; }
+
+    let html = '';
+    html += `<div class="config-health-item"><span class="config-health-label">Version</span><span class="config-health-value">${esc(h.config_version || '?')}</span></div>`;
+    html += `<div class="config-health-item"><span class="config-health-label">Index</span><span class="config-health-value">${h.index_files ?? 0} files, ${h.index_chunks ?? 0} chunks</span></div>`;
+    const embedCount = h.embedded_files ?? 0;
+    html += `<div class="config-health-item"><span class="config-health-label">Embeddings</span><span class="config-health-value">${embedCount > 0 ? embedCount + ' files (semantic ready)' : 'not built'}</span></div>`;
+    const docChunks = h.doc_chunks ?? 0;
+    html += `<div class="config-health-item"><span class="config-health-label">Doc Index (RAG)</span><span class="config-health-value">${docChunks > 0 ? docChunks + ' chunks' : 'not built'}</span></div>`;
+
+    const staleCls = (h.stale_files || 0) > 5 ? 'warn' : '';
+    html += `<div class="config-health-item"><span class="config-health-label">Stale Files</span><span class="config-health-value ${staleCls}">${h.stale_files ?? 0}</span></div>`;
+    html += `<div class="config-health-item"><span class="config-health-label">Instructions</span><span class="config-health-value">${esc(h.instructions_file || '?')}</span></div>`;
+    html += `<div class="config-health-item"><span class="config-health-label">Sessions</span><span class="config-health-value">${h.sessions ?? 0}</span></div>`;
+    html += `<div class="config-health-item"><span class="config-health-label">Facts</span><span class="config-health-value">${h.facts ?? 0}</span></div>`;
+
+    const healthCls = h.healthy ? 'ok' : 'err';
+    html += `<div class="config-health-item"><span class="config-health-label">Status</span><span class="config-health-value ${healthCls}">${h.healthy ? 'Healthy' : h.issues?.length + ' issue(s)'}</span></div>`;
+
+    if (h.path_changed) {
+      html += `<div class="config-health-item"><span class="config-health-label">Path Change</span><span class="config-health-value warn">Moved from ${esc(h.old_path || '?')}</span></div>`;
+    }
+
+    if (h.issues?.length) {
+      html += `<div class="config-health-issues"><strong>Issues:</strong><ul>${h.issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`;
+    }
+
+    host.innerHTML = html;
+  } catch(e) {
+    host.innerHTML = `<div class="config-health-loading" style="color:var(--red)">Failed to check health: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadBudgetSettings() {
+  if (!mcpModalPath) return;
+  try {
+    const r = await fetch('/api/projects/budget', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: mcpModalPath}),
+    });
+    const cfg = await r.json();
+    document.getElementById('budget-threshold').value = cfg.threshold || 35000;
+    document.getElementById('budget-nudges-toggle').checked = cfg.show_context_nudges !== false;
+    document.getElementById('budget-alerts-toggle').checked = cfg.prepend_notifications !== false;
+  } catch(e) {
+    document.getElementById('budget-save-msg').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+async function saveBudgetSettings() {
+  if (!mcpModalPath) return;
+  const msgEl = document.getElementById('budget-save-msg');
+  msgEl.textContent = 'Saving…';
+  try {
+    const payload = {
+      path: mcpModalPath,
+      threshold: parseInt(document.getElementById('budget-threshold').value) || 35000,
+      show_context_nudges: document.getElementById('budget-nudges-toggle').checked,
+      prepend_notifications: document.getElementById('budget-alerts-toggle').checked,
+    };
+    const r = await fetch('/api/projects/budget', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.error) { msgEl.textContent = 'Error: ' + d.error; return; }
+    msgEl.textContent = '✓ Saved';
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 3000);
+  } catch(e) {
+    msgEl.textContent = 'Error: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+}
+
+async function loadPermissions() {
+  if (!mcpModalPath) return;
+  try {
+    const r = await fetch('/api/projects/permissions', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: mcpModalPath}),
+    });
+    const cfg = await r.json();
+    const section = document.getElementById('perm-section');
+    if (cfg.supported === false) { if (section) section.style.display = 'none'; return; }
+    if (section) section.style.display = '';
+    const badge = document.getElementById('perm-current-badge');
+    const counts = document.getElementById('perm-rule-counts');
+    const list = document.getElementById('perm-tier-list');
+    const current = cfg.current_tier || 'not set';
+    badge.textContent = current;
+    badge.style.background = current === 'read-only' ? 'var(--blue)' : current === 'standard' ? 'var(--green)' : current === 'permissive' ? 'var(--yellow)' : 'var(--muted)';
+    badge.style.color = current === 'permissive' ? '#000' : '#fff';
+    counts.textContent = cfg.allow_count ? `${cfg.allow_count} allow, ${cfg.deny_count} deny rules` : '';
+    list.innerHTML = '';
+    if (cfg.tiers) {
+      for (const [name, info] of Object.entries(cfg.tiers)) {
+        const isActive = current === name;
+        const color = name === 'read-only' ? 'var(--blue)' : name === 'standard' ? 'var(--green)' : 'var(--yellow)';
+        const row = document.createElement('div');
+        row.style.cssText = `display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;border:1px solid ${isActive ? color : 'var(--border)'};background:${isActive ? color + '18' : 'transparent'};cursor:pointer;transition:all 0.15s;`;
+        row.innerHTML = `
+          <div style="width:13px;height:13px;border-radius:50%;border:2px solid ${isActive ? color : 'var(--muted)'};background:${isActive ? color : 'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            ${isActive ? '<div style="width:5px;height:5px;border-radius:50%;background:var(--bg)"></div>' : ''}
+          </div>
+          <div style="flex:1;">
+            <div style="font-size:12px;font-weight:${isActive ? 600 : 400};color:${isActive ? color : 'var(--text)'}">${name}</div>
+            <div style="font-size:10px;color:var(--muted)">${info.description}</div>
+          </div>
+          <div style="font-size:10px;color:var(--muted);font-family:monospace;white-space:nowrap;">${info.allow_count} allow</div>
+        `;
+        if (!isActive) {
+          row.onclick = () => applyPermTier(name);
+        }
+        list.appendChild(row);
+      }
+    }
+  } catch(e) {
+    document.getElementById('perm-save-msg').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+async function applyPermTier(tier) {
+  if (!mcpModalPath) return;
+  const msgEl = document.getElementById('perm-save-msg');
+  msgEl.textContent = 'Applying…';
+  msgEl.style.color = 'var(--muted)';
+  try {
+    const r = await fetch('/api/projects/permissions/apply', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: mcpModalPath, tier}),
+    });
+    const d = await r.json();
+    if (d.error) { msgEl.textContent = 'Error: ' + d.error; msgEl.style.color = 'var(--red)'; return; }
+    msgEl.textContent = `✓ Applied '${tier}' — restart Claude Code to activate`;
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 4000);
+    loadPermissions();
+  } catch(e) {
+    msgEl.textContent = 'Error: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+}
+
+function setConfigOutput(text, kind = '') {
+  const out = document.getElementById('config-output');
+  out.textContent = text || '(no output)';
+  out.className = 'cmd-output' + (kind ? ` ${kind}` : '');
+}
+
+async function runComponentUpdate(component) {
+  if (!mcpModalPath) return;
+
+  // "Update All" runs each component in sequence
+  if (component === 'all') {
+    const components = ['config', 'index', 'embeddings', 'doc_index', 'dictionary', 'instructions', 'mcp'];
+    setConfigOutput('Running all component updates…');
+    let allOutput = '';
+    let allOk = true;
+    for (const c of components) {
+      const row = document.querySelector(`.config-component-row[data-component="${c}"]`) ||
+                  [...document.querySelectorAll('.config-component-row')].find(el => el.querySelector('button')?.onclick?.toString().includes(`'${c}'`));
+      try {
+        const r = await fetch('/api/projects/run-component', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            path: mcpModalPath, component: c,
+            ide: document.getElementById('mcp-modal-ide')?.value?.trim() || null,
+            mcp_mode: document.getElementById('mcp-modal-mode')?.value?.trim() || null,
+          }),
+        });
+        const d = await r.json();
+        allOutput += `── ${c} ──\n${d.output || d.error || '(no output)'}\n\n`;
+        if (!d.success) allOk = false;
+      } catch(e) {
+        allOutput += `── ${c} ──\nError: ${e.message}\n\n`;
+        allOk = false;
+      }
+    }
+    setConfigOutput(allOutput.trim(), allOk ? 'success' : 'failure');
+    toast(allOk ? 'All components updated' : 'Some components failed', allOk ? 'ok' : 'err');
+    delete detailsCache[mcpModalPath];
+    await loadProjects();
+    await loadConfigHealth();
+    return;
+  }
+
+  // Single component update
+  const btn = event?.target;
+  const origText = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin">⟳</span>'; }
+  setConfigOutput(`Updating ${component}…`);
+
+  try {
+    const r = await fetch('/api/projects/run-component', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        path: mcpModalPath, component,
+        ide: document.getElementById('mcp-modal-ide')?.value?.trim() || null,
+        mcp_mode: document.getElementById('mcp-modal-mode')?.value?.trim() || null,
+      }),
+    });
+    const d = await r.json();
+    if (d.error && !d.success) throw new Error(d.error);
+    setConfigOutput(d.output || '(no output)', d.success ? 'success' : 'failure');
+    toast(d.success ? `${component} updated` : `${component} failed`, d.success ? 'ok' : 'err');
+    if (d.success) {
+      delete detailsCache[mcpModalPath];
+      await loadProjects();
+      await loadConfigHealth();
+    }
+  } catch(e) {
+    setConfigOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+  }
+}
+
+// ── IDE Launcher Modal ─────────────────────────────────────────────────────
+function openIdeModal(path, currentIde) {
+  idePath     = path;
+  ideSelected = currentIde || 'claude-code';
+  document.getElementById('ide-modal-path').textContent = path;
+  const out = document.getElementById('ide-cmd-output');
+  out.textContent = '';
+  out.classList.add('hidden');
+  const btn = document.getElementById('ide-launch-btn');
+  btn.textContent = '\u25B6 Launch';
+  btn.disabled = false;
+  btn.onclick = launchIde;
+  renderIdePicker();
+  openModal('ide-modal');
+}
+
+function renderIdePicker() {
+  const picker = document.getElementById('ide-picker');
+  picker.innerHTML = IDE_OPTIONS.map(opt => `
+    <div class="ide-option${ideSelected === opt.id ? ' selected' : ''}"
+         onclick="selectIdeOption('${opt.id}')">
+      <span class="ide-icon">${opt.icon}</span>
+      <span class="ide-name">${esc(opt.name)}</span>
+      <span class="ide-cmd">${esc(opt.cmd)}</span>
+    </div>`).join('');
+  document.getElementById('ide-custom-row').style.display =
+    ideSelected === 'custom' ? '' : 'none';
+}
+
+function selectIdeOption(id) {
+  ideSelected = id;
+  renderIdePicker();
+}
+
+async function launchIde() {
+  if (!idePath || !ideSelected) return;
+  const customCmd = ideSelected === 'custom'
+    ? document.getElementById('ide-custom-cmd').value.trim() : '';
+  if (ideSelected === 'custom' && !customCmd) {
+    toast('Enter a custom command first.', 'err'); return;
+  }
+  const btn = document.getElementById('ide-launch-btn');
+  const out = document.getElementById('ide-cmd-output');
+  btn.disabled = true;
+  btn.textContent = 'Launching\u2026';
+  out.textContent = '';
+  out.classList.add('hidden');
+  try {
+    const resp = await fetch('/api/projects/launch-ide', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ path: idePath, ide: ideSelected, custom_cmd: customCmd })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      out.textContent = '\u2715 ' + data.error;
+      out.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = '\u25B6 Launch';
+    } else {
+      out.textContent = '\u2713 Launched.';
+      out.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = '\u25B6 Launch';
+    }
+  } catch (e) {
+    out.textContent = '\u2715 ' + e.message;
+    out.classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = '\u25B6 Launch';
+  }
+}
+
+// ── Edit Modal ─────────────────────────────────────────────────────────────
+function openEditModal(path, name, tagsStr) {
+  editPath = path;
+  // Fetch latest data from allProjects for notes
+  const proj = allProjects.find(p => p.path === path) || {};
+  document.getElementById('edit-modal-path').textContent = path;
+  document.getElementById('edit-name').value  = proj.name  || name || '';
+  document.getElementById('edit-tags').value  = (proj.tags || []).join(', ') || tagsStr || '';
+  document.getElementById('edit-notes').value = proj.notes || '';
+  document.getElementById('edit-save-btn').disabled = false;
+  openModal('edit-modal');
+}
+
+async function saveEdit() {
+  if (!editPath) return;
+  const name  = document.getElementById('edit-name').value.trim();
+  const tags  = document.getElementById('edit-tags').value;
+  const notes = document.getElementById('edit-notes').value;
+  const btn   = document.getElementById('edit-save-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects/update', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: editPath, name, tags, notes}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    toast(d.updated ? 'Project updated' : 'Project not found', d.updated ? 'ok' : 'err');
+    if (d.updated) { closeModal('edit-modal'); loadProjects(); }
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Transfer Modal ────────────────────────────────────────────────────────
+
+function openTransferModal(path, name) {
+  transferPath = path;
+  document.getElementById('transfer-modal-old-path').textContent = path;
+  document.getElementById('transfer-new-path').value = '';
+  document.getElementById('transfer-save-btn').disabled = false;
+  openModal('transfer-modal');
+}
+
+async function saveTransfer() {
+  if (!transferPath) return;
+  const newPath = document.getElementById('transfer-new-path').value.trim();
+  if (!newPath) { toast('New path is required', 'err'); return; }
+  const btn = document.getElementById('transfer-save-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects/transfer', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({old_path: transferPath, new_path: newPath}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    toast(d.transferred ? 'Project transferred' : 'Transfer failed', d.transferred ? 'ok' : 'err');
+    if (d.transferred) { closeModal('transfer-modal'); delete detailsCache[transferPath]; loadProjects(); }
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Settings Modal ─────────────────────────────────────────────────────────
+async function openSettings() {
+  try {
+    const r = await fetch('/api/hub/config');
+    const d = await r.json();
+    document.getElementById('settings-port').value = d.port || 3330;
+    document.getElementById('settings-auto-browser').checked = !!d.auto_open_browser;
+    document.getElementById('settings-running-info').textContent =
+      `Hub is running on port ${hubRunningPort}`;
+    document.getElementById('settings-port-warning').style.display = 'none';
+    // Session mode
+    const hasTerminal = !!d.has_terminal;
+    const badge = document.getElementById('session-mode-badge');
+    const label = document.getElementById('session-mode-label');
+    const detachBtn = document.getElementById('detach-terminal-btn');
+    const modeInfo = document.getElementById('session-mode-info');
+    if (hasTerminal) {
+      badge.textContent = '⬛ terminal';
+      badge.className = 'svc-badge svc-stopped';
+      label.textContent = 'Running with terminal window attached';
+      detachBtn.style.display = '';
+      modeInfo.style.display = '';
+    } else {
+      badge.textContent = '● background';
+      badge.className = 'svc-badge svc-ok';
+      label.textContent = 'Running as background process (no terminal)';
+      detachBtn.style.display = 'none';
+      modeInfo.style.display = 'none';
+    }
+  } catch(e) {
+    toast('Could not load hub config', 'err');
+    return;
+  }
+  openModal('settings-modal');
+  // Reset service output
+  const out = document.getElementById('svc-output');
+  out.textContent = ''; out.className = 'cmd-output hidden';
+  // Load service status async
+  loadServiceStatus();
+}
+
+async function loadServiceStatus() {
+  setSvcBadge('checking…', 'svc-unknown');
+  try {
+    const r = await fetch('/api/hub/service');
+    const d = await r.json();
+    renderServiceStatus(d);
+  } catch(e) {
+    setSvcBadge('unavailable', 'svc-error');
+  }
+}
+
+function renderServiceStatus(d) {
+  const installed = d.installed;
+  const running   = d.running;  // null = unknown (windows), true/false otherwise
+
+  let label, cls;
+  if (!installed) {
+    label = 'not installed'; cls = 'svc-stopped';
+  } else if (running === true) {
+    label = '● running';    cls = 'svc-ok';
+  } else if (running === false) {
+    label = '○ stopped';    cls = 'svc-stopped';
+  } else {
+    label = '● installed';  cls = 'svc-ok';
+  }
+  setSvcBadge(label, cls);
+
+  const method = d.method || '';
+  const portStr = d.port ? ` (port ${d.port})` : '';
+  document.getElementById('svc-method').textContent = method + portStr;
+
+  const logRow = document.getElementById('svc-log-row');
+  if (d.log_path) {
+    document.getElementById('svc-log-path').textContent = d.log_path;
+    logRow.style.display = 'block';
+  } else {
+    logRow.style.display = 'none';
+  }
+
+  // Button states
+  document.getElementById('svc-install-btn').textContent   = installed ? '↓ Reinstall' : '↓ Install Service';
+  document.getElementById('svc-uninstall-btn').style.display = installed ? '' : 'none';
+  document.getElementById('svc-start-btn').style.display   = installed ? '' : 'none';
+  document.getElementById('svc-stop-btn').textContent      = '■ Stop Hub';
+}
+
+function setSvcBadge(text, cls) {
+  const el = document.getElementById('svc-status-badge');
+  el.textContent = text;
+  el.className = 'svc-badge ' + cls;
+}
+
+async function svcAction(action) {
+  const out = document.getElementById('svc-output');
+
+  if (action === 'stop') {
+    const ok = await confirmDialog({ title: 'Stop Hub', message: 'The page will become unreachable until the hub is restarted.', confirmText: 'Stop', danger: true });
+    if (!ok) return;
+  }
+  if (action === 'uninstall') {
+    const ok = await confirmDialog({ title: 'Uninstall Service', message: 'The hub will no longer auto-start on login.', confirmText: 'Uninstall', danger: true });
+    if (!ok) return;
+  }
+
+  out.textContent = action + '…';
+  out.className = 'cmd-output';
+  setSvcBadge('working…', 'svc-unknown');
+
+  try {
+    const r = await fetch('/api/hub/service/' + action, {method: 'POST'});
+
+    if (action === 'stop') {
+      // Server is shutting down — show stopped message
+      out.textContent = 'Hub stopped. Restart with: c3 hub';
+      out.className = 'cmd-output success';
+      setSvcBadge('stopped', 'svc-stopped');
+      return;
+    }
+
+    const d = await r.json();
+    out.textContent = d.output || (d.success ? 'Done.' : 'Failed.');
+    out.className = 'cmd-output ' + (d.success ? 'success' : 'failure');
+    toast(d.success ? action + ' succeeded' : action + ' failed', d.success ? 'ok' : 'err');
+    setTimeout(loadServiceStatus, 800);
+  } catch(e) {
+    if (action === 'stop') {
+      out.textContent = 'Hub stopped. Restart with: c3 hub';
+      out.className = 'cmd-output success';
+      setSvcBadge('stopped', 'svc-stopped');
+    } else {
+      out.textContent = 'Error: ' + e.message;
+      out.className = 'cmd-output failure';
+    }
+  }
+}
+
+async function saveSettings() {
+  const portVal = parseInt(document.getElementById('settings-port').value, 10);
+  const autoBrowser = document.getElementById('settings-auto-browser').checked;
+  const btn = document.getElementById('settings-save-btn');
+  if (isNaN(portVal) || portVal < 1024 || portVal > 65535) {
+    toast('Port must be 1024–65535', 'err');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/hub/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({port: portVal, auto_open_browser: autoBrowser}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    hubDedicatedPort = portVal;
+    document.getElementById('hub-port-badge').textContent = ':' + portVal;
+    toast('Settings saved', 'ok');
+    // Show restart warning if port differs from running port
+    if (portVal != hubRunningPort) {
+      const warn = document.getElementById('settings-port-warning');
+      warn.textContent = `⚠ Restart hub to apply new port (currently running on :${hubRunningPort})`;
+      warn.style.display = 'block';
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Modal generic open/close with animation ───────────────────────────────
+function openModal(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('hidden');
+  // Force reflow before adding visible class for CSS transition
+  void el.offsetWidth;
+  el.classList.add('modal-visible');
+}
+
+function closeModal(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('modal-visible');
+  setTimeout(() => {
+    el.classList.add('hidden');
+  }, 150); // match CSS transition duration
+  if (id === 'mcp-modal') { mcpModalPath = null; }
+  if (id === 'update-modal') { modalPath = null; }
+  if (id === 'edit-modal') { editPath = null; }
+  if (id === 'transfer-modal') { transferPath = null; }
+  if (id === 'c3-setup-modal') { c3SetupPath = null; }
+}
+
+// Close modals on backdrop click
+['mcp-modal','edit-modal','transfer-modal','settings-modal','update-modal','batch-update-modal','ide-modal','c3-setup-modal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal(id);
+  });
+});
+
+// ── Project actions ────────────────────────────────────────────────────────
+async function addProject() {
+  const pathEl = document.getElementById('add-path');
+  const nameEl = document.getElementById('add-name');
+  const path = pathEl.value.trim(), name = nameEl.value.trim() || null;
+  if (!path) { toast('Enter a project path', 'info'); pathEl.focus(); return; }
+
+  const btn = document.getElementById('add-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path, name}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Unknown error');
+    toast('Registered: ' + d.name, 'ok');
+    pathEl.value = ''; nameEl.value = '';
+    await loadProjects();
+    if (!d.c3_initialized) openC3SetupModal(d.path || path);
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function openC3SetupModal(path) {
+  c3SetupPath = path;
+  const pathEl = document.getElementById('c3-setup-path');
+  pathEl.textContent = path;
+  pathEl.title = path;
+  // Reset state
+  document.getElementById('c3-setup-ide').value = '';
+  document.getElementById('c3-setup-mcp-mode').value = '';
+  document.getElementById('c3-setup-init-btn').disabled = false;
+  document.getElementById('c3-setup-init-btn').textContent = 'Initialize';
+  document.getElementById('c3-setup-mcp-btn').disabled = true;
+  document.getElementById('c3-setup-done-btn').disabled = true;
+  const out = document.getElementById('c3-setup-output');
+  out.textContent = '';
+  out.className = 'cmd-output hidden';
+  document.getElementById('c3-setup-step1-badge').className = 'mcp-pill';
+  document.getElementById('c3-setup-step2-badge').className = 'mcp-pill';
+  openModal('c3-setup-modal');
+}
+
+function setC3SetupOutput(text, kind = '') {
+  const out = document.getElementById('c3-setup-output');
+  out.textContent = text || '(no output)';
+  out.className = 'cmd-output' + (kind ? ` ${kind}` : '');
+}
+
+async function c3SetupRunInit() {
+  if (!c3SetupPath) return;
+  const btn = document.getElementById('c3-setup-init-btn');
+  const ide = document.getElementById('c3-setup-ide').value.trim() || null;
+  const mcpMode = document.getElementById('c3-setup-mcp-mode').value.trim() || null;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> Running…';
+  setC3SetupOutput('Initializing C3…');
+  try {
+    const r = await fetch('/api/projects/run-init', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: c3SetupPath, ide, mcp_mode: mcpMode, init_mode: 'force'}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    setC3SetupOutput(d.output || '(no output)', d.success ? 'success' : 'failure');
+    if (d.success) {
+      document.getElementById('c3-setup-step1-badge').className = 'mcp-pill ok';
+      document.getElementById('c3-setup-mcp-btn').disabled = false;
+      toast('C3 initialized', 'ok');
+      delete detailsCache[c3SetupPath];
+      await loadProjects();
+    } else {
+      toast('Init finished with errors', 'err');
+    }
+  } catch(e) {
+    setC3SetupOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Re-run Init';
+  }
+}
+
+async function c3SetupRunMcp() {
+  if (!c3SetupPath) return;
+  const btn = document.getElementById('c3-setup-mcp-btn');
+  const ide = document.getElementById('c3-setup-ide').value.trim() || null;
+  const mcpMode = document.getElementById('c3-setup-mcp-mode').value.trim() || null;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> Installing…';
+  setC3SetupOutput('Installing MCP server…');
+  try {
+    const r = await fetch('/api/projects/run-mcp', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path: c3SetupPath, ide, mcp_mode: mcpMode}),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    setC3SetupOutput(d.output || '(no output)', d.success ? 'success' : 'failure');
+    if (d.success) {
+      document.getElementById('c3-setup-step2-badge').className = 'mcp-pill ok';
+      document.getElementById('c3-setup-done-btn').disabled = false;
+      toast('MCP server installed', 'ok');
+      delete detailsCache[c3SetupPath];
+      await loadProjects();
+    } else {
+      toast('MCP install finished with errors', 'err');
+    }
+  } catch(e) {
+    setC3SetupOutput('Error: ' + e.message, 'failure');
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Re-run Install';
+  }
+}
+
+async function removeProject(path, name) {
+  const ok = await confirmDialog({ title: 'Remove Project', message: `Remove "${name}" from the hub? Project files are NOT deleted.`, confirmText: 'Remove', danger: true });
+  if (!ok) return;
+  const r = await fetch('/api/projects/remove', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path}),
+  });
+  const d = await r.json();
+  toast(d.removed ? 'Removed: ' + name : 'Not found', d.removed ? 'ok' : 'info');
+  delete detailsCache[path];
+  loadProjects();
+}
+
+async function startSession(path) {
+  toast('Launching session…', 'info');
+  const r = await fetch('/api/sessions/start', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path}),
+  });
+  const d = await r.json();
+  if (d.error) { toast('Error: ' + d.error, 'err'); return; }
+  toast(d.launched ? 'Session launched — watching…' : 'Launch failed', d.launched ? 'ok' : 'err');
+  if (d.launched) {
+    launchingPaths.add(path);
+    renderProjects(); // immediate yellow-border feedback before first fetch
+
+    const project = allProjects.find(x => x.path === path);
+    addSessionViewer(path, project?.name || path);
+
+    // Adaptive poll: 0ms, 0.5s, 1s, 1.5s, 2s, 2s, 3s, 3s, 3s, 5s, 5s, 5s  (~28s, 12 checks)
+    const DELAYS = [0, 500, 1000, 1500, 2000, 2000, 3000, 3000, 3000, 5000, 5000, 5000];
+    let idx = 0;
+    const poll = async () => {
+      await loadProjects();
+      await refreshSessionViewer(path, true);
+      const p = allProjects.find(x => x.path === path);
+      if (p?.active) { launchingPaths.delete(path); renderProjects(); return; }
+      if (++idx >= DELAYS.length) {
+        launchingPaths.delete(path);
+        renderProjects();
+        const pFinal = allProjects.find(x => x.path === path);
+        if (!pFinal?.active) toast('Session did not become active — check the project log at .c3/ui.log', 'warn');
+        return;
+      }
+      setTimeout(poll, DELAYS[idx]);
+    };
+    setTimeout(poll, DELAYS[idx]);
+  }
+}
+
+// (syncCmdModalOptions removed — init controls now live in the MCP modal's Setup tab)
+
+async function restartSession(path, port) {
+  toast('Restarting UI server…', 'info');
+  const r = await fetch('/api/sessions/restart', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path, port}),
+  });
+  const d = await r.json();
+  toast(d.launched ? 'UI server restarted' : ('Restart failed: ' + (d.error||'')), d.launched ? 'ok' : 'err');
+  setTimeout(loadProjects, 1500);
+}
+
+async function toggleAutostart(path, currentlyOn) {
+  const enabled = !currentlyOn;
+  const r = await fetch('/api/sessions/autostart', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path, enabled}),
+  });
+  const d = await r.json();
+  if (d.error) { toast('Error: ' + d.error, 'err'); return; }
+  toast(enabled ? '⚡ Autostart enabled — UI will launch when Hub starts' : 'Autostart disabled', 'ok');
+  loadProjects();
+}
+
+async function stopSession(port) {
+  const r = await fetch('/api/sessions/stop', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({port}),
+  });
+  const d = await r.json();
+  toast(d.stopped ? `Session :${port} stopped` : 'Stop failed', d.stopped ? 'ok' : 'err');
+  setTimeout(loadProjects, 1000);
+  sessionDrawerTabs.forEach(tab => { if (tab.port === port) tab.active = false; });
+  renderSessionDrawer();
+}
+
+async function endMcpSession(path) {
+  const r = await fetch('/api/sessions/end', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path}),
+  });
+  const d = await r.json();
+  toast(d.stopped ? 'Session ended' : 'No active session found', d.stopped ? 'ok' : 'info');
+  loadProjects();
+}
+
+function openSession(port) { window.open('http://localhost:' + port, '_blank'); }
+
+async function openFolder(path) {
+  toast('Opening folder…', 'info');
+  try {
+    const r = await fetch('/api/projects/open', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({path}),
+    });
+    const d = await r.json().catch(() => null);
+    if (!r.ok) {
+      if (r.status === 404) {
+        throw new Error('Folder open endpoint is unavailable on this server. Restart the hub or update to the latest C3 instance.');
+      }
+      throw new Error(d?.error || `Server error (HTTP ${r.status})`);
+    }
+    if (d?.error) throw new Error(d.error);
+    toast('Folder opened', 'ok');
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+async function updateAllProjects() {
+  const outdated = allProjects.filter(p => p.c3_version && p.c3_version !== hubVersion);
+  if (!outdated.length) return;
+  _batchOutdated = outdated;
+
+  document.getElementById('batch-update-version').textContent = hubVersion;
+  const list = document.getElementById('batch-update-list');
+  list.innerHTML = outdated.map(p => `
+    <div class="batch-item">
+      <div style="overflow:hidden; flex:1; min-width:0;">
+        <div class="batch-item-name">${esc(p.name)}</div>
+        <div class="batch-item-path">${esc(p.path)}</div>
+      </div>
+      <span class="batch-item-status batch-status-pending" id="batch-item-${cardId(p.path)}">pending</span>
+    </div>
+  `).join('');
+
+  const log = document.getElementById('batch-update-log');
+  log.textContent = '';
+  log.className = 'cmd-output hidden';
+  document.getElementById('batch-progress-bar').style.display = 'none';
+  document.getElementById('batch-progress-fill').style.width = '0%';
+  document.getElementById('batch-summary').style.display = 'none';
+  document.getElementById('batch-retry-btn').style.display = 'none';
+
+  const runBtn = document.getElementById('batch-update-run-btn');
+  runBtn.disabled = false;
+  runBtn.textContent = 'Start Batch Update';
+  runBtn.style.display = '';
+  runBtn.onclick = runBatchUpdate;
+  document.getElementById('batch-update-cancel').style.display = '';
+  document.getElementById('batch-update-cancel').onclick = () => closeModal('batch-update-modal');
+  document.getElementById('batch-cancel-running').style.display = 'none';
+
+  openModal('batch-update-modal');
+}
+
+// (old runBatchUpdate removed — replaced by polling-based version below)
+
+// ── Utils ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function jsq(s) {
+  return String(s ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+// ── Toast Manager ─────────────────────────────────────────────────────────
+const ToastManager = (() => {
+  let _id = 0;
+  const _toasts = new Map();
+  const _container = () => document.getElementById('toast-container');
+  const ICONS = { ok: '\u2713', err: '\u2717', info: '\u24D8', warn: '\u26A0' };
+  const MAX_VISIBLE = 5;
+
+  function _prune() {
+    const container = _container();
+    if (!container) return;
+    const items = container.querySelectorAll('.toast-item');
+    if (items.length > MAX_VISIBLE) {
+      for (let i = 0; i < items.length - MAX_VISIBLE; i++) {
+        _dismiss(items[i].dataset.tid);
+      }
+    }
+  }
+
+  function _dismiss(id) {
+    const el = document.querySelector(`.toast-item[data-tid="${id}"]`);
+    if (!el) return;
+    el.classList.add('removing');
+    el.classList.remove('show');
+    const meta = _toasts.get(String(id));
+    if (meta?.timer) clearTimeout(meta.timer);
+    _toasts.delete(String(id));
+    setTimeout(() => el.remove(), 200);
+  }
+
+  function show(msg, type = 'info', opts = {}) {
+    const id = ++_id;
+    const duration = opts.duration ?? (type === 'err' ? 6000 : 3400);
+    const container = _container();
+    if (!container) return id;
+
+    const el = document.createElement('div');
+    el.className = `toast-item ${type}`;
+    el.dataset.tid = id;
+    el.innerHTML = `
+      <span class="toast-icon">${ICONS[type] || ICONS.info}</span>
+      <span class="toast-msg">${msg.replace(/</g,'&lt;')}</span>
+      <button class="toast-close" onclick="ToastManager.dismiss(${id})">&times;</button>
+    `;
+    container.appendChild(el);
+    void el.offsetWidth;
+    el.classList.add('show');
+
+    const meta = { el };
+    if (duration > 0) {
+      meta.timer = setTimeout(() => _dismiss(id), duration);
+    }
+    _toasts.set(String(id), meta);
+    _prune();
+    return id;
+  }
+
+  function progress(msg, id) {
+    return show(msg, 'info', { duration: 0 });
+  }
+
+  function update(id, patch) {
+    const el = document.querySelector(`.toast-item[data-tid="${id}"]`);
+    if (!el) return;
+    if (patch.message) {
+      const msgEl = el.querySelector('.toast-msg');
+      if (msgEl) msgEl.textContent = patch.message;
+    }
+    if (patch.progress != null) {
+      let bar = el.querySelector('.toast-progress');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'toast-progress';
+        el.appendChild(bar);
+      }
+      bar.style.width = Math.min(100, patch.progress) + '%';
+    }
+    if (patch.type) {
+      el.className = `toast-item ${patch.type} show`;
+      const icon = el.querySelector('.toast-icon');
+      if (icon) icon.textContent = ICONS[patch.type] || ICONS.info;
+    }
+  }
+
+  function dismiss(id) { _dismiss(id); }
+
+  return { show, progress, update, dismiss };
+})();
+
+// Backward-compatible wrapper
+function toast(msg, type = 'info') {
+  return ToastManager.show(msg, type);
+}
+
+// ── Confirm Dialog ────────────────────────────────────────────────────────
+function confirmDialog({ title, message, confirmText = 'Confirm', danger = false }) {
+  return new Promise(resolve => {
+    const root = document.getElementById('confirm-root');
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+      <div class="confirm-dialog">
+        <div class="confirm-title">${esc(title)}</div>
+        <div class="confirm-message">${esc(message)}</div>
+        <div class="confirm-actions">
+          <button class="btn btn-ghost" id="confirm-cancel-btn">Cancel</button>
+          <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="confirm-ok-btn">${esc(confirmText)}</button>
+        </div>
+      </div>
+    `;
+    root.appendChild(overlay);
+
+    const cleanup = (result) => {
+      overlay.remove();
+      resolve(result);
+    };
+    overlay.querySelector('#confirm-cancel-btn').onclick = () => cleanup(false);
+    overlay.querySelector('#confirm-ok-btn').onclick = () => cleanup(true);
+    overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(false); });
+    document.addEventListener('keydown', function handler(e) {
+      if (e.key === 'Escape') { document.removeEventListener('keydown', handler); cleanup(false); }
+    });
+  });
+}
+
+// ── Batch Update (polling-based) ──────────────────────────────────────────
+let _batchPollTimer = null;
+let _batchOutdated = [];
+
+async function runBatchUpdate() {
+  const runBtn = document.getElementById('batch-update-run-btn');
+  const cancelBtn = document.getElementById('batch-update-cancel');
+  const cancelRunning = document.getElementById('batch-cancel-running');
+  const log = document.getElementById('batch-update-log');
+  const progressBar = document.getElementById('batch-progress-bar');
+  const progressFill = document.getElementById('batch-progress-fill');
+
+  runBtn.disabled = true;
+  runBtn.style.display = 'none';
+  cancelBtn.style.display = 'none';
+  cancelRunning.style.display = '';
+  progressBar.style.display = '';
+  progressFill.style.width = '0%';
+  log.textContent = 'Starting batch update...\n';
+  log.className = 'cmd-output';
+
+  try {
+    const r = await fetch('/api/projects/run-init/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: _batchOutdated.map(p => ({ path: p.path, name: p.name, ide: p.ide })) })
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    _startBatchPoll();
+  } catch(e) {
+    log.textContent += '\nError: ' + e.message;
+    log.className = 'cmd-output failure';
+    toast('Batch update error: ' + e.message, 'err');
+    _batchResetButtons();
+  }
+}
+
+function _startBatchPoll() {
+  clearInterval(_batchPollTimer);
+  _batchPollTimer = setInterval(_pollBatchStatus, 1000);
+}
+
+async function _pollBatchStatus() {
+  try {
+    const r = await fetch('/api/projects/run-init/batch/status');
+    const state = await r.json();
+    _renderBatchProgress(state);
+    if (state.done || (!state.running && state.results?.length > 0)) {
+      clearInterval(_batchPollTimer);
+      _batchPollTimer = null;
+      _batchFinished(state);
+    }
+  } catch(e) {
+    // network hiccup, keep polling
+  }
+}
+
+function _renderBatchProgress(state) {
+  const total = state.total || 1;
+  const done = (state.results || []).length;
+  const pct = Math.round((done / total) * 100);
+  const progressFill = document.getElementById('batch-progress-fill');
+  if (progressFill) progressFill.style.width = pct + '%';
+
+  // Update individual items
+  (state.results || []).forEach(res => {
+    const cid = cardId(res.path);
+    const el = document.getElementById(`batch-item-${cid}`);
+    if (el) {
+      const cls = res.success ? 'batch-status-done' : 'batch-status-failed';
+      el.textContent = res.success ? 'DONE' : 'FAILED';
+      el.className = 'batch-item-status ' + cls;
+    }
+  });
+
+  // Mark currently running
+  if (state.current) {
+    const list = document.getElementById('batch-update-list');
+    const items = list?.querySelectorAll('.batch-item-status');
+    items?.forEach(el => {
+      if (el.textContent === 'running...') {
+        el.textContent = 'pending';
+        el.className = 'batch-item-status batch-status-pending';
+      }
+    });
+    // Find the current one by index
+    const allItems = list?.querySelectorAll('.batch-item');
+    if (allItems && state.current_index < allItems.length) {
+      const statusEl = allItems[state.current_index]?.querySelector('.batch-item-status');
+      if (statusEl && statusEl.textContent === 'pending') {
+        statusEl.textContent = 'running...';
+        statusEl.className = 'batch-item-status batch-status-running';
+      }
+    }
+  }
+
+  const log = document.getElementById('batch-update-log');
+  if (log && state.results?.length > 0) {
+    log.textContent = state.results.map(res =>
+      `[${res.success ? 'OK' : 'ERR'}] ${res.name || res.path}${!res.success && res.output ? '\n    ' + res.output.split('\n').slice(-2).join('\n    ') : ''}`
+    ).join('\n');
+  }
+}
+
+function _batchFinished(state) {
+  const results = state.results || [];
+  const successCount = results.filter(r => r.success).length;
+  const failCount = results.filter(r => !r.success).length;
+  const cancelled = state.cancelled;
+
+  const summary = document.getElementById('batch-summary');
+  if (summary) {
+    summary.style.display = '';
+    summary.textContent = `Batch update ${cancelled ? 'cancelled' : 'finished'}. ${successCount} succeeded, ${failCount} failed` +
+      (cancelled ? ` (${state.total - results.length} skipped)` : '') + '.';
+  }
+
+  const log = document.getElementById('batch-update-log');
+  if (log) log.className = 'cmd-output ' + (failCount === 0 && !cancelled ? 'success' : 'failure');
+
+  toast(`Batch ${cancelled ? 'cancelled' : 'finished'} (${successCount} ok, ${failCount} err)`, failCount === 0 && !cancelled ? 'ok' : 'err');
+
+  // Show retry button if there were failures
+  const retryBtn = document.getElementById('batch-retry-btn');
+  if (retryBtn) retryBtn.style.display = failCount > 0 ? '' : 'none';
+
+  _batchResetButtons();
+  loadProjects();
+}
+
+function _batchResetButtons() {
+  const runBtn = document.getElementById('batch-update-run-btn');
+  const cancelBtn = document.getElementById('batch-update-cancel');
+  const cancelRunning = document.getElementById('batch-cancel-running');
+  runBtn.style.display = '';
+  runBtn.disabled = false;
+  runBtn.textContent = 'Close';
+  runBtn.onclick = () => closeModal('batch-update-modal');
+  cancelBtn.style.display = 'none';
+  cancelRunning.style.display = 'none';
+}
+
+async function cancelBatchUpdate() {
+  if (_batchPollTimer) {
+    try {
+      await fetch('/api/projects/run-init/batch/cancel', { method: 'POST' });
+      toast('Cancellation requested...', 'warn');
+    } catch(e) {}
+  } else {
+    closeModal('batch-update-modal');
+  }
+}
+
+async function retryFailedBatch() {
+  // Re-open the batch modal with only failed projects
+  closeModal('batch-update-modal');
+  toast('Re-run batch for the full project list to retry.', 'info');
+}
+</script>
+</body>
+</html>

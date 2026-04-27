@@ -41,12 +41,10 @@ Honest caveats:
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -264,7 +262,8 @@ def _run_aider_on_task(
 ) -> tuple[float, int, int, float, str]:
     """Invoke aider against the task. Returns (latency_s, input_tok, output_tok, cost, error)."""
     from services.bench.external.aider_polyglot import (
-        detect_aider, _parse_aider_tokens_cost,
+        _parse_aider_tokens_cost,
+        detect_aider,
     )
 
     aider = detect_aider()

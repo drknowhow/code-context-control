@@ -7,27 +7,28 @@ Exposes 10 C3 tools as MCP endpoints. Tool logic lives in cli/tools/.
 Usage:
     python cli/mcp_server.py --project <path>
 """
+import argparse
+import asyncio
 import os
 import sys
-import time
-import asyncio
-import argparse
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from contextlib import asynccontextmanager
 from typing import Any
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastmcp import FastMCP, Context
-from core import count_tokens
-from services.transcript_index import TranscriptIndex
+from fastmcp import Context, FastMCP
+
+from core.ide import get_profile, load_ide_config
+from services.auto_memory import AutoMemory
 from services.context_snapshot import ContextSnapshot
 from services.runtime import C3Runtime, build_runtime, start_runtime, stop_runtime
-from services.auto_memory import AutoMemory
-from core.ide import load_ide_config, get_profile
+from services.transcript_index import TranscriptIndex
+
 
 # Read version without importing cli.c3 (heavy side effects)
 def _read_version() -> str:
@@ -44,18 +45,18 @@ C3_VERSION = _read_version()
 
 # Tool handlers
 from cli.tools._helpers import maybe_related_facts, validate_file_path
-from cli.tools.search import handle_search
-from cli.tools.session import handle_session
+from cli.tools.agent import handle_agent
+from cli.tools.compress import handle_compress
+from cli.tools.delegate import handle_delegate
+from cli.tools.edit import handle_edit
+from cli.tools.filter import handle_filter
 from cli.tools.memory import handle_memory
 from cli.tools.read import handle_read
-from cli.tools.compress import handle_compress
-from cli.tools.validate import handle_validate
-from cli.tools.filter import handle_filter
-from cli.tools.status import handle_status
-from cli.tools.delegate import handle_delegate
-from cli.tools.agent import handle_agent
-from cli.tools.edit import handle_edit
+from cli.tools.search import handle_search
+from cli.tools.session import handle_session
 from cli.tools.shell import handle_shell
+from cli.tools.status import handle_status
+from cli.tools.validate import handle_validate
 
 
 def _get_project_path() -> str:
@@ -229,7 +230,7 @@ async def lifespan(server):
 
     def _bg_delegate_prewarm():
         try:
-            from cli.tools.delegate import check_gemini, check_codex
+            from cli.tools.delegate import check_codex, check_gemini
             check_gemini()
             check_codex()
         except Exception:
@@ -513,7 +514,8 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     # Wire progress notifications (same direct-stdout approach as c3_agent)
-    import json as _json, threading as _threading
+    import json as _json
+    import threading as _threading
     _stdout_lock = _threading.Lock()
 
     def _progress_cb(message: str):
@@ -554,7 +556,8 @@ async def c3_agent(workflow: str, scope: str = "", context: str = "",
     # event loop is technically free (awaiting to_thread) but the transport write stalls.
     # Direct stdout writes are safe here because the event loop is idle during to_thread
     # (no concurrent transport writes until the tool response is sent after to_thread returns).
-    import json as _json, threading as _threading
+    import json as _json
+    import threading as _threading
     _stdout_lock = _threading.Lock()
 
     def _progress_cb(message: str):
@@ -646,5 +649,12 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
     return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry-point for the ``c3-mcp`` console script."""
+    from services import error_reporting
+    error_reporting.init(component="c3-mcp", version=C3_VERSION)
     mcp.run(transport="stdio", show_banner=False, log_level="ERROR")
+
+
+if __name__ == "__main__":
+    main()

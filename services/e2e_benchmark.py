@@ -20,10 +20,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
+from core import count_tokens
 from services.e2e_evaluator import EvalScore, Evaluator
-from services.e2e_tasks import E2ETask, TaskBuilder, build_prompt, DIFFICULTY_WEIGHTS
+from services.e2e_tasks import DIFFICULTY_WEIGHTS, E2ETask, build_prompt
 
 
 def _unicode_safe() -> bool:
@@ -526,16 +526,16 @@ class CLIProvider:
             for model_id, mdata in models.items():
                 if not response.model_used:
                     response.model_used = model_id
-                
+
                 api_stats = mdata.get("api", {})
                 total_req += api_stats.get("totalRequests", 0) or 0
-                
+
                 tok = mdata.get("tokens", {})
                 total_input += tok.get("input", 0) or 0
                 # "candidates" = generated/output tokens
                 total_output += tok.get("candidates", 0) or 0
                 total_cached += tok.get("cached", 0) or 0
-            
+
             response.num_turns = total_req
             response.input_tokens = total_input
             response.output_tokens = total_output
@@ -1896,7 +1896,7 @@ def _build_insights(report: dict) -> dict:
         findings.append({
             "severity": "strength", "area": "category",
             "title": f"Dominates in {', '.join(strong_cats)}",
-            "detail": f"C3 wins 80%+ of tasks in these categories.",
+            "detail": "C3 wins 80%+ of tasks in these categories.",
             "action": "These are C3's sweet spots — consider marketing/documentation around these strengths.",
         })
     if weak_cats:
@@ -2737,8 +2737,8 @@ class DelegateBenchmark:
     def run_all(self) -> list[DelegateBenchmarkResult]:
         """Run all delegate benchmark tasks through both backends."""
         from cli.tools.delegate import (
-            handle_delegate, check_codex, _is_codex_on_path,
-            DELEGATE_TASKS, CODEX_MODELS,
+            _is_codex_on_path,
+            check_codex,
         )
 
         results = []
@@ -2776,6 +2776,7 @@ class DelegateBenchmark:
                     context: str) -> DelegateBenchmarkResult:
         """Run a single task through a specific backend."""
         import time as _time
+
         from cli.tools.delegate import handle_delegate
 
         result = DelegateBenchmarkResult(

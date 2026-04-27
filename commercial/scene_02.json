@@ -1,0 +1,14 @@
+{
+  "scene_id": "02_surgical_precision",
+  "title": "Precision Retrieval",
+  "visual_prompt": "A split-screen view in 8k. Left: A terminal window where 'c3_search' and 'c3_read' commands are typed, with results appearing as surgical, golden glowing highlights. Right: A 3D wireframe representation of a codebase where a specific module is isolated, extracted, and 'shrunk' into a dense, glowing memory cube. The atmosphere is high-tech laboratory style, with clean surfaces and soft ambient blue lighting.",
+  "camera_movement": "Side-to-side slider move between the terminal and the 3D codebase, followed by a macro lens zoom on the 'Memory Cube'.",
+  "sound_design": "Clean, rhythmic mechanical keyboard clicks (ASMR style) synchronized with the code highlights. Digital 'scanning' noises and a satisfying high-frequency 'lock' sound on extraction.",
+  "overlay_text": ["c3_search: Find the Needle", "c3_compress: Map the Whole", "c3_read: Surgical Extraction"],
+  "veo_settings": {
+    "duration": "7s",
+    "aspect_ratio": "16:9",
+    "motion_score": 5,
+    "quality_preset": "high"
+  }
+}

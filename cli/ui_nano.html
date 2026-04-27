@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C3 Nano</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.9/babel.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+    body { font-family: 'DM Sans', -apple-system, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { border-radius: 3px; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-up { animation: fadeUp 0.25s ease forwards; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    // ─── Theme ───
+    const DARK = {
+      bg: "#0a0e14", surface: "#0f1720", surfaceAlt: "#141e2b", border: "#1e2733",
+      text: "#c5cdd8", dim: "#6b7d95", accent: "#36d7b7", blue: "#65a9ff",
+      warn: "#ffbf57", error: "#ff6f7a", ok: "#50e39f", purple: "#b38aff",
+    };
+    const LIGHT = {
+      bg: "#edf2f8", surface: "#ffffff", surfaceAlt: "#f7f9fd", border: "#cfd9e8",
+      text: "#172436", dim: "#5e738f", accent: "#008a76", blue: "#1f6ed4",
+      warn: "#b07a00", error: "#c6374b", ok: "#1f9d5b", purple: "#7c5cbf",
+    };
+
+    // ─── API ───
+    const API = window.location.origin;
+    const parse = async (r) => {
+      const ct = (r.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("application/json")) {
+        const j = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(j?.error || j?.message || `HTTP ${r.status}`);
+        return j || {};
+      }
+      const t = await r.text().catch(() => "");
+      if (!r.ok) throw new Error(t || `HTTP ${r.status}`);
+      return {};
+    };
+    const api = {
+      get: async (p) => parse(await fetch(`${API}${p}`)),
+      post: async (p, b = {}) => parse(await fetch(`${API}${p}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b),
+      })),
+    };
+
+    // ─── Helpers ───
+    const timeAgo = (iso) => {
+      if (!iso) return "-";
+      const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (isNaN(s) || s < 0) return "-";
+      if (s < 60) return `${s}s`;
+      if (s < 3600) return `${Math.floor(s / 60)}m`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h`;
+      return `${Math.floor(s / 86400)}d`;
+    };
+    const localTime = (iso) => {
+      if (!iso) return "-";
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? "-" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    };
+    const fmtDuration = (iso) => {
+      if (!iso) return "-";
+      const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+      return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+    };
+    const fmtK = n => n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n);
+
+    // ─── Tiny Components ───
+    const Dot = ({ color, pulse }) => (
+      <span style={{
+        width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block",
+        boxShadow: `0 0 8px ${color}80`, animation: pulse ? "pulse 1.2s linear infinite" : "none",
+      }} />
+    );
+
+    const Badge = ({ color, children }) => (
+      <span className="mono" style={{
+        fontSize: 9, fontWeight: 600, color, background: `${color}15`, border: `1px solid ${color}30`,
+        padding: "1px 5px", borderRadius: 4, letterSpacing: 0.2,
+      }}>{children}</span>
+    );
+
+    const MiniBar = ({ value, max = 100, color, height = 4 }) => (
+      <div style={{ height, borderRadius: height, background: `${color}20`, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, max > 0 ? (value / max) * 100 : 0)}%`, background: color, borderRadius: height, transition: "width 0.3s" }} />
+      </div>
+    );
+
+    const Stat = ({ t, label, value, color }) => (
+      <div style={{ background: `${color}10`, border: `1px solid ${color}25`, borderRadius: 6, padding: "6px 8px" }}>
+        <div className="mono" style={{ fontSize: 9, color: t.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</div>
+        <div className="mono" style={{ fontSize: 16, color, fontWeight: 700, marginTop: 1 }}>{value}</div>
+      </div>
+    );
+
+    const Card = ({ t, title, badge, children }) => (
+      <section className="fade-up" style={{
+        background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8,
+        padding: 12, display: "flex", flexDirection: "column", gap: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: t.dim, textTransform: "uppercase", letterSpacing: 1, flex: 1 }}>{title}</span>
+          {badge}
+        </div>
+        {children}
+      </section>
+    );
+
+    // ─── App ───
+    function App() {
+      const [dark, setDark] = useState(() => localStorage.getItem("c3-nano-theme") !== "light");
+      const t = dark ? DARK : LIGHT;
+
+      const [connected, setConnected] = useState(true);
+      const [loading, setLoading] = useState(false);
+      const [health, setHealth] = useState(null);
+      const [stats, setStats] = useState({});
+      const [session, setSession] = useState(null);
+      const [activity, setActivity] = useState([]);
+      const [notifications, setNotifications] = useState([]);
+      const [actionMsg, setActionMsg] = useState("");
+      const [showShutdown, setShowShutdown] = useState(false);
+      const [shutdownBusy, setShutdownBusy] = useState(false);
+      const [shutdownForce, setShutdownForce] = useState(false);
+      const [tick, setTick] = useState(0);
+
+      useEffect(() => {
+        localStorage.setItem("c3-nano-theme", dark ? "dark" : "light");
+      }, [dark]);
+
+      const loadHealth = useCallback(async () => {
+        try { const h = await api.get("/api/health"); setHealth(h); setConnected(true); } catch { setConnected(false); }
+      }, []);
+      const loadStats = useCallback(async () => {
+        try { const s = await api.get("/api/stats"); setStats(s); setConnected(true); } catch { setConnected(false); }
+      }, []);
+      const loadSession = useCallback(async () => {
+        try { setSession(await api.get("/api/sessions/current") || null); } catch {}
+      }, []);
+      const loadActivity = useCallback(async () => {
+        try { const a = await api.get("/api/activity?limit=12"); setActivity(Array.isArray(a) ? a : []); } catch {}
+      }, []);
+      const loadNotifications = useCallback(async () => {
+        try { const n = await api.get("/api/notifications?limit=30"); setNotifications(Array.isArray(n) ? n : []); } catch {}
+      }, []);
+
+      const refreshAll = useCallback(async () => {
+        setLoading(true);
+        await Promise.all([loadHealth(), loadStats(), loadSession(), loadActivity(), loadNotifications()]);
+        setLoading(false);
+      }, [loadHealth, loadStats, loadSession, loadActivity, loadNotifications]);
+
+      useEffect(() => { refreshAll(); }, [refreshAll]);
+      useEffect(() => {
+        const fast = setInterval(() => { loadSession(); loadActivity(); }, 5000);
+        const mid = setInterval(() => { loadNotifications(); loadStats(); }, 12000);
+        const slow = setInterval(loadHealth, 20000);
+        const ticker = setInterval(() => setTick(x => x + 1), 1000);
+        return () => { clearInterval(fast); clearInterval(mid); clearInterval(slow); clearInterval(ticker); };
+      }, [loadSession, loadActivity, loadNotifications, loadStats, loadHealth]);
+
+      const ackOne = async (id) => { try { await api.post("/api/notifications/ack", { id }); setNotifications(p => p.filter(n => n.id !== id)); } catch {} };
+      const ackAll = async () => { try { await api.post("/api/notifications/ack-all"); setNotifications([]); } catch {} };
+      const rebuildIndex = async () => {
+        setActionMsg("Rebuilding index...");
+        try { await api.post("/api/index/rebuild", {}); setActionMsg("Index rebuilt."); loadActivity(); } catch { setActionMsg("Rebuild failed."); }
+        setTimeout(() => setActionMsg(""), 3000);
+      };
+      const confirmShutdown = async (force = false) => {
+        setShutdownBusy(true); setShutdownForce(force);
+        try { await api.post("/api/shutdown", { force_close_terminal: force }); } catch {}
+        setConnected(false);
+        setTimeout(() => { try { window.close(); } catch {} window.location.href = "about:blank"; }, 450);
+      };
+
+      const eventSummary = (e) => {
+        if (!e) return "-";
+        if (e.type === "tool_call") return (e.tool || "tool") + (e.result_summary ? `: ${e.result_summary}` : "");
+        if (e.type === "decision") return e.decision || e.data || "decision";
+        if (e.type === "file_change") return e.file || e.data || "file change";
+        if (e.type === "session_start") return `session started`;
+        if (e.type === "session_save") return `session saved`;
+        return e.type || "event";
+      };
+
+      // Derived
+      const projectName = stats?.project_path ? stats.project_path.split(/[/\\]/).pop() : "C3";
+      const orig = stats?.total_original_tokens || 0;
+      const comp = stats?.total_compressed_tokens || 0;
+      const saved = orig - comp;
+      const pct = stats?.savings_pct || 0;
+      const convUsage = stats?.conversation_token_usage;
+      const sourceUsage = convUsage?.sources || {};
+      const sourceEntries = Object.entries(sourceUsage).sort((a, b) => (b[1]?.total_tokens || 0) - (a[1]?.total_tokens || 0));
+      const totalSourceTokens = sourceEntries.reduce((sum, [, d]) => sum + (d?.total_tokens || 0), 0);
+      const budget = stats?.context_budget;
+      const hasBudget = budget && budget.call_count > 0;
+      const budgetPct = hasBudget ? Math.min(100, Math.round((budget.response_tokens / (budget.threshold || 35000)) * 100)) : 0;
+      const budgetColor = budgetPct >= 90 ? t.error : budgetPct >= 70 ? t.warn : t.accent;
+      const sessionDuration = session?.live ? fmtDuration(session.started) : (session?.duration || "-");
+      const sourceLabel = session?.source_system || session?.source_ide || "unknown";
+
+      return (
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: t.bg, color: t.text }}>
+          {/* ── Header ── */}
+          <header style={{
+            borderBottom: `1px solid ${t.border}`, background: t.surface, padding: "8px 14px",
+            display: "flex", alignItems: "center", gap: 10, flexShrink: 0,
+          }}>
+            <Dot color={connected ? t.ok : t.error} pulse={connected} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>
+                  C<span style={{ color: t.accent }}>3</span> <span style={{ fontWeight: 400, color: t.dim }}>Nano</span>
+                </span>
+                <span className="mono" style={{ fontSize: 10, color: t.dim }}>{projectName}</span>
+              </div>
+            </div>
+
+            {/* Source badges */}
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {(health?.sources ? Object.entries(health.sources) : []).map(([k, v]) => (
+                <Badge key={k} color={v ? t.ok : t.error}>{k}</Badge>
+              ))}
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={refreshAll} disabled={loading}
+                className="mono" style={{
+                  height: 26, padding: "0 8px", borderRadius: 5, border: `1px solid ${t.border}`,
+                  background: "transparent", color: t.dim, fontSize: 10, cursor: "pointer",
+                }}>
+                {loading ? "..." : "Refresh"}
+              </button>
+              <button onClick={() => setDark(v => !v)}
+                className="mono" style={{
+                  height: 26, padding: "0 8px", borderRadius: 5, border: `1px solid ${t.border}`,
+                  background: "transparent", color: t.dim, fontSize: 10, cursor: "pointer",
+                }}>
+                {dark ? "Light" : "Dark"}
+              </button>
+              <button onClick={async () => {
+                  try { const h = await api.get('/api/hub/info'); window.location.href = h.url; }
+                  catch { window.location.href = 'http://localhost:3330'; }
+                }}
+                className="mono" style={{
+                  height: 26, padding: "0 8px", borderRadius: 5, border: `1px solid ${t.warn}40`,
+                  background: `${t.warn}12`, color: t.warn, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                }}>
+                Hub
+              </button>
+              <a href="/" className="mono" style={{
+                height: 26, padding: "0 10px", borderRadius: 5, border: `1px solid ${t.purple}40`,
+                background: `${t.purple}12`, color: t.purple, fontSize: 10, fontWeight: 700,
+                textDecoration: "none", display: "flex", alignItems: "center",
+              }}>
+                Full UI
+              </a>
+              <a href="/edits" className="mono" style={{
+                height: 26, padding: "0 10px", borderRadius: 5, border: `1px solid ${t.accent}40`,
+                background: `${t.accent}12`, color: t.accent, fontSize: 10, fontWeight: 700,
+                textDecoration: "none", display: "flex", alignItems: "center",
+              }}>
+                Ledger
+              </a>
+              <button onClick={() => setShowShutdown(true)}
+                className="mono" style={{
+                  height: 26, padding: "0 8px", borderRadius: 5, border: `1px solid ${t.error}40`,
+                  background: `${t.error}12`, color: t.error, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                }}>
+                Shut Down
+              </button>
+            </div>
+          </header>
+
+          {/* ── Content ── */}
+          <main style={{ flex: 1, overflow: "auto", padding: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10 }}>
+
+              {/* Card: Overview */}
+              <Card t={t} title="Overview" badge={<Badge color={t.accent}>{pct}% savings</Badge>}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                  <Stat t={t} label="Saved" value={fmtK(saved)} color={t.accent} />
+                  <Stat t={t} label="Files" value={stats?.index?.files_indexed || 0} color={t.blue} />
+                  <Stat t={t} label="Sessions" value={stats?.sessions_count || 0} color={t.warn} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="mono" style={{ fontSize: 9, color: t.dim, flexShrink: 0 }}>Savings</span>
+                  <MiniBar value={pct} color={t.accent} />
+                  <span className="mono" style={{ fontSize: 10, color: t.accent, fontWeight: 600, flexShrink: 0 }}>{pct}%</span>
+                </div>
+                {hasBudget && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="mono" style={{ fontSize: 9, color: t.dim, flexShrink: 0 }}>Budget</span>
+                    <MiniBar value={budgetPct} color={budgetColor} />
+                    <span className="mono" style={{ fontSize: 10, color: budgetColor, fontWeight: 600, flexShrink: 0 }}>{budgetPct}%</span>
+                  </div>
+                )}
+              </Card>
+
+              {/* Card: Current Session */}
+              <Card t={t} title="Current Session" badge={<Badge color={t.blue}>source:{sourceLabel}</Badge>}>
+                {!session ? (
+                  <div style={{ color: t.dim, fontSize: 12 }}>No active session.</div>
+                ) : (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                      <Stat t={t} label="Session" value={(session.id || "-").slice(0, 12)} color={t.blue} />
+                      <Stat t={t} label="Duration" value={sessionDuration} color={t.accent} />
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                      <Stat t={t} label="Tools" value={Array.isArray(session.tool_calls) ? session.tool_calls.length : (session.tool_calls || 0)} color={t.warn} />
+                      <Stat t={t} label="Decisions" value={Array.isArray(session.decisions) ? session.decisions.length : (session.decisions || 0)} color={t.purple} />
+                      <Stat t={t} label="Files" value={Array.isArray(session.files_touched) ? session.files_touched.length : (session.files_touched || 0)} color={t.ok} />
+                    </div>
+                    <div className="mono" style={{ fontSize: 9, color: t.dim }}>
+                      started {localTime(session.started)} ({timeAgo(session.started)} ago)
+                    </div>
+                  </>
+                )}
+              </Card>
+
+              {/* Card: Token Usage by Source (provider-agnostic) */}
+              {sourceEntries.length > 0 && (
+                <Card t={t} title="Token Usage" badge={<Badge color={t.purple}>{fmtK(totalSourceTokens)} total</Badge>}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {sourceEntries.map(([name, data], idx) => {
+                      const tokens = data?.total_tokens || 0;
+                      const input = data?.input_tokens || 0;
+                      const output = data?.output_tokens || 0;
+                      const calls = data?.call_count || data?.sessions || 0;
+                      const colors = [t.accent, t.blue, t.purple, t.warn, t.error];
+                      const color = colors[idx % colors.length];
+                      const sourcePct = totalSourceTokens > 0 ? Math.round((tokens / totalSourceTokens) * 100) : 0;
+                      return (
+                        <div key={name} style={{
+                          background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 6, padding: "7px 10px",
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                            <Dot color={color} />
+                            <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: t.text, flex: 1 }}>{name}</span>
+                            <span className="mono" style={{ fontSize: 10, color }}>{fmtK(tokens)}</span>
+                            {calls > 0 && <span className="mono" style={{ fontSize: 9, color: t.dim }}>{calls} calls</span>}
+                            <Badge color={color}>{sourcePct}%</Badge>
+                          </div>
+                          <MiniBar value={sourcePct} color={color} />
+                          {(input > 0 || output > 0) && (
+                            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                              <span className="mono" style={{ fontSize: 9, color: t.dim }}>{fmtK(input)} in</span>
+                              <span className="mono" style={{ fontSize: 9, color: t.dim }}>{fmtK(output)} out</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
+
+              {/* Card: Activity */}
+              <Card t={t} title="Activity" badge={<Badge color={t.blue}>{activity.length}</Badge>}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflow: "auto" }}>
+                  {activity.length === 0 && <div style={{ color: t.dim, fontSize: 12 }}>No recent activity.</div>}
+                  {activity.map((e, i) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
+                      borderRadius: 5, background: t.surfaceAlt, border: `1px solid ${t.border}`,
+                    }}>
+                      <Badge color={t.blue}>{e.type || "event"}</Badge>
+                      <span className="mono" style={{ fontSize: 10, color: t.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {eventSummary(e)}
+                      </span>
+                      <span className="mono" style={{ fontSize: 9, color: t.dim, flexShrink: 0 }}>{timeAgo(e.timestamp)}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              {/* Card: Notifications */}
+              <Card t={t} title="Notifications"
+                badge={
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <Badge color={t.warn}>{notifications.length}</Badge>
+                    {notifications.length > 0 && (
+                      <button onClick={ackAll} className="mono" style={{
+                        border: `1px solid ${t.border}`, borderRadius: 4, background: "transparent",
+                        color: t.dim, fontSize: 9, padding: "1px 5px", cursor: "pointer",
+                      }}>Dismiss all</button>
+                    )}
+                  </div>
+                }>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflow: "auto" }}>
+                  {notifications.length === 0 && <div style={{ color: t.dim, fontSize: 12 }}>No notifications.</div>}
+                  {notifications.slice(0, 15).map((n, i) => {
+                    const sev = (n.severity || "info").toLowerCase();
+                    const sevColor = sev === "critical" ? t.error : sev === "warning" ? t.warn : t.blue;
+                    return (
+                      <div key={n.id || i} style={{
+                        display: "flex", alignItems: "center", gap: 6, padding: "5px 8px",
+                        borderRadius: 5, background: t.surfaceAlt, borderLeft: `3px solid ${sevColor}`,
+                      }}>
+                        <Badge color={sevColor}>{sev}</Badge>
+                        <span className="mono" style={{ fontSize: 10, color: t.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {n.title || "notification"}{n.message ? ` - ${n.message}` : ""}
+                        </span>
+                        <button onClick={() => ackOne(n.id)} style={{
+                          border: "none", background: "transparent", color: t.dim, fontSize: 9, cursor: "pointer", padding: "2px",
+                        }}>x</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              {/* Card: Quick Actions */}
+              <Card t={t} title="Actions">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <button onClick={rebuildIndex} className="mono" style={{
+                    height: 34, borderRadius: 6, border: `1px solid ${t.blue}40`,
+                    background: `${t.blue}12`, color: t.blue, fontWeight: 700, fontSize: 11, cursor: "pointer",
+                  }}>Rebuild Index</button>
+                  <button onClick={loadHealth} className="mono" style={{
+                    height: 34, borderRadius: 6, border: `1px solid ${t.accent}40`,
+                    background: `${t.accent}12`, color: t.accent, fontWeight: 700, fontSize: 11, cursor: "pointer",
+                  }}>Refresh Health</button>
+                </div>
+                {actionMsg && (
+                  <div className="mono" style={{ fontSize: 10, color: actionMsg.includes("fail") ? t.error : t.dim }}>
+                    {actionMsg}
+                  </div>
+                )}
+              </Card>
+
+            </div>
+          </main>
+
+          {/* ── Shutdown Modal ── */}
+          {showShutdown && (
+            <div style={{
+              position: "fixed", inset: 0, background: "rgba(4,10,18,0.6)",
+              display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+            }}>
+              <div style={{
+                width: "min(400px, calc(100vw - 24px))",
+                background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8,
+                boxShadow: "0 16px 48px rgba(0,0,0,0.3)", padding: 16, display: "flex", flexDirection: "column", gap: 10,
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>Shut Down C3?</div>
+                <div style={{ fontSize: 12, color: t.dim, lineHeight: 1.5 }}>
+                  Stops the C3 server and ends the current session.
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
+                  <button onClick={() => { if (!shutdownBusy) setShowShutdown(false); }}
+                    disabled={shutdownBusy} className="mono" style={{
+                      height: 30, padding: "0 10px", borderRadius: 5, border: `1px solid ${t.border}`,
+                      background: "transparent", color: t.dim, fontSize: 10, cursor: shutdownBusy ? "default" : "pointer",
+                      opacity: shutdownBusy ? 0.5 : 1,
+                    }}>Cancel</button>
+                  <button onClick={() => confirmShutdown(false)} disabled={shutdownBusy}
+                    className="mono" style={{
+                      height: 30, padding: "0 10px", borderRadius: 5, border: `1px solid ${t.error}60`,
+                      background: `${t.error}15`, color: t.error, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                      opacity: shutdownBusy ? 0.7 : 1,
+                    }}>
+                    {shutdownBusy && !shutdownForce ? "Stopping..." : "Shut Down"}
+                  </button>
+                  <button onClick={() => confirmShutdown(true)} disabled={shutdownBusy}
+                    className="mono" style={{
+                      height: 30, padding: "0 10px", borderRadius: 5, border: `1px solid ${t.error}80`,
+                      background: `${t.error}22`, color: t.error, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                      opacity: shutdownBusy ? 0.7 : 1,
+                    }}>
+                    {shutdownBusy && shutdownForce ? "Closing..." : "Shut Down + Close Terminal"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(React.createElement(App), document.getElementById("root"));
+  </script>
+</body>
+</html>

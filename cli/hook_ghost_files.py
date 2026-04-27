@@ -40,6 +40,7 @@ _MAX_GHOST_SIZE = 4096
 
 # Version-number pattern: 3.0.0, 1.2, 10.20.30 — usually from pip specifiers.
 import re as _re
+
 _VERSION_RE = _re.compile(r"^\d+(\.\d+)+[`'\"$|]*$")
 
 # Extensions that are definitely NOT ghost files

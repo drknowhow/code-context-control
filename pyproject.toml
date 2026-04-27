@@ -1,0 +1,158 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-context-control"
+version = "2.28.0"
+description = "Local code-intelligence layer for AI coding tools (Claude Code, Codex, Gemini, Copilot). Retrieve less, read less, edit safer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Dimitri Tselenchuk", email = "dtselenc@gmail.com" }
+]
+keywords = [
+    "claude", "claude-code", "mcp", "ai", "code-intelligence",
+    "code-context", "developer-tools", "llm-tools",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "tiktoken>=0.7.0",
+    "fastmcp>=2.0.0",
+    "watchdog>=4.0.0",
+    "tree-sitter>=0.22.0",
+    "tree-sitter-python>=0.21.0",
+    "tree-sitter-javascript>=0.21.0",
+    "tree-sitter-typescript>=0.21.0",
+    "tree-sitter-html>=0.21.0",
+    "tree-sitter-markdown>=0.3.2",
+    "tree-sitter-css>=0.21.0",
+    "tree-sitter-go>=0.21.0",
+    "tree-sitter-rust>=0.21.0",
+    "tree-sitter-json>=0.21.0",
+    "tree-sitter-yaml>=0.6.0",
+    "flask>=3.0.0",
+    "rich>=13.0.0",
+    "click>=8.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+vector = [
+    "scikit-learn>=1.3.0",
+    "numpy>=1.24.0",
+    "chromadb>=0.4.24",
+]
+tui = [
+    "textual>=0.50.0",
+]
+telemetry = [
+    "sentry-sdk>=2.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pyright>=1.1.350",
+    "ruff>=0.6.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/drknowhow/code-context-control"
+Documentation = "https://github.com/drknowhow/code-context-control#readme"
+Repository = "https://github.com/drknowhow/code-context-control"
+Changelog = "https://github.com/drknowhow/code-context-control/blob/main/CHANGELOG.md"
+Issues = "https://github.com/drknowhow/code-context-control/issues"
+
+[project.scripts]
+c3 = "cli.c3:main"
+c3-mcp = "cli.mcp_server:main"
+c3-hub = "cli.hub_server:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "cli*",
+    "services*",
+    "core*",
+    "oracle*",
+    "tui*",
+]
+exclude = [
+    "tests*",
+    ".c3*",
+    ".github*",
+    "Marketing*",
+    "commercial*",
+    "docs*",
+    "guide*",
+    "oracle-guide*",
+]
+
+[tool.setuptools.package-data]
+"*" = [
+    "*.html",
+    "*.css",
+    "*.js",
+    "*.json",
+    "*.tcss",
+    "*.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    ".c3",
+    ".pytest_cache",
+    "dist",
+    "build",
+    "docs",
+    "guide",
+    "oracle-guide",
+    "commercial",
+    "tui/build.bat",
+    "tui/build.sh",
+]
+
+[tool.ruff.lint]
+# Conservative ruleset to start: pyflakes, basic style, import sorting.
+# Tighten over time; do NOT add rules that mass-rewrite existing code.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line-too-long: handled by formatter, many existing exceptions
+    "E402",  # module-level imports not at top: needed for sys.path hacks
+    "E701",  # multi-statement-on-one-line: stylistic; common in CLI/argparse code
+    "E722",  # bare-except: tolerated in best-effort/diagnostic paths (TODO: tighten)
+    "E731",  # do-not-assign-lambda: stylistic, many false positives
+    "E741",  # ambiguous-variable-name (l/I/O): rare, low value
+    "F841",  # unused-variable: often left intentionally as documentation
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]
+"cli/c3.py" = ["E402"]
+"cli/mcp_server.py" = ["E402"]
