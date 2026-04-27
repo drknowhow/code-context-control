@@ -172,11 +172,15 @@ See [`SECURITY.md`](SECURITY.md) for vulnerability reports, the full hardening g
 
 ---
 
-## License
+## License & project posture
 
-- **Core / OSS** — Apache License 2.0 (see [`LICENSE`](LICENSE)).
-- **Pro tier** (planned: license-key activation, hosted team Hub, advanced memory) — separate commercial EULA (see [`EULA-PRO.md`](EULA-PRO.md)).
-- **Third-party deps** — listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+- **Current OSS license** — Apache License 2.0 ([`LICENSE`](LICENSE)). Free for any use, including commercial. Modify, fork, redistribute — all permitted.
+- **Pro tier** (planned, not yet shipped) — license-key activation will gate new additive features. Existing OSS features stay free. See [`EULA-PRO.md`](EULA-PRO.md).
+- **Future major versions may relicense** to a source-available license (e.g. BSL 1.1 with a 4-year Apache-2.0 conversion) to protect commercialization. Already-published 2.x versions stay Apache-2.0 forever.
+- **Trademarks** — "C3" and "Code Context Control" are trademarks (™) of Dimitri Tselenchuk. Forks must use a distinct name. See [`NOTICE`](NOTICE).
+- **Third-party deps** — see [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+**Building on C3 commercially?** Please email `dtselenc@gmail.com` first. Apache-2.0 grants broad rights to the published 2.x code, but as a courtesy we ask the community not to repackage C3 as a commercial competing product. Full FAQ: [`LICENSING.md`](LICENSING.md).
 
 ---
 

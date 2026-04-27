@@ -8,11 +8,37 @@ file in the root of this repository for the full text.
 
 Third-party dependencies and their licenses are listed in THIRD_PARTY_LICENSES.md.
 
-The following components require a separate commercial license for use beyond
-personal/evaluation purposes (see EULA-PRO.md):
-  - Pro tier features behind a license-key activation gate (when introduced)
-  - Hosted services operated under the "Code Context Control" name
+----------------------------------------------------------------------------
+Project posture and commercialization plans
+----------------------------------------------------------------------------
 
-The "Code Context Control" and "C3" names and logos are trademarks of
-Dimitri Tselenchuk. The Apache-2.0 license does not grant permission to use
-these names except as required for describing the origin of the work.
+This project is being developed with the intent to commercialize a paid
+"Pro" tier in future releases. The plan is:
+
+  - The current and prior 2.x releases remain under Apache License 2.0
+    perpetually. Your existing rights to those releases cannot be revoked.
+
+  - Future releases (3.x and onwards) MAY be relicensed under a
+    source-available license (for example, Business Source License 1.1)
+    that restricts redistribution and competing-service offerings while
+    keeping the source visible and usable.
+
+  - A Pro tier with license-key activation is planned (see EULA-PRO.md).
+    Pro features will be additive — not gated removals from current OSS
+    functionality in already-published versions.
+
+If you are evaluating C3 for commercial use, redistribution, or building a
+hosted service on top of it, please reach out to dtselenc@gmail.com first
+so we can discuss the appropriate arrangement. While Apache-2.0 grants
+broad rights to the published 2.x code, we ask the community as a courtesy
+not to repackage C3 as a commercial competing product.
+
+----------------------------------------------------------------------------
+Trademarks
+----------------------------------------------------------------------------
+
+"Code Context Control" and "C3" are trademarks (TM) of Dimitri Tselenchuk.
+The Apache-2.0 license does not grant permission to use these names, logos,
+or product identity except as required for describing the origin of the
+Work (per Section 6 of Apache-2.0). Forks and derivative works must use a
+distinct name and not present themselves as official C3 distributions.

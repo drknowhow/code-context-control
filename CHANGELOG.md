@@ -6,6 +6,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.28.1] - 2026-04-27
+
+Documentation-only release. No code changes; no behavior changes; no
+license change. The current OSS license remains Apache-2.0 for all 2.x
+versions, as it always will.
+
+### Added
+- New top-level [`LICENSING.md`](LICENSING.md) — FAQ-style document
+  covering "can I use this at work", "can I fork", "will the license
+  change", "what happens to my install if you relicense", and the
+  rationale around the planned Pro tier.
+
+### Changed
+- [`NOTICE`](NOTICE) — expanded with an explicit "project posture and
+  commercialization plans" section. Declares intent to introduce a paid
+  Pro tier and the possibility of switching future major versions
+  (3.x onwards) to a source-available license (e.g. BSL 1.1). All 2.x
+  releases remain Apache-2.0 in perpetuity. Reinstates the trademark
+  notice for "C3" and "Code Context Control" (™).
+- [`README.md`](README.md) License section rewritten to clearly signal
+  the project's commercialization intent without changing the actual
+  license. Points at LICENSING.md for the full FAQ.
+
+### Why this release exists
+
+Better to declare commercialization intent **before** building a community
+that depends on permissive terms than after. Honest signal vs. rug pull.
+If we eventually do relicense future major versions, the prior 2.x
+versions will retain their Apache-2.0 grant forever — your installed copy
+is yours under the terms it was published under.
+
 ### Added
 - `services/error_reporting.py` — opt-in Sentry crash reporting module.
   Off by default; activated only when `SENTRY_DSN` is set AND the user
