@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -22,6 +23,16 @@ class _StubActivityLog:
 class TestProjectManager(unittest.TestCase):
     def setUp(self):
         self.pm = ProjectManager()
+        # Use a real existing dir so Path(p["path"]).is_dir() is True. The
+        # previous hardcoded self.proj_path was accidentally truthy on dev
+        # machines where the path happened to exist (e.g. U:\tmp\proj on
+        # Windows) but False on clean CI runners — making the live-session
+        # and last-session-derivation paths silently skip.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.proj_path = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def test_live_session_info_ignores_stale_activity(self):
         old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
@@ -47,8 +58,8 @@ class TestProjectManager(unittest.TestCase):
 
     def test_list_projects_does_not_mark_null_port_project_active_without_recent_session(self):
         now = datetime.now(timezone.utc).isoformat()
-        with patch.object(self.pm, "_read_projects", return_value=[{"name": "Proj", "path": "/tmp/proj", "added_at": now}]), \
-             patch.object(self.pm, "_read_registry", return_value=[{"project_path": "/tmp/proj", "port": None, "started_at": now}]), \
+        with patch.object(self.pm, "_read_projects", return_value=[{"name": "Proj", "path": self.proj_path, "added_at": now}]), \
+             patch.object(self.pm, "_read_registry", return_value=[{"project_path": self.proj_path, "port": None, "started_at": now}]), \
              patch.object(self.pm, "_port_alive", return_value=False), \
              patch.object(self.pm, "_get_live_session_info", return_value=None), \
              patch.object(self.pm, "_read_project_config", return_value={}):
@@ -64,7 +75,7 @@ class TestProjectManager(unittest.TestCase):
         recent = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
         with patch.object(self.pm, "_read_projects", return_value=[{
             "name": "Proj",
-            "path": "/tmp/proj",
+            "path": self.proj_path,
             "added_at": old,
             "last_session": old,
         }]), \
@@ -86,7 +97,7 @@ class TestProjectManager(unittest.TestCase):
             "last_activity": now,
             "description": "recent",
         }
-        with patch.object(self.pm, "_read_projects", return_value=[{"name": "Proj", "path": "/tmp/proj", "added_at": now}]), \
+        with patch.object(self.pm, "_read_projects", return_value=[{"name": "Proj", "path": self.proj_path, "added_at": now}]), \
              patch.object(self.pm, "_read_registry", return_value=[]), \
              patch.object(self.pm, "_get_live_session_info", return_value=live_session), \
              patch.object(self.pm, "_read_project_config", return_value={}), \
@@ -103,7 +114,7 @@ class TestProjectManager(unittest.TestCase):
         with patch.object(self.pm, "_read_registry", return_value=[]), \
              patch.object(self.pm, "list_projects", return_value=[{
                  "name": "Proj",
-                 "path": "/tmp/proj",
+                 "path": self.proj_path,
                  "session_active": True,
                  "ui_active": False,
                  "started_at": now,
@@ -111,7 +122,7 @@ class TestProjectManager(unittest.TestCase):
              }]):
             sessions = self.pm.get_active_sessions()
         self.assertEqual(sessions, [{
-            "project_path": "/tmp/proj",
+            "project_path": self.proj_path,
             "project_name": "Proj",
             "port": None,
             "started_at": now,
