@@ -88,12 +88,6 @@ C3 ships with two web UIs (no electron, no install — pure Flask + vanilla JS):
 
 Every C3-initialized project on your machine appears here. Group them by tag, filter by active/idle, see which IDE each project uses, jump straight into your IDE with one click, and monitor session activity at a glance. Each project card shows live status, version, MCP wiring mode, port, and last activity.
 
-Same data, grid layout:
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/hub_projects_grid.png" alt="C3 Project Hub - grid view" width="900">
-</p>
-
 **Open in your IDE of choice** — C3 auto-detects which CLIs you have installed and gives you one-click launchers:
 
 <p align="center">
