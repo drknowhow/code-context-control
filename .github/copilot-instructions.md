@@ -22,6 +22,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 5. **FILTER output**: `c3_filter(text=...)` — for terminal output >10 lines
 6. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done
 7. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
+8. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`). Read actions are safe; write actions are auto-logged to the edit ledger.
 
 ## Anti-patterns (DO NOT do these)
 - Starting with native file search/read/grep without a prior c3_* call

@@ -751,6 +751,7 @@
 
       <div class="sidebar-section">MCP Server</div>
       <a href="#mcp-tools">MCP Tools</a>
+      <a href="#bitbucket-tool">Bitbucket Integration</a>
       <a href="#context-tools">Context Manager</a>
       <a href="#claudemd-tools">Instructions Tools</a>
       <a href="#agent-tools">Background Agents</a>
@@ -1147,7 +1148,7 @@ python cli/c3.py install-mcp . gemini</code></pre>
 
       <!-- â”€â”€â”€ MCP Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <h2 id="mcp-tools">MCP Tools Reference</h2>
-      <p>C3 exposes 9 MCP tools. All core tools work without Ollama; delegate requires it.</p>
+      <p>C3 exposes 15 MCP tools. All core tools work without Ollama; delegate requires it. The Bitbucket integration is optional and activated via <code>c3 bitbucket login</code>.</p>
 
       <h3>Discovery &amp; Compression</h3>
       <table>
@@ -1297,6 +1298,41 @@ python cli/c3.py install-mcp . gemini</code></pre>
         <strong>standard</strong> (+ git info &amp; diffs), or <strong>detailed</strong> (+ code snippets).
         View the full timeline at <code>/edits</code>.
       </div>
+
+      <!-- Bitbucket Integration (v2.30.0) -->
+      <h2 id="bitbucket-tool">Bitbucket Data Center / Server</h2>
+      <p>C3 v2.30.0 ships a dedicated <code>c3_bitbucket</code> tool for self-hosted enterprise Bitbucket. It supports read browsing (PRs, branches, builds, activity), PR write actions (create / comment / approve / decline / merge), branch writes, and repository administration (settings, webhooks, permissions). PATs are stored in the OS keyring — never in <code>.c3/config.json</code>.</p>
+
+      <table>
+        <tr><th>Surface</th><th>What it provides</th></tr>
+        <tr><td><code>c3_bitbucket</code> MCP tool</td><td>Action-dispatched Bitbucket calls from Claude Code (27 actions across read / PR-write / branch / admin)</td></tr>
+        <tr><td><code>c3 bitbucket {login,logout,status,use,set-default}</code></td><td>CLI for credential and default-repo management. Login uses <code>getpass</code> for masked PAT entry.</td></tr>
+        <tr><td>Hub UI Bitbucket tab</td><td>Per-project visual browser: Overview, Pull Requests, Branches, Activity, Admin</td></tr>
+        <tr><td><code>/api/bitbucket/*</code> REST endpoints</td><td>Project session-server endpoints proxying to <code>BitbucketDataCenterClient</code></td></tr>
+      </table>
+
+      <div class="tip">
+        <div class="tip-title">Where the token lives</div>
+        Tokens are stored exclusively in the <strong>OS keyring</strong> (Windows Credential Manager / macOS Keychain / Linux Secret Service) under service <code>c3-bitbucket</code>. Only a non-secret index of <code>(base_url, username)</code> pairs and the active-account pointer is written to <code>.c3/config.json</code>. <code>.c3/</code> is gitignored.
+      </div>
+
+      <p><strong>Quick start</strong></p>
+      <pre><code>c3 bitbucket login --url https://bitbucket.example.com
+c3 bitbucket set-default --project PROJ --repo my-service
+c3 bitbucket status</code></pre>
+
+      <p>From Claude Code:</p>
+      <pre><code>c3_bitbucket(action='list_prs', state='OPEN')
+c3_bitbucket(action='get_pr', pr_id=42)
+c3_bitbucket(action='approve_pr', pr_id=42)
+c3_bitbucket(action='merge_pr', pr_id=42)  # version auto-fetched</code></pre>
+
+      <div class="tip">
+        <div class="tip-title">Audit trail</div>
+        PR merges, branch deletes, webhook writes, and other mutating actions are appended to the C3 edit ledger under the virtual path <code>bitbucket://&lt;project&gt;/&lt;repo&gt;</code> so the local audit trail covers platform-side state changes too. Token text is stripped from logged kwargs before persisting.
+      </div>
+
+      <p>Full reference (action tables, security model, configuration shape, examples, troubleshooting): <a href="/guide/bitbucket.html">Bitbucket integration guide</a>. Currently <strong>Bitbucket Cloud</strong> (<code>bitbucket.org</code>) is not supported — only Data Center / Server.</p>
 
       <h3 id="agent-tools">Background Agents</h3>
       <p>C3 runs 9 autonomous daemon threads that perform periodic analysis and surface findings via a notification

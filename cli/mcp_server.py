@@ -649,6 +649,56 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
     return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize)
 
 
+@mcp.tool()
+async def c3_bitbucket(
+    action: str,
+    project: str = "",
+    repo: str = "",
+    pr_id: int = 0,
+    branch: str = "",
+    state: str = "OPEN",
+    title: str = "",
+    body: str = "",
+    from_branch: str = "",
+    to_branch: str = "",
+    description: str = "",
+    reviewers: str = "",
+    name: str = "",
+    url: str = "",
+    events: str = "",
+    start_point: str = "",
+    commit: str = "",
+    settings: str = "",
+    webhook_id: int = 0,
+    limit: int = 50,
+    ctx: Context = None,
+) -> str:
+    """BITBUCKET (Data Center / Server) — see and act on PRs, branches, builds, repo admin.
+    actions: status, whoami, list_projects, list_repos, get_repo,
+    list_prs, get_pr, get_pr_diff, get_pr_activities,
+    create_pr, comment_pr, approve_pr, unapprove_pr, decline_pr, merge_pr,
+    list_branches, create_branch, delete_branch,
+    list_commits, list_activity, build_status,
+    repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook,
+    list_permissions.
+    project/repo fall back to bitbucket.default_project/default_repo from .c3/config.json.
+    Tokens live in the OS keyring — `c3 bitbucket login` to set them up first."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.bitbucket import handle_bitbucket
+    return await asyncio.to_thread(
+        handle_bitbucket, action, svc, finalize,
+        project=project, repo=repo, pr_id=pr_id, branch=branch, state=state,
+        title=title, body=body, from_branch=from_branch, to_branch=to_branch,
+        description=description, reviewers=reviewers, name=name, url=url,
+        events=events, start_point=start_point, commit=commit,
+        settings=settings, webhook_id=webhook_id, limit=limit,
+    )
+
+
 def main() -> None:
     """Entry-point for the ``c3-mcp`` console script."""
     from services import error_reporting

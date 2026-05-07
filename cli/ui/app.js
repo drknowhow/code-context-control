@@ -8,6 +8,7 @@ const tabs = [
   { id: "sessions", label: "Sessions", icon: "clock" },
   { id: "memory", label: "Memory", icon: "bookmark" },
   { id: "edits", label: "Edits", icon: "edit" },
+  { id: "bitbucket", label: "Bitbucket", icon: "gitBranch" },
   { id: "instructions", label: "Instructions", icon: "fileText" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -114,6 +115,9 @@ function App() {
         </div>
         <div style={{ display: tab === "edits" ? "block" : "none", height: "100%" }}>
           <EditsPanel />
+        </div>
+        <div style={{ display: tab === "bitbucket" ? "block" : "none", height: "100%" }}>
+          <BitbucketPanel />
         </div>
         <div style={{ display: tab === "instructions" ? "block" : "none", height: "100%" }}>
           <Instructions />

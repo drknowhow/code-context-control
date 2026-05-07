@@ -86,7 +86,9 @@ C3 ships with two web UIs (no electron, no install — pure Flask + vanilla JS):
   <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/hub_projects.png" alt="C3 Project Hub - all projects" width="900">
 </p>
 
-Every C3-initialized project on your machine appears here. Group them by tag, filter by active/idle, see which IDE each project uses, jump straight into your IDE with one click, and monitor session activity at a glance. Each project card shows live status, version, MCP wiring mode, port, and last activity.
+Every C3-initialized project on your machine appears here automatically — `c3 init` registers the project with the hub on first run, no extra step. Group them by tag, filter by active/idle, see which IDE each project uses, jump straight into your IDE with one click, and monitor session activity at a glance. Each project card shows live status, version, MCP wiring mode, port, and last activity.
+
+Per-card actions cover the full lifecycle: launch the IDE, open the per-project UI, edit name / tags / notes, transfer the registration to a new path, **merge** another project's memory + conversation history + edit ledger into this one (with optional source cleanup), or remove it from the registry.
 
 Same data, grid layout:
 
@@ -170,7 +172,7 @@ Per-project knobs for everything: budget thresholds, feature flag mode, edit led
 
 ## The MCP tool suite
 
-C3 exposes 14 tools as a native MCP server. Your IDE calls them directly:
+C3 exposes 15 tools as a native MCP server. Your IDE calls them directly:
 
 | Tool | What it does |
 |---|---|
@@ -188,8 +190,39 @@ C3 exposes 14 tools as a native MCP server. Your IDE calls them directly:
 | `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini / etc. |
 | `c3_agent` | Multi-step agentic workflows (review, investigate, refactor) |
 | `c3_edits` | Edit-ledger queries + version diffs + restore points |
+| `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
 
-Every tool is **read-only safe in plan mode** (except `c3_edit` and `c3_shell`).
+Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, and write actions on `c3_bitbucket`).
+
+### Bitbucket Data Center / Server (v2.30.0)
+
+`c3_bitbucket` connects to self-hosted enterprise Bitbucket via REST + Personal
+Access Token. Tokens live in the **OS keyring** (Windows Credential Manager,
+macOS Keychain, Linux Secret Service) — never in `.c3/config.json`.
+
+```bash
+# One-time login per server
+c3 bitbucket login --url https://bitbucket.example.com
+#  → prompts for username + PAT (masked)
+
+# Pin defaults so subsequent calls don't need project/repo
+c3 bitbucket set-default --project PROJ --repo my-service
+
+# Inspect status
+c3 bitbucket status
+```
+
+The MCP tool dispatches by `action`. Read-only actions: `status`, `whoami`,
+`list_projects`, `list_repos`, `get_repo`, `list_prs`, `get_pr`, `get_pr_diff`,
+`get_pr_activities`, `list_branches`, `list_commits`, `list_activity`,
+`build_status`, `repo_settings`, `list_webhooks`, `list_permissions`. Write
+actions: `create_pr`, `comment_pr`, `approve_pr`, `unapprove_pr`, `decline_pr`,
+`merge_pr`, `create_branch`, `delete_branch`, `update_repo_settings`,
+`create_webhook`, `delete_webhook`. PR merges and branch deletes are recorded
+to the C3 edit ledger so the audit trail covers platform-side changes too.
+
+The **Hub UI** (per-project) gains a "Bitbucket" tab with sub-views for
+Overview / Pull Requests / Branches / Activity / Admin.
 
 ---
 

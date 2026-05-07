@@ -188,6 +188,7 @@ _UI_JS_FILES = [
     "ui/components/sessions.js",
     "ui/components/memory.js",
     "ui/components/edits.js",
+    "ui/components/bitbucket.js",
     "ui/components/instructions.js",
     "ui/components/settings.js",
     "ui/components/chat.js",
@@ -2895,6 +2896,370 @@ def api_conversations_export(session_id):
             lines += [f"- `{tc.get('tool', '?')}` {tc.get('args', '')}" for tc in t['tool_calls']]
         lines += ["", "---", ""]
     return jsonify({'markdown': "\n".join(lines), 'title': meta.get('title', session_id)})
+
+
+# ─── API: Bitbucket Data Center / Server (v2.30.0) ───────
+
+
+def _bb_client_and_repo():
+    """Return (client, project_key, repo_slug, error_response_or_None).
+
+    On any setup failure (missing account, missing token, repo not configured),
+    returns (None, "", "", flask_response). Callers should early-return that
+    response unchanged.
+    """
+    from core.config import load_bitbucket_config
+    from services import bitbucket_credentials as bb_creds
+    from services.bitbucket_client import BitbucketDataCenterClient
+
+    cfg = load_bitbucket_config(PROJECT_PATH)
+    active = cfg.get("active") or {}
+    base_url = active.get("base_url")
+    username = active.get("username")
+    if not base_url or not username:
+        return None, "", "", (jsonify({"error": "no active Bitbucket account — run `c3 bitbucket login`"}), 400)
+    try:
+        token = bb_creds.load_token(base_url, username)
+    except RuntimeError as exc:
+        return None, "", "", (jsonify({"error": str(exc)}), 500)
+    if not token:
+        return None, "", "", (jsonify({"error": f"no keyring token for {username}@{base_url}"}), 400)
+
+    project = (request.args.get("project") or "").strip() or cfg.get("default_project", "")
+    repo = (request.args.get("repo") or "").strip() or cfg.get("default_repo", "")
+    client = BitbucketDataCenterClient(
+        base_url=base_url, token=token,
+        verify_tls=bool(cfg.get("verify_tls", True)),
+    )
+    return client, project, repo, None
+
+
+def _bb_require_repo(project: str, repo: str):
+    if not project or not repo:
+        return jsonify({"error": "project and repo required (set defaults via `c3 bitbucket set-default`)"}), 400
+    return None
+
+
+def _bb_handle(call):
+    """Run a BB API closure; translate BitbucketError to HTTP response."""
+    from services.bitbucket_client import BitbucketError
+    try:
+        return jsonify(call())
+    except BitbucketError as exc:
+        return jsonify({
+            "error": str(exc),
+            "status": exc.status,
+            "path": exc.path,
+        }), 502 if exc.status == 0 else exc.status
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.route('/api/bitbucket/status')
+def api_bitbucket_status():
+    """Active account, accounts list, defaults, and a connection probe."""
+    from core.config import load_bitbucket_config
+    from services import bitbucket_credentials as bb_creds
+    from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
+
+    cfg = load_bitbucket_config(PROJECT_PATH)
+    active = cfg.get("active") or {}
+    out = {"config": cfg, "connection": {"ok": False}}
+
+    if not active.get("base_url") or not active.get("username"):
+        out["connection"]["error"] = "no active account"
+        return jsonify(out)
+    try:
+        token = bb_creds.load_token(active["base_url"], active["username"])
+    except RuntimeError as exc:
+        out["connection"]["error"] = str(exc)
+        return jsonify(out)
+    if not token:
+        out["connection"]["error"] = "no keyring token"
+        return jsonify(out)
+    try:
+        client = BitbucketDataCenterClient(
+            base_url=active["base_url"], token=token,
+            verify_tls=bool(cfg.get("verify_tls", True)),
+        )
+        props = client.application_properties()
+        out["connection"] = {"ok": True, "version": props.get("version", "?")}
+    except BitbucketError as exc:
+        out["connection"] = {"ok": False, "error": str(exc), "status": exc.status}
+    return jsonify(out)
+
+
+@app.route('/api/bitbucket/prs')
+def api_bitbucket_list_prs():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    state = (request.args.get("state") or "OPEN").upper()
+    return _bb_handle(lambda: {
+        "values": client.list_pull_requests(project, repo, state=state,
+                                            limit=int(request.args.get("limit", 50))),
+    })
+
+
+@app.route('/api/bitbucket/prs', methods=['POST'])
+def api_bitbucket_create_pr():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(force=True) or {}
+    return _bb_handle(lambda: client.create_pull_request(
+        project, repo,
+        title=data.get("title", ""),
+        from_branch=data.get("from_branch", ""),
+        to_branch=data.get("to_branch", ""),
+        description=data.get("description", ""),
+        reviewers=data.get("reviewers") or [],
+    ))
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>')
+def api_bitbucket_get_pr(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: client.get_pull_request(project, repo, pr_id))
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>/diff')
+def api_bitbucket_pr_diff(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: {
+        "diff": client.get_pr_diff(project, repo, pr_id,
+                                   context_lines=int(request.args.get("context_lines", 3))),
+    })
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>/approve', methods=['POST'])
+def api_bitbucket_approve_pr(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: client.approve_pr(project, repo, pr_id))
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>/decline', methods=['POST'])
+def api_bitbucket_decline_pr(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+
+    def _do():
+        pr = client.get_pull_request(project, repo, pr_id)
+        return client.decline_pr(project, repo, pr_id, version=pr.get("version", 0))
+    return _bb_handle(_do)
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>/merge', methods=['POST'])
+def api_bitbucket_merge_pr(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(silent=True) or {}
+
+    def _do():
+        pr = client.get_pull_request(project, repo, pr_id)
+        return client.merge_pr(project, repo, pr_id, version=pr.get("version", 0),
+                               message=data.get("message", ""))
+    return _bb_handle(_do)
+
+
+@app.route('/api/bitbucket/prs/<int:pr_id>/comments', methods=['POST'])
+def api_bitbucket_comment_pr(pr_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "") or data.get("body", "")
+    return _bb_handle(lambda: client.comment_on_pr(project, repo, pr_id, text=text))
+
+
+@app.route('/api/bitbucket/branches')
+def api_bitbucket_list_branches():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: {
+        "values": client.list_branches(project, repo,
+                                       filter_text=request.args.get("filter", "")),
+    })
+
+
+@app.route('/api/bitbucket/branches', methods=['POST'])
+def api_bitbucket_create_branch():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(force=True) or {}
+    return _bb_handle(lambda: client.create_branch(
+        project, repo,
+        name=data.get("name", ""),
+        start_point=data.get("start_point", ""),
+        message=data.get("message", ""),
+    ))
+
+
+@app.route('/api/bitbucket/branches/<path:name>', methods=['DELETE'])
+def api_bitbucket_delete_branch(name: str):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: client.delete_branch(project, repo, name=name))
+
+
+@app.route('/api/bitbucket/builds')
+def api_bitbucket_builds():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    commit = request.args.get("commit", "")
+    if not commit:
+        repo_err = _bb_require_repo(project, repo)
+        if repo_err is not None:
+            return repo_err
+        # Resolve to default branch's latest commit.
+        try:
+            default = client.get_default_branch(project, repo)
+            commit = default.get("latestCommit", "")
+        except Exception:
+            commit = ""
+    if not commit:
+        return jsonify({"error": "no commit hash and could not resolve default branch"}), 400
+    return _bb_handle(lambda: {
+        "commit": commit,
+        "values": client.get_build_status(commit),
+    })
+
+
+@app.route('/api/bitbucket/activity')
+def api_bitbucket_activity():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: {
+        "values": client.list_repo_activities(project, repo,
+                                              limit=int(request.args.get("limit", 30))),
+    })
+
+
+@app.route('/api/bitbucket/repo-settings')
+def api_bitbucket_repo_settings_get():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: client.get_repo_settings(project, repo))
+
+
+@app.route('/api/bitbucket/repo-settings', methods=['PUT'])
+def api_bitbucket_repo_settings_put():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(force=True) or {}
+    return _bb_handle(lambda: client.update_repo_settings(project, repo, settings=data))
+
+
+@app.route('/api/bitbucket/webhooks')
+def api_bitbucket_webhooks_get():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: {"values": client.list_webhooks(project, repo)})
+
+
+@app.route('/api/bitbucket/webhooks', methods=['POST'])
+def api_bitbucket_webhooks_create():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    data = request.get_json(force=True) or {}
+    return _bb_handle(lambda: client.create_webhook(
+        project, repo,
+        name=data.get("name", ""),
+        url=data.get("url", ""),
+        events=data.get("events") or [],
+        active=bool(data.get("active", True)),
+        secret=data.get("secret", ""),
+    ))
+
+
+@app.route('/api/bitbucket/webhooks/<int:webhook_id>', methods=['DELETE'])
+def api_bitbucket_webhooks_delete(webhook_id: int):
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: client.delete_webhook(project, repo, webhook_id=webhook_id))
+
+
+@app.route('/api/bitbucket/permissions')
+def api_bitbucket_permissions():
+    client, project, repo, err = _bb_client_and_repo()
+    if err is not None:
+        return err
+    repo_err = _bb_require_repo(project, repo)
+    if repo_err is not None:
+        return repo_err
+    return _bb_handle(lambda: {
+        "users": client.list_repo_user_permissions(project, repo),
+        "groups": client.list_repo_group_permissions(project, repo),
+    })
 
 
 # ─── Launch ──────────────────────────────────────────────

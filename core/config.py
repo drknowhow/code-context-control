@@ -267,3 +267,32 @@ def load_agent_config(project_path: str) -> dict:
     for name, defaults in AGENT_DEFAULTS.items():
         result[name] = {**defaults, **overrides.get(name, {})}
     return result
+
+
+# ─── Bitbucket Defaults (v2.30.0) ──────────────────────────
+
+BITBUCKET_DEFAULTS = {
+    # Active account pointer; both fields empty when no login has run.
+    "active": {"base_url": "", "username": ""},
+    # Non-secret index of accounts whose PATs live in the OS keyring.
+    "accounts": [],
+    # Default project key + repo slug for tool calls when not provided.
+    "default_project": "",
+    "default_repo": "",
+    # Set False for self-signed enterprise certificates.
+    "verify_tls": True,
+}
+
+
+def load_bitbucket_config(project_path: str) -> dict:
+    """Load Bitbucket config from .c3/config.json, merged with defaults."""
+    config_file = Path(project_path) / ".c3" / "config.json"
+    overrides = {}
+    if config_file.exists():
+        try:
+            with open(config_file, encoding="utf-8") as f:
+                data = json.load(f)
+            overrides = data.get("bitbucket", {})
+        except Exception:
+            pass
+    return {**BITBUCKET_DEFAULTS, **overrides}

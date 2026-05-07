@@ -17,6 +17,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
+10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
 
 ## Plan mode
 In plan mode, all c3_* read tools (search, read, compress, filter, validate, status) work normally — skip edit/delegate steps.
@@ -27,27 +28,26 @@ In plan mode, all c3_* read tools (search, read, compress, filter, validate, sta
 - Reading entire files when c3_compress + c3_read would be more surgical
 - Skipping c3_validate after making edits
 
----
-
 # Project Context
 
 ```
 claude-companion - v2/
   .gitignore
+  .manifest.swo
+  .manifest.swp
   .mcp.json
   AGENTS.md
   CHANGELOG.md
   CLAUDE.md
   GEMINI.md
   LICENSE
+  LICENSING.md
   README.md
   SECURITY.md
   THIRD_PARTY_LICENSES.md
   c3.bat
   install.bat
-  install.sh
-  oracle_start.bat
-  ... +1 more
+  ... +3 more
   .claude/
     settings.local.json
   .codex/
@@ -62,6 +62,18 @@ claude-companion - v2/
     settings.json
     brain/ (3 files)
     outputs/
+  .pytest_cache/
+    .gitignore
+    CACHEDIR.TAG
+    README.md
+    v/
+  .ruff_cache/
+    .gitignore
+    CACHEDIR.TAG
+    0.15.12/
+  .vscode/
+    mcp.json
+    settings.json
   cli/
     __init__.py
     _hook_utils.py
@@ -80,7 +92,7 @@ claude-companion - v2/
     hook_session_stats.py
     ... +9 more
     commands/ (3 files)
-    tools/ (16 files)
+    tools/ (17 files)
     ui/ (5 files)
   commercial/
     info_01_efficiency.json
@@ -96,8 +108,9 @@ claude-companion - v2/
     config.py
     ide.py
   docs/
-    screenshots/ (4 files)
+    screenshots/ (11 files)
   guide/
+    bitbucket.html
     getting-started.html
     index.html
     shared.css
@@ -122,6 +135,8 @@ claude-companion - v2/
     agents.py
     auto_memory.py
     benchmark_dashboard.py
+    bitbucket_client.py
+    bitbucket_credentials.py
     claude_md.py
     compressor.py
     context_snapshot.py
@@ -129,12 +144,14 @@ claude-companion - v2/
     doc_index.py
     e2e_benchmark.py
     e2e_evaluator.py
-    e2e_tasks.py
-    edit_ledger.py
-    ... +31 more
+    ... +33 more
     bench/ (1 files)
   tests/
     test_aider_polyglot.py
+    test_bitbucket_cli_smoke.py
+    test_bitbucket_client.py
+    test_bitbucket_credentials.py
+    test_bitbucket_tool.py
     test_c3_shell.py
     test_cli_smoke.py
     test_e2e_benchmark.py
@@ -145,11 +162,7 @@ claude-companion - v2/
     test_hub_server_smoke.py
     test_mcp_server_smoke.py
     test_memory_graph_api.py
-    test_memory_system.py
-    test_notification_discipline.py
-    test_output_filter.py
-    test_permissions.py
-    ... +6 more
+    ... +11 more
   tui/
     __init__.py
     backend.py
@@ -170,5 +183,13 @@ Python (Modern)
 - `cli/tools/agent.py` — edited in 17 sessions
 - `cli/mcp_server.py` — edited in 15 sessions
 - `cli/tools/search.py` — edited in 11 sessions
-- `cli/c3.py` — edited in 7 sessions
+- `cli/c3.py` — edited in 8 sessions
 - `cli/hook_pretool_enforce.py` — edited in 5 sessions
+
+## Key Facts (use c3_memory for more)
+
+- [architecture] File Memory system: FileMemoryStore in services/file_memory.py provides persistent structural index of so
+- [ui] Left sidebar and right bar both support hover-to-open + pin. App state: sidebarPinned/rightBarPinned (localStorage 
+- c3_delegate now supports allow_model_fallback/fallback_models and resolves nearest installed Ollama model when the reque
+- ConversationStore sync now supports source='all|claude|imports', and sessions/turns persist normalized source labels for
+- SessionManager.parse_claude_session_tokens now resolves Claude transcript dirs via project slug candidates and constrain

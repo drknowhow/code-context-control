@@ -207,6 +207,9 @@ if !ERRORLEVEL! equ 0 (echo         !OK!  Hub Service) else (echo         !WARN!
 python -c "import sys; sys.path.insert(0,'%C3_HOME%'); import fastmcp" >nul 2>&1
 if !ERRORLEVEL! equ 0 (echo         !OK!  MCP ^(FastMCP^)) else (echo         !WARN!  FastMCP not found   — pip install fastmcp & set /a FAIL_COUNT+=1)
 
+python -c "import keyring" >nul 2>&1
+if !ERRORLEVEL! equ 0 (echo         !OK!  Keyring ^(Bitbucket PAT storage^)) else (echo         !WARN!  Keyring not found   — pip install keyring  ^(needed by 'c3 bitbucket login'^) & set /a FAIL_COUNT+=1)
+
 echo.
 echo   %CYAN%================================================================%R%
 if "!FAIL_COUNT!"=="0" (
@@ -278,6 +281,13 @@ echo   %CYAN%  c3 ui%R%                  Per-project web dashboard
 echo   %CYAN%  c3 hub%R%                 Global project hub  ^(port 3330^)
 echo   %CYAN%  c3%R%                     Interactive TUI
 echo.
+echo   %BOLD%BITBUCKET DATA CENTER ^(optional, v2.30.0+^)%R%
+echo   ----------------------------------------------------------------
+echo   %CYAN%  c3 bitbucket login --url ^<URL^>%R%   Auth with self-hosted Bitbucket ^(token to OS keyring^)
+echo   %CYAN%  c3 bitbucket set-default --project K --repo R%R%   Pin default project + repo
+echo   %CYAN%  c3 bitbucket status%R%             Show accounts and connectivity
+echo   %DIM%  Full guide: guide/bitbucket.html%R%
+echo.
 echo   %BOLD%ALL COMMANDS%R%
 echo   ----------------------------------------------------------------
 echo     c3                       Open interactive TUI
@@ -295,6 +305,11 @@ echo     c3 projects list         List all registered projects
 echo     c3 projects add .        Register current directory
 echo     c3 stats                 Show session and token stats
 echo     c3 benchmark             Run local token-efficiency benchmark
+echo     c3 bitbucket login       Authenticate with Bitbucket Data Center ^(v2.30.0+^)
+echo     c3 bitbucket logout      Remove a Bitbucket account from keyring + config
+echo     c3 bitbucket status      Show configured accounts and connectivity
+echo     c3 bitbucket use         Switch active Bitbucket account
+echo     c3 bitbucket set-default Pin default project key + repo slug
 echo.
 echo   %BOLD%BACKGROUND SERVICE%R%
 echo   ----------------------------------------------------------------

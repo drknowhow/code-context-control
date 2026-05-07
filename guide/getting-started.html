@@ -20,6 +20,7 @@
       <a href="getting-started.html" class="active">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="bitbucket.html">Bitbucket</a>
     </nav>
     <span class="header-version">v2.x</span>
   </header>
@@ -35,6 +36,7 @@
       <a href="#first-session" class="sidebar-link"><span class="icon">▶️</span> First Session</a>
       <a href="#permissions" class="sidebar-link"><span class="icon">🔒</span> Permissions</a>
       <a href="#hub" class="sidebar-link"><span class="icon">🌐</span> Web UI &amp; Hub</a>
+      <a href="#bitbucket" class="sidebar-link"><span class="icon">🪣</span> Bitbucket</a>
       <a href="#uninstall" class="sidebar-link"><span class="icon">🗑️</span> Uninstall</a>
     </div>
     <div class="sidebar-section">
@@ -377,6 +379,36 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
         <span class="callout-icon">ℹ️</span>
         <div class="callout-body">
           The web UI and Hub run as separate Flask servers from the MCP server. They read shared state from the <code>.c3/</code> directory on disk.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Bitbucket Integration -->
+    <section class="section" id="bitbucket">
+      <div class="section-title"><span class="icon">🪣</span> Bitbucket Data Center (optional)</div>
+
+      <p>If your team runs self-hosted Bitbucket Data Center / Server, C3 can connect to it so Claude Code (and the Hub UI) can read and act on pull requests, branches, builds, and repo administration.</p>
+
+      <h3>One-time setup</h3>
+      <pre><code><span class="com"># Generate a Personal Access Token in Bitbucket first</span>
+<span class="com"># (Profile → Manage account → Personal access tokens)</span>
+
+c3 bitbucket login --url https://bitbucket.example.com
+<span class="com"># → prompts for username + PAT (token text masked, stored in OS keyring)</span>
+
+c3 bitbucket set-default --project PROJ --repo my-service
+c3 bitbucket status</code></pre>
+
+      <p>Tokens live in the <strong>OS keyring</strong> (Windows Credential Manager / macOS Keychain / Linux Secret Service). The <code>.c3/config.json</code> file only stores a non-secret index of <code>(base_url, username)</code> pairs and the active-account pointer — never the token itself.</p>
+
+      <p>Once configured, the new <code>c3_bitbucket</code> MCP tool is available in Claude Code, the Hub UI gains a <strong>Bitbucket</strong> tab, and the <code>c3 bitbucket</code> CLI exposes <code>login / logout / status / use / set-default</code> subcommands.</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          Full action reference, security notes, configuration shape, and troubleshooting are on the dedicated <a href="bitbucket.html"><strong>Bitbucket integration guide</strong></a>.
         </div>
       </div>
     </section>
