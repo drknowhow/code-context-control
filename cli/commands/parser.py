@@ -283,4 +283,43 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_bext.add_argument("--dry-run", action="store_true",
         help="Validate setup (CLIs, datasets) without running the agent")
 
+    # ── Bitbucket Data Center / Server (v2.30.0) ─────────────────────────
+    p_bitbucket = subparsers.add_parser(
+        "bitbucket",
+        help="Bitbucket Data Center / Server credential + workspace management",
+    )
+    bb_subs = p_bitbucket.add_subparsers(dest="bitbucket_cmd")
+
+    bb_login = bb_subs.add_parser(
+        "login",
+        help="Authenticate with a Bitbucket Data Center server (interactive PAT prompt)",
+    )
+    bb_login.add_argument("--url", required=True, help="Bitbucket server base URL (e.g. https://bitbucket.example.com)")
+    bb_login.add_argument("--username", help="Bitbucket username (prompted if omitted)")
+    bb_login.add_argument("--token", help="Personal Access Token (prompted via getpass if omitted — preferred)")
+    bb_login.add_argument("--no-set-active", action="store_true", help="Do not switch the active account to this one")
+    bb_login.add_argument("--insecure", action="store_true", help="Disable TLS verification (self-signed certs)")
+    bb_login.add_argument("project_path", nargs="?", default=".")
+
+    bb_logout = bb_subs.add_parser("logout", help="Remove a Bitbucket account from keyring + config")
+    bb_logout.add_argument("--url", help="Bitbucket server base URL (defaults to active account)")
+    bb_logout.add_argument("--username", help="Username to log out (defaults to active account)")
+    bb_logout.add_argument("project_path", nargs="?", default=".")
+
+    bb_status = bb_subs.add_parser("status", help="Show configured Bitbucket accounts and connectivity")
+    bb_status.add_argument("project_path", nargs="?", default=".")
+
+    bb_use = bb_subs.add_parser("use", help="Switch the active Bitbucket account")
+    bb_use.add_argument("--url", required=True)
+    bb_use.add_argument("--username", required=True)
+    bb_use.add_argument("project_path", nargs="?", default=".")
+
+    bb_default = bb_subs.add_parser(
+        "set-default",
+        help="Set the default project key + repo slug for this C3 project",
+    )
+    bb_default.add_argument("--project", required=True, help="Bitbucket project key (e.g. PROJ)")
+    bb_default.add_argument("--repo", required=True, help="Repository slug")
+    bb_default.add_argument("project_path", nargs="?", default=".")
+
     return parser

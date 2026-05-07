@@ -79,6 +79,7 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html" class="active">Tools</a>
+      <a href="bitbucket.html">Bitbucket</a>
     </nav>
     <span class="header-version">v2.x</span>
   </header>
@@ -117,6 +118,10 @@
       <div class="sidebar-label">Ledger</div>
       <a href="#c3_edits"    class="sidebar-link"><span class="icon">📝</span> c3_edits</a>
     </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">SCM</div>
+      <a href="#c3_bitbucket" class="sidebar-link"><span class="icon">🪣</span> c3_bitbucket</a>
+    </div>
   </aside>
 
   <!-- Main -->
@@ -124,7 +129,7 @@
 
     <div class="page-hero">
       <h1>Tools Reference</h1>
-      <p>Complete reference for all 14 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+      <p>Complete reference for all 15 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
     </div>
 
     <!-- TOC -->
@@ -145,6 +150,7 @@
         <a href="#c3_delegate" class="toc-item">c3_delegate <span class="cat">AI</span></a>
         <a href="#c3_agent"    class="toc-item">c3_agent    <span class="cat">AI</span></a>
         <a href="#c3_edits"    class="toc-item">c3_edits    <span class="cat">Ledger</span></a>
+        <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
       </div>
     </div>
 
@@ -1065,6 +1071,58 @@ c3_edits(action=<span class="str">'versions'</span>, file=<span class="str">'ser
 
 <span class="com"># Ledger stats</span>
 c3_edits(action=<span class="str">'stats'</span>)</code></pre>
+        </div>
+      </div>
+
+      <!-- c3_bitbucket -->
+      <div class="tool-card" id="c3_bitbucket">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_bitbucket</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">scm</span>
+            <span class="badge">v2.30.0</span>
+          </div>
+          <span class="tool-tagline">Bitbucket Data Center / Server — see and act on PRs, branches, builds, repo admin</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Connect to a self-hosted enterprise Bitbucket server and operate on it. Tokens live in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service); only a non-secret index of accounts and the active-account pointer is written to <code>.c3/config.json</code>. Project key + repo slug fall back to the configured defaults.</p>
+
+          <p class="tool-desc"><strong>Setup:</strong> <code>c3 bitbucket login --url &lt;URL&gt;</code> (interactive PAT prompt), then <code>c3 bitbucket set-default --project PROJ --repo my-repo</code>. See the <a href="bitbucket.html"><strong>Bitbucket integration guide</strong></a> for the full action reference, Hub UI tour, audit-trail integration, and troubleshooting.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">status</td><td>Read</td><td class="param-desc">Active account, accounts list, defaults, server-version probe</td></tr>
+              <tr><td class="param-name">whoami</td><td>Read</td><td class="param-desc">Current authenticated user (PAT owner)</td></tr>
+              <tr><td class="param-name">list_projects, list_repos, get_repo</td><td>Read</td><td class="param-desc">Project / repository discovery</td></tr>
+              <tr><td class="param-name">list_prs, get_pr, get_pr_diff, get_pr_activities</td><td>Read</td><td class="param-desc">PR browsing + diff + activity feed</td></tr>
+              <tr><td class="param-name">create_pr, comment_pr, approve_pr, unapprove_pr, decline_pr, merge_pr</td><td>Write</td><td class="param-desc">PR write actions. <code>merge_pr</code> and <code>decline_pr</code> auto-fetch the PR's current version</td></tr>
+              <tr><td class="param-name">list_branches, create_branch, delete_branch</td><td>Branch</td><td class="param-desc">Branch listing and admin (uses the <code>branch-utils</code> API)</td></tr>
+              <tr><td class="param-name">list_commits, list_activity, build_status</td><td>Read</td><td class="param-desc">Recent commits, activity, build/CI status (defaults to default-branch HEAD)</td></tr>
+              <tr><td class="param-name">repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook, list_permissions</td><td>Admin</td><td class="param-desc">Repository administration</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Connection probe + active account info</span>
+c3_bitbucket(action=<span class="str">'status'</span>)
+
+<span class="com"># List open PRs in the default repo</span>
+c3_bitbucket(action=<span class="str">'list_prs'</span>, state=<span class="str">'OPEN'</span>)
+
+<span class="com"># Open a PR</span>
+c3_bitbucket(action=<span class="str">'create_pr'</span>,
+             title=<span class="str">'Add Bitbucket integration'</span>,
+             from_branch=<span class="str">'feat/bitbucket'</span>,
+             to_branch=<span class="str">'main'</span>,
+             reviewers=<span class="str">'alice,bob'</span>)
+
+<span class="com"># Approve and merge — version is fetched automatically</span>
+c3_bitbucket(action=<span class="str">'approve_pr'</span>, pr_id=<span class="num">42</span>)
+c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num">42</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Audit trail:</strong> mutating actions (<code>merge_pr</code>, <code>create_branch</code>, <code>delete_branch</code>, webhook writes, etc.) are appended to the C3 edit ledger so the local audit log covers platform-side state changes too.</p>
         </div>
       </div>
     </div>

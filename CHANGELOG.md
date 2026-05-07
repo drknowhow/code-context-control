@@ -6,6 +6,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-05-07
+
+Feature release. Adds first-class Bitbucket Data Center / Server (self-hosted
+enterprise) integration: a new `c3_bitbucket` MCP tool, a `c3 bitbucket` CLI
+subcommand for credential management, and a Bitbucket tab in the Hub UI for
+viewing PRs, branches, builds, activity, and repository administration.
+
+### Added
+
+- `services/bitbucket_client.py` — `BitbucketDataCenterClient` REST client
+  using stdlib `urllib.request` with Bearer-token auth (PAT). Covers
+  read-only browsing, pull-request writes (create/comment/approve/merge/decline),
+  branch writes (create/delete), and repository administration
+  (settings, webhooks, permissions).
+- `services/bitbucket_credentials.py` — OS keyring wrapper (Windows
+  Credential Manager / macOS Keychain / Linux Secret Service) for storing
+  Personal Access Tokens. Tokens are never written to `.c3/config.json`.
+- `cli/tools/bitbucket.py` and `c3_bitbucket` MCP tool — action-dispatch
+  surface (`status`, `whoami`, `list_prs`, `get_pr`, `create_pr`,
+  `merge_pr`, `decline_pr`, `approve_pr`, `comment_pr`, `list_branches`,
+  `create_branch`, `delete_branch`, `list_repos`, `list_builds`,
+  `list_activity`, repo-admin actions).
+- `c3 bitbucket {login|logout|status|use|set-default}` CLI subcommand
+  with interactive `getpass` token entry.
+- Hub UI Bitbucket tab (`cli/ui/bitbucket.js`) with Overview / Pull
+  requests / Branches / Builds / Activity / Admin sub-tabs and matching
+  `/api/bitbucket/*` REST endpoints in `cli/hub_server.py`.
+- `bitbucket` section in `core/config.py` defaults
+  (`active`, `accounts`, `default_project`, `default_repo`, `verify_tls`).
+- Tests under `tests/test_bitbucket_*.py` covering the client, credentials,
+  tool dispatch, and CLI smoke.
+
+### Changed
+
+- `__version__` in `cli/c3.py` is now in sync with `pyproject.toml` again
+  (was stale at `2.28.3`).
+- `pyproject.toml` adds `keyring>=24.0` to runtime dependencies.
+
+### Why
+
+Teams on enterprise Bitbucket Data Center / Server have until now had to
+context-switch out of C3 to inspect or act on pull requests, branches, and
+builds. This release brings the same surface inside C3 — both for Claude
+Code via MCP and for the human via the Hub UI — while keeping credentials
+out of project files.
+
 ## [2.29.0] - 2026-04-27
 
 Feature release. Adds project-merge in the hub and auto-registration on

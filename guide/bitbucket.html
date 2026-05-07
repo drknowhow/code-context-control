@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitbucket Integration — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+    .pill-amber  { color: var(--amber); border-color: var(--amber); }
+
+    .action-table th, .action-table td { padding: 8px 12px; }
+    .action-table tr:hover { background: var(--bg-3); }
+    .action-table .grp-read   { color: var(--green); }
+    .action-table .grp-write  { color: var(--amber); }
+    .action-table .grp-branch { color: var(--cyan); }
+    .action-table .grp-admin  { color: var(--purple); }
+
+    .callout {
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-2);
+      padding: 12px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+    }
+    .callout-warn   { border-color: var(--amber); }
+    .callout-danger { border-color: var(--red);   }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout strong { color: var(--text); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+
+    .kv-table td { padding: 6px 12px; font-size: 13px; }
+    .kv-table td:first-child {
+      font-family: var(--mono); color: var(--text-dim); width: 200px; vertical-align: top;
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="bitbucket.html" class="active">Bitbucket</a>
+    </nav>
+    <span class="header-version">v2.30.0</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🪣</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#auth"            class="sidebar-link"><span class="icon">🔐</span> Authentication</a>
+      <a href="#actions"         class="sidebar-link"><span class="icon">⚙️</span> Action reference</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
+      <a href="#hub-ui"          class="sidebar-link"><span class="icon">🖥️</span> Hub UI</a>
+      <a href="#audit"           class="sidebar-link"><span class="icon">📝</span> Audit trail</a>
+      <a href="#config"          class="sidebar-link"><span class="icon">📂</span> Configuration</a>
+      <a href="#examples"        class="sidebar-link"><span class="icon">📚</span> Examples</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="tools.html#c3_bitbucket" class="sidebar-link">Tool reference card</a>
+      <a href="workflow.html"           class="sidebar-link">Standard workflow</a>
+      <a href="getting-started.html#bitbucket" class="sidebar-link">First-time setup</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Bitbucket Data Center / Server</h1>
+      <p>First-class integration with self-hosted enterprise Bitbucket — see and act on pull requests, branches, builds, and repository administration from inside C3.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.30.0</span>
+        <span class="pill pill-purple">SCM integration</span>
+        <span class="pill pill-green">Read &amp; write</span>
+        <span class="pill">REST API 1.0</span>
+        <span class="pill">OS keyring</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p>C3 ships with <code>c3_bitbucket</code> — a single MCP tool that lets Claude Code (and the human, via the Hub UI) read and act on a self-hosted Bitbucket Data Center / Server instance. There is no separate browser context-switch: PRs, diffs, builds, branches, comments, approvals, and merges are all accessible inside the C3 workflow.</p>
+
+      <div class="callout">
+        <p><strong>Scope:</strong> Bitbucket <em>Data Center</em> / <em>Server</em> only (the on-prem enterprise product, REST API <code>/rest/api/1.0</code>, Bearer-token auth via Personal Access Tokens). Bitbucket Cloud (<code>bitbucket.org</code>) is not currently supported — its API path, auth model, and pagination differ.</p>
+      </div>
+
+      <h3>What you get</h3>
+      <table class="params-table">
+        <thead><tr><th>Surface</th><th>Where</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>c3_bitbucket</code> MCP tool</td>
+            <td>Claude Code</td>
+            <td>Action-dispatched Bitbucket operations from inside an AI session</td>
+          </tr>
+          <tr>
+            <td><code>c3 bitbucket</code> CLI</td>
+            <td>Terminal</td>
+            <td>One-time login, account switching, default-repo pinning</td>
+          </tr>
+          <tr>
+            <td>Bitbucket tab</td>
+            <td>Hub UI (per-project)</td>
+            <td>Visual PR / branch / activity / admin browsing</td>
+          </tr>
+          <tr>
+            <td><code>/api/bitbucket/*</code></td>
+            <td>Project server</td>
+            <td>REST endpoints proxying to the Bitbucket REST client</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ QUICK START ═══ -->
+    <section id="quick-start" class="tool-section">
+      <h2>Quick start</h2>
+      <p>Three commands to wire up an enterprise Bitbucket server and pin a working repo.</p>
+
+      <div class="step-grid">
+        <div class="step-card">
+          <span class="step-num">1</span><h4>Log in</h4>
+          <pre><code>c3 bitbucket login \
+  --url https://bitbucket.example.com</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Prompts for username and Personal Access Token (PAT). The PAT goes straight into the OS keyring; <code>.c3/config.json</code> only records the username + URL pair.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">2</span><h4>Pin defaults</h4>
+          <pre><code>c3 bitbucket set-default \
+  --project PROJ \
+  --repo my-service</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Lets <code>c3_bitbucket</code> calls skip <code>project=</code> and <code>repo=</code> arguments — the configured defaults are used automatically.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">3</span><h4>Verify</h4>
+          <pre><code>c3 bitbucket status</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Lists active account + accounts list, runs an <code>application-properties</code> probe to confirm the PAT works.</p>
+        </div>
+      </div>
+
+      <h3>First call from Claude Code</h3>
+      <pre><code><span class="com"># Whoami</span>
+c3_bitbucket(action=<span class="str">'whoami'</span>)
+
+<span class="com"># Open PRs in the pinned repo</span>
+c3_bitbucket(action=<span class="str">'list_prs'</span>, state=<span class="str">'OPEN'</span>)
+
+<span class="com"># Detail of a specific PR</span>
+c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">42</span>)</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUTHENTICATION ═══ -->
+    <section id="auth" class="tool-section">
+      <h2>Authentication &amp; security</h2>
+
+      <h3>Personal Access Tokens</h3>
+      <p>C3 uses Bitbucket Data Center <strong>Personal Access Tokens</strong> (Bearer auth). Generate one in your Bitbucket profile under <em>Manage account → Personal access tokens</em>. Choose a permission level matching what you intend to do:</p>
+      <table class="params-table">
+        <thead><tr><th>Permission</th><th>What c3_bitbucket can do</th></tr></thead>
+        <tbody>
+          <tr><td><code>REPO_READ</code></td>     <td>Browse projects, repos, PRs, diffs, branches, builds, activity</td></tr>
+          <tr><td><code>REPO_WRITE</code></td>    <td>+ Create / comment / approve / decline / merge PRs · create / delete branches</td></tr>
+          <tr><td><code>REPO_ADMIN</code></td>    <td>+ Update repo settings · webhooks · permissions</td></tr>
+          <tr><td><code>PROJECT_*</code></td>     <td>Equivalent permissions but scoped to a whole project key</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Where the token lives</h3>
+      <table class="kv-table">
+        <tr>
+          <td>OS keyring</td>
+          <td>Token text, under service <code>c3-bitbucket</code>, account <code>{base_url}|{username}</code>. Backed by <strong>Windows Credential Manager</strong>, <strong>macOS Keychain</strong>, or <strong>Linux Secret Service</strong>.</td>
+        </tr>
+        <tr>
+          <td><code>.c3/config.json</code></td>
+          <td>Non-secret <code>bitbucket</code> section: list of known accounts, active-account pointer, default project + repo, TLS-verify flag. <strong>Never</strong> contains the token.</td>
+        </tr>
+      </table>
+
+      <div class="callout callout-warn">
+        <p><strong>Why both?</strong> The OS keyring has no portable list API on every backend, so C3 also keeps a non-secret accounts index in <code>.c3/config.json</code>. This makes <code>c3 bitbucket status</code> able to show all configured accounts without prompting the keyring per-entry. Tokens themselves only flow through the keyring.</p>
+      </div>
+
+      <h3>TLS verification</h3>
+      <p>Default: <code>verify_tls = true</code>. To disable verification for self-signed enterprise CAs, pass <code>--insecure</code> on <code>c3 bitbucket login</code>, or flip <code>bitbucket.verify_tls</code> to <code>false</code> in <code>.c3/config.json</code>.</p>
+
+      <div class="callout callout-danger">
+        <p><strong>Use with care.</strong> Disabling TLS verification means a network-positioned attacker could steal your PAT. Only set it when the server certificate is signed by an internal CA you trust, and prefer importing the CA into the system trust store.</p>
+      </div>
+
+      <h3>Multiple servers / accounts</h3>
+      <p><code>save_credentials</code> appends each <code>(base_url, username)</code> pair to the accounts index. Switch with <code>c3 bitbucket use --url ... --username ...</code>. The <em>active</em> account is what every <code>c3_bitbucket</code> call resolves to.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ ACTION REFERENCE ═══ -->
+    <section id="actions" class="tool-section">
+      <h2>Action reference</h2>
+      <p>The MCP tool dispatches by <code>action</code>. Twenty-seven actions are grouped below by capability. Project + repo default from <code>bitbucket.default_project</code> / <code>default_repo</code> when not provided.</p>
+
+      <h3>Read &amp; discovery</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-read"><code>status</code></td>      <td>—</td>                         <td>Active account, accounts list, defaults, server-version probe. Works without a valid token (returns <code>connection: FAIL</code> in that case)</td></tr>
+          <tr><td class="grp-read"><code>whoami</code></td>      <td>—</td>                         <td>Authenticated user (PAT owner)</td></tr>
+          <tr><td class="grp-read"><code>list_projects</code></td><td><code>name?</code></td>       <td>All projects visible to the PAT, optionally filtered by name</td></tr>
+          <tr><td class="grp-read"><code>list_repos</code></td>   <td><code>project</code></td>     <td>Repos under a project key</td></tr>
+          <tr><td class="grp-read"><code>get_repo</code></td>     <td><code>project, repo</code></td><td>Repo metadata — name, scmId, public flag, clone URLs</td></tr>
+          <tr><td class="grp-read"><code>list_prs</code></td>     <td><code>project, repo, state?, author?, reviewer?, limit?</code></td><td>Pull requests — default <code>state=OPEN</code>; supports <code>MERGED</code>, <code>DECLINED</code>, <code>ALL</code></td></tr>
+          <tr><td class="grp-read"><code>get_pr</code></td>       <td><code>project, repo, pr_id</code></td><td>Full PR detail incl. version, reviewers, description, open-tasks</td></tr>
+          <tr><td class="grp-read"><code>get_pr_diff</code></td>  <td><code>project, repo, pr_id, context_lines?</code></td><td>Unified diff (truncated to 6000 chars in the response)</td></tr>
+          <tr><td class="grp-read"><code>get_pr_activities</code></td><td><code>project, repo, pr_id</code></td><td>PR event timeline (comments, approvals, reviewer changes)</td></tr>
+          <tr><td class="grp-read"><code>list_branches</code></td><td><code>project, repo, filter?</code></td><td>Branches with ahead/behind counts and default-branch flag</td></tr>
+          <tr><td class="grp-read"><code>list_commits</code></td> <td><code>project, repo, branch?, path?, limit?</code></td><td>Commit log on a branch / path</td></tr>
+          <tr><td class="grp-read"><code>list_activity</code></td><td><code>project, repo, limit?</code></td><td>Repo activity feed (commit-based)</td></tr>
+          <tr><td class="grp-read"><code>build_status</code></td> <td><code>commit?</code></td>     <td>CI build statuses for a commit. If <code>commit</code> is omitted, the default branch's HEAD is used.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Pull-request writes</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-write"><code>create_pr</code></td>   <td><code>title, from_branch, to_branch, description?, reviewers?</code></td><td>Open a new PR. <code>reviewers</code> may be a list or comma-separated string.</td></tr>
+          <tr><td class="grp-write"><code>comment_pr</code></td>  <td><code>pr_id, body</code></td>            <td>Add a top-level comment</td></tr>
+          <tr><td class="grp-write"><code>approve_pr</code></td>  <td><code>pr_id</code></td>                  <td>Mark the PR approved as the current user</td></tr>
+          <tr><td class="grp-write"><code>unapprove_pr</code></td><td><code>pr_id</code></td>                  <td>Withdraw approval</td></tr>
+          <tr><td class="grp-write"><code>decline_pr</code></td>  <td><code>pr_id</code></td>                  <td>Decline the PR. Auto-fetches the current PR version first.</td></tr>
+          <tr><td class="grp-write"><code>merge_pr</code></td>    <td><code>pr_id, message?</code></td>        <td>Merge the PR. Auto-fetches the current PR version first; logs to the C3 edit ledger.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Branch writes</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-branch"><code>create_branch</code></td><td><code>name, start_point, message?</code></td><td>Create a branch from a ref. Goes through the <code>/rest/branch-utils/1.0</code> API.</td></tr>
+          <tr><td class="grp-branch"><code>delete_branch</code></td><td><code>name, dry_run?</code></td>             <td>Delete a branch. Logs to the edit ledger.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Repository administration</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-admin"><code>repo_settings</code></td>          <td><code>project, repo</code></td>          <td>Read repo settings (currently the same as <code>get_repo</code>)</td></tr>
+          <tr><td class="grp-admin"><code>update_repo_settings</code></td>   <td><code>project, repo, settings</code></td><td>PUT updated settings JSON to the repo. <code>settings</code> may be a dict or JSON string.</td></tr>
+          <tr><td class="grp-admin"><code>list_webhooks</code></td>          <td><code>project, repo</code></td>          <td>All webhooks on the repo</td></tr>
+          <tr><td class="grp-admin"><code>create_webhook</code></td>         <td><code>name, url, events, active?, secret?</code></td><td>Create a webhook. <code>events</code> is a list or comma-separated string (e.g. <code>repo:refs_changed,pr:opened</code>).</td></tr>
+          <tr><td class="grp-admin"><code>delete_webhook</code></td>         <td><code>webhook_id</code></td>             <td>Remove a webhook</td></tr>
+          <tr><td class="grp-admin"><code>list_permissions</code></td>       <td><code>project, repo</code></td>          <td>User and group permission grants on the repo</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <p><strong>Argument fall-back.</strong> Any action in the table whose row says it needs <code>project, repo</code> will fall back to <code>bitbucket.default_project</code> and <code>bitbucket.default_repo</code> from <code>.c3/config.json</code> when the call omits them. Use <code>c3 bitbucket set-default</code> to pin them.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CLI ═══ -->
+    <section id="cli" class="tool-section">
+      <h2>CLI commands</h2>
+      <p>Five subcommands cover account lifecycle and repo defaults. Run any with <code>--help</code> for full flags.</p>
+
+      <table class="params-table">
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>c3 bitbucket login --url &lt;URL&gt; [--username &lt;U&gt;] [--token &lt;T&gt;] [--insecure]</code></td><td>Interactive PAT prompt (<code>getpass</code> masked). Writes to keyring, appends to accounts index, sets active. Runs a connection probe.</td></tr>
+          <tr><td><code>c3 bitbucket logout [--url &lt;URL&gt;] [--username &lt;U&gt;]</code></td>                          <td>Removes from keyring and accounts index. Falls back to the active account when args are omitted.</td></tr>
+          <tr><td><code>c3 bitbucket status</code></td>                                                                      <td>Lists accounts, marks the active one, runs an <code>application-properties</code> probe.</td></tr>
+          <tr><td><code>c3 bitbucket use --url &lt;URL&gt; --username &lt;U&gt;</code></td>                                   <td>Switch active account (no token re-entry needed if the keyring already has it).</td></tr>
+          <tr><td><code>c3 bitbucket set-default --project &lt;K&gt; --repo &lt;R&gt;</code></td>                              <td>Pin the project key + repo slug used by <code>c3_bitbucket</code> calls when args are omitted.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ HUB UI ═══ -->
+    <section id="hub-ui" class="tool-section">
+      <h2>Hub UI tab</h2>
+      <p>The per-project Hub UI gains a <strong>Bitbucket</strong> tab in its sidebar (between <em>Edits</em> and <em>Instructions</em>). Five sub-views:</p>
+
+      <table class="params-table">
+        <thead><tr><th>Sub-view</th><th>Shows</th></tr></thead>
+        <tbody>
+          <tr><td>Overview</td>      <td>Active account · default project + repo · server version &amp; connection state · all configured accounts</td></tr>
+          <tr><td>Pull Requests</td> <td>State filter (OPEN / MERGED / DECLINED / ALL) · PR list with state badge · click-through detail JSON</td></tr>
+          <tr><td>Branches</td>      <td>Branch list with latest commit hash and default-branch marker</td></tr>
+          <tr><td>Activity</td>      <td>Recent commit feed</td></tr>
+          <tr><td>Admin</td>         <td>Webhooks (id, active, name → URL, events) · user / group permission grants</td></tr>
+        </tbody>
+      </table>
+
+      <p>Endpoints powering the tab live in <code>cli/server.py</code> under <code>/api/bitbucket/*</code>. The Hub server (port 3330) does not host these — Bitbucket is per-project, so the API runs inside each project's session-server (default port 3333).</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUDIT TRAIL ═══ -->
+    <section id="audit" class="tool-section">
+      <h2>Audit trail — Edit ledger integration</h2>
+      <p>State changes that happen <em>on the platform side</em> (not in your local working tree) are still appended to the C3 edit ledger so the audit trail is complete. The path for these entries is virtual:</p>
+      <pre><code>bitbucket://&lt;project&gt;/&lt;repo&gt;</code></pre>
+      <p>The following actions log to the ledger when they succeed:</p>
+
+      <table class="params-table">
+        <thead><tr><th>Action</th><th>Why it's logged</th></tr></thead>
+        <tbody>
+          <tr><td><code>create_pr</code></td>            <td>New PR opened — relevant for review timeline</td></tr>
+          <tr><td><code>comment_pr</code></td>           <td>Discussion contribution worth recovering on / clear</td></tr>
+          <tr><td><code>approve_pr</code> / <code>unapprove_pr</code></td><td>Reviewer state changes</td></tr>
+          <tr><td><code>decline_pr</code></td>           <td>PR closed without merge</td></tr>
+          <tr><td><code>merge_pr</code></td>             <td>Code now lives in the target branch — high-impact</td></tr>
+          <tr><td><code>create_branch</code> / <code>delete_branch</code></td><td>Branch topology changed</td></tr>
+          <tr><td><code>update_repo_settings</code></td> <td>Repo-level config drift</td></tr>
+          <tr><td><code>create_webhook</code> / <code>delete_webhook</code></td><td>Integration footprint changed</td></tr>
+        </tbody>
+      </table>
+
+      <p>Read-only actions and the <code>status</code> probe are <em>not</em> logged. Token text is stripped from logged kwargs before persisting.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CONFIGURATION ═══ -->
+    <section id="config" class="tool-section">
+      <h2><code>.c3/config.json</code> — bitbucket section</h2>
+      <p>Default shape (gets created on first <code>c3 bitbucket login</code>):</p>
+      <pre><code>{
+  <span class="str">"bitbucket"</span>: {
+    <span class="str">"active"</span>: { <span class="str">"base_url"</span>: <span class="str">"https://bitbucket.example.com"</span>, <span class="str">"username"</span>: <span class="str">"alice"</span> },
+    <span class="str">"accounts"</span>: [
+      { <span class="str">"base_url"</span>: <span class="str">"https://bitbucket.example.com"</span>, <span class="str">"username"</span>: <span class="str">"alice"</span> }
+    ],
+    <span class="str">"default_project"</span>: <span class="str">"PROJ"</span>,
+    <span class="str">"default_repo"</span>: <span class="str">"my-service"</span>,
+    <span class="str">"verify_tls"</span>: <span class="num">true</span>
+  }
+}</code></pre>
+
+      <table class="kv-table">
+        <tr><td><code>active</code></td>          <td>Pointer to the account whose token will be loaded for every <code>c3_bitbucket</code> call.</td></tr>
+        <tr><td><code>accounts</code></td>        <td>Non-secret index of all known <code>(base_url, username)</code> pairs.</td></tr>
+        <tr><td><code>default_project</code></td> <td>Project key used when an action call omits <code>project=</code>.</td></tr>
+        <tr><td><code>default_repo</code></td>    <td>Repo slug used when an action call omits <code>repo=</code>.</td></tr>
+        <tr><td><code>verify_tls</code></td>      <td>Set to <code>false</code> for self-signed enterprise certificates. Prefer fixing the trust chain at the OS level instead.</td></tr>
+      </table>
+
+      <div class="callout callout-warn">
+        <p><strong><code>.c3/</code> is gitignored by default.</strong> Even so, never write a token under this section by hand. The keyring is the authoritative store; this file is just the index.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ EXAMPLES ═══ -->
+    <section id="examples" class="tool-section">
+      <h2>Example workflows</h2>
+
+      <h3>Review and merge a PR</h3>
+      <pre><code><span class="com"># 1. See what's open</span>
+c3_bitbucket(action=<span class="str">'list_prs'</span>, state=<span class="str">'OPEN'</span>)
+
+<span class="com"># 2. Drill into one</span>
+c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">42</span>)
+c3_bitbucket(action=<span class="str">'get_pr_diff'</span>, pr_id=<span class="num">42</span>)
+
+<span class="com"># 3. Comment with review notes</span>
+c3_bitbucket(action=<span class="str">'comment_pr'</span>, pr_id=<span class="num">42</span>,
+             body=<span class="str">'LGTM modulo the test in test_x.py:42'</span>)
+
+<span class="com"># 4. Approve, then merge — version is fetched automatically</span>
+c3_bitbucket(action=<span class="str">'approve_pr'</span>, pr_id=<span class="num">42</span>)
+c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num">42</span>,
+             message=<span class="str">'Merge feat/bitbucket — release v2.30.0'</span>)</code></pre>
+
+      <h3>Open a PR for the current branch</h3>
+      <pre><code><span class="com"># Push the branch first via c3_shell (auto-logs to ledger)</span>
+c3_shell(cmd=<span class="str">'git push -u origin feat/bitbucket'</span>)
+
+<span class="com"># Then open the PR</span>
+c3_bitbucket(action=<span class="str">'create_pr'</span>,
+             title=<span class="str">'feat: Bitbucket Data Center integration (v2.30.0)'</span>,
+             from_branch=<span class="str">'feat/bitbucket'</span>,
+             to_branch=<span class="str">'main'</span>,
+             description=<span class="str">'See CHANGELOG [2.30.0] for details.'</span>,
+             reviewers=<span class="str">'alice,bob'</span>)</code></pre>
+
+      <h3>Cut a feature branch via the API</h3>
+      <pre><code>c3_bitbucket(action=<span class="str">'create_branch'</span>,
+             name=<span class="str">'feat/oauth-fix'</span>,
+             start_point=<span class="str">'refs/heads/main'</span>)</code></pre>
+
+      <h3>Check CI status before merging</h3>
+      <pre><code><span class="com"># Latest commit on the PR's source branch</span>
+pr = c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">42</span>)
+<span class="com"># (in agent code) → fromRef.latestCommit</span>
+c3_bitbucket(action=<span class="str">'build_status'</span>, commit=<span class="str">'&lt;sha&gt;'</span>)</code></pre>
+
+      <h3>Inventory webhooks before changing CI</h3>
+      <pre><code>c3_bitbucket(action=<span class="str">'list_webhooks'</span>)
+c3_bitbucket(action=<span class="str">'create_webhook'</span>,
+             name=<span class="str">'jenkins'</span>,
+             url=<span class="str">'https://ci.example.com/hooks/bitbucket'</span>,
+             events=<span class="str">'repo:refs_changed,pr:opened,pr:merged'</span>,
+             active=<span class="num">true</span>,
+             secret=<span class="str">'shared-with-jenkins'</span>)</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+
+      <table class="params-table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>[bitbucket:no-account]</code></td>
+            <td>Active account isn't set in <code>.c3/config.json</code>. Run <code>c3 bitbucket login --url &lt;URL&gt;</code> or <code>c3 bitbucket use --url ... --username ...</code> if the token is already stored.</td>
+          </tr>
+          <tr>
+            <td><code>[bitbucket:no-token]</code></td>
+            <td>Account is in the index but the keyring entry is missing (e.g. <code>.c3/</code> was copied to a different machine). Re-run <code>c3 bitbucket login --url ... --username ...</code> to put the PAT back into the keyring.</td>
+          </tr>
+          <tr>
+            <td>HTTP 401 on a fresh PAT</td>
+            <td>The PAT was issued for a different Bitbucket server, or the project / repo permission isn't on the token. Generate a new token with at least <code>REPO_READ</code>.</td>
+          </tr>
+          <tr>
+            <td>HTTP 403 on PR write</td>
+            <td>The token has <code>REPO_READ</code> but the action needs <code>REPO_WRITE</code>. Re-issue with the right level.</td>
+          </tr>
+          <tr>
+            <td>HTTP 409 on <code>merge_pr</code> / <code>decline_pr</code></td>
+            <td>PR version is stale (somebody else updated it). The handler auto-fetches the current version on each call, so simply retrying the same MCP action usually succeeds.</td>
+          </tr>
+          <tr>
+            <td><code>SSL: CERTIFICATE_VERIFY_FAILED</code></td>
+            <td>Self-signed enterprise CA. Either import the CA into the OS trust store (preferred), or set <code>bitbucket.verify_tls = false</code> in <code>.c3/config.json</code>.</td>
+          </tr>
+          <tr>
+            <td>Connection probe times out</td>
+            <td>Server is reachable from the browser but blocked at the OS firewall (e.g. corporate proxy). Set <code>HTTPS_PROXY</code> in your environment — <code>urllib</code> picks it up automatically.</td>
+          </tr>
+          <tr>
+            <td><code>The 'keyring' package is required</code></td>
+            <td><code>pip install keyring</code> — added as a dependency in v2.30.0 but missing if you upgraded without re-installing.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Where to look</h3>
+      <ul>
+        <li><strong>Activity log:</strong> Hub UI → Bitbucket tab → Overview, plus <code>.c3/activity_log.jsonl</code> for raw events tagged <code>bitbucket_action</code>.</li>
+        <li><strong>Edit ledger:</strong> <code>c3_edits(action='history', file='bitbucket://&lt;project&gt;/&lt;repo&gt;')</code> for all platform-side mutations.</li>
+        <li><strong>Tool calls:</strong> <code>c3_session(action='log')</code> entries record every <code>c3_bitbucket</code> dispatch with action name and (sanitized) args.</li>
+      </ul>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Need to add an action this surface doesn't cover? File an issue or pull request — the integration is intentionally thin around the Bitbucket REST 1.0 API in <code>services/bitbucket_client.py</code>.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

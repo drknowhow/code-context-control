@@ -60,7 +60,7 @@ from cli.commands.common import cmd_stats as common_cmd_stats
 from cli.commands.common import cmd_ui as common_cmd_ui
 from cli.commands.parser import build_parser
 from core import count_tokens, format_token_count
-from core.config import AGENT_DEFAULTS, DELEGATE_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
+from core.config import AGENT_DEFAULTS, BITBUCKET_DEFAULTS, DELEGATE_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
 from core.config import DEFAULTS as HYBRID_DEFAULTS
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services.compressor import CodeCompressor
@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.28.3"
+__version__ = "2.30.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -164,6 +164,7 @@ def _build_init_config(project_path: str) -> dict:
         "proxy": deepcopy(PROXY_DEFAULTS),
         "delegate": deepcopy(DELEGATE_DEFAULTS),
         "agents": deepcopy(AGENT_DEFAULTS),
+        "bitbucket": deepcopy(BITBUCKET_DEFAULTS),
     }
     merged = _deep_merge_dict(defaults, existing if isinstance(existing, dict) else {})
     # Always persist current path/version on init/update.
@@ -237,7 +238,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_session", "mcp__c3__c3_status", "mcp__c3__c3_filter",
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
-    "mcp__c3__c3_impact", "mcp__c3__c3_shell",
+    "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -562,6 +563,25 @@ def _check_c3_health(project_path: str) -> dict:
     info["sessions"] = len(list(sessions_dir.glob("*.json"))) if sessions_dir.exists() else 0
     facts_dir = c3_dir / "facts"
     info["facts"] = len(list(facts_dir.glob("*.json"))) if facts_dir.exists() else 0
+
+    # Bitbucket integration (v2.30.0+) — informational
+    bb_section = config.get("bitbucket") if isinstance(config, dict) else None
+    if isinstance(bb_section, dict):
+        active = bb_section.get("active") or {}
+        accounts = bb_section.get("accounts") or []
+        info["bitbucket_accounts"] = len(accounts) if isinstance(accounts, list) else 0
+        info["bitbucket_active_account"] = (
+            f"{active.get('username', '')}@{active.get('base_url', '')}"
+            if active.get("base_url") and active.get("username") else ""
+        )
+        info["bitbucket_default_repo"] = (
+            f"{bb_section.get('default_project', '')}/{bb_section.get('default_repo', '')}"
+            if bb_section.get("default_project") and bb_section.get("default_repo") else ""
+        )
+    else:
+        info["bitbucket_accounts"] = 0
+        info["bitbucket_active_account"] = ""
+        info["bitbucket_default_repo"] = ""
 
     info["issues"] = issues
     info["healthy"] = len(issues) == 0
@@ -945,6 +965,15 @@ def cmd_init(args):
             print(f"  Gemini: not available ({detail})")
     except Exception:
         print("  Gemini: unknown")
+
+    # Bitbucket integration (v2.30.0+)
+    bb_n = int(health.get("bitbucket_accounts") or 0)
+    if bb_n:
+        active = health.get("bitbucket_active_account") or "(no active)"
+        repo = health.get("bitbucket_default_repo") or "(no default repo)"
+        print(f"  Bitbkt: {bb_n} account(s), active={active}, repo={repo}")
+    else:
+        print("  Bitbkt: not configured (run 'c3 bitbucket login --url <URL>')")
 
     if health["healthy"]:
         print("\n  Status: healthy — no issues detected.")
@@ -4462,6 +4491,7 @@ back to native tools as the task progresses.
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
 - **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
+- **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 
 ## Self-Check
 If you haven't called a c3_* tool in several turns during active development, re-engage
@@ -5388,6 +5418,144 @@ def cmd_hub(args):
     run_hub(port=port, open_browser=open_browser, silent=silent, quiet=quiet)
 
 
+def cmd_bitbucket(args):
+    """Bitbucket Data Center / Server credential + workspace management."""
+    sub = getattr(args, "bitbucket_cmd", None)
+    if not sub:
+        print("Usage: c3 bitbucket {login,logout,status,use,set-default} [args]")
+        return
+
+    project_path = getattr(args, "project_path", ".") or "."
+
+    if sub == "login":
+        _bb_cmd_login(args, project_path)
+    elif sub == "logout":
+        _bb_cmd_logout(args, project_path)
+    elif sub == "status":
+        _bb_cmd_status(args, project_path)
+    elif sub == "use":
+        _bb_cmd_use(args, project_path)
+    elif sub == "set-default":
+        _bb_cmd_set_default(args, project_path)
+    else:
+        print(f"Unknown bitbucket subcommand: {sub}")
+
+
+def _bb_cmd_login(args, project_path: str) -> None:
+    import getpass
+
+    from services import bitbucket_credentials as bb_creds
+    from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
+
+    base_url = (args.url or "").rstrip("/")
+    username = args.username or input(f"Username for {base_url}: ").strip()
+    if not username:
+        print("Login cancelled — username required.")
+        return
+    token = args.token or getpass.getpass(f"Personal Access Token for {username}: ").strip()
+    if not token:
+        print("Login cancelled — token required.")
+        return
+
+    try:
+        bb_creds.save_credentials(
+            base_url, username, token,
+            project_path=project_path,
+            set_active=not getattr(args, "no_set_active", False),
+        )
+    except bb_creds.BitbucketCredentialError as exc:
+        print(f"[error] {exc}")
+        return
+
+    if getattr(args, "insecure", False):
+        bb_creds.set_verify_tls(False, project_path=project_path)
+
+    print(f"[OK] Stored credentials for {username}@{base_url}")
+
+    # Connection probe — non-fatal if it fails (token might be valid but
+    # network blocked at this moment).
+    try:
+        client = BitbucketDataCenterClient(
+            base_url=base_url, token=token,
+            verify_tls=not getattr(args, "insecure", False),
+        )
+        props = client.application_properties()
+        version = props.get("version", "?")
+        user = client.whoami()
+        print(f"     Server: {version} ({base_url})")
+        print(f"     Auth as: {user.get('displayName', username)} <{user.get('emailAddress', '?')}>")
+    except BitbucketError as exc:
+        print(f"[warn] Connection probe failed: {exc}")
+        print("       Token saved anyway — re-test with `c3 bitbucket status`.")
+
+
+def _bb_cmd_logout(args, project_path: str) -> None:
+    from services import bitbucket_credentials as bb_creds
+
+    base_url = (getattr(args, "url", "") or "").rstrip("/")
+    username = getattr(args, "username", "") or ""
+    if not base_url or not username:
+        active = bb_creds.get_active_account(project_path)
+        base_url = base_url or active.get("base_url", "")
+        username = username or active.get("username", "")
+    if not base_url or not username:
+        print("[error] No account specified and no active account configured.")
+        return
+    removed = bb_creds.delete_credentials(base_url, username, project_path=project_path)
+    if removed:
+        print(f"[OK] Removed {username}@{base_url}")
+    else:
+        print(f"[warn] Nothing to remove for {username}@{base_url}")
+
+
+def _bb_cmd_status(args, project_path: str) -> None:
+    from core.config import load_bitbucket_config
+    from services import bitbucket_credentials as bb_creds
+    from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
+
+    cfg = load_bitbucket_config(project_path)
+    active = cfg.get("active") or {}
+    accounts = cfg.get("accounts") or []
+
+    print("[bitbucket:status]")
+    print(f"  Active  : {active.get('username') or '-'}@{active.get('base_url') or '-'}")
+    print(f"  Defaults: project={cfg.get('default_project') or '-'} repo={cfg.get('default_repo') or '-'}")
+    print(f"  Verify TLS: {cfg.get('verify_tls', True)}")
+    print(f"  Accounts ({len(accounts)}):")
+    for a in accounts:
+        marker = "*" if a == active else " "
+        print(f"    {marker} {a.get('username','?')}@{a.get('base_url','?')}")
+
+    if not active.get("base_url") or not active.get("username"):
+        print("  Connection: (no active account)")
+        return
+    token = bb_creds.load_token(active["base_url"], active["username"])
+    if not token:
+        print("  Connection: FAIL — no token in keyring")
+        return
+    try:
+        client = BitbucketDataCenterClient(
+            base_url=active["base_url"], token=token,
+            verify_tls=bool(cfg.get("verify_tls", True)),
+        )
+        props = client.application_properties()
+        print(f"  Connection: OK (version {props.get('version','?')})")
+    except BitbucketError as exc:
+        print(f"  Connection: FAIL — {exc}")
+
+
+def _bb_cmd_use(args, project_path: str) -> None:
+    from services import bitbucket_credentials as bb_creds
+    bb_creds.set_active_account(args.url, args.username, project_path=project_path)
+    print(f"[OK] Active account: {args.username}@{args.url.rstrip('/')}")
+
+
+def _bb_cmd_set_default(args, project_path: str) -> None:
+    from services import bitbucket_credentials as bb_creds
+    bb_creds.set_default_repo(args.project, args.repo, project_path=project_path)
+    print(f"[OK] Default repo: {args.project}/{args.repo}")
+
+
 def cmd_projects(args):
     """Manage the global C3 project registry."""
     from services.project_manager import ProjectManager
@@ -6139,6 +6307,7 @@ def main():
         "ui": cmd_ui,
         "projects": cmd_projects,
         "hub": cmd_hub,
+        "bitbucket": cmd_bitbucket,
     }
 
     cmd_func = commands.get(args.command)
