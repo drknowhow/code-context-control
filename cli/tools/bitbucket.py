@@ -10,7 +10,6 @@ caller's context budget.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from core import count_tokens

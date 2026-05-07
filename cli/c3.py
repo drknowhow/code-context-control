@@ -5443,6 +5443,7 @@ def cmd_bitbucket(args):
 
 def _bb_cmd_login(args, project_path: str) -> None:
     import getpass
+
     from services import bitbucket_credentials as bb_creds
     from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
 
@@ -5508,9 +5509,9 @@ def _bb_cmd_logout(args, project_path: str) -> None:
 
 
 def _bb_cmd_status(args, project_path: str) -> None:
+    from core.config import load_bitbucket_config
     from services import bitbucket_credentials as bb_creds
     from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
-    from core.config import load_bitbucket_config
 
     cfg = load_bitbucket_config(project_path)
     active = cfg.get("active") or {}
