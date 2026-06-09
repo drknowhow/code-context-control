@@ -23,12 +23,19 @@ from oracle.services import api_auth
 logger = logging.getLogger("oracle.mcp")
 
 _INSTRUCTIONS = (
-    "C3 Oracle Discovery — cross-project code & memory intelligence as tools. "
-    "Start with list_projects to see available projects, then use c3_search_cross "
-    "or search_facts to discover across all of them, or the per-project tools "
-    "(c3_search, c3_read, c3_compress, query_memory, read_graph) with a project_path. "
-    "suggest_action creates a PENDING suggestion for human approval; delegate_task runs "
-    "a configured Oracle agent. No code-editing tools are exposed."
+    "C3 Oracle Discovery — use C3's cross-project code & memory intelligence as tools.\n"
+    "\n"
+    "Recommended workflow:\n"
+    "1. list_projects — see which C3 projects exist (names + absolute paths).\n"
+    "2. Discover across ALL projects: search_facts (memory) or c3_search_cross (code).\n"
+    "3. Narrow to one project using its path: c3_search to find code; c3_compress "
+    "(mode='map') to see a file's shape before reading; c3_read for exact content; "
+    "query_memory / read_graph / cross_insights for that project's memory.\n"
+    "\n"
+    "Notes: per-project tools REQUIRE a `project_path` taken from list_projects. Every tool "
+    "returns JSON. suggest_action creates a PENDING suggestion for a human to approve (not a "
+    "direct write); delegate_task runs a configured Oracle agent. Read + safe-action tiers "
+    "only — no code-editing tools are exposed."
 )
 
 

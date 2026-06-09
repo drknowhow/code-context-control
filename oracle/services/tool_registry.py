@@ -398,8 +398,23 @@ class ToolRegistry:
             "info": {
                 "title": "C3 Oracle Discovery API",
                 "version": _c3_version(),
-                "description": "Read + safe-action discovery tools over C3's cross-project code and "
-                               "memory intelligence, for use by external LLMs.",
+                "description": (
+                    "Use C3's cross-project code & memory intelligence as tools, for external LLMs.\n\n"
+                    "**Workflow:** call `list_projects` first to get project names + absolute paths; "
+                    "discover across all projects with `search_facts` (memory) or `c3_search_cross` "
+                    "(code); then narrow to one project (pass its `project_path`) using `c3_search`, "
+                    "`c3_compress` (mode `map` to see a file's shape before reading), `c3_read` (exact "
+                    "content), `query_memory`, `read_graph`, or `cross_insights`.\n\n"
+                    "**Auth:** every request requires an `Authorization: Bearer <token>` header "
+                    "(get it from `/api/discovery/mcp-info` or by running `c3 oracle api info`).\n\n"
+                    "**Capability tiers:** `read` tools are pure discovery; `action` tools are safe and "
+                    "non-destructive — `suggest_action` creates a PENDING suggestion for human approval "
+                    "(not a direct write) and `delegate_task` runs a configured Oracle agent. No "
+                    "code-editing tools are exposed.\n\n"
+                    "**Invoke:** POST the arguments object to `/api/discovery/tools/{name}`, or POST "
+                    "`{\"tool\": \"<name>\", \"args\": {...}}` to `/api/discovery/call`. Per-project "
+                    "tools require a `project_path` from `list_projects`."
+                ),
             },
             "security": [{"bearerAuth": []}],
             "components": {
