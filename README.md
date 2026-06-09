@@ -219,6 +219,34 @@ to the C3 edit ledger so the audit trail covers platform-side changes too.
 The **Hub UI** (per-project) gains a "Bitbucket" tab with sub-views for
 Overview / Pull Requests / Branches / Activity / Admin.
 
+### Oracle Discovery API (v2.32.0)
+
+The **Oracle** is C3's optional cross-project memory agent (a local web app). As of
+v2.32.0 it can expose C3's cross-project code & memory intelligence as **tools for an
+external LLM** — point Claude (or any function-calling model) at a running Oracle and
+it can discover your projects and search code, memory, and the cross-project graph
+across all of them.
+
+Two transports share one tool core:
+
+- **MCP** (streamable HTTP/SSE) at `http://127.0.0.1:3332/mcp` — native for Claude
+  Code / Claude Desktop / any MCP client.
+- **OpenAPI REST** at `http://127.0.0.1:3331/api/discovery` — for any LLM with
+  function-calling (fetch `/openapi.json` to auto-register the tools).
+
+```bash
+# Start the Oracle (serves the REST + MCP discovery endpoints)
+python oracle/oracle_server.py --no-browser
+
+# Print the Bearer token + a ready-to-paste .mcp.json snippet
+c3 oracle api info
+```
+
+Only **read** and **safe-action** tools are exposed (no code editing); requests need a
+**Bearer token** (stored in the OS keyring) and both servers bind `127.0.0.1` by
+default. Generate, rotate, and copy the token from the dashboard's **Settings →
+Discovery API** tab. See the [Oracle Discovery API guide](oracle-guide/discovery-api.md).
+
 ---
 
 ## Tiered local AI (optional)
@@ -293,6 +321,7 @@ The author may introduce a paid offering or relicense future major versions; no 
 
 - **PyPI:** https://pypi.org/project/code-context-control/
 - **Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
+- **Oracle Discovery API:** [`oracle-guide/discovery-api.md`](oracle-guide/discovery-api.md)
 - **Security policy:** [`SECURITY.md`](SECURITY.md)
 - **Licensing FAQ:** [`LICENSING.md`](LICENSING.md)
 - **Issues:** https://github.com/drknowhow/code-context-control/issues
