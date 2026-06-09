@@ -4921,8 +4921,14 @@ def cmd_install_mcp(args):
         # Build hook commands using the Python executable that runs c3.
         # On Windows, Claude Code executes hooks via /usr/bin/bash (Git Bash), which cannot
         # parse Windows absolute paths containing parentheses (e.g. "(C3)"). Prefix with
-        # "cmd /c" so cmd.exe handles path resolution instead of bash.
-        _hook_prefix = "cmd /c " if sys.platform == "win32" else ""
+        # cmd.exe so it handles path resolution instead of bash.
+        #
+        # Use "cmd.exe" WITH the extension, not bare "cmd": Git Bash does not resolve bare
+        # "cmd" on PATH, so the old "cmd /c …" prefix silently failed to launch any hook
+        # (verified: under bash, "cmd.exe /c '<py>' '<hook>'" runs and writes the signal
+        # file; "cmd /c …" returns "cmd: command not found"). The single-quoted paths are
+        # correct — bash strips them and re-quotes for cmd.exe, preserving spaces/parens.
+        _hook_prefix = "cmd.exe /c " if sys.platform == "win32" else ""
         hook_filter_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_filter.py'))}"
         hook_read_cmd      = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_read.py'))}"
         hook_c3read_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
