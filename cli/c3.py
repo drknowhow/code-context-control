@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.30.0"
+__version__ = "2.31.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -239,6 +239,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
+    "mcp__c3__c3_project",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -4492,6 +4493,7 @@ back to native tools as the task progresses.
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
 - **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
+- **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
 
 ## Self-Check
 If you haven't called a c3_* tool in several turns during active development, re-engage
