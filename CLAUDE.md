@@ -92,7 +92,7 @@ claude-companion - v2/
     hook_session_stats.py
     ... +9 more
     commands/ (3 files)
-    tools/ (17 files)
+    tools/ (18 files)
     ui/ (5 files)
   commercial/
     info_01_efficiency.json
@@ -113,21 +113,24 @@ claude-companion - v2/
     bitbucket.html
     getting-started.html
     index.html
+    oracle.html
     shared.css
     tools.html
     workflow.html
   oracle/
     __init__.py
     config.py
+    mcp_oracle.py
     oracle.html
     oracle_server.py
-    services/ (13 files)
+    services/ (16 files)
   oracle-guide/
     README.md
     api-reference.md
     architecture.md
     changelog.md
     configuration.md
+    discovery-api.md
   services/
     __init__.py
     activity_log.py
@@ -144,7 +147,7 @@ claude-companion - v2/
     doc_index.py
     e2e_benchmark.py
     e2e_evaluator.py
-    ... +33 more
+    ... +34 more
     bench/ (1 files)
   tests/
     test_aider_polyglot.py
@@ -162,7 +165,7 @@ claude-companion - v2/
     test_hub_server_smoke.py
     test_mcp_server_smoke.py
     test_memory_graph_api.py
-    ... +11 more
+    ... +16 more
   tui/
     __init__.py
     backend.py
@@ -189,7 +192,7 @@ Python (Modern)
 ## Key Facts (use c3_memory for more)
 
 - [architecture] File Memory system: FileMemoryStore in services/file_memory.py provides persistent structural index of so
-- [ui] Left sidebar and right bar both support hover-to-open + pin. App state: sidebarPinned/rightBarPinned (localStorage 
 - c3_delegate now supports allow_model_fallback/fallback_models and resolves nearest installed Ollama model when the reque
 - ConversationStore sync now supports source='all|claude|imports', and sessions/turns persist normalized source labels for
 - SessionManager.parse_claude_session_tokens now resolves Claude transcript dirs via project slug candidates and constrain
+- `c3 benchmark` now provides a repeatable local benchmark for compression savings, retrieval token reduction, and groundi
