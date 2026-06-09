@@ -34,6 +34,9 @@ c3 oracle api rotate      # replace the token
 c3 oracle api clear       # delete the stored token
 ```
 
+You can also generate, rotate, and copy the token from the **Oracle dashboard →
+Settings → Discovery API** (it shows the live MCP URL, REST base, and `.mcp.json` snippet).
+
 The token lives in your OS keyring (Windows Credential Manager / macOS Keychain /
 Linux Secret Service). For headless/CI, set `C3_ORACLE_API_KEY` instead — it
 overrides the keyring and is never persisted.

@@ -20,6 +20,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory  # noqa
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
+from oracle.services import api_auth  # noqa: E402
 from oracle.services.api_auth import extract_bearer  # noqa: E402
 from oracle.services.api_auth import verify as verify_api_key  # noqa: E402
 from oracle.services.c3_bridge import C3Bridge  # noqa: E402
@@ -682,6 +683,79 @@ def api_discovery_mcp_info():
         "auth": "bearer",
         "rest_base": request.host_url.rstrip("/") + "/api/discovery",
     })
+
+
+# ── Discovery API key management (local dashboard — unauthenticated, loopback) ──
+def _apikey_status() -> dict:
+    """Status payload for the Discovery API token + connection info."""
+    key = api_auth.peek()
+    host = _cfg.get("bind_host", "127.0.0.1")
+    port = int(_cfg.get("mcp_port", 3332))
+    url = mcp_url(host, port)
+    rest_base = request.host_url.rstrip("/") + "/api/discovery"
+    masked = ""
+    if key:
+        masked = (key[:4] + "…" + key[-4:]) if len(key) > 12 else "••••"
+    snippet = {
+        "mcpServers": {
+            "c3-oracle": {
+                "type": "http",
+                "url": url,
+                "headers": {"Authorization": f"Bearer {key or '<token>'}"},
+            }
+        }
+    }
+    return {
+        "exists": bool(key),
+        "key": key or "",
+        "masked": masked,
+        "require_auth": bool(_cfg.get("api_require_auth", True)),
+        "api_enabled": bool(_cfg.get("api_enabled", True)),
+        "mcp_enabled": bool(_cfg.get("mcp_enabled", True)),
+        "mcp_url": url,
+        "rest_base": rest_base,
+        "openapi_url": rest_base + "/openapi.json",
+        "snippet": snippet,
+    }
+
+
+@app.route("/api/apikey", methods=["GET"])
+def api_apikey_get():
+    """Return the Discovery API token (if any) + connection info."""
+    try:
+        return jsonify(_apikey_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/apikey/generate", methods=["POST"])
+def api_apikey_generate():
+    """Create a token if none exists; returns the current status."""
+    try:
+        api_auth.get_or_create_key()
+        return jsonify(_apikey_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/apikey/rotate", methods=["POST"])
+def api_apikey_rotate():
+    """Replace the token with a fresh one."""
+    try:
+        api_auth.rotate()
+        return jsonify(_apikey_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/apikey/clear", methods=["POST"])
+def api_apikey_clear():
+    """Delete the stored token."""
+    try:
+        api_auth.clear()
+        return jsonify(_apikey_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Error handlers ────────────────────────────────────────
