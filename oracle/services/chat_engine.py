@@ -825,6 +825,15 @@ class ChatEngine:
 
     # ── Tool execution ────────────────────────────────────
 
+    def run_tool(self, name: str, args: dict | None = None) -> dict:
+        """Public entry point for dispatching a single tool call.
+
+        Shared by the internal chat loop and the external Discovery API so both
+        route through one dispatch path and can never diverge. ``args`` may be
+        None/empty for no-argument tools.
+        """
+        return self._execute_tool(name, args or {})
+
     def _execute_tool(self, name: str, args: dict) -> dict:
         """Dispatch tool call to the appropriate service."""
         try:

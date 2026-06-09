@@ -19,6 +19,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 from flask import Flask, Response, jsonify, request, send_from_directory  # noqa: E402
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
+from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
+from oracle.services.api_auth import extract_bearer  # noqa: E402
+from oracle.services.api_auth import verify as verify_api_key  # noqa: E402
 from oracle.services.c3_bridge import C3Bridge  # noqa: E402
 from oracle.services.chat_engine import ChatEngine  # noqa: E402
 from oracle.services.chat_store import ChatStore  # noqa: E402
@@ -31,6 +34,8 @@ from oracle.services.memory_writer import MemoryWriter  # noqa: E402
 from oracle.services.ollama_bridge import OllamaBridge  # noqa: E402
 from oracle.services.project_scanner import ProjectScanner  # noqa: E402
 from oracle.services.review_agent import ReviewAgent  # noqa: E402
+from oracle.services.tool_executor import ToolExecutor  # noqa: E402
+from oracle.services.tool_registry import ToolRegistry, _c3_version  # noqa: E402
 
 # ── App ───────────────────────────────────────────────────
 app = Flask(__name__)
@@ -50,10 +55,11 @@ _chat_store: ChatStore | None = None
 _chat_engine: ChatEngine | None = None
 _c3_bridge: C3Bridge | None = None
 _federated: FederatedGraph | None = None
+_tool_registry: ToolRegistry | None = None
 
 
 def _init_services():
-    global _cfg, _bridge, _scanner, _reader, _checker, _writer, _cross_memory, _engine, _agent, _model_verified, _chat_store, _chat_engine, _c3_bridge, _federated
+    global _cfg, _bridge, _scanner, _reader, _checker, _writer, _cross_memory, _engine, _agent, _model_verified, _chat_store, _chat_engine, _c3_bridge, _federated, _tool_registry
     _cfg = load_config()
     _bridge = OllamaBridge(
         base_url=_cfg.get("ollama_base_url", "https://ollama.com"),
@@ -101,6 +107,10 @@ def _init_services():
         store=_chat_store,
         c3_bridge=_c3_bridge,
     )
+    _tool_registry = ToolRegistry(
+        ToolExecutor(_chat_engine),
+        max_tier=_cfg.get("api_max_tier", "action"),
+    )
     atexit.register(lambda: _c3_bridge.shutdown() if _c3_bridge else None)
 
 
@@ -108,9 +118,27 @@ def _init_services():
 @app.after_request
 def _cors(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
     return resp
+
+
+# ── Discovery API auth guard ──────────────────────────────
+@app.before_request
+def _discovery_auth_guard():
+    """Bearer-token gate for the external Discovery API (``/api/discovery/*``)."""
+    path = request.path or ""
+    if not path.startswith("/api/discovery"):
+        return None
+    if request.method == "OPTIONS":
+        return None  # allow CORS preflight
+    if not _cfg.get("api_enabled", True):
+        return jsonify({"error": "discovery API disabled"}), 404
+    if _cfg.get("api_require_auth", True):
+        token = extract_bearer(request.headers.get("Authorization"))
+        if not verify_api_key(token):
+            return jsonify({"error": "unauthorized"}), 401
+    return None
 
 
 # ── Static ────────────────────────────────────────────────
@@ -570,6 +598,92 @@ def api_chat_conversation_state(conv_id):
     return jsonify({"state": _chat_store.get_state(conv_id)})
 
 
+# ── Discovery API (external LLM tool surface) ─────────────
+@app.route("/api/discovery/tools", methods=["GET"])
+def api_discovery_tools():
+    """List available discovery tools with their JSON schemas and capability tier."""
+    if not _tool_registry:
+        return jsonify({"error": "not initialized"}), 500
+    return jsonify({"tools": _tool_registry.list_tools(), "tier": _tool_registry.max_tier})
+
+
+@app.route("/api/discovery/call", methods=["POST"])
+def api_discovery_call():
+    """Invoke any discovery tool: body {"tool": name, "args": {...}}."""
+    if not _tool_registry:
+        return jsonify({"error": "not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    name = (data.get("tool") or "").strip()
+    if not name:
+        return jsonify({"error": "missing 'tool'"}), 400
+    args = data.get("args") or {}
+    if not isinstance(args, dict):
+        return jsonify({"error": "'args' must be an object"}), 400
+    return jsonify(_tool_registry.call_tool(name, args))
+
+
+@app.route("/api/discovery/tools/<name>", methods=["POST"])
+def api_discovery_call_named(name):
+    """Invoke a named tool with the request body as its arguments object."""
+    if not _tool_registry:
+        return jsonify({"error": "not initialized"}), 500
+    args = request.get_json(silent=True) or {}
+    if not isinstance(args, dict):
+        return jsonify({"error": "request body must be a JSON object of arguments"}), 400
+    return jsonify(_tool_registry.call_tool(name, args))
+
+
+@app.route("/api/discovery/call/stream", methods=["POST"])
+def api_discovery_call_stream():
+    """Invoke a tool and stream {start, result|error, [DONE]} as SSE."""
+    if not _tool_registry:
+        return jsonify({"error": "not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    name = (data.get("tool") or "").strip()
+    args = data.get("args") or {}
+    if not name:
+        return jsonify({"error": "missing 'tool'"}), 400
+    if not isinstance(args, dict):
+        return jsonify({"error": "'args' must be an object"}), 400
+
+    def generate():
+        yield f"data: {json.dumps({'type': 'start', 'tool': name})}\n\n"
+        try:
+            result = _tool_registry.call_tool(name, args)
+            yield f"data: {json.dumps({'type': 'result', 'tool': name, 'result': result}, default=str)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.route("/api/discovery/openapi.json", methods=["GET"])
+def api_discovery_openapi():
+    """OpenAPI 3.1 document describing every available discovery tool."""
+    if not _tool_registry:
+        return jsonify({"error": "not initialized"}), 500
+    return jsonify(_tool_registry.openapi_spec(request.host_url))
+
+
+@app.route("/api/discovery/mcp-info", methods=["GET"])
+def api_discovery_mcp_info():
+    """Connection details for the MCP transport (URL + auth scheme)."""
+    host = _cfg.get("bind_host", "127.0.0.1")
+    port = int(_cfg.get("mcp_port", 3332))
+    return jsonify({
+        "enabled": bool(_cfg.get("mcp_enabled", True)),
+        "transport": "http",
+        "url": mcp_url(host, port),
+        "auth": "bearer",
+        "rest_base": request.host_url.rstrip("/") + "/api/discovery",
+    })
+
+
 # ── Error handlers ────────────────────────────────────────
 @app.errorhandler(404)
 def not_found(e):
@@ -647,10 +761,29 @@ def run_oracle(port: int = None, open_browser: bool = None):
         _agent.start()
         atexit.register(_agent.stop)
 
+    # Start the discovery MCP server on its own loopback port if enabled.
+    if cfg.get("mcp_enabled", True) and _tool_registry is not None:
+        try:
+            from oracle.services.api_auth import get_or_create_key
+
+            get_or_create_key()  # ensure a Bearer key exists for clients
+            mcp_host = cfg.get("bind_host", "127.0.0.1")
+            mcp_p = int(cfg.get("mcp_port", 3332))
+            start_mcp_thread(
+                _tool_registry,
+                host=mcp_host,
+                port=mcp_p,
+                version=_c3_version(),
+                require_auth=cfg.get("api_require_auth", True),
+            )
+            print(f"Oracle Discovery MCP  →  {mcp_url(mcp_host, mcp_p)}  (auth: bearer)")
+        except Exception as e:
+            logging.getLogger("oracle").warning("MCP server not started: %s", e)
+
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
-    app.run(host="0.0.0.0", port=actual_port, debug=False, use_reloader=False)
+    app.run(host=cfg.get("bind_host", "127.0.0.1"), port=actual_port, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-06-09
+
+Feature release. The **Oracle Discovery API** lets external LLMs — Claude Code /
+Claude Desktop and any function-calling model — point at a running Oracle and use
+C3's cross-project code & memory intelligence as tools, over **MCP (HTTP/SSE)** and
+a parallel **OpenAPI REST** surface that share one tool core. Read + safe-action
+tiers only (no code edits); Bearer-token auth; loopback-bound by default.
+
+### Added
+
+- `oracle/services/api_auth.py` — keyring-backed Bearer API key (`c3-oracle-api`),
+  with a `C3_ORACLE_API_KEY` env override for headless/CI; `secrets.compare_digest`
+  verification, plus `rotate`/`clear`/`peek`.
+- `oracle/services/tool_registry.py` — `TOOL_SPECS`, the single source of truth:
+  18 tools with JSON Schemas + capability tiers (`read`/`action`). `ToolRegistry`
+  does tier filtering, arg validation, dispatch, and OpenAPI 3.1 generation.
+- `oracle/services/tool_executor.py` — thin adapter routing the API through
+  `ChatEngine.run_tool`, so chat and the API share one dispatch path.
+- `oracle/mcp_oracle.py` — FastMCP HTTP/SSE server built from the registry, guarded
+  by a pure-ASGI Bearer middleware (streaming stays intact), served in a daemon thread.
+- Oracle REST endpoints under `/api/discovery/*`: `tools`, `call`, `tools/<name>`,
+  `call/stream` (SSE), `openapi.json`, `mcp-info` — all behind a `before_request`
+  Bearer guard.
+- `c3 oracle api {info,key,rotate,clear}` CLI — prints the token, REST/MCP URLs,
+  and a ready-to-paste Claude `.mcp.json` snippet.
+- Oracle config keys: `bind_host`, `api_enabled`, `api_require_auth`, `api_max_tier`,
+  `mcp_enabled`, `mcp_port`.
+- Tests: `test_oracle_api_auth.py`, `test_tool_registry.py`, `test_oracle_discovery_api.py`.
+
+### Changed
+
+- `ChatEngine` gained a public `run_tool()` entry point so the chat loop and the
+  Discovery API share one dispatch path.
+- The Oracle server now binds **`127.0.0.1`** by default (was `0.0.0.0`); set
+  `bind_host` in `~/.c3/oracle/config.json` to expose it on a network.
+
 ## [2.31.0] - 2026-06-09
 
 Feature release. C3 tools can now reach **outside the current workspace** to
