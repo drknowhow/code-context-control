@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Discovery API guidance enriched for LLM clients: the MCP server `instructions` and the
+  OpenAPI `info.description` now spell out the recommended workflow (`list_projects` →
+  cross-project search → `c3_compress`/`c3_read`), the `project_path` requirement, the
+  read/safe-action capability tiers, Bearer auth, and how to invoke tools — so Claude (MCP)
+  and generic function-calling LLMs (REST) orient the same way.
+
 ### Fixed
 
 - **Ghost files (0-byte) from shell-redirect misinterpretation.** The output filter
