@@ -122,6 +122,10 @@
       <div class="sidebar-label">SCM</div>
       <a href="#c3_bitbucket" class="sidebar-link"><span class="icon">🪣</span> c3_bitbucket</a>
     </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Cross-project</div>
+      <a href="#c3_project" class="sidebar-link"><span class="icon">🗂️</span> c3_project</a>
+    </div>
   </aside>
 
   <!-- Main -->
@@ -129,7 +133,7 @@
 
     <div class="page-hero">
       <h1>Tools Reference</h1>
-      <p>Complete reference for all 15 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+      <p>Complete reference for all 16 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
     </div>
 
     <!-- TOC -->
@@ -151,6 +155,7 @@
         <a href="#c3_agent"    class="toc-item">c3_agent    <span class="cat">AI</span></a>
         <a href="#c3_edits"    class="toc-item">c3_edits    <span class="cat">Ledger</span></a>
         <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
+        <a href="#c3_project"  class="toc-item">c3_project  <span class="cat">Multi-project</span></a>
       </div>
     </div>
 
@@ -1123,6 +1128,60 @@ c3_bitbucket(action=<span class="str">'approve_pr'</span>, pr_id=<span class="nu
 c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num">42</span>)</code></pre>
 
           <p class="tool-desc"><strong>Audit trail:</strong> mutating actions (<code>merge_pr</code>, <code>create_branch</code>, <code>delete_branch</code>, webhook writes, etc.) are appended to the C3 edit ledger so the local audit log covers platform-side state changes too.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ CROSS-PROJECT ═════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Cross-project</div>
+
+      <!-- c3_project -->
+      <div class="tool-card" id="c3_project">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_project</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">multi-project</span>
+            <span class="badge">v2.31.0</span>
+          </div>
+          <span class="tool-tagline">Run C3 against OTHER c3-installed projects — discover, read, and (guarded) write</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Reach outside the current workspace. C3 keeps a global registry of installed projects (<code>~/.c3/projects.json</code>); <code>c3_project</code> lists/scans them and proxies the core C3 operations against any one — building and caching a full runtime per target project on demand. Name the target by registered <strong>name</strong> or absolute <strong>path</strong> (a <code>.c3</code> directory is required).</p>
+
+          <p class="tool-desc"><strong>Write safety:</strong> read ops run freely; mutating ops (<code>edit</code>, <code>shell</code>, and memory <code>add/update/delete</code>) are refused unless you pass <code>allow_write=true</code>, and every foreign mutation is recorded on the <em>target</em> project's activity log and edit ledger.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">list</td><td>Discover</td><td class="param-desc">Registered projects (fast; registry only)</td></tr>
+              <tr><td class="param-name">scan</td><td>Discover</td><td class="param-desc">Registry + bounded filesystem scan for unregistered <code>.c3</code> projects nearby</td></tr>
+              <tr><td class="param-name">info, register, unregister</td><td>Discover</td><td class="param-desc">Project details / add to / remove from the registry</td></tr>
+              <tr><td class="param-name">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project</td></tr>
+              <tr><td class="param-name">edit, shell, memory(add/update/delete)</td><td>Write</td><td class="param-desc">Mutate the target project — require <code>allow_write=true</code></td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Which projects have C3 installed?</span>
+c3_project(action=<span class="str">'list'</span>)
+c3_project(action=<span class="str">'scan'</span>)              <span class="com"># also finds unregistered .c3 dirs nearby</span>
+
+<span class="com"># Search / read inside another project</span>
+c3_project(action=<span class="str">'search'</span>, project=<span class="str">'SafeMirror'</span>, query=<span class="str">'token bucket'</span>)
+c3_project(action=<span class="str">'read'</span>, project=<span class="str">'SafeMirror'</span>, file_path=<span class="str">'core/limiter.py'</span>, symbols=<span class="str">'RateLimiter'</span>)
+
+<span class="com"># Memory recall from another project's fact store</span>
+c3_project(action=<span class="str">'memory'</span>, project=<span class="str">'Sentinel'</span>, mem_action=<span class="str">'recall'</span>, query=<span class="str">'auth flow'</span>)
+
+<span class="com"># Guarded write — the edit lands in the target project's ledger</span>
+c3_project(action=<span class="str">'edit'</span>, project=<span class="str">'Sentinel'</span>,
+           file_path=<span class="str">'README.md'</span>,
+           old_string=<span class="str">'v1'</span>, new_string=<span class="str">'v2'</span>,
+           allow_write=<span class="num">true</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Sub-action params:</strong> <code>search_action</code> (code/files/semantic/…), <code>mem_action</code> (recall/index/fetch/add/…), and <code>edits_action</code> (history/versions/stats) pick the operation for those verbs; <code>scan_roots</code> (comma-separated) overrides where <code>scan</code> looks.</p>
         </div>
       </div>
     </div>

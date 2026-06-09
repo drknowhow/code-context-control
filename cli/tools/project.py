@@ -1,0 +1,287 @@
+"""c3_project tool -- run C3 against OTHER c3-installed projects.
+
+Discovery and read ops run freely against any registered/.c3 project. Write ops
+(``edit``, ``shell``, and memory mutations) require ``allow_write=True`` and are
+recorded on the *target* project (its edit ledger + activity log), so a foreign
+mutation leaves an audit trail in the project it touched.
+
+The heavy lifting reuses the existing per-tool handlers unchanged -- only the
+``svc`` (a ``C3Runtime``) differs, supplied by the shared foreign-runtime cache.
+"""
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+from services.project_runtime import (
+    discover_projects,
+    resolve_project,
+    shared_cache,
+)
+
+# Memory sub-actions that mutate the target project's fact store.
+_MEMORY_WRITE = {"add", "update", "delete", "consolidate", "consolidate_deep", "ground"}
+# Dispatch verbs that mutate the target project.
+_WRITE_OPS = {"edit", "shell"}
+_DISCOVERY_OPS = {"list", "scan", "info", "register", "unregister"}
+_READ_OPS = {
+    "search", "read", "compress", "status", "memory",
+    "impact", "edits", "validate", "filter",
+}
+
+
+def _foreign_finalize(_name, _args, resp, _summ="", **_kw):
+    """No-op finalize for proxied calls.
+
+    The home session's finalize wraps the whole ``c3_project`` response, so the
+    inner handlers must not also charge budget / log against either session.
+    """
+    return resp
+
+
+def _foreign_facts(*_a, **_kw):
+    return ""
+
+
+def _runtime_for(path: str):
+    """Indirection point (monkeypatched in tests) -> foreign ``C3Runtime``."""
+    return shared_cache().get(path)
+
+
+# ── Discovery renderers ────────────────────────────────────────────────────
+
+
+def _render_discovery(scan_roots_csv: str, do_scan: bool) -> str:
+    roots = [r.strip() for r in (scan_roots_csv or "").split(",") if r.strip()] or None
+    data = discover_projects(scan_roots=roots, scan=do_scan)
+    reg = data["registered"]
+    unreg = data["unregistered"]
+
+    out = [f"Registered C3 projects ({len(reg)}):"]
+    if not reg:
+        out.append("  (none -- c3_project(action='register', project='<path>') to add one)")
+    for p in reg:
+        flag = "" if p["accessible"] else "  [MISSING]"
+        out.append(f"  - {p['name']:<28} {p['ide']:<12} {p['path']}{flag}")
+
+    if do_scan:
+        out.append("")
+        out.append(f"Unregistered .c3 projects found nearby ({len(unreg)}):")
+        if not unreg:
+            out.append("  (none found near registered projects)")
+        for p in unreg:
+            out.append(f"  - {p['name']:<28} {'':<12} {p['path']}")
+        if unreg:
+            out.append("")
+            out.append("Register one: c3_project(action='register', project='<path>')")
+    return "\n".join(out)
+
+
+def _render_info(project: str) -> str:
+    try:
+        resolved = resolve_project(project)
+    except ValueError as e:
+        return f"[c3_project:error] {e}"
+    p = Path(resolved["path"])
+    out = [
+        f"Project: {resolved['name']}",
+        f"  path        : {resolved['path']}",
+        f"  .c3 present : {(p / '.c3').is_dir()}",
+        f"  accessible  : {p.is_dir()}",
+    ]
+    try:
+        from services.project_manager import ProjectManager
+
+        details = ProjectManager().get_project_details(resolved["path"]) or {}
+        for key in ("ide", "c3_version", "facts_count", "last_session", "active"):
+            if key in details and details[key] not in (None, ""):
+                out.append(f"  {key:<11} : {details[key]}")
+    except Exception:
+        pass
+    return "\n".join(out)
+
+
+def _do_register(project: str) -> str:
+    if not (project or "").strip():
+        return "[c3_project:error] register requires project='<path>'."
+    path = Path(project).expanduser()
+    if not path.exists():
+        return f"[c3_project:error] Path does not exist: {project}"
+    if not (path / ".c3").is_dir():
+        return (
+            f"[c3_project:error] No .c3 directory in {path}. "
+            "Run 'c3 init' there first."
+        )
+    from services.project_manager import ProjectManager
+
+    entry = ProjectManager().add_project(str(path.resolve()))
+    return f"Registered: {entry['name']}  ({entry['path']})"
+
+
+def _do_unregister(project: str) -> str:
+    try:
+        resolved = resolve_project(project)
+    except ValueError as e:
+        return f"[c3_project:error] {e}"
+    from services.project_manager import ProjectManager
+
+    removed = ProjectManager().remove_project(resolved["path"])
+    return (
+        f"Unregistered: {resolved['name']}"
+        if removed
+        else f"Not in registry: {resolved['name']}"
+    )
+
+
+# ── Proxied op dispatch ────────────────────────────────────────────────────
+
+
+def _proxy(action, fsvc, *, query, file_path, symbols, lines, mode, view, top_k,
+           max_tokens, search_action, mem_action, fact, category, fact_id,
+           edits_action, file, tag, limit, target, old_string, new_string,
+           summary, edits, replace_all, tags, cmd, timeout, project_path):
+    if action == "search":
+        from cli.tools.search import handle_search
+
+        return handle_search(query, search_action, top_k, max_tokens,
+                             fsvc, _foreign_finalize, _foreign_facts)
+    if action == "read":
+        from cli.tools.read import handle_read
+
+        return handle_read(file_path, symbols=symbols, lines=lines,
+                           svc=fsvc, finalize=_foreign_finalize)
+    if action == "compress":
+        from cli.tools.compress import handle_compress
+
+        return handle_compress(file_path, mode, fsvc, _foreign_finalize, _foreign_facts)
+    if action == "status":
+        from cli.tools.status import handle_status
+
+        return handle_status(view, False, fsvc, _foreign_finalize)
+    if action == "memory":
+        from cli.tools.memory import handle_memory
+
+        return handle_memory(mem_action, query, fact, category, top_k,
+                            fsvc, _foreign_finalize, fact_id=fact_id)
+    if action == "impact":
+        from cli.tools.impact import handle_impact
+
+        imode = mode if mode in ("symbol", "unstaged") else "symbol"
+        return handle_impact(target, file_path, imode, fsvc, _foreign_finalize)
+    if action == "edits":
+        from cli.tools.edits import handle_edits
+
+        return handle_edits(edits_action, file, "", "", "", tags, limit, "", "",
+                           tag, fsvc, _foreign_finalize)
+    if action == "validate":
+        from cli.tools.validate import handle_validate
+
+        return asyncio.run(handle_validate(file_path, fsvc, _foreign_finalize))
+    if action == "filter":
+        from cli.tools.filter import handle_filter
+
+        return handle_filter(file_path, "", query, 100, "smart", False,
+                           fsvc, _foreign_finalize)
+    if action == "edit":
+        from cli.tools.edit import handle_edit
+
+        return handle_edit(file_path, old_string, new_string, summary, tags,
+                          replace_all, fsvc, _foreign_finalize, edits)
+    if action == "shell":
+        from cli.tools.shell import handle_shell
+
+        return asyncio.run(handle_shell(cmd, project_path, timeout, True, True,
+                                       fsvc, _foreign_finalize))
+    return f"[c3_project:error] Unhandled op '{action}'."
+
+
+# ── Entry point ────────────────────────────────────────────────────────────
+
+
+def handle_project(action, svc, finalize, *, project="", query="", file_path="",
+                   symbols=None, lines=None, mode="map", view="health", top_k=5,
+                   max_tokens=1200, search_action="code", mem_action="recall",
+                   fact="", category="", fact_id="", edits_action="history",
+                   file="", tag="", limit=50, target="", old_string="",
+                   new_string="", summary="", edits="", replace_all=False,
+                   tags="", cmd="", timeout=60, scan_roots="", allow_write=False):
+    action = (action or "").strip().lower()
+
+    def done(resp, summ="ok"):
+        return finalize("c3_project", {"action": action, "project": project},
+                        resp, summ)
+
+    if not action:
+        return done(
+            "[c3_project:error] action required. "
+            f"Discovery: {', '.join(sorted(_DISCOVERY_OPS))}. "
+            f"Read: {', '.join(sorted(_READ_OPS))}. "
+            f"Write (allow_write=true): {', '.join(sorted(_WRITE_OPS))}.",
+            "error")
+
+    # ── Discovery (no foreign runtime needed) ──────────────────────────
+    if action in ("list", "scan"):
+        return done(_render_discovery(scan_roots, action == "scan"), f"{action} projects")
+    if action == "info":
+        return done(_render_info(project), "project info")
+    if action == "register":
+        return done(_do_register(project), "register project")
+    if action == "unregister":
+        return done(_do_unregister(project), "unregister project")
+
+    if action not in _READ_OPS and action not in _WRITE_OPS:
+        return done(
+            f"[c3_project:error] Unknown action '{action}'. "
+            f"Discovery: {', '.join(sorted(_DISCOVERY_OPS))}. "
+            f"Read: {', '.join(sorted(_READ_OPS))}. "
+            f"Write (allow_write=true): {', '.join(sorted(_WRITE_OPS))}.",
+            "error")
+
+    # ── Write guard ────────────────────────────────────────────────────
+    is_write = action in _WRITE_OPS or (
+        action == "memory" and (mem_action or "").lower() in _MEMORY_WRITE
+    )
+    if is_write and not allow_write:
+        label = action + (f"/{mem_action}" if action == "memory" else "")
+        return done(
+            f"[c3_project:blocked] '{label}' would modify project '{project}'. "
+            "Re-run with allow_write=true to proceed.",
+            "blocked")
+
+    # ── Resolve + borrow the foreign runtime ───────────────────────────
+    try:
+        resolved = resolve_project(project)
+    except ValueError as e:
+        return done(f"[c3_project:error] {e}", "error")
+    try:
+        fsvc = _runtime_for(resolved["path"])
+    except Exception as e:
+        return done(
+            f"[c3_project:error] Could not load '{resolved['name']}': {e}", "error")
+
+    banner = f"[c3_project:{resolved['name']}] {action}\n"
+    try:
+        body = _proxy(
+            action, fsvc, query=query, file_path=file_path, symbols=symbols,
+            lines=lines, mode=mode, view=view, top_k=top_k, max_tokens=max_tokens,
+            search_action=search_action, mem_action=mem_action, fact=fact,
+            category=category, fact_id=fact_id, edits_action=edits_action,
+            file=file, tag=tag, limit=limit, target=target, old_string=old_string,
+            new_string=new_string, summary=summary, edits=edits,
+            replace_all=replace_all, tags=tags, cmd=cmd, timeout=timeout,
+            project_path=resolved["path"],
+        )
+    except Exception as e:
+        return done(f"{banner}[error] {type(e).__name__}: {e}", "error")
+
+    # Audit foreign mutations on the target project itself.
+    if is_write and getattr(fsvc, "activity_log", None):
+        try:
+            fsvc.activity_log.log("cross_project_write", {
+                "action": action,
+                "from_project": getattr(svc, "project_path", ""),
+            })
+        except Exception:
+            pass
+
+    return done(banner + (body or ""), f"{action} on {resolved['name']}")

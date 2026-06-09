@@ -699,6 +699,65 @@ async def c3_bitbucket(
     )
 
 
+@mcp.tool()
+async def c3_project(
+    action: str,
+    project: str = "",
+    query: str = "",
+    file_path: str = "",
+    symbols: Any = None,
+    lines: Any = None,
+    mode: str = "map",
+    view: str = "health",
+    top_k: int = 5,
+    max_tokens: int = 1200,
+    search_action: str = "code",
+    mem_action: str = "recall",
+    fact: str = "",
+    category: str = "",
+    fact_id: str = "",
+    edits_action: str = "history",
+    file: str = "",
+    tag: str = "",
+    limit: int = 50,
+    target: str = "",
+    old_string: str = "",
+    new_string: str = "",
+    summary: str = "",
+    edits: str = "",
+    replace_all: bool = False,
+    tags: str = "",
+    cmd: str = "",
+    timeout: int = 60,
+    scan_roots: str = "",
+    allow_write: bool = False,
+    ctx: Context = None,
+) -> str:
+    """CROSS-PROJECT — run C3 against OTHER c3-installed projects (read-only safe in plan mode).
+    Discover: list (registry), scan (registry+filesystem), info, register, unregister.
+    Read    : search, read, compress, status, memory, impact, edits, validate, filter.
+    Write   : edit, shell, memory(add/update/delete) — require allow_write=true; logged to that project's ledger.
+    project = registered name OR absolute path (.c3 required). list/scan need no project.
+    search_action/mem_action/edits_action pick the sub-op for those verbs."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.project import handle_project
+    return await asyncio.to_thread(
+        handle_project, action, svc, finalize,
+        project=project, query=query, file_path=file_path, symbols=symbols,
+        lines=lines, mode=mode, view=view, top_k=top_k, max_tokens=max_tokens,
+        search_action=search_action, mem_action=mem_action, fact=fact,
+        category=category, fact_id=fact_id, edits_action=edits_action, file=file,
+        tag=tag, limit=limit, target=target, old_string=old_string,
+        new_string=new_string, summary=summary, edits=edits,
+        replace_all=replace_all, tags=tags, cmd=cmd, timeout=timeout,
+        scan_roots=scan_roots, allow_write=allow_write,
+    )
+
+
 def main() -> None:
     """Entry-point for the ``c3-mcp`` console script."""
     from services import error_reporting

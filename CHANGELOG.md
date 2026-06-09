@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.31.0] - 2026-06-09
+
+Feature release. C3 tools can now reach **outside the current workspace** to
+discover and operate on *other* c3-installed projects. A new `c3_project` MCP
+tool lists/scans for projects that have a `.c3` directory and proxies the core
+C3 operations (search, read, compress, status, memory, impact, edits, validate,
+filter) against any of them — plus guarded writes (`edit`, `shell`, memory
+mutations) behind an explicit `allow_write=true`.
+
+### Added
+
+- `services/project_runtime.py` — shared, thread-safe `ProjectRuntimeCache`
+  (LRU, `.c3`-validated) that builds one `C3Runtime` per foreign project via the
+  existing `build_runtime`; plus `resolve_project()` (name-or-path resolution
+  against the global registry) and `scan_for_c3()` / `discover_projects()`
+  (registry + bounded filesystem scan for unregistered `.c3` projects).
+- `cli/tools/project.py` and the `c3_project` MCP tool — action-dispatch surface:
+  discovery (`list`, `scan`, `info`, `register`, `unregister`), read ops
+  (`search`, `read`, `compress`, `status`, `memory`, `impact`, `edits`,
+  `validate`, `filter`), and guarded write ops (`edit`, `shell`, memory
+  `add/update/delete`). Foreign mutations are logged to the *target* project's
+  activity log and edit ledger.
+- `mcp__c3__c3_project` added to `_C3_MCP_ALLOW` in `cli/c3.py`.
+- `tests/test_project_tool.py` covering the resolver, discovery, runtime-cache
+  LRU/validation, and the dispatcher (read proxy + write guard + audit).
+
+### Changed
+
+- `__version__` in `cli/c3.py` and `version` in `pyproject.toml` bumped to
+  `2.31.0` (kept in sync).
+
+### Why
+
+Until now every C3 capability was scoped to the single project the MCP server
+was launched in. Cross-project work meant switching workspaces. `c3_project`
+lets an agent stay in one session, see which sibling projects have C3 installed,
+and search/read/edit across them — while keeping writes explicit and auditable
+on the project they land in.
+
 ## [2.30.0] - 2026-05-07
 
 Feature release. Adds first-class Bitbucket Data Center / Server (self-hosted
