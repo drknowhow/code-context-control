@@ -14,7 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The header now uses `→` (not a shell metacharacter). The ghost-file cleanup hook
   (`hook_ghost_files.py`) also now runs after `c3_shell`, `c3_read`, and `Read` — not
   just `Bash` — so ghosts from any tool's output (git `ref -> ref`, Python `-> Type`,
-  pip `>=x`) get swept. Re-run `c3 install-mcp` to register the new hook matchers.
+  pip `>=x`) get swept.
+- **Windows hooks never launched.** The generated PostToolUse/PreToolUse hook commands
+  used a bare `cmd /c` prefix, but Git Bash (which Claude Code uses to run hooks on
+  Windows) does not resolve bare `cmd` on PATH — so every c3 hook (enforcement, c3-signal,
+  output filter, ghost cleanup) silently failed to start. Changed the prefix to
+  `cmd.exe /c` (verified: the hook then runs and writes its signal file). Re-run
+  `c3 install-mcp` to regenerate the hook commands.
 
 ## [2.32.2] - 2026-06-09
 
