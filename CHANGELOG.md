@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.32.2] - 2026-06-09
+
+Docs release — no functional changes.
+
+### Changed
+
+- README now documents the **Oracle Discovery API** (v2.32.0): the MCP + OpenAPI
+  transports, the `c3 oracle api` token workflow, the read/safe-action + Bearer +
+  loopback security model, and dashboard token management. Since PyPI renders the
+  README as the project description, this surfaces the Oracle work (shipped in the
+  2.32.x line) on the PyPI and GitHub project pages.
+
 ## [2.32.1] - 2026-06-09
 
 UI follow-up to the Discovery API: manage the Bearer token from the Oracle dashboard.

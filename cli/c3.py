@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.32.1"
+__version__ = "2.32.2"
 
 
 def _command_deps() -> CommandDeps:
