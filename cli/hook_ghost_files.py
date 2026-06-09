@@ -212,6 +212,17 @@ def cleanup_ghost_files(ghosts: list[dict]) -> list[str]:
     return deleted
 
 
+# Tools whose output can carry shell-meta text that leaks into 0-byte files:
+# native shells, c3_shell (its `N->Mtok` filter header), and file reads whose
+# content has `-> Type` hints. A downstream shell sees `> word` and creates an
+# empty file named `word`.
+_GHOST_TRIGGER_TOOLS = (
+    "Bash", "run_shell_command",
+    "mcp__c3__c3_shell",
+    "mcp__c3__c3_read", "Read", "read_file",
+)
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -221,8 +232,7 @@ def main():
         data = json.loads(raw)
         tool_name = data.get("tool_name", "")
 
-        # Only trigger on Bash (Claude Code) or run_shell_command (Gemini)
-        if tool_name not in ("Bash", "run_shell_command"):
+        if tool_name not in _GHOST_TRIGGER_TOOLS:
             return
 
         is_gemini = isinstance(data.get("tool_response", ""), dict)

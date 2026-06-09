@@ -64,10 +64,10 @@ def _filter_text(text: str, depth: str, svc, finalize) -> str:
     raw_tokens = res['raw_tokens']
     savings_pct = round((1 - filtered_tokens / raw_tokens) * 100, 1) if raw_tokens > 0 else 0
 
-    header = f"[filter:{method}] {raw_tokens}->{filtered_tokens}tok ({savings_pct}%saved)"
+    header = f"[filter:{method}] {raw_tokens}→{filtered_tokens}tok ({savings_pct}%saved)"
     resp = f"{header}\n{result_text}"
     return finalize("c3_filter", {"depth": depth},
-                    resp, f"{raw_tokens}->{filtered_tokens}tok",
+                    resp, f"{raw_tokens}→{filtered_tokens}tok",
                     response_tokens=filtered_tokens)
 
 
