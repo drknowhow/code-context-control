@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oracle Discovery API — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+    .pill-amber  { color: var(--amber); border-color: var(--amber); }
+
+    .action-table th, .action-table td { padding: 8px 12px; }
+    .action-table tr:hover { background: var(--bg-3); }
+    .action-table .grp-read   { color: var(--green); }
+    .action-table .grp-write  { color: var(--amber); }
+
+    .callout {
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-2);
+      padding: 12px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+    }
+    .callout-warn   { border-color: var(--amber); }
+    .callout-danger { border-color: var(--red);   }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout strong { color: var(--text); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+
+    .kv-table td { padding: 6px 12px; font-size: 13px; }
+    .kv-table td:first-child {
+      font-family: var(--mono); color: var(--text-dim); width: 200px; vertical-align: top;
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html" class="active">Oracle</a>
+    </nav>
+    <span class="header-version">v2.32.0</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🔮</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#connect-claude"  class="sidebar-link"><span class="icon">🤝</span> Connect Claude (MCP)</a>
+      <a href="#connect-openapi" class="sidebar-link"><span class="icon">🌐</span> Connect any LLM (REST)</a>
+      <a href="#endpoints"       class="sidebar-link"><span class="icon">📡</span> Endpoints</a>
+      <a href="#tools"           class="sidebar-link"><span class="icon">🧰</span> Tools &amp; tiers</a>
+      <a href="#auth"            class="sidebar-link"><span class="icon">🔐</span> Auth &amp; security</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
+      <a href="#config"          class="sidebar-link"><span class="icon">📂</span> Configuration</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="bitbucket.html"          class="sidebar-link">Bitbucket integration</a>
+      <a href="workflow.html"           class="sidebar-link">Standard workflow</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Oracle Discovery API</h1>
+      <p>Point Claude — or any function-calling LLM — at a running Oracle and let it use C3's cross-project code &amp; memory intelligence as tools. Discover projects, search code and memory across all of them, traverse the memory graph, and surface insights, without ever opening the chat UI.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.32.0</span>
+        <span class="pill pill-purple">External LLM tools</span>
+        <span class="pill pill-green">MCP + OpenAPI</span>
+        <span class="pill">Read &amp; safe-actions</span>
+        <span class="pill">Bearer + loopback</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p>The Oracle normally runs the LLM relationship <em>inwards</em>: its own model (Ollama) calls C3 tools to analyze your projects. The Discovery API flips that — it exposes those same capabilities <strong>outwards</strong>, so an external LLM can use the Oracle as a discovery tool over your whole C3 estate.</p>
+
+      <div class="callout">
+        <p><strong>Two transports, one tool core.</strong> The exact same tool registry is served over both <strong>MCP</strong> (streamable HTTP/SSE — native for Claude Code / Claude Desktop) and an <strong>OpenAPI REST</strong> surface (for any function-calling LLM). They run on separate loopback ports because Flask is WSGI and the MCP transport is ASGI, but they dispatch through one definition of each tool — so the two surfaces can never drift apart.</p>
+      </div>
+
+      <h3>What you get</h3>
+      <table class="params-table">
+        <thead><tr><th>Surface</th><th>Where</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>MCP server</td>
+            <td><code>http://127.0.0.1:3332/mcp</code></td>
+            <td>Native tool discovery for Claude Code / Desktop and any MCP client</td>
+          </tr>
+          <tr>
+            <td>REST + OpenAPI</td>
+            <td><code>http://127.0.0.1:3331/api/discovery</code></td>
+            <td>Function-calling for any LLM (GPT, Gemini, custom agents)</td>
+          </tr>
+          <tr>
+            <td><code>c3 oracle api</code> CLI</td>
+            <td>Terminal</td>
+            <td>Get the token + a ready-to-paste <code>.mcp.json</code> snippet; rotate / clear the key</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-warn">
+        <p><strong>Safe by construction.</strong> Only <em>read</em> and <em>safe-action</em> tools are exposed — there are <strong>no code-editing tools</strong> on this surface. Both servers bind <code>127.0.0.1</code> (loopback) by default and require a Bearer token.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ QUICK START ═══ -->
+    <section id="quick-start" class="tool-section">
+      <h2>Quick start</h2>
+      <p>Start the Oracle, grab your token, and connect a client.</p>
+
+      <div class="step-grid">
+        <div class="step-card">
+          <span class="step-num">1</span><h4>Start the Oracle</h4>
+          <pre><code>python oracle/oracle_server.py \
+  --no-browser</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Prints the REST + MCP URLs and ensures an API key exists. The MCP server starts in a background thread.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">2</span><h4>Get the token</h4>
+          <pre><code>c3 oracle api info</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Prints the Bearer token, both URLs, and a ready-to-paste Claude <code>.mcp.json</code> entry. Use <code>c3 oracle api key</code> for just the token.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">3</span><h4>Connect</h4>
+          <pre><code><span class="com"># Claude → paste the snippet</span>
+<span class="com"># Any LLM → fetch openapi.json</span></code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">See the two sections below for the MCP config and the OpenAPI flow.</p>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CONNECT CLAUDE ═══ -->
+    <section id="connect-claude" class="tool-section">
+      <h2>Connect Claude (MCP)</h2>
+      <p>Add the entry from <code>c3 oracle api info</code> to your <code>.mcp.json</code> (project root) or Claude Desktop config:</p>
+      <pre><code>{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"c3-oracle"</span>: {
+      <span class="str">"type"</span>: <span class="str">"http"</span>,
+      <span class="str">"url"</span>: <span class="str">"http://127.0.0.1:3332/mcp"</span>,
+      <span class="str">"headers"</span>: { <span class="str">"Authorization"</span>: <span class="str">"Bearer &lt;token&gt;"</span> }
+    }
+  }
+}</code></pre>
+      <p>Claude lists the <code>c3-oracle</code> tools (<code>list_projects</code>, <code>c3_search_cross</code>, <code>query_memory</code>, <code>read_graph</code>, …). Ask it to <em>"discover what C3 projects exist and search them for X"</em>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CONNECT OPENAPI ═══ -->
+    <section id="connect-openapi" class="tool-section">
+      <h2>Connect any LLM (OpenAPI REST)</h2>
+      <p>Every tool is also a plain REST operation. Point a function-calling LLM at the spec, then call tools with the Bearer header.</p>
+      <pre><code><span class="com"># Discover the tools (OpenAPI 3.1)</span>
+curl -H <span class="str">"Authorization: Bearer &lt;token&gt;"</span> \
+     http://127.0.0.1:3331/api/discovery/openapi.json
+
+<span class="com"># Invoke a tool by name</span>
+curl -X POST \
+     -H <span class="str">"Authorization: Bearer &lt;token&gt;"</span> \
+     -H <span class="str">"Content-Type: application/json"</span> \
+     -d <span class="str">'{"tool":"list_projects","args":{}}'</span> \
+     http://127.0.0.1:3331/api/discovery/call
+
+<span class="com"># Or use the per-tool path (body = the tool's args)</span>
+curl -X POST \
+     -H <span class="str">"Authorization: Bearer &lt;token&gt;"</span> \
+     -H <span class="str">"Content-Type: application/json"</span> \
+     -d <span class="str">'{"query":"rate limiter","top_k":5}'</span> \
+     http://127.0.0.1:3331/api/discovery/tools/c3_search_cross</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ ENDPOINTS ═══ -->
+    <section id="endpoints" class="tool-section">
+      <h2>REST endpoints</h2>
+      <p>All under <code>/api/discovery</code>; every request requires <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+      <table class="params-table">
+        <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /tools</code></td>                  <td>Available tools, each with a JSON Schema and capability tier</td></tr>
+          <tr><td><code>POST /call</code></td>                  <td>Invoke any tool: body <code>{"tool": name, "args": {…}}</code></td></tr>
+          <tr><td><code>POST /tools/&lt;name&gt;</code></td>     <td>Invoke a named tool with the request body as its arguments object</td></tr>
+          <tr><td><code>POST /call/stream</code></td>           <td>Same as <code>/call</code> but streams <code>start → result|error → [DONE]</code> as SSE</td></tr>
+          <tr><td><code>GET /openapi.json</code></td>           <td>OpenAPI 3.1 document — one operation per tool</td></tr>
+          <tr><td><code>GET /mcp-info</code></td>               <td>MCP URL + auth scheme for the streamable-HTTP transport</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TOOLS ═══ -->
+    <section id="tools" class="tool-section">
+      <h2>Tools &amp; capability tiers</h2>
+      <p>The exposed set is capped by <code>api_max_tier</code> in <code>~/.c3/oracle/config.json</code> (<code>read</code> or <code>action</code>). Code-editing tools are never registered.</p>
+
+      <h3>Read tier — discovery</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Tool</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-read"><code>list_projects</code></td>   <td>All registered C3 projects with paths + fact counts</td></tr>
+          <tr><td class="grp-read"><code>search_facts</code></td>    <td>Search memory facts across ALL projects</td></tr>
+          <tr><td class="grp-read"><code>query_memory</code></td>    <td>Search/list facts within one project</td></tr>
+          <tr><td class="grp-read"><code>project_health</code></td>  <td>Memory health check for a project</td></tr>
+          <tr><td class="grp-read"><code>analyze_project</code></td> <td>LLM-powered analysis of a project's memory themes</td></tr>
+          <tr><td class="grp-read"><code>cross_insights</code></td>  <td>Cross-project insights</td></tr>
+          <tr><td class="grp-read"><code>read_graph</code></td>      <td>Memory-graph statistics for a project</td></tr>
+          <tr><td class="grp-read"><code>c3_search</code> / <code>c3_search_cross</code></td><td>Code-intelligence search (one project / all projects)</td></tr>
+          <tr><td class="grp-read"><code>c3_read</code></td>         <td>Read exact file content (symbols / line ranges)</td></tr>
+          <tr><td class="grp-read"><code>c3_compress</code></td>     <td>Token-efficient structural file map</td></tr>
+          <tr><td class="grp-read"><code>c3_validate</code></td>     <td>Syntax/type validation on a file</td></tr>
+          <tr><td class="grp-read"><code>c3_status</code></td>       <td>Project health / budget / sessions overview</td></tr>
+          <tr><td class="grp-read"><code>c3_memory_query</code></td> <td>Read-only memory query (recall/list/score/graph/trends)</td></tr>
+          <tr><td class="grp-read"><code>c3_edits</code> / <code>c3_edits_cross</code></td><td>Query the edit ledger (one / all projects)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Action tier — safe writes (no code edits)</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Tool</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-write"><code>suggest_action</code></td><td>Create a <strong>pending</strong> memory suggestion a human approves (not a direct write)</td></tr>
+          <tr><td class="grp-write"><code>delegate_task</code></td> <td>Run a configured Oracle agent and return its result</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUTH ═══ -->
+    <section id="auth" class="tool-section">
+      <h2>Authentication &amp; security</h2>
+      <p>A single Bearer token guards both transports. The REST surface checks it in a Flask <code>before_request</code> hook; the MCP transport checks it in a pure-ASGI middleware (so streaming responses pass through intact).</p>
+
+      <h3>Where the token lives</h3>
+      <table class="kv-table">
+        <tr>
+          <td>OS keyring</td>
+          <td>Token text, under service <code>c3-oracle-api</code>. Backed by <strong>Windows Credential Manager</strong>, <strong>macOS Keychain</strong>, or <strong>Linux Secret Service</strong>.</td>
+        </tr>
+        <tr>
+          <td><code>C3_ORACLE_API_KEY</code></td>
+          <td>Environment override for headless / CI / containers where no keyring backend exists. When set, it wins and is <strong>never</strong> persisted to the keyring.</td>
+        </tr>
+      </table>
+
+      <div class="callout callout-warn">
+        <p><strong>Exposing on a network.</strong> The default bind is <code>127.0.0.1</code>. To let a remote LLM service reach the Oracle, set <code>bind_host</code> to <code>0.0.0.0</code> in <code>~/.c3/oracle/config.json</code> — and put it behind TLS + a firewall yourself. The token alone is not a substitute for transport security.</p>
+      </div>
+
+      <p>Rotate or revoke at any time with <code>c3 oracle api rotate</code> / <code>c3 oracle api clear</code>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CLI ═══ -->
+    <section id="cli" class="tool-section">
+      <h2>CLI commands</h2>
+      <table class="params-table">
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>c3 oracle api info</code></td>   <td>Print REST + MCP URLs, the token, and a ready-to-paste <code>.mcp.json</code> snippet</td></tr>
+          <tr><td><code>c3 oracle api key</code></td>    <td>Print just the token (generating one if needed)</td></tr>
+          <tr><td><code>c3 oracle api rotate</code></td> <td>Replace the token with a fresh one</td></tr>
+          <tr><td><code>c3 oracle api clear</code></td>  <td>Delete the stored token from the keyring</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CONFIGURATION ═══ -->
+    <section id="config" class="tool-section">
+      <h2><code>~/.c3/oracle/config.json</code> keys</h2>
+      <table class="kv-table">
+        <tr><td><code>bind_host</code></td>        <td>Interface to bind. Default <code>127.0.0.1</code>. Use <code>0.0.0.0</code> to expose on a network (add TLS/firewall).</td></tr>
+        <tr><td><code>api_enabled</code></td>      <td>Serve the <code>/api/discovery/*</code> REST surface. Default <code>true</code>.</td></tr>
+        <tr><td><code>api_require_auth</code></td> <td>Require the Bearer token. Default <code>true</code>.</td></tr>
+        <tr><td><code>api_max_tier</code></td>     <td>Cap exposed tools: <code>read</code> (discovery only) or <code>action</code> (adds <code>suggest_action</code>, <code>delegate_task</code>). Default <code>action</code>.</td></tr>
+        <tr><td><code>mcp_enabled</code></td>      <td>Start the MCP HTTP/SSE server. Default <code>true</code>.</td></tr>
+        <tr><td><code>mcp_port</code></td>         <td>MCP transport port. Default <code>3332</code>.</td></tr>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+      <table class="params-table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>401 unauthorized</code></td>
+            <td>Missing or wrong token. Get the current one with <code>c3 oracle api key</code> and send it as <code>Authorization: Bearer &lt;token&gt;</code>.</td>
+          </tr>
+          <tr>
+            <td>Claude doesn't list the tools</td>
+            <td>Confirm the Oracle is running and <code>mcp_enabled</code> is <code>true</code>; check the URL is <code>http://127.0.0.1:3332/mcp</code> and the <code>Authorization</code> header is present in <code>.mcp.json</code>.</td>
+          </tr>
+          <tr>
+            <td>Tool not found in the catalog</td>
+            <td>It may be above your <code>api_max_tier</code> (e.g. <code>suggest_action</code> needs <code>action</code>), or it is a code-editing tool — those are never exposed.</td>
+          </tr>
+          <tr>
+            <td>Need a token without a keyring</td>
+            <td>Set <code>C3_ORACLE_API_KEY</code> in the environment (CI / containers). It overrides the keyring and is not persisted.</td>
+          </tr>
+          <tr>
+            <td><code>The 'keyring' package is required</code></td>
+            <td><code>pip install keyring</code> — a C3 dependency that may be missing if you upgraded without re-installing.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Full endpoint and schema details live in <code>oracle-guide/api-reference.md</code> and <code>oracle-guide/discovery-api.md</code>.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

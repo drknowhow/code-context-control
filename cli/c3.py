@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.31.0"
+__version__ = "2.32.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -5558,6 +5558,60 @@ def _bb_cmd_set_default(args, project_path: str) -> None:
     print(f"[OK] Default repo: {args.project}/{args.repo}")
 
 
+def cmd_oracle(args):
+    """Oracle Discovery API key + connection management."""
+    sub = getattr(args, "oracle_cmd", None)
+    if sub != "api":
+        print("Usage: c3 oracle api {info,key,rotate,clear}")
+        return
+
+    from oracle.config import load_config
+    from oracle.mcp_oracle import mcp_url
+    from oracle.services import api_auth
+
+    action = getattr(args, "action", "info") or "info"
+
+    if action == "rotate":
+        print("Rotated. New Discovery API key:")
+        print(f"  {api_auth.rotate()}")
+        return
+    if action == "clear":
+        removed = api_auth.clear()
+        print("Discovery API key cleared." if removed else "No stored Discovery API key to clear.")
+        return
+
+    key = api_auth.get_or_create_key()
+    if action == "key":
+        print(key)
+        return
+
+    cfg = load_config()
+    host = cfg.get("bind_host", "127.0.0.1")
+    disp_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    rest_port = getattr(args, "port", None) or cfg.get("port", 3331)
+    mcp_port = getattr(args, "mcp_port", None) or cfg.get("mcp_port", 3332)
+    rest_base = f"http://{disp_host}:{rest_port}/api/discovery"
+    url = mcp_url(host, mcp_port)
+
+    print("[oracle:api]")
+    print(f"  REST base : {rest_base}")
+    print(f"  OpenAPI   : {rest_base}/openapi.json")
+    print(f"  MCP URL   : {url}")
+    print(f"  Auth      : Bearer {key}")
+    print()
+    print("  Claude .mcp.json entry:")
+    snippet = {
+        "mcpServers": {
+            "c3-oracle": {
+                "type": "http",
+                "url": url,
+                "headers": {"Authorization": f"Bearer {key}"},
+            }
+        }
+    }
+    print(json.dumps(snippet, indent=2))
+
+
 def cmd_projects(args):
     """Manage the global C3 project registry."""
     from services.project_manager import ProjectManager
@@ -6310,6 +6364,7 @@ def main():
         "projects": cmd_projects,
         "hub": cmd_hub,
         "bitbucket": cmd_bitbucket,
+        "oracle": cmd_oracle,
     }
 
     cmd_func = commands.get(args.command)

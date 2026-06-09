@@ -322,4 +322,25 @@ def build_parser(version: str, parse_cli_ide_arg):
     bb_default.add_argument("--repo", required=True, help="Repository slug")
     bb_default.add_argument("project_path", nargs="?", default=".")
 
+    # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
+    p_oracle = subparsers.add_parser(
+        "oracle",
+        help="Oracle Discovery API key + connection management",
+    )
+    or_subs = p_oracle.add_subparsers(dest="oracle_cmd")
+    or_api = or_subs.add_parser(
+        "api",
+        help="Show connection info / manage the Discovery API key",
+    )
+    or_api.add_argument(
+        "action",
+        nargs="?",
+        default="info",
+        choices=["info", "key", "rotate", "clear"],
+        help="info (default): print REST+MCP URLs and a .mcp.json snippet; "
+             "key: print the token; rotate: replace it; clear: delete it",
+    )
+    or_api.add_argument("--port", type=int, default=None, help="Override REST port in printed info")
+    or_api.add_argument("--mcp-port", type=int, default=None, help="Override MCP port in printed info")
+
     return parser

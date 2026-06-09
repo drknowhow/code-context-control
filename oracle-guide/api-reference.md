@@ -334,6 +334,87 @@ Test generation with the current model. Sends a simple prompt and returns the re
 
 ---
 
+## Discovery API (external LLM tool surface)
+
+> Added in v2.32.0. Lets Claude or any function-calling LLM use C3's cross-project
+> code & memory intelligence as tools. **Bearer-token auth required**; the Oracle
+> binds `127.0.0.1` by default.
+
+Get your token + connection snippet with `c3 oracle api info` (or `c3 oracle api key`
+for just the token). All `/api/discovery/*` requests require
+`Authorization: Bearer <token>`.
+
+### `GET /api/discovery/tools`
+
+Returns the available tools, each with a JSON Schema and capability tier.
+
+```json
+{ "tier": "action",
+  "tools": [ { "name": "c3_search_cross", "tier": "read",
+               "description": "...", "parameters": { "type": "object" } } ] }
+```
+
+### `POST /api/discovery/call`
+
+Invoke any tool by name.
+
+```json
+// Request
+{ "tool": "list_projects", "args": {} }
+```
+
+### `POST /api/discovery/tools/<name>`
+
+Invoke a named tool with the request body as its arguments object (one operation
+per tool — matches the generated OpenAPI paths).
+
+```json
+// POST /api/discovery/tools/c3_search_cross
+{ "query": "rate limiter", "top_k": 5 }
+```
+
+### `POST /api/discovery/call/stream`
+
+Same as `/call`, but streams `start` → `result`|`error` → `[DONE]` as SSE
+(`text/event-stream`).
+
+### `GET /api/discovery/openapi.json`
+
+OpenAPI 3.1 document describing every available tool as a
+`POST /api/discovery/tools/{name}` operation. Point a generic function-calling LLM
+at this URL to auto-register the tools.
+
+### `GET /api/discovery/mcp-info`
+
+Connection details for the MCP transport.
+
+```json
+{ "enabled": true, "transport": "http",
+  "url": "http://127.0.0.1:3332/mcp", "auth": "bearer",
+  "rest_base": "http://127.0.0.1:3331/api/discovery" }
+```
+
+### Capability tiers
+
+- **read** — discovery only: `list_projects`, `search_facts`, `query_memory`,
+  `project_health`, `analyze_project`, `cross_insights`, `read_graph`, `c3_search`,
+  `c3_search_cross`, `c3_read`, `c3_compress`, `c3_validate`, `c3_status`,
+  `c3_memory_query`, `c3_edits`, `c3_edits_cross`.
+- **action** — adds safe, non-code-edit writes: `suggest_action` (creates a
+  *pending* suggestion for human approval) and `delegate_task`.
+- Code-editing tools are **never** exposed. Cap the tier via `api_max_tier`
+  (`read` | `action`) in `~/.c3/oracle/config.json`.
+
+---
+
+## MCP transport
+
+The same tools are served over MCP streamable-HTTP at `http://127.0.0.1:3332/mcp`
+(port = `mcp_port`). Every request requires `Authorization: Bearer <token>`. See
+[discovery-api.md](discovery-api.md) for a Claude `.mcp.json` example.
+
+---
+
 ## Error Responses
 
 All endpoints return errors as JSON with appropriate HTTP status codes:

@@ -9,6 +9,13 @@ CONFIG_FILE = ORACLE_DIR / "config.json"
 
 DEFAULTS = {
     "port": 3331,
+    # ── Discovery API (external LLM tool surface, v2.32.0) ──
+    "bind_host": "127.0.0.1",       # loopback only by default (was 0.0.0.0)
+    "api_enabled": True,            # expose /api/discovery/* REST surface
+    "api_require_auth": True,       # require Bearer token on /api/discovery/*
+    "api_max_tier": "action",       # cap exposed tools: "read" | "action"
+    "mcp_enabled": True,            # start FastMCP HTTP/SSE discovery server
+    "mcp_port": 3332,               # discovery MCP transport port (loopback)
     "ollama_base_url": "https://ollama.com",
     "ollama_api_key": "",
     "model": "gemma4:31b-cloud",

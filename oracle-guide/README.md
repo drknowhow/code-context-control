@@ -23,6 +23,7 @@ Open `http://localhost:3331` in your browser.
 - **Ollama cloud**: Uses `https://ollama.com` with Bearer token auth by default. Can also target a local Ollama instance.
 - **Hub-aware**: Discovers projects through the C3 hub API or falls back to reading `~/.c3/projects.json` directly.
 - **Read + suggest-write**: Oracle reads project memory freely. Writes to project `.c3/facts/` require explicit user approval in the UI.
+- **Discovery API (v2.32.0)**: External LLMs (Claude Code/Desktop or any function-calling model) can use Oracle's tools over MCP (`:3332/mcp`) and OpenAPI REST (`/api/discovery`) — Bearer-auth'd, loopback-bound, read + safe-action tiers only. See [Discovery API](discovery-api.md).
 - **Cross-project memory**: Maintains a global insight store (`~/.c3/oracle/cross_memory.json`) linking patterns, risks, and opportunities across projects.
 - **Background review**: A daemon thread periodically scans projects for changes, runs health checks, and generates consolidation suggestions.
 - **Notifications & activity**: The UI shows toast notifications for all actions and a global busy indicator when Oracle is processing.
@@ -33,6 +34,7 @@ Open `http://localhost:3331` in your browser.
 |-------|-------------|
 | [Architecture](architecture.md) | System design, data flow, folder structure, service diagram |
 | [API Reference](api-reference.md) | All REST endpoints with request/response examples |
+| [Discovery API](discovery-api.md) | Expose C3's tools to external LLMs over MCP + OpenAPI (v2.32.0) |
 | [Configuration](configuration.md) | Config options, authentication, model selection |
 | [Changelog](changelog.md) | Version history and changes |
 
