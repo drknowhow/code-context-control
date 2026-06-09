@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.32.1] - 2026-06-09
+
+UI follow-up to the Discovery API: manage the Bearer token from the Oracle dashboard.
+
+### Added
+
+- Oracle dashboard **Settings → Discovery API** section: generate / rotate / clear the
+  Bearer token, reveal + copy it, and copy a ready-to-paste Claude `.mcp.json` snippet,
+  alongside live MCP URL / REST base / OpenAPI links.
+- `GET /api/apikey` + `POST /api/apikey/{generate,rotate,clear}` — local-dashboard
+  (loopback, unauthenticated, like `/api/config`) endpoints backing the token UI.
+- Tests: `test_oracle_apikey_api.py`.
+
 ## [2.32.0] - 2026-06-09
 
 Feature release. The **Oracle Discovery API** lets external LLMs — Claude Code /

@@ -1088,6 +1088,45 @@
       </div>
       <div id="settingsMsg" class="status-msg"></div>
     </div>
+
+    <!-- ── Discovery API (external LLM tools) ── -->
+    <h2 style="font-size:16px;font-weight:600;margin:28px 0 16px">Discovery API <span style="font-size:11px;color:var(--text2);font-weight:400">— external LLM tools (v2.32.0)</span></h2>
+    <div class="card">
+      <p style="font-size:12px;color:var(--text2);margin:0 0 14px;line-height:1.5">Let Claude or any LLM use C3's cross-project tools over MCP and OpenAPI. Requests authenticate with a <b>Bearer token</b>; both servers bind <code>127.0.0.1</code> by default.</p>
+      <div class="field">
+        <label>API token</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input id="dkToken" type="password" readonly placeholder="No token yet — click Generate" style="flex:1;width:0;min-width:0;font-family:var(--mono,monospace)">
+          <button class="btn btn-ghost" id="dkReveal" onclick="toggleDiscoveryReveal()" style="flex-shrink:0;display:none">Reveal</button>
+          <button class="btn btn-ghost" onclick="copyDiscoveryToken()" style="flex-shrink:0">Copy</button>
+        </div>
+        <div id="dkStatus" style="font-size:11px;color:var(--text2);margin-top:6px"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" id="dkGenBtn" onclick="generateDiscoveryKey()">Generate token</button>
+        <button class="btn btn-ghost" onclick="rotateDiscoveryKey()">Rotate</button>
+        <button class="btn btn-ghost" onclick="clearDiscoveryKey()">Clear</button>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:18px 0">
+      <div class="field">
+        <label>MCP URL (Claude / MCP clients)</label>
+        <input id="dkMcpUrl" type="text" readonly>
+      </div>
+      <div class="field">
+        <label>REST base (any function-calling LLM)</label>
+        <input id="dkRestBase" type="text" readonly>
+      </div>
+      <div class="field">
+        <label>OpenAPI spec</label>
+        <input id="dkOpenapi" type="text" readonly>
+      </div>
+      <div class="field">
+        <label>Claude <code>.mcp.json</code> entry</label>
+        <pre id="dkSnippet" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;overflow:auto;margin:0;white-space:pre"></pre>
+        <button class="btn btn-ghost" onclick="copyMcpSnippet()" style="margin-top:8px">Copy .mcp.json</button>
+      </div>
+      <div id="discoveryMsg" class="status-msg"></div>
+    </div>
   </div>
 
   <!-- Agent Modal -->
@@ -1127,7 +1166,7 @@
 
 <script>
 const API = '';
-const ORACLE_BUILD_TIME = "2026-04-11 oracle-v2";
+const ORACLE_BUILD_TIME = "2026-06-09 oracle-v2 (discovery-api)";
 
 // ═══════════════════════════════════════════════════════════
 // ─�� Toast notification system ──
@@ -1994,6 +2033,95 @@ async function testConnection() {
     const resp = result.response || 'No response';
     toast('Ollama response', resp, resp.includes('No response') ? 'warning' : 'success', 6000);
   }, { silent: true });
+}
+
+// ── Discovery API token management ──
+window._discoveryKey = null;
+window._dkRevealed = false;
+
+function _renderDiscoveryKey(s) {
+  window._discoveryKey = s;
+  const tok = document.getElementById('dkToken');
+  if (!tok) return;
+  const reveal = document.getElementById('dkReveal');
+  const genBtn = document.getElementById('dkGenBtn');
+  const status = document.getElementById('dkStatus');
+  if (s.exists) {
+    tok.value = s.key || '';
+    tok.type = window._dkRevealed ? 'text' : 'password';
+    tok.placeholder = '';
+    reveal.style.display = '';
+    reveal.textContent = window._dkRevealed ? 'Hide' : 'Reveal';
+    genBtn.style.display = 'none';
+    status.textContent = s.require_auth
+      ? 'Token active — required on all /api/discovery requests and the MCP transport.'
+      : 'Token set, but auth is DISABLED (api_require_auth=false in config).';
+  } else {
+    tok.value = '';
+    tok.type = 'password';
+    tok.placeholder = 'No token yet — click Generate';
+    reveal.style.display = 'none';
+    genBtn.style.display = '';
+    status.textContent = s.require_auth
+      ? 'No token yet. Generate one so external LLMs can authenticate.'
+      : 'Auth is disabled — external requests are accepted without a token.';
+  }
+  document.getElementById('dkMcpUrl').value = s.mcp_enabled ? s.mcp_url : s.mcp_url + '  (MCP server disabled)';
+  document.getElementById('dkRestBase').value = s.rest_base;
+  document.getElementById('dkOpenapi').value = s.openapi_url;
+  document.getElementById('dkSnippet').textContent = JSON.stringify(s.snippet, null, 2);
+}
+
+async function loadDiscoveryKey() {
+  try { _renderDiscoveryKey(await api('/api/apikey')); } catch { /* ignore */ }
+}
+
+function toggleDiscoveryReveal() {
+  window._dkRevealed = !window._dkRevealed;
+  if (window._discoveryKey) _renderDiscoveryKey(window._discoveryKey);
+}
+
+async function generateDiscoveryKey() {
+  await tracked('Generating token', async () => {
+    const s = await api('/api/apikey/generate', { method: 'POST' });
+    window._dkRevealed = true;
+    _renderDiscoveryKey(s);
+  }, { successMsg: 'Discovery API token generated' });
+}
+
+async function rotateDiscoveryKey() {
+  if (!confirm('Rotate the Discovery API token? Clients using the old token will stop working until updated.')) return;
+  await tracked('Rotating token', async () => {
+    const s = await api('/api/apikey/rotate', { method: 'POST' });
+    window._dkRevealed = true;
+    _renderDiscoveryKey(s);
+  }, { successMsg: 'Token rotated — update your clients' });
+}
+
+async function clearDiscoveryKey() {
+  if (!confirm('Delete the Discovery API token? External LLMs cannot authenticate until you generate a new one.')) return;
+  await tracked('Clearing token', async () => {
+    const s = await api('/api/apikey/clear', { method: 'POST' });
+    window._dkRevealed = false;
+    _renderDiscoveryKey(s);
+  }, { successMsg: 'Token cleared' });
+}
+
+async function copyDiscoveryToken() {
+  const s = window._discoveryKey;
+  if (!s || !s.exists || !s.key) { toast('No token', 'Generate a token first.', 'warning'); return; }
+  await _dkCopy(s.key, 'Token copied');
+}
+
+async function copyMcpSnippet() {
+  const s = window._discoveryKey;
+  if (!s) return;
+  await _dkCopy(JSON.stringify(s.snippet, null, 2), '.mcp.json copied');
+}
+
+async function _dkCopy(text, okMsg) {
+  try { await navigator.clipboard.writeText(text); toast(okMsg, '', 'success', 2000); }
+  catch { toast('Copy failed', 'Select the field and copy manually.', 'error'); }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3891,7 +4019,7 @@ function editAgent(id) {
 // ── Init ──
 // ═══════════════════════════════════════════════════════════
 (async function init() {
-  await Promise.all([refreshHeader(), loadProjects(), loadInsights(), loadSuggestions(), loadSettings(), chatLoadConversations(), chatLoadCommands()]);
+  await Promise.all([refreshHeader(), loadProjects(), loadInsights(), loadSuggestions(), loadSettings(), loadDiscoveryKey(), chatLoadConversations(), chatLoadCommands()]);
   // Auto-refresh every 60s
   setInterval(() => { refreshHeader(); loadProjects(); }, 60000);
 })();
