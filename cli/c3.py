@@ -4962,13 +4962,24 @@ def cmd_install_mcp(args):
             },
             {
                 "matcher": read_matcher,
-                "hooks": [{"type": "command", "command": hook_read_cmd}]
+                "hooks": [
+                    {"type": "command", "command": hook_read_cmd},
+                    {"type": "command", "command": hook_ghost_files_cmd},
+                ]
             },
             {
                 "matcher": "mcp__c3__c3_read",
                 "hooks": [
                     {"type": "command", "command": hook_c3read_cmd},
                     {"type": "command", "command": hook_c3_signal_cmd},
+                    {"type": "command", "command": hook_ghost_files_cmd},
+                ]
+            },
+            {
+                "matcher": "mcp__c3__c3_shell",
+                "hooks": [
+                    {"type": "command", "command": hook_c3_signal_cmd},
+                    {"type": "command", "command": hook_ghost_files_cmd},
                 ]
             },
             {

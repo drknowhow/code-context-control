@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ghost files (0-byte) from shell-redirect misinterpretation.** The output filter
+  emitted its savings header as `raw->Ntok`; the literal `->` could be re-read by a
+  shell as a `> Ntok` redirect, creating an empty file named after the token count.
+  The header now uses `→` (not a shell metacharacter). The ghost-file cleanup hook
+  (`hook_ghost_files.py`) also now runs after `c3_shell`, `c3_read`, and `Read` — not
+  just `Bash` — so ghosts from any tool's output (git `ref -> ref`, Python `-> Type`,
+  pip `>=x`) get swept. Re-run `c3 install-mcp` to register the new hook matchers.
+
 ## [2.32.2] - 2026-06-09
 
 Docs release — no functional changes.
