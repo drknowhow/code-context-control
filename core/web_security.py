@@ -126,6 +126,17 @@ def cors_origin(request, allowed: set[str]) -> str | None:
     return None
 
 
+def guard_summary() -> dict:
+    """Compact, serializable status for health endpoints — confirms to operators
+    that the localhost guard is active (it otherwise enforces silently)."""
+    return {
+        "active": True,
+        "host_allowlist": True,
+        "csrf": "origin+referer",
+        "cors": "scoped",
+    }
+
+
 def install_guard(app, get_allowed: Callable[[], set[str]]) -> None:
     """Register the Host/Origin guard and a tightened CORS policy on a Flask app.
 
@@ -156,3 +167,8 @@ def install_guard(app, get_allowed: Callable[[], set[str]]) -> None:
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
             response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
         return response
+
+    import logging
+    logging.getLogger("c3.web_security").info(
+        "localhost web guard active — Host allowlist + Origin/Referer CSRF + scoped CORS"
+    )

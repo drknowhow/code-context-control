@@ -10,7 +10,6 @@ import csv
 import json
 import logging
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -173,6 +172,9 @@ atexit.register(_cleanup_runtime)
 # in the user's browser from driving these endpoints — see core/web_security.py.
 from core.web_security import (
     allowed_hostnames as _allowed_hostnames,
+)
+from core.web_security import (
+    guard_summary as _guard_summary,
 )
 from core.web_security import (
     install_guard as _install_web_guard,
@@ -376,7 +378,8 @@ def api_health():
     except Exception:
         pass
 
-    return jsonify({"service": "c3-ui", "sources": sources, "session": session_info})
+    return jsonify({"service": "c3-ui", "sources": sources, "session": session_info,
+                    "web_guard": _guard_summary()})
 
 
 # ─── API: Session Registry ───────────────────────────────
@@ -2421,47 +2424,15 @@ def api_proxy_tools():
 
 
 # ─── API: MCP Status ─────────────────────────────────────
-def _parse_toml_mcp_servers(content: str) -> dict:
-    """Parse [mcp_servers.<name>] sections from TOML content."""
-    servers = {}
-    current_server = None
-
-    for raw in content.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip()
-            if section.startswith("mcp_servers."):
-                current_server = section.split(".", 1)[1]
-                servers.setdefault(current_server, {})
-            else:
-                current_server = None
-            continue
-
-        if not current_server or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-
-        if key == "args":
-            servers[current_server]["args"] = re.findall(r"[\"']([^\"']*)[\"']", value)
-        elif key in ("command", "type"):
-            match = re.match(r"^[\"'](.*)[\"']$", value)
-            servers[current_server][key] = match.group(1) if match else value
-        elif key == "enabled":
-            low = value.lower()
-            if low.startswith("true"):
-                servers[current_server]["enabled"] = True
-            elif low.startswith("false"):
-                servers[current_server]["enabled"] = False
-        else:
-            servers[current_server][key] = value
-
-    return servers
+from core.mcp_toml import (
+    parse_toml_mcp_servers as _parse_toml_mcp_servers,
+)
+from core.mcp_toml import (
+    remove_toml_section as _remove_toml_section,
+)
+from core.mcp_toml import (
+    upsert_toml_section as _upsert_toml_section,
+)
 
 
 def _find_server_script(servers: dict) -> bool:
@@ -2472,71 +2443,6 @@ def _find_server_script(servers: dict) -> bool:
             if isinstance(arg, str) and arg.endswith(".py") and Path(arg).exists():
                 return True
     return False
-
-
-def _toml_escape_str(value: str) -> str:
-    return value.replace("\\", "/")
-
-
-def _upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
-    """Add or replace a dotted TOML section in-place."""
-    content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
-    header = f"[{section}]"
-
-    lines = content.splitlines()
-    new_lines = []
-    skip = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == header:
-            skip = True
-            continue
-        if skip and stripped.startswith("["):
-            skip = False
-        if not skip:
-            new_lines.append(line)
-
-    content = "\n".join(new_lines).rstrip()
-    section_lines = [f"\n\n{header}"]
-    for k, v in entries.items():
-        if isinstance(v, list):
-            items = ", ".join(f'"{_toml_escape_str(str(x))}"' for x in v)
-            section_lines.append(f'{k} = [{items}]')
-        elif isinstance(v, bool):
-            section_lines.append(f'{k} = {"true" if v else "false"}')
-        else:
-            section_lines.append(f'{k} = "{_toml_escape_str(str(v))}"')
-    section_lines.append("")
-
-    toml_path.parent.mkdir(parents=True, exist_ok=True)
-    toml_path.write_text(content + "\n".join(section_lines), encoding="utf-8")
-
-
-def _remove_toml_section(toml_path: Path, section: str) -> bool:
-    """Remove a dotted TOML section. Returns True if removed."""
-    if not toml_path.exists():
-        return False
-    content = toml_path.read_text(encoding="utf-8")
-    header = f"[{section}]"
-
-    lines = content.splitlines()
-    new_lines = []
-    skip = False
-    removed = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == header:
-            skip = True
-            removed = True
-            continue
-        if skip and stripped.startswith("["):
-            skip = False
-        if not skip:
-            new_lines.append(line)
-
-    if removed:
-        toml_path.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
-    return removed
 
 
 def _resolve_mcp_profile(ide_name: str | None):

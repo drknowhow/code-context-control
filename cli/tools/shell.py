@@ -60,7 +60,13 @@ _FILTER_THRESHOLD_LINES = 30
 
 
 def _popen_kwargs() -> dict:
-    kw: dict = {"stdin": subprocess.DEVNULL}
+    # Force UTF-8 in child processes so Unicode output (→, box-drawing, emoji)
+    # doesn't crash on Windows' legacy cp1252 console encoding. setdefault so an
+    # intentional caller-set encoding still wins.
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    kw: dict = {"stdin": subprocess.DEVNULL, "env": env}
     if sys.platform == "win32":
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kw
@@ -86,7 +92,7 @@ def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
     proc = subprocess.Popen(
         cmd, shell=True, cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, errors="replace",
+        text=True, encoding="utf-8", errors="replace",
         **_popen_kwargs(),
     )
     timed_out = False
@@ -133,6 +139,45 @@ def _maybe_refresh_ledger(cmd: str, result: dict, svc) -> list[str]:
         return []
 
 
+# git diagnostics whose output the caller almost always needs verbatim — never
+# auto-filter these, even past the line threshold.
+_GIT_DIAGNOSTIC = re.compile(
+    r"^\s*git\s+(status|diff|log|show|branch|stash\s+list)\b", re.IGNORECASE
+)
+
+
+def _list_root_files(root: Path) -> set[str]:
+    try:
+        return {e.name for e in root.iterdir() if e.is_file()}
+    except OSError:
+        return set()
+
+
+def _sweep_new_ghost_files(root: Path, before: set[str]) -> list[str]:
+    """Delete 0-byte 'ghost' files (shell-redirect / metacharacter artifacts —
+    e.g. a `>Lnnn` marker or `2>$null` leaking a filename) that appeared in
+    *root* during this command. Only files absent from *before* are removed, so
+    pre-existing files are never touched. Detection is reused from
+    hook_ghost_files so the rules live in one place; this makes c3_shell
+    self-clean regardless of whether the external PostToolUse ghost hook is
+    wired for this tool."""
+    try:
+        from cli.hook_ghost_files import scan_ghost_files
+    except Exception:
+        return []
+    swept: list[str] = []
+    for g in scan_ghost_files(root):
+        name = g.get("name", "")
+        if not name or name in before:
+            continue
+        try:
+            Path(g["path"]).unlink()
+            swept.append(name)
+        except OSError:
+            pass
+    return swept
+
+
 async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                        log: bool, svc, finalize) -> str:
     if not cmd or not cmd.strip():
@@ -147,11 +192,17 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
     work_cwd = cwd or svc.project_path
     work_cwd = str(Path(work_cwd).resolve())
 
+    ghost_root = Path(work_cwd)
+    _ghosts_before = _list_root_files(ghost_root)
+
     result = await asyncio.to_thread(_run_sync, cmd, work_cwd, timeout)
+
+    swept_ghosts = _sweep_new_ghost_files(ghost_root, _ghosts_before)
 
     raw_stdout = result["stdout"]
     filtered_note = ""
-    if filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES:
+    if (filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES
+            and not _GIT_DIAGNOSTIC.search(cmd)):
         try:
             filtered = await asyncio.to_thread(
                 handle_filter,
@@ -201,6 +252,11 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         body += f"--- stderr ---\n{result['stderr'].rstrip()}\n"
     if touched_files:
         body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
+    if swept_ghosts:
+        body += (
+            f"--- ghost-sweep ---\nremoved {len(swept_ghosts)} stray 0-byte "
+            f"file(s): {', '.join(swept_ghosts)}\n"
+        )
 
     summary = f"shell {status} in {result['duration_ms']}ms"
     resp_tokens = count_tokens(body) if body else 0

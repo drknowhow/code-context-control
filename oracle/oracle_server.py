@@ -858,6 +858,7 @@ def run_oracle(port: int = None, open_browser: bool = None):
                 port=mcp_p,
                 version=_c3_version(),
                 require_auth=cfg.get("api_require_auth", True),
+                allowed_hosts=cfg.get("allowed_hosts"),
             )
             print(f"Oracle Discovery MCP  →  {mcp_url(mcp_host, mcp_p)}  (auth: bearer)")
         except Exception as e:

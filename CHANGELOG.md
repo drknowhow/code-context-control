@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-06-10
+
+### Added
+
+- **`c3_shell` self-sweeps stray 0-byte "ghost" files** (shell-redirect / metacharacter
+  artifacts like a `>Lnnn` marker or `2>$null` leaking a filename) created during a command,
+  and reports them in the response. These previously accumulated in the project root on
+  Windows because the external ghost-cleanup hook was never wired to the `mcp__c3__c3_shell`
+  matcher; the sweep is now in-process and install-independent, and only removes files that
+  appeared *during* the command (pre-existing files are never touched).
+- **Security-guard observability.** A startup log line confirms the localhost web guard is
+  active, and the UI `/api/health` now reports a `web_guard` status block.
+- **MCP transport Host allowlist.** The Oracle MCP server (`:3332`) now rejects requests whose
+  `Host` header isn't loopback or the configured `bind_host`/`allowed_hosts`
+  (`_HostGuardMiddleware`) — defense-in-depth against DNS rebinding on top of the Bearer gate.
+
+### Changed
+
+- **`c3_shell` forces UTF-8 in child processes** (`PYTHONUTF8` / `PYTHONIOENCODING`) and decodes
+  their output as UTF-8, fixing `cp1252` `UnicodeEncodeError` crashes when a command prints `→`,
+  box-drawing, or emoji on Windows.
+- **`c3_shell` no longer auto-filters `git status`/`diff`/`log`/`show`/`branch` output** — those
+  are needed verbatim.
+- **De-duplicated the MCP-section TOML helpers** (parse / upsert / remove / escape) that had
+  drifted between `cli/server.py` and `cli/hub_server.py` into a single shared
+  `core/mcp_toml.py`. The reconciled versions strip quoted keys and delete a config file that
+  becomes empty.
+
 ### Documentation
 
 - Refreshed the README, the in-app guide (`guide/tools.html` c3_shell safety classification,

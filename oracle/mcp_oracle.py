@@ -106,21 +106,59 @@ class _BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_app(registry, version: str = "", require_auth: bool = True, path: str = "/mcp"):
+class _HostGuardMiddleware:
+    """Pure-ASGI Host-header allowlist.
+
+    Rejects requests whose ``Host`` header is not loopback or the configured
+    bind host — defeating DNS-rebinding against the MCP transport. Defense in
+    depth on top of the Bearer gate (a rebound request would still need a valid
+    token, but this stops it reaching the app at all).
+    """
+
+    def __init__(self, app, allowed: set):
+        self.app = app
+        self.allowed = allowed
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            from core.web_security import _hostname
+            headers = dict(scope.get("headers") or [])
+            host = headers.get(b"host", b"").decode("latin-1")
+            if _hostname(host) not in self.allowed:
+                body = b'{"error": "forbidden host"}'
+                await send({
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
+def build_app(registry, version: str = "", require_auth: bool = True, path: str = "/mcp",
+              host: str = "127.0.0.1", allowed_hosts=None):
     """Build the Starlette ASGI app for the MCP server (auth middleware attached)."""
     mcp = build_mcp(registry, version)
     app = mcp.http_app(path=path)
     if require_auth:
         app.add_middleware(_BearerAuthMiddleware)
+    # Host-header allowlist (defense-in-depth vs DNS rebinding). Added last so it
+    # is the outermost middleware and runs before the bearer check.
+    from core.web_security import allowed_hostnames
+    app.add_middleware(_HostGuardMiddleware, allowed=allowed_hostnames(host, allowed_hosts))
     return app
 
 
 def serve_mcp(registry, host: str = "127.0.0.1", port: int = 3332,
-              version: str = "", require_auth: bool = True, path: str = "/mcp") -> None:
+              version: str = "", require_auth: bool = True, path: str = "/mcp",
+              allowed_hosts=None) -> None:
     """Blocking: serve the MCP app with uvicorn. Safe to run off the main thread."""
     import uvicorn
 
-    app = build_app(registry, version=version, require_auth=require_auth, path=path)
+    app = build_app(registry, version=version, require_auth=require_auth, path=path,
+                    host=host, allowed_hosts=allowed_hosts)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     # uvicorn only installs signal handlers on the main thread; disable so this
@@ -131,13 +169,13 @@ def serve_mcp(registry, host: str = "127.0.0.1", port: int = 3332,
 
 def start_mcp_thread(registry, host: str = "127.0.0.1", port: int = 3332,
                      version: str = "", require_auth: bool = True,
-                     path: str = "/mcp") -> threading.Thread:
+                     path: str = "/mcp", allowed_hosts=None) -> threading.Thread:
     """Start :func:`serve_mcp` in a daemon thread and return the thread."""
 
     def _run():
         try:
             serve_mcp(registry, host=host, port=port, version=version,
-                      require_auth=require_auth, path=path)
+                      require_auth=require_auth, path=path, allowed_hosts=allowed_hosts)
         except Exception:
             logger.exception("Oracle MCP server crashed")
 

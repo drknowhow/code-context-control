@@ -14,7 +14,8 @@ Two transports share one tool core:
 
 > Security: both bind to `127.0.0.1` (loopback) by default and require a Bearer token.
 > The REST surface is additionally protected by C3's Host-header allowlist + Origin/Referer
-> CSRF guard (v2.33.0), so a web page open in a browser on the same machine cannot reach it.
+> CSRF guard (v2.33.0); the MCP transport enforces a Host-header allowlist too (v2.34.0). A web
+> page open in a browser on the same machine therefore cannot reach either transport.
 > Only **read** and **safe-action** tools are exposed — no code-editing tools.
 
 ---
