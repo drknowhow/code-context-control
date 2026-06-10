@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cli.tools.read import _coerce_list, _coerce_lines  # noqa: E402
+from cli.tools.read import _coerce_lines, _coerce_list  # noqa: E402
 
 
 class TestCoerceSymbols(unittest.TestCase):

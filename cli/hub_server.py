@@ -41,8 +41,10 @@ app = Flask(__name__, static_folder=str(Path(__file__).parent))
 # DNS-rebinding protection matters even though it binds loopback by default.
 # Reads bind host + optional allowed_hosts per-request from hub_config.json.
 from core.web_security import (
-    install_guard as _install_web_guard,
     allowed_hostnames as _allowed_hostnames,
+)
+from core.web_security import (
+    install_guard as _install_web_guard,
 )
 
 

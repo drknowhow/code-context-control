@@ -172,9 +172,12 @@ atexit.register(_cleanup_runtime)
 # loopback origins are accepted. A loopback bind alone does NOT stop a web page
 # in the user's browser from driving these endpoints — see core/web_security.py.
 from core.web_security import (
-    install_guard as _install_web_guard,
     allowed_hostnames as _allowed_hostnames,
 )
+from core.web_security import (
+    install_guard as _install_web_guard,
+)
+
 _install_web_guard(app, lambda: _allowed_hostnames(None))
 
 

@@ -122,9 +122,12 @@ def _init_services():
 # guard also protects the ungated endpoints (config, chat, /api/apikey) from
 # cross-origin reads — notably the raw Discovery token returned by api_apikey_get.
 from core.web_security import (
-    install_guard as _install_web_guard,
     allowed_hostnames as _allowed_hostnames,
 )
+from core.web_security import (
+    install_guard as _install_web_guard,
+)
+
 _install_web_guard(
     app, lambda: _allowed_hostnames(_cfg.get("bind_host"), _cfg.get("allowed_hosts"))
 )
