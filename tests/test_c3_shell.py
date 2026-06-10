@@ -73,6 +73,40 @@ class TestShellClassification(unittest.TestCase):
             runner.assert_not_called()
         self.assertIn("blocked pattern", out)
 
+    def test_blocked_rm_root_glob_rejected(self):
+        svc, _, _ = _fake_svc(Path.cwd())
+        with patch.object(shell_mod, "_run_sync") as runner:
+            out = _run(shell_mod.handle_shell("rm -rf /*", "", 10, True, False, svc, _finalize_passthrough))
+            runner.assert_not_called()
+        self.assertIn("blocked pattern", out)
+
+    def test_blocked_rm_top_level_system_dir_rejected(self):
+        svc, _, _ = _fake_svc(Path.cwd())
+        with patch.object(shell_mod, "_run_sync") as runner:
+            out = _run(shell_mod.handle_shell("rm -rf /etc", "", 10, True, False, svc, _finalize_passthrough))
+            runner.assert_not_called()
+        self.assertIn("blocked pattern", out)
+
+    def test_blocked_windows_drive_wipe_rejected(self):
+        svc, _, _ = _fake_svc(Path.cwd())
+        with patch.object(shell_mod, "_run_sync") as runner:
+            out = _run(shell_mod.handle_shell("del /s /q C:\\", "", 10, True, False, svc, _finalize_passthrough))
+            runner.assert_not_called()
+        self.assertIn("blocked pattern", out)
+
+    def test_nested_path_delete_not_blocked(self):
+        # Deleting a nested project path must NOT trip the catastrophic-command
+        # guard (only whole-root / top-level-dir / drive wipes are blocked).
+        svc, _, _ = _fake_svc(Path.cwd())
+        fake = {"exit_code": 0, "stdout": "", "stderr": "",
+                "duration_ms": 1, "timed_out": False}
+        with patch.object(shell_mod, "_run_sync", return_value=fake) as runner:
+            out = _run(shell_mod.handle_shell(
+                "rm -rf /home/me/project/build", "", 10, True, False,
+                svc, _finalize_passthrough))
+            runner.assert_called_once()
+        self.assertNotIn("blocked pattern", out)
+
 
 class TestShellExecution(unittest.TestCase):
     def test_exit_code_success(self):

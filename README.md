@@ -301,7 +301,7 @@ Real-world A/B tests: same task, with and without C3 mounted. Reports include to
 
 ## Security & privacy
 
-- **Hub binds to `127.0.0.1` by default.** Setting `host` to a non-loopback interface in `~/.c3/hub_config.json` is opt-in and warned at startup. **Do not expose the Hub to a public network without auth/TLS in front of it.**
+- **All web servers (Hub, per-project UI, Oracle) bind to `127.0.0.1` by default and are guarded against browser-based attacks even on loopback** — a Host-header allowlist (defeats DNS rebinding) plus an Origin/Referer check on every request (defeats cross-origin CSRF), with scoped, non-wildcard CORS. A malicious web page you visit therefore cannot drive C3's local endpoints. There is still **no user authentication**, so do not expose these servers to an untrusted network without auth/TLS in front. Binding to a non-loopback interface in `~/.c3/hub_config.json` (`host`) or Oracle's config (`bind_host`) is opt-in and warned at startup; add externally-facing hostnames/IPs to an `allowed_hosts` list there so the guard permits them.
 - **No telemetry by default.** The OSS package collects nothing. Opt-in Sentry crash reporting requires the `[telemetry]` extra plus both `SENTRY_DSN` and `C3_TELEMETRY_OPT_IN=1`. Even when enabled, request bodies, local variables, and prompts are stripped before sending.
 - **API keys** for third-party model providers are read from environment variables and never persisted by C3.
 - See [`SECURITY.md`](SECURITY.md) for the full hardening guide and disclosure policy.

@@ -35,6 +35,26 @@ from services.tool_classifier import CATEGORIES
 
 app = Flask(__name__, static_folder=str(Path(__file__).parent))
 
+# Localhost-only security: Host-header allowlist + Origin/Referer CSRF guard +
+# scoped CORS. The hub manages MANY projects and exposes command-executing
+# endpoints (launch-ide, mcp-server-add, permissions), so cross-origin CSRF /
+# DNS-rebinding protection matters even though it binds loopback by default.
+# Reads bind host + optional allowed_hosts per-request from hub_config.json.
+from core.web_security import (
+    allowed_hostnames as _allowed_hostnames,
+)
+from core.web_security import (
+    install_guard as _install_web_guard,
+)
+
+
+def _hub_allowed_hosts():
+    _c = _read_hub_config()
+    return _allowed_hostnames(_c.get("host"), _c.get("allowed_hosts"))
+
+
+_install_web_guard(app, _hub_allowed_hosts)
+
 # ─── Hub config ───────────────────────────────────────────────────────────────
 
 _GLOBAL_C3_DIR = Path.home() / ".c3"
@@ -519,6 +539,11 @@ def api_projects_open():
         path = Path(path_str).resolve()
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path_str}"}), 404
+        # Only ever open directories. Opening a *file* via os.startfile would
+        # invoke its default handler (e.g. run an .exe/.bat/.lnk), so refuse
+        # anything that is not a folder.
+        if not path.is_dir():
+            return jsonify({"error": "Only directories can be opened"}), 400
 
         if sys.platform == "win32":
             os.startfile(str(path))

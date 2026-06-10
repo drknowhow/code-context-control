@@ -42,10 +42,18 @@ Out of scope:
 
 ## Hardening notes for operators
 
-- The C3 Hub binds to `127.0.0.1` by default. **Do not expose it to a
-  public network without setting up authentication, TLS, and access
-  control in front of it.** Setting `host` to `0.0.0.0` or another
-  interface in `~/.c3/hub_config.json` is an opt-in advanced setting.
+- All C3 web servers (Hub, per-project UI, Oracle) bind to `127.0.0.1` by
+  default and are guarded against browser-based attacks even on loopback:
+  a Host-header allowlist (anti DNS-rebinding) plus an Origin/Referer check
+  on every request (anti cross-origin CSRF), with scoped, non-wildcard CORS
+  (see `core/web_security.py`). A malicious web page you visit therefore
+  cannot drive C3's local endpoints. **There is still no user
+  authentication**, so do not expose these servers to a public network
+  without setting up TLS and an auth proxy in front of them. Setting `host`
+  to `0.0.0.0`/another interface in `~/.c3/hub_config.json` (or `bind_host`
+  for Oracle) is an opt-in advanced setting; add the externally-facing
+  hostnames/IPs to an `allowed_hosts` list in the same config so the guard
+  permits them.
 - API keys for third-party model providers (Anthropic, OpenAI, etc.) are
   read from environment variables and never persisted by C3.
 - Hooks executed by C3 inherit the calling process's privileges. Run C3
