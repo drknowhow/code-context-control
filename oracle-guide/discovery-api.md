@@ -13,6 +13,8 @@ Two transports share one tool core:
   function-calling.
 
 > Security: both bind to `127.0.0.1` (loopback) by default and require a Bearer token.
+> The REST surface is additionally protected by C3's Host-header allowlist + Origin/Referer
+> CSRF guard (v2.33.0), so a web page open in a browser on the same machine cannot reach it.
 > Only **read** and **safe-action** tools are exposed — no code-editing tools.
 
 ---
@@ -86,6 +88,7 @@ Set in `~/.c3/oracle/config.json`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `bind_host` | `127.0.0.1` | Interface to bind (use `0.0.0.0` to expose on a network — then add TLS/firewalling). |
+| `allowed_hosts` | `[]` | Extra hostnames/IPs the Host-header + Origin guard accepts. Needed when `bind_host` is non-loopback so legitimate browsers/clients are not blocked (v2.33.0). |
 | `api_enabled` | `true` | Serve the REST surface. |
 | `api_require_auth` | `true` | Require the Bearer token. |
 | `api_max_tier` | `action` | Cap exposed tools: `read` (discovery only) or `action` (adds `suggest_action`, `delegate_task`). |

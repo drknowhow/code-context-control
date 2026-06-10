@@ -331,6 +331,7 @@ curl -X POST \
       <h2><code>~/.c3/oracle/config.json</code> keys</h2>
       <table class="kv-table">
         <tr><td><code>bind_host</code></td>        <td>Interface to bind. Default <code>127.0.0.1</code>. Use <code>0.0.0.0</code> to expose on a network (add TLS/firewall).</td></tr>
+        <tr><td><code>allowed_hosts</code></td>    <td>Extra hostnames/IPs the Host + Origin guard accepts. Needed when <code>bind_host</code> is non-loopback so legitimate browsers/clients aren't blocked (v2.33.0).</td></tr>
         <tr><td><code>api_enabled</code></td>      <td>Serve the <code>/api/discovery/*</code> REST surface. Default <code>true</code>.</td></tr>
         <tr><td><code>api_require_auth</code></td> <td>Require the Bearer token. Default <code>true</code>.</td></tr>
         <tr><td><code>api_max_tier</code></td>     <td>Cap exposed tools: <code>read</code> (discovery only) or <code>action</code> (adds <code>suggest_action</code>, <code>delegate_task</code>). Default <code>action</code>.</td></tr>
