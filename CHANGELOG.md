@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   web-security guard (Host/Origin/CSRF), the strengthened `c3_shell` blocklist, and the new
   `allowed_hosts` config option.
 
+### Maintenance
+
+- CI/release workflows: bump GitHub Actions off the deprecated Node 20 runtime to their
+  latest Node 24 majors — `actions/checkout@v6`, `actions/setup-python@v6`,
+  `actions/upload-artifact@v7`, `actions/download-artifact@v8`,
+  `softprops/action-gh-release@v3`. (`pypa/gh-action-pypi-publish` is container-based and
+  unaffected.)
+
 ## [2.33.0] - 2026-06-10
 
 ### Security
