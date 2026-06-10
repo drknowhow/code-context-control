@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Refreshed the README, the in-app guide (`guide/tools.html` c3_shell safety classification,
+  `guide/oracle.html` config table), and the Oracle discovery docs to reflect the v2.33.0
+  web-security guard (Host/Origin/CSRF), the strengthened `c3_shell` blocklist, and the new
+  `allowed_hosts` config option.
+
 ## [2.33.0] - 2026-06-10
 
 ### Security

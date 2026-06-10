@@ -647,10 +647,11 @@ c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str"
 
           <h4>Safety classification</h4>
           <div class="tag-row">
-            <span class="badge badge-red">BLOCKED — rm -rf / or ~, fork bombs</span>
+            <span class="badge badge-red">BLOCKED — rm -rf of /, a top-level system dir, $HOME/~; fork bombs; whole-drive wipes</span>
             <span class="badge badge-yellow">WARN — --force, --no-verify, reset --hard, DROP/TRUNCATE</span>
             <span class="badge badge-green">OK — everything else</span>
           </div>
+          <p class="tool-desc" style="margin-top:8px">The blocklist is a <strong>best-effort guard against the most catastrophic commands — not a sandbox</strong>. <code>c3_shell</code> runs arbitrary commands by design; for an intentionally dangerous command, use native <code>Bash</code> with explicit approval.</p>
 
           <div class="callout callout-tip">
             <span class="callout-icon">💡</span>
