@@ -13,11 +13,12 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 4. **IMPACT** (shared symbols): `c3_impact(target='symbol')` — blast-radius check before editing any function/class used across files
 5. **EDIT via C3**: `c3_edit(file_path, old_string, new_string, summary)` — for ALL edits. Parallel across files; `edits=[]` batch for same file
 6. **FILTER**: `c3_filter(text=...)` — for terminal output >10 lines or log files
-6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Blocks fork bombs and `rm -rf /` or `~`; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands
+6.5. **SHELL via C3**: `c3_shell(cmd, cwd='', timeout=60)` — for tests, git, build, scripts. Returns structured `{exit_code, stdout, stderr, duration_ms}`. Auto-filters stdout >30 lines; auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger. Best-effort blocks the most catastrophic commands (`rm -rf` of `/`, a top-level system dir, or `$HOME`/`~`; fork bombs; whole-drive wipes) — a guard, not a sandbox; soft-warns on `--force`, `--no-verify`, `reset --hard`. Native Bash remains the fallback for interactive/TTY commands
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
 10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
+11. **CROSS-PROJECT** (v2.31.0+): `c3_project(action='list|scan|info|search|read|edit|shell|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. `list`/`scan` need no project; reads (search/read/compress/status/memory/impact/edits/validate/filter) run freely; writes (`edit`, `shell`, memory add/update/delete) require `allow_write=true` and are logged to the target project's ledger.
 
 ## Plan mode
 In plan mode, all c3_* read tools (search, read, compress, filter, validate, status) work normally — skip edit/delegate steps.
@@ -107,6 +108,7 @@ claude-companion - v2/
     __init__.py
     config.py
     ide.py
+    web_security.py
   docs/
     screenshots/ (11 files)
   guide/
@@ -165,7 +167,7 @@ claude-companion - v2/
     test_hub_server_smoke.py
     test_mcp_server_smoke.py
     test_memory_graph_api.py
-    ... +16 more
+    ... +18 more
   tui/
     __init__.py
     backend.py

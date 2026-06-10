@@ -639,7 +639,9 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
     """EXECUTE shell command — structured returns, auto-filter, ledger-aware.
     Use for tests, git, build, scripts. Returns exit_code/stdout/stderr/duration_ms.
     Auto-filters stdout >30 lines; auto-logs git mutations to the edit ledger.
-    Blocks: rm -rf / or ~, fork bombs. Soft-warns on --force, --no-verify, reset --hard.
+    Best-effort block of catastrophic commands (rm -rf of /, a top-level system dir, or
+    $HOME/~; fork bombs; whole-drive wipes) — a guard, NOT a sandbox. Soft-warns on
+    --force, --no-verify, reset --hard.
     Native Bash remains the fallback for interactive/TTY commands."""
     svc = _svc(ctx)
 

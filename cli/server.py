@@ -167,12 +167,15 @@ atexit.register(_cleanup_runtime)
 
 
 # ─── CORS middleware ──────────────────────────────────────
-@app.after_request
-def add_cors(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,DELETE,OPTIONS'
-    return response
+# Localhost-only security: Host-header allowlist + Origin/Referer CSRF guard +
+# scoped CORS (no wildcard). This UI server always binds 127.0.0.1, so only
+# loopback origins are accepted. A loopback bind alone does NOT stop a web page
+# in the user's browser from driving these endpoints — see core/web_security.py.
+from core.web_security import (
+    install_guard as _install_web_guard,
+    allowed_hostnames as _allowed_hostnames,
+)
+_install_web_guard(app, lambda: _allowed_hostnames(None))
 
 
 # ─── Serve the UI ─────────────────────────────────────────
@@ -283,6 +286,11 @@ def api_projects_open():
         path = Path(path_str).resolve()
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path_str}"}), 404
+        # Only ever open directories. Opening a *file* via os.startfile would
+        # invoke its default handler (e.g. run an .exe/.bat/.lnk), so refuse
+        # anything that is not a folder.
+        if not path.is_dir():
+            return jsonify({"error": "Only directories can be opened"}), 400
 
         if sys.platform == "win32":
             os.startfile(str(path))

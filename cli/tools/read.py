@@ -25,13 +25,50 @@ def _coerce_list(val: Any) -> list[str] | None:
             except (json.JSONDecodeError, ValueError):
                 pass
         if val:
+            # Comma-separated symbols ("a,b,c") -> multiple targets. Function/class
+            # names never contain commas, and regex anchors (^foo$) have none either.
+            if "," in val:
+                return [s.strip() for s in val.split(",") if s.strip()]
             return [val]
+    return None
+
+
+def _coerce_lines(val: Any):
+    """Coerce `lines` from MCP's string serialization into an int or list.
+
+    MCP clients sometimes serialize numbers/lists as strings (the same reason
+    `_coerce_list` exists for `symbols`). Without this, a JSON-string such as
+    "[22, 193]" or "22" falls through handle_read's range logic and the tool
+    silently returns the file *map* instead of the requested source lines.
+    """
+    if val is None or isinstance(val, (int, list, tuple)):
+        return val
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+        if val.startswith("["):
+            try:
+                parsed = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            return parsed if isinstance(parsed, list) else None
+        try:
+            return int(val)
+        except ValueError:
+            if "-" in val:  # "start-end" like "22-40"
+                a, _, b = val.partition("-")
+                try:
+                    return [int(a.strip()), int(b.strip())]
+                except ValueError:
+                    return None
     return None
 
 
 def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
                 include_docstrings: bool = True, svc=None, finalize=None) -> str:
     symbols = _coerce_list(symbols)
+    lines = _coerce_lines(lines)
     # Multi-file dispatch (parallel)
     if "," in file_path:
         paths = [p.strip() for p in file_path.split(",") if p.strip()]

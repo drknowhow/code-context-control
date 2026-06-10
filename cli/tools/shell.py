@@ -22,9 +22,29 @@ from core import count_tokens
 _GIT_MUTATING = re.compile(
     r"^\s*git\s+(commit|add|mv|rm|merge|rebase|cherry-pick|revert|reset|restore|checkout)\b"
 )
-# Hard deny — fork bombs, rm -rf on root/home. Escape hatch: native Bash.
+# Hard deny — the handful of genuinely catastrophic, irreversible commands.
+# This is a BEST-EFFORT guard, NOT a sandbox: c3_shell runs arbitrary commands
+# by design and a determined caller can trivially reword around these patterns.
+# The escape hatch for an intentional dangerous command is native Bash.
+# Covered: rm -rf of the filesystem root / a top-level system dir / $HOME / ~,
+# the classic fork bomb, and Windows whole-drive-root wipes (del/rd/format C:\).
+# A top-level system dir only matches when it is the *whole* target, so deleting
+# a nested path like /home/me/project/build is intentionally NOT blocked.
 _BLOCKED = re.compile(
-    r"(\brm\s+-rf\s+(/|~|\$HOME)(\s|$)|:\(\)\s*\{\s*:\s*\|\s*:)"
+    r"""
+      (?<!git\ )\brm\b (?:\s+-\S+)* \s+        # rm + any flags, then a target:
+      (?:
+          /(?=\s|$|\*)                          #   filesystem root:  /   /*
+        | ~(?=/|\s|$)                            #   home dir:         ~   ~/
+        | \$HOME\b                               #   $HOME
+        | /(?:etc|usr|bin|sbin|lib|lib64|var|boot|root|home|srv|sys|proc|dev|opt)
+            (?=/?(?:\s|$|\*))                    #   a whole top-level system dir
+      )
+    | :\(\)\s*\{\s*:\s*\|\s*:\s*\}?              # fork bomb        :(){ :|: };:
+    | \b(?:format|rd|rmdir|del)\b [^\n]*?        # windows whole-drive-root wipe
+        \b[a-zA-Z]:\\?(?=\s|\*|$|["'])
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 # Soft warn — run but prepend a caveat to the response.
 # `(?<!\w)` / `(?!\w)` anchor against word chars, so `--force` (which starts

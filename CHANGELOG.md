@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.33.0] - 2026-06-10
+
+### Security
+
+- **Cross-origin / CSRF + DNS-rebinding hardening for all local web servers.**
+  The Hub (`cli/hub_server.py`), per-project UI (`cli/server.py`), and Oracle
+  (`oracle/oracle_server.py`) bind to loopback but had no authentication, no
+  Origin/Host validation, and a wildcard `Access-Control-Allow-Origin: *`, so a
+  web page open in the user's browser could drive state-changing endpoints
+  (the `launch-ide` custom command, adding a malicious MCP server, downgrading
+  Claude permissions, wiping data) and read the Oracle Discovery bearer token
+  (`api_apikey_get`). A new shared guard (`core/web_security.py`) now enforces a
+  Host-header allowlist (defeats DNS rebinding) and an Origin/Referer check on
+  every request (defeats CSRF), and replaces the wildcard CORS with scoped,
+  same-origin reflection. Loopback and non-browser API clients are unaffected;
+  an intentional non-loopback bind honours `host`/`bind_host` and an optional
+  `allowed_hosts` list from config. Oracle Discovery bearer auth still applies
+  on top.
+- `api_projects_open` (Hub + UI) now refuses non-directory paths, so it can no
+  longer launch an arbitrary file via the OS default handler.
+- **c3_shell blocklist strengthened** to also cover `rm -rf /*`, `rm -rf` of a
+  whole top-level system directory (`/etc`, `/usr`, …), and Windows
+  whole-drive-root wipes (`del`/`rd`/`format C:\`), in addition to the existing
+  `rm -rf /`/`~`/`$HOME` and fork-bomb patterns. Nested-path deletes
+  (`rm -rf /home/me/project/build`) are intentionally still allowed. Documented
+  explicitly as a best-effort guard, **not** a sandbox.
+
 ### Changed
 
 - Discovery API guidance enriched for LLM clients: the MCP server `instructions` and the
@@ -16,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **c3_read silently returned the file *map* instead of source for `lines`
+  range reads.** MCP clients serialize `lines` as a string (e.g. `"[22, 193]"`),
+  which fell through `handle_read`'s range logic; `lines` is now coerced just
+  like `symbols`. Comma-separated `symbols` (`"a,b,c"`) also now split into
+  multiple targets instead of being read as one ambiguous name.
 - **Ghost files (0-byte) from shell-redirect misinterpretation.** The output filter
   emitted its savings header as `raw->Ntok`; the literal `->` could be re-read by a
   shell as a `> Ntok` redirect, creating an empty file named after the token count.
