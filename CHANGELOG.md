@@ -6,6 +6,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.35.0] - 2026-06-13
+
+### Added
+
+- **Git branch awareness across the index, ledger, sessions, and snapshots.** Working-tree state
+  is now centralized in a new `GitContext` helper (`services/git_context.py`): branch, HEAD sha,
+  upstream, ahead/behind, and dirty status from a single cached
+  `git status --branch --porcelain=v2` call, plus `changed_files()` / `dirty_files()` queries.
+  Worktrees and detached HEAD are handled. `EditLedger` and `VersionTracker` now route git-root
+  detection through it, de-duplicating two near-identical implementations.
+- **`BranchWatchAgent` — automatic, scoped re-index on branch changes.** A new background agent
+  detects HEAD/branch movement (checkout, switch, pull, merge — but *not* `git fetch`, which only
+  moves refs and leaves the working tree untouched) and queues a re-index of exactly the files
+  that differ between the old and new HEAD, restricted to files C3 already tracks. It also queues
+  files dirty on disk each cycle, catching edits made outside C3 (rebase, `git restore`, another
+  editor). Emits a **warning** notification on a branch switch and an **info** notification on a
+  same-branch HEAD move. Enabled by default (30s interval); tunable via `.c3/config.json` →
+  `agents.BranchWatch`.
+- **Branch stamping.** Edit-ledger entries, sessions, and context snapshots now record the git
+  `branch` + `head_sha` in effect at the time of the edit / session / snapshot.
+- **`c3_edits(action='history', branch=…)`** filters the audit trail to edits made on a given
+  branch; history output now shows the branch per entry.
+- **Snapshot restore warns on branch drift.** `c3_session(restore)` flags when the working tree
+  has moved to a different branch than the one the snapshot was captured on.
+
+### Changed
+
+- Context-snapshot capture and restore read fresh git state (bypassing the short TTL cache) so
+  the recorded and compared branch is always current.
+
+### Tests
+
+- New `tests/test_git_branch_awareness.py` exercises `GitContext`, `BranchWatchAgent`, ledger
+  branch stamping/filtering, and the snapshot branch-change warning against a real temporary git
+  repository (8 tests). Full suite: 389 passing.
+
 ## [2.34.0] - 2026-06-10
 
 ### Added

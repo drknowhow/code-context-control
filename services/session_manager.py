@@ -16,6 +16,7 @@ from typing import Optional
 
 from core import count_tokens
 from core.ide import detect_ide, load_ide_config
+from services.git_context import GitContext
 
 
 class SessionManager:
@@ -49,6 +50,7 @@ class SessionManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.current_session = None
         self.ollama_client = ollama_client
+        self._git = None
 
         # Analytics now in a dedicated directory
         analytics_dir = self.project_path / ".c3" / "analytics"
@@ -94,6 +96,20 @@ class SessionManager:
             ide_name = detect_ide(str(self.project_path))
         return ide_name or "claude-code"
 
+    def _git_state(self) -> dict:
+        """Current git branch/HEAD for stamping on the session (lazy, cached)."""
+        try:
+            if self._git is None:
+                self._git = GitContext(self.project_path)
+            st = self._git.state()
+            return {
+                "branch": st.get("branch"),
+                "head_sha": st.get("head_sha", ""),
+                "detached": st.get("detached", False),
+            }
+        except Exception:
+            return {"branch": None, "head_sha": "", "detached": False}
+
     def start_session(self, description: str = "", source_system: Optional[str] = None) -> dict:
         """Start a new session."""
         session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -108,6 +124,7 @@ class SessionManager:
             "description": description,
             "source_system": source_system_value,
             "source_ide": source_ide,
+            "git": self._git_state(),
             "decisions": [],
             "files_touched": [],
             "key_changes": [],

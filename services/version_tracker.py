@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.ide import get_profile
+from services.git_context import GitContext
 
 
 class VersionTracker:
@@ -20,7 +21,8 @@ class VersionTracker:
         self.ide_name = ide_name
         self.store_path = self.project_path / ".c3" / "version_tracker.json"
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        self._git_root = self._detect_git_root()
+        self._git = GitContext(self.project_path)
+        self._git_root = self._git.git_root
         self.state = self._load_state()
 
     def scan(self, agent: str = "current", max_files: int | None = None) -> dict:
@@ -163,21 +165,6 @@ class VersionTracker:
         except Exception:
             return ""
 
-    def _detect_git_root(self) -> Path | None:
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=True,
-            )
-            root = (result.stdout or "").strip()
-            return Path(root).resolve() if root else None
-        except Exception:
-            return None
-
     def _git_info(self, rel_path: str) -> dict:
         info = {
             "available": bool(self._git_root),
@@ -187,6 +174,7 @@ class VersionTracker:
             "author": "",
             "timestamp": 0,
             "subject": "",
+            "branch": None,
         }
         if not self._git_root:
             return info
@@ -249,6 +237,10 @@ class VersionTracker:
                     info["timestamp"] = 0
                 info["author"] = parts[2]
                 info["subject"] = parts[3]
+        except Exception:
+            pass
+        try:
+            info["branch"] = self._git.state().get("branch")
         except Exception:
             pass
         return info
