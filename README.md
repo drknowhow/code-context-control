@@ -183,7 +183,7 @@ C3 exposes 16 tools as a native MCP server. Your IDE calls them directly:
 | `c3_impact` | Blast-radius analysis before edits to shared symbols |
 | `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini / etc. |
 | `c3_agent` | Multi-step agentic workflows (review, investigate, refactor) |
-| `c3_edits` | Edit-ledger queries + version diffs + restore points |
+| `c3_edits` | Edit-ledger queries + version diffs + restore points + per-branch filter |
 | `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
 | `c3_project` | Cross-project — discover & operate on other c3-installed projects; guarded writes (v2.31.0) |
 

@@ -3,7 +3,7 @@
 
 def handle_edits(action: str, file: str, change_type: str, summary: str,
                  lines_changed: str, tags: str, limit: int, since: str,
-                 edit_id: str, tag: str, svc, finalize) -> str:
+                 edit_id: str, tag: str, svc, finalize, branch: str = "") -> str:
     """Route c3_edits actions."""
     ledger = svc.edit_ledger
     if ledger is None:
@@ -64,12 +64,17 @@ def handle_edits(action: str, file: str, change_type: str, summary: str,
             file=file or None,
             limit=limit or 50,
             since=since or None,
+            branch=branch or None,
         )
         if not entries:
             return finalize("c3_edits", {"action": "history"}, "No edits found", "0 edits")
-        lines = [f"[edits:history] {len(entries)} entries" + (f" for {file}" if file else "")]
+        scope = (f" for {file}" if file else "") + (f" on {branch}" if branch else "")
+        lines = [f"[edits:history] {len(entries)} entries" + scope]
         for e in entries:
             ln = f"  {e['timestamp'][:19]} | {e['file']} {e['version']} | {e['change_type']} | {e['summary']}"
+            br = (e.get("git") or {}).get("branch")
+            if br:
+                ln += f" @{br}"
             if e.get("tags"):
                 ln += f" [{','.join(e['tags'])}]"
             lines.append(ln)

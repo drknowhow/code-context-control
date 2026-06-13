@@ -604,9 +604,10 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
 async def c3_edits(action: str, file: str = "", change_type: str = "modified",
              summary: str = "", lines_changed: str = "", tags: str = "",
              limit: int = 50, since: str = "", edit_id: str = "",
-             tag: str = "", ctx: Context = None) -> str:
+             tag: str = "", branch: str = "", ctx: Context = None) -> str:
     """EDIT HISTORY — inspect the ledger. Different from c3_edit (which writes); this one reads.
-    actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id)."""
+    actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id).
+    branch: filter history to edits stamped with a given git branch."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -615,7 +616,7 @@ async def c3_edits(action: str, file: str = "", change_type: str = "modified",
     from cli.tools.edits import handle_edits
     return await asyncio.to_thread(handle_edits, action, file, change_type, summary,
                                    lines_changed, tags, limit, since, edit_id, tag,
-                                   svc, finalize)
+                                   svc, finalize, branch)
 
 
 @mcp.tool()

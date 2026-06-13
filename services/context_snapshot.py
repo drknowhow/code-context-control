@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core import count_tokens
+from services.git_context import GitContext
 
 # Max characters per file structural map stored in snapshot
 _FILE_MAP_MAX_CHARS = 600
@@ -21,6 +22,7 @@ class ContextSnapshot:
         self.project_path = Path(project_path)
         self.data_dir = self.project_path / data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._git = GitContext(self.project_path)
 
     def capture(self, session_mgr, memory_store,
                 task_description: str = "",
@@ -88,11 +90,23 @@ class ContextSnapshot:
         # Context budget snapshot
         budget = session.get("context_budget", {})
 
+        # Git working-tree state — lets restore flag a branch change.
+        try:
+            gstate = self._git.state(force=True)
+            git_info = {
+                "branch": gstate.get("branch"),
+                "head_sha": gstate.get("head_sha", ""),
+                "detached": gstate.get("detached", False),
+            }
+        except Exception:
+            git_info = {"branch": None, "head_sha": "", "detached": False}
+
         snapshot = {
             "schema_version": 3,
             "snapshot_id": datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
             "created": datetime.now(timezone.utc).isoformat(),
             "session_id": session_id,
+            "git": git_info,
             "task_description": task_description,
             "working_files": working_files or [],
             "custom_notes": custom_notes,
@@ -151,6 +165,20 @@ class ContextSnapshot:
         snap = self._load_snapshot(snapshot_id)
         if "error" in snap:
             return snap
+
+        # Flag when the working tree has moved off the branch this was taken on.
+        snap_git = snap.get("git") or {}
+        if snap_git.get("branch"):
+            try:
+                cur = self._git.state(force=True)
+                if (cur.get("available") and cur.get("branch")
+                        and cur["branch"] != snap_git["branch"]):
+                    snap["_branch_warning"] = (
+                        f"snapshot taken on '{snap_git['branch']}', "
+                        f"now on '{cur['branch']}'"
+                    )
+            except Exception:
+                pass
 
         # Enrich with live memory recall so cross-session facts are surfaced immediately
         if memory_store and snap.get("task_description"):
@@ -252,6 +280,13 @@ class ContextSnapshot:
         parts = [f"# Context Restore: {snap.get('task_description', 'N/A')}"]
         parts.append(f"Snapshot: {snap['snapshot_id']} | Session: {snap.get('session_id', '?')}")
 
+        git = snap.get("git") or {}
+        if git.get("head_sha"):
+            label = (git.get("branch") or "(detached)") + " @ " + git["head_sha"][:8]
+            parts.append(f"Branch: {label}")
+        if snap.get("_branch_warning"):
+            parts.append(f"\n⚠️ Branch changed since snapshot — {snap['_branch_warning']}")
+
         if snap.get("custom_notes"):
             parts.append(f"\n## Notes\n{snap['custom_notes']}")
 
@@ -328,6 +363,8 @@ class ContextSnapshot:
     def _compact_briefing(self, snap: dict) -> str:
         """Level 1: Compact briefing — top decisions + file list."""
         parts = [f"[restore:{snap['snapshot_id']}] {snap.get('task_description', '')}"]
+        if snap.get("_branch_warning"):
+            parts.append(f"⚠️ branch changed — {snap['_branch_warning']}")
 
         plans = snap.get("plans", [])
         if plans:

@@ -15,6 +15,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services.git_context import GitContext
+
 
 class EditLedger:
     """Tracks every AI edit with version numbering and git context."""
@@ -23,7 +25,8 @@ class EditLedger:
         self.project_path = Path(project_path).resolve()
         self.ledger_file = self.project_path / ".c3" / "edit_ledger.jsonl"
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
-        self._git_root = self._detect_git_root()
+        self._git = GitContext(self.project_path)
+        self._git_root = self._git.git_root
         # In-memory caches — loaded lazily on first use, updated on writes
         self._version_cache: dict[str, int] | None = None  # {file: max_version}
         self._total_count: int | None = None
@@ -75,7 +78,8 @@ class EditLedger:
         self._seq_counter += 1
 
         # Git info — single combined command when enabled
-        git_info = {"commit": "", "author": "", "subject": "", "dirty": False}
+        git_info = {"commit": "", "author": "", "subject": "", "dirty": False,
+                    "branch": None, "head_sha": ""}
         diff_summary = ""
         if include_git and self._git_root:
             git_info, diff_summary = self._git_combined(rel)
@@ -107,9 +111,10 @@ class EditLedger:
         return entry
 
     def get_history(self, file: str = None, limit: int = 50,
-                    since: str = None) -> list:
-        """Query edits, optionally filtered by file and/or time."""
-        results = self._load_merged(file_filter=file, since_filter=since)
+                    since: str = None, branch: str = None) -> list:
+        """Query edits, optionally filtered by file, time, and/or branch."""
+        results = self._load_merged(file_filter=file, since_filter=since,
+                                    branch_filter=branch)
         return results[-limit:]
 
     def get_file_versions(self, file: str) -> list:
@@ -208,31 +213,13 @@ class EditLedger:
                 continue
         return results[-limit:]
 
-    def _detect_git_root(self):
-        """Find git root directory."""
-        try:
-            kwargs = {}
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=self.project_path,
-                capture_output=True, text=True, timeout=3,
-                stdin=subprocess.DEVNULL,
-                **kwargs,
-            )
-            if result.returncode == 0:
-                return Path(result.stdout.strip()).resolve()
-        except Exception:
-            pass
-        return None
-
     def _git_combined(self, rel_path: str) -> tuple:
         """Capture git info + diff in a single subprocess call.
 
         Returns (git_info_dict, diff_summary_str).
         """
-        info = {"commit": "", "author": "", "subject": "", "dirty": False}
+        info = {"commit": "", "author": "", "subject": "", "dirty": False,
+                "branch": None, "head_sha": ""}
         diff_summary = ""
         abs_path = (self.project_path / rel_path).resolve()
         try:
@@ -296,11 +283,20 @@ class EditLedger:
         except Exception:
             pass
 
+        # Branch + HEAD from the cached GitContext (cheap; shared TTL cache).
+        try:
+            gstate = self._git.state()
+            info["branch"] = gstate.get("branch")
+            info["head_sha"] = gstate.get("head_sha", "")
+        except Exception:
+            pass
+
         return info, diff_summary
 
     # ── Async enrichment ──────────────────────────────────────────────
 
-    def _load_merged(self, file_filter: str = None, since_filter: str = None) -> list:
+    def _load_merged(self, file_filter: str = None, since_filter: str = None,
+                     branch_filter: str = None) -> list:
         """Read all base entries with any appended patches merged in.
 
         Patch entries are identified by having a 'target_id' field.
@@ -347,6 +343,8 @@ class EditLedger:
             if norm_file and entry.get("file") != norm_file:
                 continue
             if since_filter and entry.get("timestamp", "") < since_filter:
+                continue
+            if branch_filter and (entry.get("git") or {}).get("branch") != branch_filter:
                 continue
             results.append(entry)
         results.sort(key=lambda e: e.get("timestamp", ""))

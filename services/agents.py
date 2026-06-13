@@ -11,6 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 from services.agent_base import BackgroundAgent  # noqa: F401 — re-exported for consumers
+from services.git_context import GitContext
 
 
 class IndexStalenessAgent(BackgroundAgent):
@@ -922,6 +923,137 @@ class FileMemoryAgent(BackgroundAgent):
         return status
 
 
+class BranchWatchAgent(BackgroundAgent):
+    """Detects branch / HEAD changes and queues a scoped, targeted re-index.
+
+    Change detection keys on the HEAD sha, so it fires on checkout, switch,
+    pull, and merge — but NOT on ``git fetch`` (which only moves remote refs;
+    the working tree is untouched). On a move it queues exactly the files that
+    differ between the old and new HEAD (from ``git diff``), restricted to files
+    C3 already tracks and that genuinely need re-indexing, then notifies
+    (warning on a branch switch, info on a same-branch HEAD move).
+
+    Every cycle it also queues tracked files that are dirty on disk, catching
+    edits made outside C3 (rebase, ``git restore``, another editor) that the
+    lazy mtime-on-access path would only notice later. The actual re-extraction
+    is done by FileMemoryAgent, which drains the same queue.
+    """
+
+    def __init__(self, file_memory, notifications, project_path,
+                 enabled=True, interval=30, max_queue=200, **kwargs):
+        super().__init__("BranchWatch", interval, notifications, enabled, **kwargs)
+        self.file_memory = file_memory
+        self.project_path = project_path
+        self.max_queue = max_queue
+        self._git = GitContext(project_path)
+        self._state_path = Path(project_path) / ".c3" / "branch_state.json"
+        self._loaded = False
+        self._last = {"branch": None, "head_sha": ""}
+
+    def _load_state(self):
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            if self._state_path.exists():
+                data = json.loads(self._state_path.read_text(encoding="utf-8"))
+                self._last = {"branch": data.get("branch"),
+                              "head_sha": data.get("head_sha", "")}
+        except Exception:
+            pass
+
+    def _save_state(self, branch, head_sha):
+        self._last = {"branch": branch, "head_sha": head_sha}
+        try:
+            self._state_path.write_text(
+                json.dumps({"branch": branch, "head_sha": head_sha}),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _queue_changed(self, paths) -> int:
+        """Queue tracked files that still need re-indexing; return count queued.
+
+        Paths are compared slash-agnostically against the file-memory store and
+        filtered through ``needs_update`` so unchanged files (e.g. after a local
+        commit where the working tree already matches) are not re-processed.
+        """
+        if not paths:
+            return 0
+        tracked = {t.replace("\\", "/"): t for t in self.file_memory.list_tracked()}
+        queued = 0
+        for p in paths:
+            canonical = tracked.get(p.replace("\\", "/"))
+            if canonical is None:
+                continue
+            try:
+                if not self.file_memory.needs_update(canonical):
+                    continue
+            except Exception:
+                pass
+            self.file_memory.queue_for_update(canonical)
+            queued += 1
+            if queued >= self.max_queue:
+                break
+        return queued
+
+    def check(self):
+        st = self._git.state(force=True)
+        if not st.get("available"):
+            return False  # no git here — idle backoff
+        self._load_state()
+        cur_branch = st.get("branch")
+        cur_head = st.get("head_sha", "")
+        if not cur_head:
+            return False
+        prev_branch = self._last.get("branch")
+        prev_head = self._last.get("head_sha", "")
+
+        # Catch out-of-band working-tree edits every cycle.
+        dirty_queued = self._queue_changed(self._git.dirty_files())
+
+        # First run for this project — record the baseline without notifying.
+        if not prev_head:
+            self._save_state(cur_branch, cur_head)
+            return False if dirty_queued == 0 else None
+
+        if cur_head == prev_head and cur_branch == prev_branch:
+            return False if dirty_queued == 0 else None
+
+        # HEAD or branch moved — scope the re-index to what actually differs.
+        changed = self._git.changed_files(prev_head, cur_head)
+        if not changed:
+            # Old commit unreachable / diff failed — fall back to dirty set.
+            changed = self._git.dirty_files()
+        queued = self._queue_changed(changed)
+
+        switched = (cur_branch != prev_branch)
+        self._save_state(cur_branch, cur_head)
+
+        new_label = cur_branch or "(detached)"
+        if switched:
+            old_label = prev_branch or (prev_head[:8] if prev_head else "?")
+            self.notify(
+                "warning", "Branch changed",
+                f"{old_label} → {new_label}; queued {queued} tracked file(s) for re-index",
+                replace_if_unacked=True,
+            )
+        else:
+            self.notify(
+                "info", "Index refresh",
+                f"HEAD {prev_head[:8]}→{cur_head[:8]} on {new_label}; "
+                f"queued {queued} file(s) for re-index",
+                replace_if_unacked=True,
+            )
+        return None
+
+    def get_status(self) -> dict:
+        status = super().get_status()
+        status["branch"] = self._git.label()
+        return status
+
+
 class AutonomyPlannerAgent(BackgroundAgent):
     """Builds a prioritized autonomous action plan from recent tool telemetry."""
 
@@ -1507,6 +1639,19 @@ def create_agents(services, notifications, config=None, ollama=None) -> list:
                 **_cfg("FileMemory", {
                     "enabled": True, "interval": 120, "use_ai": False,
                     "ai_model": "gemma3n:latest", "max_files_per_cycle": 5,
+                }),
+            )
+        )
+
+    # BranchWatchAgent — needs file_memory's re-index queue.
+    if hasattr(services, 'file_memory') and services.file_memory:
+        agents.append(
+            BranchWatchAgent(
+                file_memory=services.file_memory,
+                notifications=notifications,
+                project_path=getattr(services, 'project_path', None),
+                **_cfg("BranchWatch", {
+                    "enabled": True, "interval": 30, "max_queue": 200,
                 }),
             )
         )

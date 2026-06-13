@@ -1031,7 +1031,7 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
           <span class="tool-tagline">Edit ledger — history, versions, audit trail</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Access the edit ledger — a persistent append-only log of all file changes made through c3_edit. Provides history, version diffing, stats, and tagging. The ledger is also enriched in the background by the EditLedgerEnricherAgent.</p>
+          <p class="tool-desc">Access the edit ledger — a persistent append-only log of all file changes made through c3_edit. Provides history, version diffing, stats, and tagging. The ledger is also enriched in the background by the EditLedgerEnricherAgent. Since v2.35.0, each entry is stamped with the git <strong>branch</strong> and HEAD it was made on, and history can be filtered by branch.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -1054,6 +1054,12 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
                 <td class="param-default">"modified"</td>
                 <td class="param-desc">Change type for <code>log</code> action</td>
               </tr>
+              <tr>
+                <td class="param-name">branch</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Filter <code>history</code> to edits stamped with this git branch <span class="badge">v2.35.0</span></td>
+              </tr>
             </tbody>
           </table>
 
@@ -1062,7 +1068,7 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
             <thead><tr><th>Action</th><th>Description</th></tr></thead>
             <tbody>
               <tr><td class="param-name">log</td><td class="param-desc">Manually log an edit to the ledger (normally done automatically by c3_edit)</td></tr>
-              <tr><td class="param-name">history</td><td class="param-desc">Show edit history (optionally filtered by file)</td></tr>
+              <tr><td class="param-name">history</td><td class="param-desc">Show edit history (optionally filtered by file and/or branch)</td></tr>
               <tr><td class="param-name">versions</td><td class="param-desc">Show version history for a specific file</td></tr>
               <tr><td class="param-name">stats</td><td class="param-desc">Aggregate stats: most-edited files, change frequency</td></tr>
               <tr><td class="param-name">tag</td><td class="param-desc">Tag an edit entry with a label</td></tr>
@@ -1077,7 +1083,10 @@ c3_edits(action=<span class="str">'history'</span>)
 c3_edits(action=<span class="str">'versions'</span>, file=<span class="str">'services/memory.py'</span>)
 
 <span class="com"># Ledger stats</span>
-c3_edits(action=<span class="str">'stats'</span>)</code></pre>
+c3_edits(action=<span class="str">'stats'</span>)
+
+<span class="com"># Edits made on a specific branch</span>
+c3_edits(action=<span class="str">'history'</span>, branch=<span class="str">'feature/x'</span>)</code></pre>
         </div>
       </div>
 
