@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.35.0"
+__version__ = "2.36.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -911,6 +911,12 @@ def cmd_init(args):
           + ("" if not health["issues"] or
              health["instructions_file"] + " missing" not in " ".join(health["issues"])
              else " [MISSING]"))
+
+    # Version-skew notice: this project's .c3 was written by an older C3.
+    stored_version = _safe_read_json(c3_dir / "config.json", "config").get("version")
+    if stored_version and _version_tuple(str(stored_version)) < _version_tuple(__version__):
+        print(f"\n  [upgrade] Set up with C3 v{stored_version}; now running v{__version__}.")
+        print("            Run 'c3 init . --force' to re-apply MCP config, hooks, and docs.")
 
     # Permission status (Claude Code only) — surface tier + stale-tool drift
     try:
@@ -3872,8 +3878,8 @@ _AGENTS_MD_CONTENT = _C3_COMPACT_WORKFLOW + """
 This project uses project-scoped MCP servers. Ensure your `.codex/config.toml` includes:
 ```toml
 [mcp_servers.c3]
-command = "python"
-args = ["<path-to-c3>/cli/mcp_server.py", "--project", "."]
+command = "c3-mcp"
+args = ["--project", "."]
 enabled = true
 ```
 """
@@ -3886,8 +3892,8 @@ This project uses project-scoped MCP servers. Ensure your `.gemini/settings.json
 {
   "mcpServers": {
     "c3": {
-      "command": "python",
-      "args": ["<path-to-c3>/cli/mcp_server.py", "--project", "."]
+      "command": "c3-mcp",
+      "args": ["--project", "."]
     }
   }
 }
@@ -4215,11 +4221,17 @@ def _upsert_json_mcp_server(config_path: Path, config_key: str, server_name: str
     return "updated" if previous_entry is not None else "written"
 
 
-def _ensure_project_session_configs(target: Path, server_script: str, primary_profile: str | None = None) -> None:
+def _ensure_project_session_configs(target: Path, server_script: str, primary_profile: str | None = None,
+                                    c3_mcp_exe: str | None = None) -> None:
     """Keep project-local Codex and Gemini MCP configs in sync for new sessions."""
     # Ensure forward slashes for config portability and avoid Windows path-splitting issues
     server_script_posix = Path(server_script).as_posix()
-    server_args = [server_script_posix, "--project", target.as_posix()]
+    if c3_mcp_exe:
+        mcp_command = c3_mcp_exe
+        server_args = ["--project", target.as_posix()]
+    else:
+        mcp_command = "python"
+        server_args = [server_script_posix, "--project", target.as_posix()]
 
     if primary_profile != "codex":
         codex_path = target / ".codex" / "config.toml"
@@ -4228,7 +4240,7 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
             codex_path,
             "mcp_servers.c3",
             {
-                "command": "python",
+                "command": mcp_command,
                 "args": server_args,
                 "enabled": True,
             },
@@ -4242,14 +4254,14 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
             "mcpServers",
             "c3",
             {
-                "command": "python",
+                "command": mcp_command,
                 "args": server_args,
             },
         )
         print(f"{gemini_state.capitalize()} {gemini_path}")
 
 
-def _ensure_global_session_fallbacks(server_script: str) -> None:
+def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None = None) -> None:
     """Keep user-global Codex/Gemini MCP configs pointing at C3.
 
     These fallback entries omit `--project` so the MCP server can resolve the
@@ -4257,7 +4269,9 @@ def _ensure_global_session_fallbacks(server_script: str) -> None:
     does not yet have project-local Codex/Gemini config files.
     """
     server_script_posix = Path(server_script).as_posix()
-    fallback_args = [server_script_posix]
+    # With the installed entry point, no script path is needed; --project stays
+    # omitted so the server resolves the working directory at session start.
+    fallback_args = [] if c3_mcp_exe else [server_script_posix]
 
     codex_path = Path.home() / ".codex" / "config.toml"
     try:
@@ -4266,7 +4280,7 @@ def _ensure_global_session_fallbacks(server_script: str) -> None:
             codex_path,
             "mcp_servers.c3",
             {
-                "command": "python",
+                "command": c3_mcp_exe or "python",
                 "args": fallback_args,
                 "enabled": True,
             },
@@ -4282,7 +4296,7 @@ def _ensure_global_session_fallbacks(server_script: str) -> None:
             "mcpServers",
             "c3",
             {
-                "command": sys.executable,
+                "command": c3_mcp_exe or sys.executable,
                 "args": fallback_args,
             },
         )
@@ -4825,13 +4839,25 @@ def cmd_install_mcp(args):
     # Use forward slashes for cross-platform compatibility in config files
     server_script = (cli_dir / server_filename).as_posix()
 
-    # Use 'python' for project-scoped IDE configs to be portable in templates,
-    # but use sys.executable for the actual config write to be precise.
-    # On Windows, Gemini CLI splits command args by space, so we must quote the script path.
-    new_entry = {
-        "command": "python",
-        "args": [server_script, "--project", "."],
-    }
+    # Prefer the installed `c3-mcp` console script for direct mode. It survives C3
+    # upgrades (pip/pipx reinstall to the same launcher path) and keeps the source-tree
+    # location out of every project's MCP config, so upgrading no longer requires
+    # re-running install-mcp per project. Fall back to invoking the source script with
+    # `python` when running from a checkout with no installed entry point, or in proxy
+    # mode (which has no console script).
+    import shutil
+    c3_mcp_exe = None
+    if mcp_mode != "proxy":
+        _found = shutil.which("c3-mcp")
+        if _found:
+            c3_mcp_exe = Path(_found).resolve().as_posix()
+
+    # On Windows, Gemini CLI splits command args by space, so the script path stays a
+    # single arg. 'python' keeps the source fallback portable across platforms.
+    if c3_mcp_exe:
+        new_entry = {"command": c3_mcp_exe, "args": ["--project", "."]}
+    else:
+        new_entry = {"command": "python", "args": [server_script, "--project", "."]}
     if profile.needs_type_field:
         new_entry["type"] = "stdio"
 
@@ -4865,7 +4891,10 @@ def cmd_install_mcp(args):
     try:
         if profile.config_format == "toml":
             # Codex uses TOML: [mcp_servers.c3] with command/args
-            toml_entries = {"command": sys.executable, "args": [server_script, "--project", str(target)]}
+            if c3_mcp_exe:
+                toml_entries = {"command": c3_mcp_exe, "args": ["--project", str(target)]}
+            else:
+                toml_entries = {"command": sys.executable, "args": [server_script, "--project", str(target)]}
             if profile.name == "codex":
                 # Codex supports explicit enable/disable per server.
                 toml_entries["enabled"] = True
@@ -4895,8 +4924,8 @@ def cmd_install_mcp(args):
 
     print(f"Wrote {mcp_config_path}")
     if profile.name in {"codex", "gemini"}:
-        _ensure_project_session_configs(target, server_script, primary_profile=profile.name)
-        _ensure_global_session_fallbacks(server_script)
+        _ensure_project_session_configs(target, server_script, primary_profile=profile.name, c3_mcp_exe=c3_mcp_exe)
+        _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe)
 
     # â”€â”€ Persist IDE choice to .c3/config.json â”€â”€
     c3_config_dir = target / ".c3"
@@ -6342,6 +6371,123 @@ def _run_swe_bench_lite(args, project_path):
         pass
 
 
+def _version_tuple(v: str) -> tuple:
+    """Best-effort numeric version tuple for comparisons ('2.36.0' -> (2, 36, 0))."""
+    parts = []
+    for chunk in str(v or "").split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) or (0,)
+
+
+def _latest_pypi_version(package: str = "code-context-control", timeout: float = 5.0) -> str | None:
+    """Best-effort latest release of `package` on PyPI; None if unreachable."""
+    import urllib.request
+    try:
+        url = f"https://pypi.org/pypi/{package}/json"
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        return (data.get("info") or {}).get("version")
+    except Exception:
+        return None
+
+
+def _installed_distribution(package: str = "code-context-control"):
+    """Return the installed Distribution for `package`, or None when running from source."""
+    try:
+        from importlib import metadata
+        return metadata.distribution(package)
+    except Exception:
+        return None
+
+
+def _is_editable_install(package: str = "code-context-control") -> bool:
+    """True when `package` is pip-installed in editable/development mode."""
+    dist = _installed_distribution(package)
+    if dist is None:
+        return False
+    try:
+        text = dist.read_text("direct_url.json")
+        if text:
+            return bool(json.loads(text).get("dir_info", {}).get("editable"))
+    except Exception:
+        pass
+    return False
+
+
+def cmd_upgrade(args):
+    """Upgrade C3 to the latest PyPI release (or just check with --check)."""
+    current = __version__
+    latest = _latest_pypi_version()
+    if latest is None:
+        print("  Could not reach PyPI to check for updates (offline?).")
+    elif _version_tuple(latest) <= _version_tuple(current):
+        print(f"  C3 is up to date (v{current}).")
+        return
+    else:
+        print(f"  Update available: v{current} -> v{latest}")
+
+    if getattr(args, "check", False):
+        return
+
+    if _installed_distribution() is None:
+        print("  C3 is running from a source checkout (not pip-installed).")
+        print("  Update with:  git pull")
+        return
+    if _is_editable_install():
+        print("  C3 is installed in editable/development mode (pip install -e .).")
+        print("  Update with:  git pull")
+        return
+
+    print("  Upgrading via pip (this may take a minute)...")
+    cmd = [sys.executable, "-m", "pip", "install", "-U", "code-context-control[tui]"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception as e:
+        print(f"  Upgrade failed to launch pip: {e}")
+        sys.exit(1)
+    if result.returncode != 0:
+        print("  pip upgrade failed:")
+        print((result.stderr or result.stdout or "").strip()[-1000:])
+        sys.exit(1)
+    print("  Upgraded to the latest release. Restart your IDE's MCP server to load it.")
+    print("  In each project, run  c3 init . --force  to apply any migrations.")
+
+
+def _launch_tui() -> None:
+    """Launch the interactive TUI — what `c3` with no arguments does.
+
+    Runs tui/main.py as a subprocess so its bare `from screens...` imports resolve
+    (its own directory lands on sys.path[0]); the package root goes on PYTHONPATH for
+    cli/services imports. Falls back to help text when the optional [tui] extra
+    (textual) is not installed.
+    """
+    pkg_root = Path(__file__).resolve().parent.parent
+    tui_main = pkg_root / "tui" / "main.py"
+    try:
+        import textual  # noqa: F401
+    except Exception:
+        print("The interactive TUI needs the optional 'textual' dependency.")
+        print('  Install it with:  pip install "code-context-control[tui]"')
+        print("  Or run  c3 --help  to see all commands.")
+        return
+    if not tui_main.exists():
+        print("TUI entry point not found. Run  c3 --help  for commands.")
+        return
+    env = os.environ.copy()
+    existing_pp = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(pkg_root) + (os.pathsep + existing_pp if existing_pp else "")
+    try:
+        subprocess.run([sys.executable, str(tui_main)], env=env)
+    except KeyboardInterrupt:
+        pass
+
+
 def main():
     try:
         from services import error_reporting
@@ -6353,7 +6499,8 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # Bare `c3` launches the interactive TUI (replaces the old c3.bat wrapper).
+        _launch_tui()
         return
 
     commands = {
@@ -6382,6 +6529,7 @@ def main():
         "hub": cmd_hub,
         "bitbucket": cmd_bitbucket,
         "oracle": cmd_oracle,
+        "upgrade": cmd_upgrade,
     }
 
     cmd_func = commands.get(args.command)

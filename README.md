@@ -44,14 +44,23 @@ Everything runs **locally**. No source code, prompts, or model output ever leave
 
 ## Install
 
-Requires Python 3.10+.
+Requires Python 3.10+. No clone needed — C3 is published on PyPI.
+
+The recommended install is [pipx](https://pipx.pypa.io) (isolated environment, on your PATH):
 
 ```bash
-pip install code-context-control
+pipx install code-context-control
 c3 init /path/to/your/project
 ```
 
-The interactive setup walks you through:
+Or with pip:
+
+```bash
+pip install "code-context-control[tui]"   # [tui] adds the optional Textual UI
+c3 init /path/to/your/project
+```
+
+Running `c3` with no arguments opens the interactive TUI. `c3 init` walks you through:
 1. **IDE selection** (Claude Code CLI/App, Codex CLI, Gemini CLI, VS Code, Cursor, Antigravity, or Custom)
 2. Optional local `git init`
 3. MCP server registration (auto-wired into your IDE)
@@ -63,12 +72,26 @@ Headless / scripted install:
 c3 init /path/to/project --force --ide claude --mcp-mode direct --permissions standard
 ```
 
-Or install from source:
+### Upgrading
+
+```bash
+c3 upgrade                          # upgrade the running install in place
+c3 upgrade --check                  # just report whether a newer release exists
+# equivalently:
+pipx upgrade code-context-control
+pip install -U code-context-control
+```
+
+MCP is wired through the `c3-mcp` entry point, so upgrading needs **no per-project
+reconfiguration** — your existing `.mcp.json` files keep working. C3 also nudges you
+in-app when a newer release is available.
+
+### From source (contributors)
 
 ```bash
 git clone https://github.com/drknowhow/code-context-control.git
 cd code-context-control
-pip install .[tui]      # add the optional Textual TUI
+pip install -e ".[dev]"             # editable dev install: tests, linters, build tools
 ```
 
 ---

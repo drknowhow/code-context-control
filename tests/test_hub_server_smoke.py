@@ -38,6 +38,26 @@ class TestHubServerSmoke(unittest.TestCase):
         self.assertEqual(data.get("status"), "ok")
         self.assertEqual(data.get("service"), "c3-hub")
 
+    def test_guide_assets_colocated_with_package(self):
+        # The in-app guide must live inside the cli package so it ships in the
+        # wheel and is locatable via __file__ after a pure pip install.
+        guide_dir = Path(self.mod.__file__).parent / "guide"
+        self.assertTrue((guide_dir / "index.html").is_file(),
+                        "guide/index.html must sit inside the cli package")
+
+    def test_guide_route_serves_index(self):
+        resp = self.client.get("/guide/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+
+    def test_guide_route_serves_named_page(self):
+        resp = self.client.get("/guide/tools.html")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_guide_route_404_for_missing(self):
+        resp = self.client.get("/guide/does-not-exist.html")
+        self.assertEqual(resp.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.36.0] - 2026-06-13
+
+Installation & upgrade simplification — a pure `pip`/`pipx` install is now self-contained,
+and upgrading no longer requires per-project reconfiguration.
+
+### Added
+
+- **`c3 upgrade`** — upgrade C3 to the latest PyPI release in place (`pip -U` within the running
+  interpreter; works for both pip and pipx installs). `c3 upgrade --check` only reports whether a
+  newer release exists. Source and editable (`pip install -e .`) installs are detected and pointed
+  at `git pull` instead of being clobbered.
+- **`VersionCheckAgent`** — background agent that nudges when a newer C3 release is available on
+  PyPI (once per day, best-effort, swallows offline errors, opt-out via `agents.VersionCheck`).
+- **Version-skew notice** — `c3 init` on a project whose `.c3` was written by an older C3 now
+  prints an upgrade hint pointing at `c3 init . --force`.
+- **In-app guide route** — the per-project UI and the Hub serve the bundled guide at
+  `/guide/<page>`, so the in-app docs work from a pure pip install (and the existing `docs.html`
+  link to the Bitbucket guide now resolves).
+
+### Changed
+
+- **`.mcp.json` (plus project/global Codex & Gemini configs) now use the `c3-mcp` entry point**
+  instead of an absolute path into the source checkout. Upgrading no longer requires re-running
+  `install-mcp` per project — existing configs keep working. Falls back to the source script when
+  C3 runs from a checkout with no installed console script.
+- **The in-app guide now ships in the wheel.** `guide/` moved under the `cli` package
+  (`cli/guide/`) and is included as package data, so `pip install code-context-control` is
+  self-contained; previously the guide existed only in a source checkout.
+- **`c3` with no arguments launches the interactive TUI** directly from the `c3` console entry
+  point (previously only the generated `c3.bat` wrapper did this), so the entry points fully
+  replace the wrapper.
+- Registered the `BranchWatch` (v2.35.0) and `VersionCheck` agents in `AGENT_DEFAULTS` so they
+  appear in freshly generated configs and the Hub agent settings.
+
+### Documentation
+
+- README now leads with `pipx install code-context-control` (no clone needed), documents
+  `c3 upgrade` / `pipx upgrade` / `pip install -U`, and adds a contributor
+  `pip install -e ".[dev]"` path.
+- `install.bat` / `install.sh` gained pipx/PyPI guidance and `c3 upgrade` in their command help.
+
 ## [2.35.0] - 2026-06-13
 
 ### Added

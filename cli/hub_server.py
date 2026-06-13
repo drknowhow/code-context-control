@@ -316,6 +316,16 @@ def index():
     return send_from_directory(str(Path(__file__).parent), "hub.html")
 
 
+@app.route("/guide/")
+@app.route("/guide/<path:filename>")
+def serve_guide(filename="index.html"):
+    """Serve the bundled in-app guide from the installed package (cli/guide/*)."""
+    guide_dir = Path(__file__).parent / "guide"
+    if not (guide_dir / filename).is_file():
+        return "<h1>C3 guide not found.</h1>", 404
+    return send_from_directory(str(guide_dir), filename)
+
+
 # ─── Routes: health & version ────────────────────────────────────────────────
 
 @app.route("/api/health")

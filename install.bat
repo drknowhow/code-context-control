@@ -276,6 +276,7 @@ echo.
 echo   %BOLD%GETTING STARTED%R%
 echo   ----------------------------------------------------------------
 echo   %CYAN%  c3 init .%R%              Initialize C3 for a project
+echo   %CYAN%  c3 upgrade%R%             Upgrade C3 to the latest release
 echo   %CYAN%  c3 install-mcp%R%         Wire MCP into your IDE
 echo   %CYAN%  c3 ui%R%                  Per-project web dashboard
 echo   %CYAN%  c3 hub%R%                 Global project hub  ^(port 3330^)
@@ -286,12 +287,13 @@ echo   ----------------------------------------------------------------
 echo   %CYAN%  c3 bitbucket login --url ^<URL^>%R%   Auth with self-hosted Bitbucket ^(token to OS keyring^)
 echo   %CYAN%  c3 bitbucket set-default --project K --repo R%R%   Pin default project + repo
 echo   %CYAN%  c3 bitbucket status%R%             Show accounts and connectivity
-echo   %DIM%  Full guide: guide/bitbucket.html%R%
+echo   %DIM%  Full guide: cli/guide/bitbucket.html  (or the in-app Guide at /guide/)%R%
 echo.
 echo   %BOLD%ALL COMMANDS%R%
 echo   ----------------------------------------------------------------
 echo     c3                       Open interactive TUI
 echo     c3 init .                Initialize / repair C3 for current project
+echo     c3 upgrade               Upgrade C3 to the latest PyPI release
 echo     c3 install-mcp           Configure MCP for your IDE
 echo     c3 permissions           Show or apply a Claude Code permission tier
 echo     c3 ui                    Launch per-project web dashboard
@@ -318,6 +320,11 @@ echo   the hub as a Windows startup task — runs automatically on login.
 echo.
 echo   %DIM%  Hub config : %USERPROFILE%\.c3\hub_config.json%R%
 echo   %DIM%  Hub log    : %USERPROFILE%\.c3\hub.log%R%
+echo.
+echo   %BOLD%UPDATING%R%
+echo   ----------------------------------------------------------------
+echo   %CYAN%  c3 upgrade%R%  updates C3 in place. For a clean no-clone install on
+echo   another machine: %CYAN%pipx install code-context-control%R%
 echo.
 echo   %BOLD%NOTE%R%
 echo   ----------------------------------------------------------------
