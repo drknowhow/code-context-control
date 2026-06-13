@@ -135,6 +135,12 @@ AGENT_DEFAULTS = {
     "EditLedgerEnricher": {
         "enabled": True, "interval": 10, "use_ai": False,
     },
+    "BranchWatch": {
+        "enabled": True, "interval": 30, "max_queue": 200,
+    },
+    "VersionCheck": {
+        "enabled": True, "interval": 3600, "check_every_hours": 24,
+    },
 }
 
 

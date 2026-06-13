@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -266,6 +266,16 @@ def serve_edits():
     if edits_path.exists():
         return send_file(str(edits_path), mimetype='text/html')
     return "<h1>C3 Edit Ledger not found.</h1>", 404
+
+
+@app.route('/guide/')
+@app.route('/guide/<path:filename>')
+def serve_guide(filename="index.html"):
+    """Serve the bundled in-app guide from the installed package (cli/guide/*)."""
+    guide_dir = Path(__file__).parent / "guide"
+    if not (guide_dir / filename).is_file():
+        return "<h1>C3 guide not found.</h1>", 404
+    return send_from_directory(str(guide_dir), filename)
 
 
 @app.route('/api/hub/info')

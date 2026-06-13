@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-context-control"
-version = "2.35.0"
+version = "2.36.0"
 description = "Local code-intelligence layer for AI coding tools (Claude Code, Codex, Gemini, Copilot). Retrieve less, read less, edit safer."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -106,7 +106,6 @@ exclude = [
     "Marketing*",
     "commercial*",
     "docs*",
-    "guide*",
     "oracle-guide*",
 ]
 
@@ -118,6 +117,13 @@ exclude = [
     "*.json",
     "*.tcss",
     "*.md",
+]
+# In-app guide HTML/CSS lives in a subdirectory of the cli package, so it needs
+# an explicit pattern (the "*" globs above only match a package's top level).
+cli = [
+    "guide/*.html",
+    "guide/*.css",
+    "guide/*.js",
 ]
 
 [tool.pytest.ini_options]
@@ -136,7 +142,7 @@ extend-exclude = [
     "dist",
     "build",
     "docs",
-    "guide",
+    "cli/guide",
     "oracle-guide",
     "commercial",
     "tui/build.bat",

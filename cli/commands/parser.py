@@ -23,6 +23,10 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_init.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only, used with --force)")
     p_init.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
 
+    p_upgrade = subparsers.add_parser("upgrade", help="Upgrade C3 to the latest PyPI release")
+    p_upgrade.add_argument("--check", action="store_true",
+                           help="Only report whether a newer version exists; don't install")
+
     p_index = subparsers.add_parser("index", help="Rebuild code index")
     p_index.add_argument("--max-files", type=int, default=500)
 

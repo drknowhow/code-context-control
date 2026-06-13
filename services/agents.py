@@ -1537,6 +1537,99 @@ class EditLedgerEnricherAgent(BackgroundAgent):
             pass  # non-critical — never break the enrichment loop
 
 
+def _version_tuple(v) -> tuple:
+    """Best-effort numeric version tuple for comparisons ('2.36.0' -> (2, 36, 0))."""
+    parts = []
+    for chunk in str(v or "").split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) or (0,)
+
+
+def _resolve_current_version() -> str:
+    """Resolve the running C3 version from package metadata, falling back to source."""
+    try:
+        from importlib.metadata import version
+        return version("code-context-control")
+    except Exception:
+        pass
+    try:
+        c3_py = Path(__file__).resolve().parent.parent / "cli" / "c3.py"
+        match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']',
+                          c3_py.read_text(encoding="utf-8-sig"))
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+class VersionCheckAgent(BackgroundAgent):
+    """Notifies once per day when a newer C3 release is available on PyPI.
+
+    Best-effort and quiet: one network call to the PyPI JSON API, throttled to
+    ``check_every_hours`` via a small state file, opt-out via config. Network
+    failures are swallowed, so offline machines simply never nudge.
+    """
+
+    def __init__(self, notifications, current_version, project_path,
+                 enabled=True, interval=3600, check_every_hours=24,
+                 package="code-context-control", **kwargs):
+        super().__init__("VersionCheck", interval, notifications, enabled, **kwargs)
+        self.current_version = current_version or "0.0.0"
+        self.package = package
+        self.check_every_hours = check_every_hours
+        self._state_path = Path(project_path) / ".c3" / "version_check.json"
+
+    def _load_state(self) -> dict:
+        try:
+            if self._state_path.exists():
+                return json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def _save_state(self, state: dict):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps(state), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _fetch_latest(self) -> str | None:
+        import urllib.request
+        try:
+            url = f"https://pypi.org/pypi/{self.package}/json"
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+            return (data.get("info") or {}).get("version")
+        except Exception:
+            return None
+
+    def check(self):
+        now = time.time()
+        state = self._load_state()
+        last_ts = float(state.get("ts", 0) or 0)
+        if now - last_ts < self.check_every_hours * 3600:
+            return False  # throttled — let the loop back off
+        latest = self._fetch_latest()
+        self._save_state({"ts": now, "latest": latest or state.get("latest")})
+        if not latest:
+            return False
+        if _version_tuple(latest) > _version_tuple(self.current_version):
+            self.notify(
+                "info", "Update available",
+                f"C3 v{latest} is out (you have v{self.current_version}). Run `c3 upgrade`.",
+                replace_if_unacked=True,
+            )
+        return None
+
+
 def create_agents(services, notifications, config=None, ollama=None) -> list:
     """Factory to instantiate all background agents with service references.
 
@@ -1655,6 +1748,18 @@ def create_agents(services, notifications, config=None, ollama=None) -> list:
                 }),
             )
         )
+
+    # VersionCheckAgent — nudge when a newer PyPI release exists (throttled, opt-out).
+    agents.append(
+        VersionCheckAgent(
+            notifications=notifications,
+            current_version=_resolve_current_version(),
+            project_path=getattr(services, 'project_path', '.'),
+            **_cfg("VersionCheck", {
+                "enabled": True, "interval": 3600, "check_every_hours": 24,
+            }),
+        )
+    )
 
     # EditLedgerEnricherAgent — only if edit_ledger is available
     if getattr(services, 'edit_ledger', None):

@@ -21,10 +21,13 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-echo "📦 Installing C3 (this may take a minute)..."
+echo "Tip: no clone needed next time — 'pipx install code-context-control' installs from PyPI."
+echo ""
+echo "📦 Installing C3 from this checkout (this may take a minute)..."
 # pip install creates the `c3`, `c3-mcp`, and `c3-hub` entry-point scripts in
-# the active Python's bin dir (or ~/.local/bin with --user). Includes the
-# optional [tui] extra so `c3` with no args launches the Textual UI.
+# the active Python's bin dir (or ~/.local/bin with --user). These entry points
+# are all that's needed — `c3` (no args) launches the TUI and `.mcp.json` points
+# at `c3-mcp`, so no PYTHONPATH wrapper is created. Includes the [tui] extra.
 pip3 install "$SCRIPT_DIR[tui]" -q 2>/dev/null \
   || pip3 install --user "$SCRIPT_DIR[tui]" -q 2>/dev/null \
   || pip3 install --break-system-packages "$SCRIPT_DIR[tui]" -q
@@ -46,6 +49,7 @@ echo "  c3 init . --force                  # Existing C3 project: apply latest m
 echo "  c3 install-mcp .                   # Register MCP tools for your IDE (auto-detect)"
 echo "  c3 ui                              # Launch per-project web dashboard"
 echo "  c3-hub                             # Launch global Project Hub (port 3330)"
+echo "  c3 upgrade                         # Upgrade C3 to the latest PyPI release"
 echo "  c3 stats                           # CLI stats"
 echo "  c3 context 'fix the auth bug'      # Get context"
 echo "  c3 pipe 'fix the auth bug'         # All-in-one context pipeline"
@@ -54,7 +58,7 @@ echo "Bitbucket Data Center / Server (v2.30.0+, optional):"
 echo "  c3 bitbucket login --url https://bitbucket.example.com   # Stores PAT in OS keyring"
 echo "  c3 bitbucket set-default --project PROJ --repo my-repo   # Pin default workspace"
 echo "  c3 bitbucket status                                       # Show accounts + connectivity"
-echo "  See guide/bitbucket.html for the full action reference."
+echo "  See cli/guide/bitbucket.html (or the in-app Guide at /guide/) for the full action reference."
 echo ""
 echo "Run 'c3 --help' for all commands."
 
