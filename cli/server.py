@@ -1121,16 +1121,11 @@ def api_claudemd_save():
         return jsonify({"error": "Generation produced empty content"}), 500
 
     output_path = PROJECT_PATH / claude_md_mgr.instructions_file
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Preserve user-written sections
-    if output_path.exists():
-        existing = output_path.read_text(encoding="utf-8", errors="replace")
-        if "# User Notes" in existing:
-            user_section = existing[existing.index("# User Notes"):]
-            content += f"\n\n{user_section}"
+    # Wrap in the C3 managed block; never clobber user content outside it.
+    from services.claude_md import write_c3_instruction_doc
+    write_c3_instruction_doc(output_path, content)
 
-    output_path.write_text(content, encoding="utf-8")
     return jsonify({
         "path": str(output_path),
         "tokens": gen.get("tokens", 0),
@@ -2021,7 +2016,12 @@ def api_permissions_get():
 @app.route('/api/permissions', methods=['PUT'])
 def api_permissions_put():
     """Apply a permission tier. Body: {tier: "read-only"|"standard"|"permissive"}"""
-    from cli.c3 import PERMISSION_TIERS, _build_permission_tier, _safe_read_json
+    from cli.c3 import (
+        PERMISSION_TIERS,
+        _build_permission_tier,
+        _merge_permission_tier,
+        _safe_read_json,
+    )
     data = request.get_json() or {}
     tier = data.get("tier", "").strip()
     if tier not in PERMISSION_TIERS:
@@ -2031,7 +2031,9 @@ def api_permissions_put():
     settings_path = PROJECT_PATH / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = _safe_read_json(settings_path, str(settings_path))
-    settings["permissions"] = tier_perms["permissions"]
+    settings["permissions"] = _merge_permission_tier(
+        settings.get("permissions") or {}, tier_perms["permissions"]
+    )
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
 

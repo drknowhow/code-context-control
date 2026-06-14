@@ -200,13 +200,9 @@ def cmd_claudemd(args, deps: CommandDeps):
             print(content)
         else:
             output_path = Path(project_path) / instructions_file
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            if output_path.exists():
-                existing = output_path.read_text(encoding="utf-8", errors="replace")
-                if "# User Notes" in existing:
-                    user_section = existing[existing.index("# User Notes"):]
-                    content += f"\n\n{user_section}"
-            output_path.write_text(content, encoding="utf-8")
+            # Wrap in the C3 managed block; preserve user content outside it.
+            from services.claude_md import write_c3_instruction_doc
+            write_c3_instruction_doc(output_path, content)
             print(f"{instructions_file} saved to {output_path} ({tokens} tokens)")
 
     elif args.claudemd_cmd == "check":

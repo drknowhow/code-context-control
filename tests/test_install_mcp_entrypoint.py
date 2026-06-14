@@ -69,6 +69,54 @@ class TestInstallMcpEntryPoint(unittest.TestCase):
         self.assertTrue(entry["args"][0].endswith("mcp_server.py"))
         self.assertEqual(entry["args"][1:], ["--project", "."])
 
+    def test_install_preserves_existing_user_config(self):
+        """install-mcp must not clobber the user's .mcp.json or settings.local.json."""
+        # Pre-existing user content that must survive install.
+        (self.project / ".mcp.json").write_text(json.dumps({
+            "mcpServers": {"myserver": {"command": "foo", "args": []}},
+            "someTopKey": 123,
+        }), encoding="utf-8")
+        claude_dir = self.project / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.local.json").write_text(json.dumps({
+            "permissions": {"allow": ["Bash(mytool:*)"], "deny": []},
+            "hooks": {
+                "PostToolUse": [
+                    {"matcher": "MyCustomTool",
+                     "hooks": [{"type": "command", "command": "echo hi"}]}
+                ],
+                "Stop": [
+                    {"matcher": "",
+                     "hooks": [{"type": "command", "command": "echo userstop"}]}
+                ],
+            },
+        }), encoding="utf-8")
+
+        with mock.patch("shutil.which", return_value=None):
+            self._run_install()
+
+        # .mcp.json: other servers + top-level keys preserved, c3 added.
+        mcp = json.loads((self.project / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertIn("myserver", mcp["mcpServers"])
+        self.assertIn("c3", mcp["mcpServers"])
+        self.assertEqual(mcp.get("someTopKey"), 123)
+
+        settings = json.loads((claude_dir / "settings.local.json").read_text(encoding="utf-8"))
+        # Plain install (no --permissions) leaves user permissions untouched.
+        self.assertIn("Bash(mytool:*)", settings["permissions"]["allow"])
+        # User PostToolUse hook (custom matcher) preserved.
+        self.assertTrue(
+            any(h.get("matcher") == "MyCustomTool" for h in settings["hooks"]["PostToolUse"])
+        )
+        # User Stop hook (empty matcher) preserved alongside C3's own stop hook.
+        stop_cmds = [
+            hk.get("command", "")
+            for h in settings["hooks"]["Stop"]
+            for hk in h.get("hooks", [])
+        ]
+        self.assertTrue(any("echo userstop" in c for c in stop_cmds))
+        self.assertTrue(any("hook_auto_snapshot.py" in c for c in stop_cmds))
+
 
 if __name__ == "__main__":
     unittest.main()

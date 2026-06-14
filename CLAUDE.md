@@ -93,8 +93,15 @@ claude-companion - v2/
     hook_session_stats.py
     ... +9 more
     commands/ (3 files)
+    guide/ (7 files)
     tools/ (18 files)
     ui/ (5 files)
+  code_context_control.egg-info/
+    SOURCES.txt
+    dependency_links.txt
+    entry_points.txt
+    requires.txt
+    top_level.txt
   commercial/
     info_01_efficiency.json
     info_02_hierarchy.json
@@ -108,17 +115,10 @@ claude-companion - v2/
     __init__.py
     config.py
     ide.py
+    mcp_toml.py
     web_security.py
   docs/
     screenshots/ (11 files)
-  guide/
-    bitbucket.html
-    getting-started.html
-    index.html
-    oracle.html
-    shared.css
-    tools.html
-    workflow.html
   oracle/
     __init__.py
     config.py
@@ -149,7 +149,7 @@ claude-companion - v2/
     doc_index.py
     e2e_benchmark.py
     e2e_evaluator.py
-    ... +34 more
+    ... +35 more
     bench/ (1 files)
   tests/
     test_aider_polyglot.py
@@ -164,10 +164,10 @@ claude-companion - v2/
     test_enforcement_flip.py
     test_federated_graph.py
     test_ghost_files.py
+    test_git_branch_awareness.py
     test_hub_server_smoke.py
-    test_mcp_server_smoke.py
-    test_memory_graph_api.py
-    ... +18 more
+    test_install_mcp_entrypoint.py
+    ... +24 more
   tui/
     __init__.py
     backend.py

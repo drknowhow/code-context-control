@@ -169,6 +169,8 @@ Every session you've ever run, with duration, decision count, file count, tool c
 
 Manage `CLAUDE.md`, `AGENTS.md` (Codex), `GEMINI.md`, and `.github/copilot-instructions.md` from one editor. Generate from project state, run a Health Check (drift detection vs the actual codebase), Compact stale sections, or Promote insights captured during sessions. **One source of truth** instead of four out-of-sync files.
 
+C3-generated content is wrapped in a `<!-- C3:BEGIN … -->` / `<!-- C3:END -->` block. Regenerating (or `Compact`) only rewrites that block — **anything you write outside it is preserved**, so it's safe to keep your own notes in the same file.
+
 ### 7. Chat — browse prior AI conversations
 
 <p align="center">
@@ -307,6 +309,8 @@ All tiers always allow C3 MCP tools and include a hard deny list (`rm -rf`, `sud
 c3 permissions show
 c3 permissions standard
 ```
+
+Applying or switching a tier **preserves your own `allow`/`deny` rules** (and keys like `ask`/`defaultMode`) — only C3-managed entries are replaced. Likewise, C3 never clobbers your other entries in `.mcp.json` (only its own `c3` server) or the hooks you've added to `settings.local.json` (only its own hooks).
 
 ---
 

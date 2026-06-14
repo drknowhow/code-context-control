@@ -169,26 +169,54 @@ class TestStaleCleanup(unittest.TestCase):
 
 
 class TestApplyPreservesOtherKeys(unittest.TestCase):
-    def test_apply_preserves_hooks_and_other_keys(self):
+    def _setup_project(self, tmpdir: str) -> Path:
+        project = Path(tmpdir)
+        (project / ".claude").mkdir()
+        (project / ".c3").mkdir()
+        return project
+
+    def test_apply_preserves_user_custom_and_other_keys(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            project = Path(tmpdir)
-            (project / ".claude").mkdir()
-            (project / ".c3").mkdir()
+            project = self._setup_project(tmpdir)
             settings = project / ".claude" / "settings.local.json"
             settings.write_text(json.dumps({
                 "enableAllProjectMcpServers": True,
                 "hooks": {"PostToolUse": [{"matcher": "*", "hooks": []}]},
-                "permissions": {"allow": ["old_entry"], "deny": []},
+                "permissions": {
+                    "allow": ["Bash(mycustomtool:*)"],  # user-custom — must survive
+                    "deny": ["Edit(*)"],                # stale tier entry — dropped under standard
+                    "ask": ["Bash(git push:*)"],        # non-allow/deny key — must survive
+                },
             }), encoding="utf-8")
             _apply_permission_tier(str(project), "standard")
             data = json.loads(settings.read_text(encoding="utf-8"))
+            # Other top-level keys preserved
             self.assertTrue(data["enableAllProjectMcpServers"])
             self.assertIn("hooks", data)
-            # Permissions replaced, not merged
-            self.assertNotIn("old_entry", data["permissions"]["allow"])
+            perms = data["permissions"]
+            # User-custom allow entry preserved (not a C3-managed rule)
+            self.assertIn("Bash(mycustomtool:*)", perms["allow"])
+            # Non-allow/deny permission sub-key preserved
+            self.assertEqual(perms.get("ask"), ["Bash(git push:*)"])
+            # Stale C3-managed deny entry not in standard → removed
+            self.assertNotIn("Edit(*)", perms["deny"])
+            # Chosen tier's entries applied
+            self.assertIn("Bash(rm -rf *)", perms["deny"])
             # Tier stored in .c3/config.json
             cfg = json.loads((project / ".c3" / "config.json").read_text(encoding="utf-8"))
             self.assertEqual(cfg["permission_tier"], "standard")
+
+    def test_tier_switch_drops_previous_tier_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = self._setup_project(tmpdir)
+            settings = project / ".claude" / "settings.local.json"
+            _apply_permission_tier(str(project), "c3-strict")
+            mid = json.loads(settings.read_text(encoding="utf-8"))
+            self.assertIn("Read(*)", mid["permissions"]["deny"])  # strict denies Read
+            _apply_permission_tier(str(project), "permissive")
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            # Switching tiers removes the previous tier's managed deny entries
+            self.assertNotIn("Read(*)", data["permissions"]["deny"])
 
 
 if __name__ == "__main__":
