@@ -6,6 +6,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.37.0] - 2026-06-14
+
+Non-destructive config generation — regenerating instruction docs and applying permission
+tiers no longer clobber content you wrote by hand.
+
+### Added
+
+- **C3-managed block markers for instruction docs.** Generated `CLAUDE.md` / `AGENTS.md` /
+  `GEMINI.md` content is now wrapped in `<!-- C3:BEGIN … -->` / `<!-- C3:END -->` sentinels
+  (with a visible `# C3 — Managed Instructions` heading). Shared helpers
+  `wrap_c3_block` / `merge_c3_block` / `write_c3_instruction_doc` in `services/claude_md.py`
+  back every write path.
+- **`_merge_permission_tier`** (`cli/c3.py`) — merges a permission tier into existing
+  `settings.local.json` permissions, preserving user-added `allow`/`deny` rules and
+  non-list keys (`ask`, `defaultMode`, `additionalDirectories`) while replacing only the
+  entries C3 manages.
+
+### Changed
+
+- **Instruction docs are merged, not overwritten.** `c3 init` / `c3 install-mcp` and the
+  `c3 claudemd save` / Hub save paths now replace only the C3-managed block and keep
+  everything outside it. A pre-existing hand-written file (no markers) is preserved and the
+  C3 block is appended; legacy marker-less C3 files are migrated in place (trailing
+  `# User Notes` still preserved). Mirrors the long-standing global `~/.claude/CLAUDE.md`
+  merge behaviour.
+- **`claudemd compact` preserves the managed block.** Compaction now operates on the inner
+  C3 body only and re-wraps it, so the markers, the `# C3` heading, and any user content
+  outside the block survive.
+- **Permission tiers are merged across every apply path** — `c3 permissions <tier>`,
+  `c3 install-mcp --permissions`, and the Hub / per-project UI endpoints — so switching or
+  re-applying a tier no longer wipes custom permission rules. Tier-owned entries are still
+  replaced authoritatively; `deny` rules continue to win over `allow`.
+
+### Fixed
+
+- **`install-mcp` no longer drops user `Stop` hooks.** Only C3's own stop hooks (identified
+  by their hook scripts) are replaced; user-added stop hooks — including the common
+  matcher-less shape — are preserved alongside C3's.
+
+### Documentation
+
+- Documented the C3-managed instruction block and the merge/preserve semantics for
+  `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, `settings.local.json` (hooks + permissions), and
+  `.mcp.json` across `README.md` and the in-app guide.
+
 ## [2.36.0] - 2026-06-13
 
 Installation & upgrade simplification — a pure `pip`/`pipx` install is now self-contained,

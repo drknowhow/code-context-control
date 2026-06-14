@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.36.0"
+__version__ = "2.37.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -379,6 +379,44 @@ def _build_permission_tier(tier: str, include_mcp_wildcard: bool = False) -> dic
     }}
 
 
+def _c3_managed_permission_entries() -> tuple[set, set]:
+    """Return (allow, deny) sets of every entry any C3 tier can emit.
+
+    Used to tell C3-managed permission rules apart from user-added ones so a
+    tier change replaces only the former and preserves the latter.
+    """
+    managed_allow: set = set()
+    managed_deny: set = set()
+    for _tier in PERMISSION_TIERS:
+        perms = _build_permission_tier(_tier, include_mcp_wildcard=True)["permissions"]
+        managed_allow.update(perms.get("allow", []))
+        managed_deny.update(perms.get("deny", []))
+    return managed_allow, managed_deny
+
+
+def _merge_permission_tier(existing: dict, tier_perms: dict) -> dict:
+    """Merge a tier's permissions into existing ones, preserving user rules.
+
+    C3 owns every entry a tier can emit: those are replaced by the chosen tier.
+    Any other allow/deny entry the user added is kept, and non-list permission
+    keys (e.g. ``ask``, ``defaultMode``, ``additionalDirectories``) are left
+    untouched. Mirrors how hooks and .mcp.json preserve non-C3 content.
+    """
+    existing = existing if isinstance(existing, dict) else {}
+    managed = dict(zip(("allow", "deny"), _c3_managed_permission_entries()))
+    merged = dict(existing)  # preserve unknown sub-keys (ask, defaultMode, ...)
+    for key in ("allow", "deny"):
+        user_custom = [e for e in (existing.get(key) or []) if e not in managed[key]]
+        out: list = []
+        seen: set = set()
+        for entry in user_custom + list(tier_perms.get(key) or []):
+            if entry not in seen:
+                seen.add(entry)
+                out.append(entry)
+        merged[key] = out
+    return merged
+
+
 def _detect_current_tier(settings_path) -> str | None:
     """Detect which permission tier is active in settings_path, or None.
 
@@ -456,9 +494,12 @@ def _apply_permission_tier(project_path: str, tier: str,
     settings_path = Path(project_path) / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = _safe_read_json(settings_path, str(settings_path))
-    settings["permissions"] = _build_permission_tier(
+    tier_perms = _build_permission_tier(
         tier, include_mcp_wildcard=include_mcp_wildcard
     )["permissions"]
+    settings["permissions"] = _merge_permission_tier(
+        settings.get("permissions") or {}, tier_perms
+    )
     # Persist chosen tier in .c3/config.json
     c3_config_path = Path(project_path) / ".c3" / "config.json"
     c3_config = _safe_read_json(c3_config_path, str(c3_config_path))
@@ -5139,10 +5180,23 @@ def cmd_install_mcp(args):
             },
         ]
         stop_event = "Stop"
-        # Replace any existing C3 stop hooks (matcher=""), keep user-added ones
+        # Replace only C3's own stop hooks (identified by our hook scripts) and
+        # keep every user-added stop hook — including matcher-less ones, which
+        # are the normal shape for Stop hooks.
+        _c3_stop_scripts = (
+            "hook_session_stats.py", "hook_auto_snapshot.py", "hook_terse_advisor.py",
+        )
+
+        def _is_c3_stop_hook(entry: dict) -> bool:
+            return any(
+                script in (hk.get("command") or "")
+                for hk in entry.get("hooks", [])
+                for script in _c3_stop_scripts
+            )
+
         existing_stop = [
             h for h in settings.get("hooks", {}).get(stop_event, [])
-            if h.get("matcher")  # keep entries with a non-empty matcher
+            if not _is_c3_stop_hook(h)
         ]
         existing_stop.extend(desired_stop_hooks)
         settings.setdefault("hooks", {})[stop_event] = existing_stop
@@ -5160,9 +5214,12 @@ def cmd_install_mcp(args):
         include_wildcard = bool(getattr(args, "include_mcp_wildcard", False))
         if perm_tier and profile.name == "claude-code":
             if perm_tier in PERMISSION_TIERS:
-                settings["permissions"] = _build_permission_tier(
-                    perm_tier, include_mcp_wildcard=include_wildcard
-                )["permissions"]
+                settings["permissions"] = _merge_permission_tier(
+                    settings.get("permissions") or {},
+                    _build_permission_tier(
+                        perm_tier, include_mcp_wildcard=include_wildcard
+                    )["permissions"],
+                )
                 # Persist tier choice in .c3/config.json
                 _c3cfg = _safe_read_json(c3_config_path, str(c3_config_path))
                 _c3cfg["permission_tier"] = perm_tier

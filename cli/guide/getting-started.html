@@ -188,6 +188,14 @@ c3 init</code></pre>
 
       <h3>Re-init / upgrade</h3>
       <p>Running <code>c3 init</code> on an existing project is safe — it merges new config without overwriting your customizations.</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">🛡️</span>
+        <div class="callout-body">
+          <strong>Your hand-written content is preserved</strong>
+          Generated instruction files (<code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>GEMINI.md</code>) wrap C3 content in a <code>&lt;!-- C3:BEGIN … --&gt;</code> / <code>&lt;!-- C3:END --&gt;</code> block. Re-running init (or <code>c3 claudemd save</code> / the <strong>Compact</strong> action) rewrites only that block — anything you add outside it stays put. An existing hand-written file with no block is kept and the C3 block is appended below it.
+        </div>
+      </div>
     </section>
 
     <hr class="divider">
@@ -200,7 +208,7 @@ c3 init</code></pre>
 
       <h3>Claude Code (primary)</h3>
       <pre><code>c3 install-mcp claude</code></pre>
-      <p>This writes to <code>.mcp.json</code> (project scope) and optionally configures PreToolUse / PostToolUse hooks in <code>.claude/settings.local.json</code>.</p>
+      <p>This writes to <code>.mcp.json</code> (project scope) and optionally configures PreToolUse / PostToolUse hooks in <code>.claude/settings.local.json</code>. Both are merged, not overwritten: C3 only touches its own <code>c3</code> server entry and its own hooks, leaving any other MCP servers, hooks, and top-level keys you've added in place.</p>
 
       <h3>VS Code Copilot</h3>
       <pre><code>c3 install-mcp vscode</code></pre>
@@ -356,6 +364,14 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
         <div class="callout-body">
           <strong>Default is standard</strong>
           The <code>standard</code> tier blocks destructive shell commands (rm -rf, git reset --hard, etc.) while allowing safe operations. Upgrade to <code>unrestricted</code> only when needed.
+        </div>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">🛡️</span>
+        <div class="callout-body">
+          <strong>Your custom rules survive a tier change</strong>
+          Applying or switching a tier preserves <code>allow</code>/<code>deny</code> entries you added yourself, plus keys like <code>ask</code> and <code>defaultMode</code>. C3 only replaces the entries it manages, so you can mix a tier with project-specific permissions.
         </div>
       </div>
     </section>

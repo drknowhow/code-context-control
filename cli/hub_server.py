@@ -1206,7 +1206,7 @@ def api_projects_permissions_get():
 @app.route("/api/projects/permissions/apply", methods=["POST"])
 def api_projects_permissions_put():
     """Apply permission tier to a project. Body: {path, tier}"""
-    from cli.c3 import PERMISSION_TIERS, _build_permission_tier
+    from cli.c3 import PERMISSION_TIERS, _build_permission_tier, _merge_permission_tier
     data = request.get_json(force=True) or {}
     path = (data.get("path") or "").strip()
     tier = (data.get("tier") or "").strip()
@@ -1228,7 +1228,9 @@ def api_projects_permissions_put():
                 settings = json.load(f)
         except Exception:
             pass
-    settings["permissions"] = tier_perms["permissions"]
+    settings["permissions"] = _merge_permission_tier(
+        settings.get("permissions") or {}, tier_perms["permissions"]
+    )
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
 

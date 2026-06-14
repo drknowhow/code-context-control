@@ -465,19 +465,14 @@ class SessionManager:
         else:
             content = auto_content
 
+        # Wrap C3-generated content in the managed block so regenerating the
+        # doc never clobbers user-written content outside it (mirrors global
+        # ~/.claude/CLAUDE.md). Legacy files and bare user files are preserved.
+        from services.claude_md import write_c3_instruction_doc
+
         output_path = self.project_path / instructions_file
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check for existing file
-        if output_path.exists():
-            existing = output_path.read_text(encoding="utf-8")
-            # Preserve user-written sections
-            if "# User Notes" in existing:
-                user_section = existing[existing.index("# User Notes"):]
-                content += f"\n\n{user_section}"
-
-        output_path.write_text(content, encoding="utf-8")
-        tokens = count_tokens(content)
+        final = write_c3_instruction_doc(output_path, content)
+        tokens = count_tokens(final)
 
         return {
             "path": str(output_path),
