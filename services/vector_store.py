@@ -38,14 +38,37 @@ class VectorStore:
         self._collections: dict[str, object] = {}
         self._chroma_available = False
         self._ollama_available = False
-        self._init_backends()
 
         self._fallback_dir = self.project_path / ".c3" / "sltm" / "fallback"
         self._fallback_dir.mkdir(parents=True, exist_ok=True)
         self._fallback_data: dict[str, list[dict]] = {}
         self._records_by_id: dict[str, dict] = {}
         self._text_index = TextIndex()
-        self._load_fallback()
+
+        # Heavy backend init (chromadb import/client + ollama probe) and the
+        # fallback load are deferred to first use so build_runtime stays fast
+        # and the MCP handshake doesn't time out. See _ensure_ready().
+        self._initialized = False
+        self._init_lock = threading.Lock()
+
+    def _ensure_ready(self):
+        """Lazily init chromadb/ollama backends + fallback data on first use.
+
+        Deferred from __init__ so build_runtime (and the MCP handshake) stays
+        fast. Idempotent and thread-safe via double-checked locking.
+        """
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            self._init_backends()
+            self._load_fallback()
+            self._initialized = True
+
+    def warm(self):
+        """Pre-initialize backends (used for background warm-up)."""
+        self._ensure_ready()
 
     def _init_backends(self):
         if self.config.get("disable_vector_backend"):
@@ -85,6 +108,7 @@ class VectorStore:
         record_id: str | None = None,
     ) -> dict:
         """Store a record in the SLTM using a stable record id when provided."""
+        self._ensure_ready()
         if category not in SLTM_CATEGORIES:
             category = "general"
 
@@ -133,6 +157,7 @@ class VectorStore:
         }
 
     def search(self, query: str, category: str = "", top_k: int = 5) -> list[dict]:
+        self._ensure_ready()
         categories = [category] if category and category in SLTM_CATEGORIES else list(SLTM_CATEGORIES)
         allowed = set(categories)
 
@@ -204,6 +229,7 @@ class VectorStore:
         return results
 
     def delete(self, record_id: str) -> dict:
+        self._ensure_ready()
         deleted = False
         with self._lock:
             deleted = self._delete_locked(record_id)

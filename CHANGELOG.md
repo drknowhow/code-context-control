@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.38.1] - 2026-06-14
+
+Startup reliability fixes for the MCP server and for the Oracle on Windows.
+
+### Fixed
+
+- **MCP server intermittently marked "× Failed to connect" on startup.** `VectorStore`
+  and `EmbeddingIndex` now initialize their chromadb/Ollama backends **lazily on first
+  use** (lock-guarded, idempotent) instead of eagerly in `build_runtime()`. This cuts
+  `build_runtime` startup from **~20s to <1s**, so it no longer exceeds Claude Code's
+  default MCP handshake timeout. The heavy init is warmed in the background by the MCP
+  `lifespan` and otherwise happens on the first semantic-search / memory call (under the
+  larger tool timeout). Status views (`c3_status`) stay non-blocking. No external timeout
+  override (`MCP_TIMEOUT`) is needed anymore.
+- **Oracle server startup crash on Windows.** `run_oracle` printed a `→` in its banner,
+  raising `UnicodeEncodeError` on consoles using the cp1252 code page; `stdout`/`stderr`
+  are now reconfigured to UTF-8 at startup (covers the banners and the logging handler).
+
 ## [2.38.0] - 2026-06-14
 
 Oracle activity reporting — the Oracle can now produce a cross-project "what happened
