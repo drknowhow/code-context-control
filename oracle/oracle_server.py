@@ -825,8 +825,19 @@ def _is_oracle_running(port: int) -> bool:
         return False
 
 
+def _force_utf8_console() -> None:
+    """Make stdout/stderr UTF-8 so banner/log output can't crash on legacy
+    Windows code pages (cp1252 raises UnicodeEncodeError on chars like '→')."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def run_oracle(port: int = None, open_browser: bool = None):
     """Main entry point for Oracle server."""
+    _force_utf8_console()
     _init_services()
 
     cfg = load_config()
