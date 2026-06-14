@@ -101,7 +101,7 @@ Set in `~/.c3/oracle/config.json`:
 **Discovery (read):** `list_projects`, `search_facts`, `query_memory`,
 `project_health`, `analyze_project`, `cross_insights`, `read_graph`, `c3_search`,
 `c3_search_cross`, `c3_read`, `c3_compress`, `c3_validate`, `c3_status`,
-`c3_memory_query`, `c3_edits`, `c3_edits_cross`.
+`c3_memory_query`, `c3_edits`, `c3_edits_cross`, `activity_report`.
 
 **Safe actions:** `suggest_action` (creates a *pending* memory suggestion a human
 approves), `delegate_task` (runs a configured Oracle agent).

@@ -72,6 +72,15 @@ class TestToolRegistry(unittest.TestCase):
         reg = ToolRegistry(self.exec, max_tier=TIER_ACTION)
         self.assertIn("error", reg.call_tool("does_not_exist", {}))
 
+    def test_activity_report_is_read_tier_no_required_args(self):
+        read_only = ToolRegistry(self.exec, max_tier=TIER_READ)
+        self.assertIn("activity_report", read_only.tool_names())
+        # No required args → callable with an empty args object.
+        out = read_only.call_tool("activity_report", {})
+        self.assertTrue(out["ok"])
+        name, _args = self.exec.calls[-1]
+        self.assertEqual(name, "activity_report")
+
     def test_openapi_has_path_per_tool(self):
         reg = ToolRegistry(self.exec, max_tier=TIER_ACTION)
         spec = reg.openapi_spec("http://127.0.0.1:3331/")

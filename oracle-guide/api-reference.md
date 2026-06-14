@@ -229,6 +229,40 @@ Dismiss an insight (marks `dismissed: true`, excluded from future listings).
 
 ---
 
+## Activity
+
+### `GET /api/activity/digest`
+
+Cross-project activity digest for a day (or custom window). Aggregates sessions, tool
+calls, edits, git mutations, and token/cost across all registered projects (or one, via
+`project`).
+
+**Query params:** `date` (UTC `YYYY-MM-DD`, default today); `since` / `until` (ISO bounds,
+override `date`); `project` (single-project path); `narrate` (`true` adds an LLM prose
+summary — best-effort, omitted on failure).
+
+```json
+{
+  "window": { "since": "2026-06-14T00:00:00", "until": "2026-06-14T23:59:59.999999",
+              "label": "2026-06-14 (today), UTC", "tz": "UTC" },
+  "totals": { "projects_active": 2, "sessions": 3, "tool_calls": 184, "edits": 57,
+              "git_mutations": 12, "decisions": 4,
+              "input_tokens": 120000, "output_tokens": 38000, "cost_usd": 1.42 },
+  "projects": [
+    { "name": "claude-companion", "path": "/path/to/proj", "sessions": [ ... ],
+      "tool_calls": 150, "edits": 57, "git_mutations": 12,
+      "tokens": { "input": 100000, "output": 30000 }, "cost_usd": 1.10,
+      "first_activity": "2026-06-14T09:00:00+00:00", "last_activity": "2026-06-14T18:30:00+00:00" }
+  ],
+  "narrative": null
+}
+```
+
+> Also available as the discovery tool **`activity_report`** (identical payload) for
+> external LLMs over MCP, OpenAPI, and `POST /api/discovery/call`.
+
+---
+
 ## Suggestions
 
 Suggestions are write-back recommendations that Oracle generates. They modify project `.c3/facts/facts.json` only when explicitly approved by the user.
