@@ -841,6 +841,7 @@
   <div class="tab active" data-tab="chat">Chat</div>
   <div class="tab" data-tab="projects">Projects</div>
   <div class="tab" data-tab="insights">Insights</div>
+  <div class="tab" data-tab="activity">Activity</div>
   <div class="tab" data-tab="crossgraph">Cross-Graph</div>
   <div class="tab" data-tab="suggestions">Suggestions</div>
   <div class="tab" data-tab="agents">Team / Agents</div>
@@ -973,6 +974,27 @@
     </div>
     <div id="insightsList"></div>
     <div id="insightsEmpty" class="empty" style="display:none">No insights yet. Click "Generate" with 2+ projects.</div>
+  </div>
+
+  <!-- ── Activity ── -->
+  <div class="panel" id="panel-activity">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="font-size:16px;font-weight:600">Activity Digest</h2>
+        <p style="font-size:12px;color:var(--text2);margin-top:4px">Cross-project sessions, tool calls, edits, git mutations and token/cost for one day (UTC).</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="date" id="actDate" style="padding:4px 6px" onchange="loadActivity()">
+        <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="actNarrate"> Narrate
+        </label>
+        <button class="btn btn-primary btn-sm" id="btnLoadActivity" onclick="loadActivity()">Refresh</button>
+      </div>
+    </div>
+    <div id="actSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <div id="actNarrative" class="card" style="display:none;margin-bottom:14px"></div>
+    <div id="actProjects"></div>
+    <div id="actEmpty" class="empty" style="display:none">No activity recorded for this day.</div>
   </div>
 
   <!-- ── Cross-Graph ── -->
@@ -1278,6 +1300,9 @@ document.querySelectorAll('.tab').forEach(tab => {
       else { setTimeout(() => { if (_cgCy) { _cgCy.resize(); _cgCy.fit(undefined, 40); } }, 50); }
     } else {
       mainEl.classList.remove('wide');
+    }
+    if (tab.dataset.tab === 'activity' && !window._actLoaded) {
+      loadActivity(); window._actLoaded = true;
     }
   });
 });
@@ -1897,6 +1922,89 @@ async function dismissInsight(id) {
     await api('/api/insights/dismiss', { method: 'POST', body: { id } });
     loadInsights();
   }, { successMsg: 'Insight dismissed', silent: false });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ── Activity Digest ──
+// ═══════════════════════════════════════════════════════════
+async function loadActivity() {
+  const dateEl = document.getElementById('actDate');
+  if (dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
+  const date = dateEl ? dateEl.value : '';
+  const narrate = document.getElementById('actNarrate')?.checked ? 'true' : 'false';
+  const btn = document.getElementById('btnLoadActivity');
+  if (btn) btn.disabled = true;
+  try {
+    const qs = new URLSearchParams({ date, narrate }).toString();
+    renderActivity(await api('/api/activity/digest?' + qs));
+  } catch (e) {
+    renderActivity({ error: (e && e.message) || 'Failed to load activity.' });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _actCard(label, value) {
+  return `<div class="card" style="flex:1;min-width:110px;text-align:center">
+    <div style="font-size:22px;font-weight:700">${value}</div>
+    <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em">${label}</div>
+  </div>`;
+}
+
+function renderActivity(data) {
+  const summary = document.getElementById('actSummary');
+  const projects = document.getElementById('actProjects');
+  const empty = document.getElementById('actEmpty');
+  const narrEl = document.getElementById('actNarrative');
+  if (!data || data.error) {
+    summary.innerHTML = ''; projects.innerHTML = ''; narrEl.style.display = 'none';
+    empty.style.display = ''; empty.textContent = (data && data.error) || 'Failed to load activity.';
+    return;
+  }
+  const t = data.totals || {};
+  summary.innerHTML = [
+    _actCard('Projects', t.projects_active || 0),
+    _actCard('Sessions', t.sessions || 0),
+    _actCard('Tool Calls', t.tool_calls || 0),
+    _actCard('Edits', t.edits || 0),
+    _actCard('Git', t.git_mutations || 0),
+    _actCard('Cost $', (t.cost_usd || 0).toFixed(2)),
+  ].join('');
+
+  if (data.narrative) {
+    narrEl.style.display = '';
+    narrEl.innerHTML = `<div style="font-size:11px;color:var(--text2);text-transform:uppercase;margin-bottom:6px">${esc(data.window && data.window.label || '')}</div>
+      <p style="font-size:13px;line-height:1.6;white-space:pre-wrap">${esc(data.narrative)}</p>`;
+  } else {
+    narrEl.style.display = 'none';
+  }
+
+  const rows = data.projects || [];
+  if (!rows.length) {
+    projects.innerHTML = ''; empty.style.display = '';
+    empty.textContent = 'No activity recorded for ' + (data.window && data.window.label || 'this day') + '.';
+    return;
+  }
+  empty.style.display = 'none';
+  projects.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:var(--text2);font-size:11px;text-transform:uppercase">
+        <th style="padding:6px">Project</th><th style="padding:6px">Sessions</th>
+        <th style="padding:6px">Tools</th><th style="padding:6px">Edits</th>
+        <th style="padding:6px">Git</th><th style="padding:6px">Tokens</th>
+        <th style="padding:6px">Cost $</th><th style="padding:6px">Last activity</th>
+      </tr></thead>
+      <tbody>${rows.map(p => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:6px;font-weight:600">${esc(p.name)}</td>
+        <td style="padding:6px">${(p.sessions || []).length}</td>
+        <td style="padding:6px">${p.tool_calls || 0}</td>
+        <td style="padding:6px">${p.edits || 0}</td>
+        <td style="padding:6px">${p.git_mutations || 0}</td>
+        <td style="padding:6px">${(((p.tokens || {}).input || 0) + ((p.tokens || {}).output || 0)).toLocaleString()}</td>
+        <td style="padding:6px">${(p.cost_usd || 0).toFixed(2)}</td>
+        <td style="padding:6px;color:var(--text2);font-size:11px">${esc((p.last_activity || '').replace('T', ' ').slice(0, 19))}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -111,6 +111,28 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": "Get memory-graph statistics for a project (node/edge/type counts).",
         "parameters": _obj({"project_path": _PROJECT_PATH}, ["project_path"]),
     },
+    {
+        "name": "activity_report",
+        "tier": TIER_READ,
+        "description": "Cross-project daily activity digest: sessions, tool calls, edits, git "
+                       "mutations, and token/cost across ALL projects (or one, via project_path). "
+                       "Defaults to today (UTC); pass date (YYYY-MM-DD) or since/until. Set "
+                       "narrate=true to add an LLM prose summary.",
+        "parameters": _obj(
+            {
+                "date": {"type": "string", "default": "",
+                         "description": "UTC day YYYY-MM-DD (default today)."},
+                "since": {"type": "string", "default": "",
+                          "description": "ISO start timestamp (overrides date)."},
+                "until": {"type": "string", "default": "",
+                          "description": "ISO end timestamp (overrides date)."},
+                "project_path": {"type": "string", "default": "",
+                                 "description": "Optional: limit the digest to one project."},
+                "narrate": {"type": "boolean", "default": False,
+                            "description": "Add an LLM-narrated prose summary."},
+            }
+        ),
+    },
     # ── read tier: C3 code intelligence ──
     {
         "name": "c3_search",

@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory  # noqa
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
 from oracle.services import api_auth  # noqa: E402
+from oracle.services.activity_reporter import ActivityReporter  # noqa: E402
 from oracle.services.api_auth import extract_bearer  # noqa: E402
 from oracle.services.api_auth import verify as verify_api_key  # noqa: E402
 from oracle.services.c3_bridge import C3Bridge  # noqa: E402
@@ -57,10 +58,11 @@ _chat_engine: ChatEngine | None = None
 _c3_bridge: C3Bridge | None = None
 _federated: FederatedGraph | None = None
 _tool_registry: ToolRegistry | None = None
+_activity_reporter: ActivityReporter | None = None
 
 
 def _init_services():
-    global _cfg, _bridge, _scanner, _reader, _checker, _writer, _cross_memory, _engine, _agent, _model_verified, _chat_store, _chat_engine, _c3_bridge, _federated, _tool_registry
+    global _cfg, _bridge, _scanner, _reader, _checker, _writer, _cross_memory, _engine, _agent, _model_verified, _chat_store, _chat_engine, _c3_bridge, _federated, _tool_registry, _activity_reporter
     _cfg = load_config()
     _bridge = OllamaBridge(
         base_url=_cfg.get("ollama_base_url", "https://ollama.com"),
@@ -97,6 +99,7 @@ def _init_services():
         interval=int(_cfg.get("review_interval_seconds", 1800)),
         federated_graph=_federated,
     )
+    _activity_reporter = ActivityReporter(scanner=_scanner, ollama_bridge=_bridge)
     _chat_engine = ChatEngine(
         bridge=_bridge,
         reader=_reader,
@@ -107,6 +110,7 @@ def _init_services():
         scanner=_scanner,
         store=_chat_store,
         c3_bridge=_c3_bridge,
+        activity_reporter=_activity_reporter,
     )
     _tool_registry = ToolRegistry(
         ToolExecutor(_chat_engine),
@@ -606,6 +610,26 @@ def api_chat_conversation_state(conv_id):
     if not _chat_store:
         return jsonify({"error": "not initialized"}), 500
     return jsonify({"state": _chat_store.get_state(conv_id)})
+
+
+# ── Activity digest (Oracle UI) ───────────────────────────
+@app.route("/api/activity/digest", methods=["GET"])
+def api_activity_digest():
+    """Cross-project activity digest for the Oracle UI.
+
+    Query params: date=YYYY-MM-DD, since, until, project (single-project path),
+    narrate=true|false. Defaults to today (UTC) across all registered projects.
+    """
+    if not _activity_reporter:
+        return jsonify({"error": "not initialized"}), 500
+    narrate = str(request.args.get("narrate", "")).lower() in ("1", "true", "yes", "on")
+    return jsonify(_activity_reporter.report(
+        date=request.args.get("date", ""),
+        since=request.args.get("since", ""),
+        until=request.args.get("until", ""),
+        project_path=request.args.get("project", ""),
+        narrate=narrate,
+    ))
 
 
 # ── Discovery API (external LLM tool surface) ─────────────

@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.38.0] - 2026-06-14
+
+Oracle activity reporting — the Oracle can now produce a cross-project "what happened
+today" digest, exposed as a discovery tool (MCP + REST + OpenAPI), a dedicated endpoint,
+and a web-UI tab.
+
+### Added
+
+- **`ActivityReporter`** (`oracle/services/activity_reporter.py`) — aggregates per-project
+  sessions, tool calls, edits, git mutations, and token/cost for a day (or `since`/`until`
+  window) across all registered projects, or one via `project_path`. Reads `.c3` JSONL
+  artifacts directly (no C3Runtime build); skips non-C3 projects without side effects.
+- **`activity_report` discovery tool** (read tier) in `TOOL_SPECS` — auto-exposed on MCP,
+  OpenAPI, `POST /api/discovery/call`, and the internal Oracle chat. Optional `narrate=true`
+  adds a best-effort LLM prose summary (never fails the structured result).
+- **`GET /api/activity/digest`** Oracle endpoint (`date` / `since` / `until` / `project` /
+  `narrate` query params) and an **Activity** tab in `oracle.html` with a date picker,
+  totals cards, optional narrative, and a per-project breakdown table.
+
+### Changed
+
+- `ChatEngine` accepts an optional `activity_reporter` and dispatches `activity_report`.
+
 ## [2.37.0] - 2026-06-14
 
 Non-destructive config generation — regenerating instruction docs and applying permission

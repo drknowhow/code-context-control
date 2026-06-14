@@ -1,5 +1,19 @@
 # Oracle Changelog
 
+## v1.2.0 (2026-06-14)
+
+### Activity Reporting (C3 v2.38.0)
+- **`ActivityReporter`** (`oracle/services/activity_reporter.py`): cross-project daily
+  digest aggregating sessions, tool calls, edits, git mutations, and token/cost. Reads
+  `.c3` JSONL artifacts directly per project (no C3Runtime build); skips non-C3 projects.
+- **`activity_report` discovery tool** (read tier): auto-exposed on MCP, OpenAPI,
+  `POST /api/discovery/call`, and the internal Oracle chat. `narrate=true` adds a
+  best-effort LLM prose summary.
+- **`GET /api/activity/digest`** endpoint (`date` / `since` / `until` / `project` /
+  `narrate` query params) + an **Activity** tab in the Oracle dashboard.
+
+---
+
 ## v1.1.0 (2026-04-10)
 
 ### Ollama Cloud Migration

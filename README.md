@@ -272,6 +272,10 @@ Only **read** and **safe-action** tools are exposed (no code editing); requests 
 default. Generate, rotate, and copy the token from the dashboard's **Settings →
 Discovery API** tab. See the [Oracle Discovery API guide](oracle-guide/discovery-api.md).
 
+As of v2.38.0 the Oracle also reports a **cross-project activity digest** — sessions,
+tool calls, edits, git mutations, and token/cost for a day — via the `activity_report`
+discovery tool, the `GET /api/activity/digest` endpoint, and the dashboard's **Activity** tab.
+
 ---
 
 ## Tiered local AI (optional)

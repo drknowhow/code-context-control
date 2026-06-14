@@ -100,6 +100,11 @@ Tools:
     Delegate a specific sub-task to a specialized agent.
     - agent_id: The ID of the active agent to use.
     - task: A detailed prompt explaining what the agent needs to do.
+
+19. activity_report(date?, since?, until?, project_path?, narrate=false)
+    Cross-project daily activity digest: sessions, tool calls, edits, git
+    mutations, and token/cost across ALL projects (or one, via project_path).
+    Defaults to today (UTC). narrate=true adds a prose summary.
 """
 
 _SYSTEM_BASE = """You are Oracle, an AI assistant specializing in cross-project code intelligence and memory analysis.
@@ -259,6 +264,7 @@ class ChatEngine:
         scanner: ProjectScanner,
         store: ChatStore,
         c3_bridge=None,
+        activity_reporter=None,
     ):
         self.bridge = bridge
         self.reader = reader
@@ -269,6 +275,7 @@ class ChatEngine:
         self.scanner = scanner
         self.store = store
         self.c3_bridge = c3_bridge
+        self.activity_reporter = activity_reporter
 
     # ── Main chat generator ───────────────────────────────
 
@@ -854,6 +861,8 @@ class ChatEngine:
                     return self._tool_suggest_action(**args)
                 case "read_graph":
                     return self._tool_read_graph(**args)
+                case "activity_report":
+                    return self._tool_activity_report(**args)
                 case "delegate_task":
                     return self._tool_delegate_task(**args)
                 # ── C3 code intelligence tools ──
@@ -1001,6 +1010,15 @@ class ChatEngine:
 
     def _tool_read_graph(self, project_path: str) -> dict:
         return self.reader.get_graph_stats(project_path)
+
+    def _tool_activity_report(self, date: str = "", since: str = "", until: str = "",
+                              project_path: str = "", narrate: bool = False) -> dict:
+        if self.activity_reporter is None:
+            return {"error": "Activity reporter not configured."}
+        return self.activity_reporter.report(
+            date=date, since=since, until=until,
+            project_path=project_path, narrate=narrate,
+        )
 
     def _tool_delegate_task(self, agent_id: str, task: str) -> dict:
         """Execute a sub-agent loop for the delegated task.

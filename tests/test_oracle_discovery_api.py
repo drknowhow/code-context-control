@@ -65,6 +65,17 @@ class TestDiscoveryAPI(unittest.TestCase):
         self.assertNotIn("c3_edit", names)
         self.assertNotIn("c3_shell", names)
 
+    def test_activity_report_listed(self):
+        r = self.client.get("/api/discovery/tools", headers=self.auth)
+        names = {t["name"] for t in r.get_json()["tools"]}
+        self.assertIn("activity_report", names)
+
+    def test_activity_report_dispatches(self):
+        r = self.client.post("/api/discovery/call",
+                             json={"tool": "activity_report", "args": {}}, headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["dispatched"], "activity_report")
+
     def test_call_dispatches(self):
         r = self.client.post("/api/discovery/call",
                              json={"tool": "list_projects", "args": {}}, headers=self.auth)
