@@ -120,10 +120,17 @@ async def lifespan(server):
                 services.indexer.build_index()
             except Exception:
                 pass
-            # After code index is built, build embedding index
-            if services.embedding_index and services.embedding_index.ready:
+            # After code index is built, build embedding index. build() lazily
+            # inits its chromadb/ollama backends, kept off the handshake path.
+            if services.embedding_index:
                 try:
                     services.embedding_index.build(services.indexer)
+                except Exception:
+                    pass
+            # Warm SLTM vector store so the first memory call isn't slow.
+            if services.vector_store:
+                try:
+                    services.vector_store.warm()
                 except Exception:
                     pass
             # Build doc index for Local RAG Pipeline
@@ -136,15 +143,23 @@ async def lifespan(server):
         threading.Thread(target=_bg_build, daemon=True, name="c3-initial-index").start()
     else:
         services.indexer._load_index()
-        # Build/update embedding index in background
-        if services.embedding_index and services.embedding_index.ready:
+        # Build/update embedding index + warm SLTM in background. Deferred off
+        # the handshake path: build()/warm() lazily init the heavy backends, so
+        # this must NOT gate on .ready synchronously here.
+        if services.embedding_index or services.vector_store:
             import threading
 
             def _bg_embed():
-                try:
-                    services.embedding_index.build(services.indexer)
-                except Exception:
-                    pass
+                if services.embedding_index:
+                    try:
+                        services.embedding_index.build(services.indexer)
+                    except Exception:
+                        pass
+                if services.vector_store:
+                    try:
+                        services.vector_store.warm()
+                    except Exception:
+                        pass
 
             threading.Thread(target=_bg_embed, daemon=True, name="c3-embed-index").start()
 

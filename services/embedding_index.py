@@ -42,10 +42,32 @@ class EmbeddingIndex:
         self._lock = threading.Lock()
         self._chunk_map: dict[str, dict] = {}  # chunk_id -> metadata
 
-        self._init_backends()
-        self._load_hashes()
+        # Heavy backend init (chromadb import/client + ollama probe) and hash
+        # load are deferred to first use so build_runtime stays fast and the MCP
+        # handshake doesn't time out. See _ensure_ready().
+        self._initialized = False
+        self._init_lock = threading.Lock()
 
     # ── Backend init ──────────────────────────────────────
+
+    def _ensure_ready(self):
+        """Lazily init chromadb/ollama backends + file hashes on first use.
+
+        Deferred from __init__ so build_runtime (and the MCP handshake) stays
+        fast. Idempotent and thread-safe via double-checked locking.
+        """
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            self._init_backends()
+            self._load_hashes()
+            self._initialized = True
+
+    def warm(self):
+        """Pre-initialize backends (used for background warm-up)."""
+        self._ensure_ready()
 
     def _init_backends(self):
         """Initialize chromadb collection and check Ollama."""
@@ -116,6 +138,7 @@ class EmbeddingIndex:
         Returns:
             Stats dict with files_processed, chunks_embedded, chunks_skipped, etc.
         """
+        self._ensure_ready()
         if not self.ready:
             return {"error": "Embedding backends unavailable", "available": False}
 
@@ -261,6 +284,7 @@ class EmbeddingIndex:
 
         Returns list of dicts with: file, lines, name, type, content, score, tokens.
         """
+        self._ensure_ready()
         if not self.ready or not self._collection or self._collection.count() == 0:
             return []
 
