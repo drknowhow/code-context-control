@@ -8,7 +8,7 @@
 ## Reporting a vulnerability
 
 Please do not open public GitHub issues for security vulnerabilities.
-Email **`dtselenc@gmail.com`** with subject line `[c3-security]`. Include:
+Email **`yepgent@gmail.com`** with subject line `[c3-security]`. Include:
 
 - A clear description of the issue and its impact.
 - Steps to reproduce, including any relevant configuration.
