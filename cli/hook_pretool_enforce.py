@@ -180,24 +180,30 @@ def _is_file_unlocked(project_path: Path, file_path: str, category: str) -> bool
     return category in cats or "both" in cats
 
 
-def _check_signal_file(project_path: Path) -> tuple[bool, bool]:
+def _check_signal_file(project_path: Path) -> tuple[bool, bool, str]:
     """Read last_c3_call.json written by hook_c3_signal.py.
 
-    Returns (recent, read_unlocked):
+    Returns (recent, read_unlocked, c3_tool):
       recent:        True if a c3_* tool completed within _SIGNAL_MAX_AGE_SECS
       read_unlocked: True if that tool was c3_search/c3_compress/c3_filter
+      c3_tool:       short name of the c3 tool that wrote the signal (e.g.
+                     "c3_edit"), or "" if recent is False / unparseable.
+
+    Fails closed: on any parse error, returns (False, False, "").
     """
     signal_path = project_path / _SIGNAL_FILE
     if not signal_path.exists():
-        return False, False
+        return False, False, ""
     try:
         data = json.loads(signal_path.read_text(encoding="utf-8"))
         ts = datetime.fromisoformat(data["timestamp"])
         age = (datetime.now(timezone.utc) - ts).total_seconds()
         recent = age <= _SIGNAL_MAX_AGE_SECS
-        return recent, bool(data.get("read_unlocked", False)) and recent
+        if not recent:
+            return False, False, ""
+        return True, bool(data.get("read_unlocked", False)), str(data.get("tool", ""))
     except Exception:
-        return False, False
+        return False, False, ""
 
 
 def _check_c3_used(project_path: Path, tool_name: str, tool_input: dict) -> tuple[bool, str]:
@@ -223,10 +229,20 @@ def _check_c3_used(project_path: Path, tool_name: str, tool_input: dict) -> tupl
     required_cat = _TOOL_CATEGORY.get(tool_name, "read")
 
     # ── Fix 4: signal file — primary, fast, reliable ─────────────────────────
-    signal_recent, signal_read_unlocked = _check_signal_file(project_path)
+    signal_recent, signal_read_unlocked, signal_tool = _check_signal_file(project_path)
     if signal_recent:
+        # Bypass fix: for write-class tools (Edit/Write/MultiEdit), the signal
+        # may only unlock them when the c3 tool that wrote it actually satisfies
+        # this tool's prereqs (e.g. c3_edit/c3_edits/c3_agent). A read-class
+        # signal (c3_status, c3_search, …) must NOT unlock a native write.
+        if tool_name in _BLOCKED_TOOLS:
+            if signal_tool in allowed:
+                if native_target:
+                    _record_unlock(project_path, native_target, required_cat)
+                return True, "signal"
+            # Fresh signal exists but it's not a write-prereq tool — fall through
         # Fix 5: Grep/Glob without file path needs a read-unlocking tool
-        if not native_target and tool_name in ("Grep", "Glob", "FindFiles", "SearchText"):
+        elif not native_target and tool_name in ("Grep", "Glob", "FindFiles", "SearchText"):
             if signal_read_unlocked:
                 return True, "signal"
             # Signal exists but not read-unlocking (e.g. c3_memory) — fall through

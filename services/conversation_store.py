@@ -14,7 +14,10 @@ Sources:
 import gzip
 import json
 import math
+import os
 import re
+import sys
+import threading
 import time
 from collections import Counter
 from datetime import datetime
@@ -40,7 +43,9 @@ class ConversationStore:
         self.store_dir = self.project_path / ".c3" / "conversations"
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._sessions_file = self.store_dir / "sessions.json"
-        self._sessions: list = []   # in-memory cache, cleared on write
+        # None = not loaded yet; [] is a legitimate "loaded, empty" state.
+        self._sessions: list | None = None
+        self._sessions_lock = threading.Lock()
         self._search_index = TextIndex()
         self._search_meta: dict[str, dict] = {}
         self._search_dirty = True
@@ -162,33 +167,35 @@ class ConversationStore:
         with open(session_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(turn, ensure_ascii=False) + "\n")
 
-        # Update session index
-        sessions = self._load_sessions()
-        existing = next((s for s in sessions if s["session_id"] == session_id), None)
-        if existing:
-            existing["turns"] = existing.get("turns", 0) + 1
-            existing["ended"] = ts
-            existing["user_tokens"] = existing.get("user_tokens", 0) + (tokens if role == "user" else 0)
-            existing["assistant_tokens"] = existing.get("assistant_tokens", 0) + (tokens if role == "assistant" else 0)
-            if source and existing.get("source") in (None, "", "manual"):
-                existing["source"] = self._normalize_source(source)
-            if role == "user" and existing.get("turns", 0) == 1:
-                existing["title"] = text[:100].replace("\n", " ")
-        else:
-            sessions.append({
-                "session_id": session_id,
-                "title": (text[:100].replace("\n", " ") if role == "user" else session_id[:24]),
-                "source": self._normalize_source(source),
-                "source_file": None,
-                "source_mtime": 0,
-                "started": ts,
-                "ended": ts,
-                "turns": 1,
-                "user_tokens": tokens if role == "user" else 0,
-                "assistant_tokens": tokens if role == "assistant" else 0,
-                "compressed": False,
-            })
-        self._save_sessions(sessions)
+        # Update session index — read-modify-write must be atomic so concurrent
+        # add_turn() calls don't lose count/token increments.
+        with self._sessions_lock:
+            sessions = self._load_sessions()
+            existing = next((s for s in sessions if s["session_id"] == session_id), None)
+            if existing:
+                existing["turns"] = existing.get("turns", 0) + 1
+                existing["ended"] = ts
+                existing["user_tokens"] = existing.get("user_tokens", 0) + (tokens if role == "user" else 0)
+                existing["assistant_tokens"] = existing.get("assistant_tokens", 0) + (tokens if role == "assistant" else 0)
+                if source and existing.get("source") in (None, "", "manual"):
+                    existing["source"] = self._normalize_source(source)
+                if role == "user" and existing.get("turns", 0) == 1:
+                    existing["title"] = text[:100].replace("\n", " ")
+            else:
+                sessions.append({
+                    "session_id": session_id,
+                    "title": (text[:100].replace("\n", " ") if role == "user" else session_id[:24]),
+                    "source": self._normalize_source(source),
+                    "source_file": None,
+                    "source_mtime": 0,
+                    "started": ts,
+                    "ended": ts,
+                    "turns": 1,
+                    "user_tokens": tokens if role == "user" else 0,
+                    "assistant_tokens": tokens if role == "assistant" else 0,
+                    "compressed": False,
+                })
+            self._save_sessions(sessions)
         self._search_dirty = True
         return turn
 
@@ -736,31 +743,59 @@ class ConversationStore:
         self._save_sessions(sessions)
 
     def _load_sessions(self) -> list:
-        if self._sessions:
+        # None = not loaded yet; an empty list is a valid loaded state and must
+        # NOT trigger a re-read (which previously re-parsed the file every call).
+        if self._sessions is not None:
             return self._sessions
         if self._sessions_file.exists():
             try:
                 with open(self._sessions_file, encoding="utf-8") as f:
                     loaded = json.load(f)
-                changed = False
-                for s in loaded:
-                    src = s.get("source")
-                    if not src:
-                        src = "claude" if s.get("source_file") else "manual"
-                        s["source"] = src
-                        changed = True
-                    norm = self._normalize_source(src)
-                    if norm != src:
-                        s["source"] = norm
-                        changed = True
-                self._sessions = loaded
-                if changed:
-                    self._save_sessions(self._sessions)
-                return self._sessions
-            except Exception:
-                pass
+            except Exception as exc:
+                # Corrupt/partial file: back it up and surface loudly. Do NOT
+                # silently reset to [] — that would let the next save persist an
+                # empty catalog and wipe the session history permanently.
+                self._backup_corrupt_sessions()
+                if self._sessions is not None:
+                    # Keep whatever was already loaded in this process.
+                    return self._sessions
+                raise RuntimeError(
+                    f"sessions.json is corrupt and was backed up: {exc}"
+                ) from exc
+            changed = False
+            for s in loaded:
+                src = s.get("source")
+                if not src:
+                    src = "claude" if s.get("source_file") else "manual"
+                    s["source"] = src
+                    changed = True
+                norm = self._normalize_source(src)
+                if norm != src:
+                    s["source"] = norm
+                    changed = True
+            self._sessions = loaded
+            if changed:
+                self._save_sessions(self._sessions)
+            return self._sessions
         self._sessions = []
         return self._sessions
+
+    def _backup_corrupt_sessions(self):
+        """Move a corrupt sessions.json aside so it is never overwritten."""
+        try:
+            n = 0
+            while True:
+                bak = self._sessions_file.with_suffix(f".json.corrupt-{n}")
+                if not bak.exists():
+                    break
+                n += 1
+            os.replace(self._sessions_file, bak)
+            print(
+                f"[conversation_store] corrupt sessions.json backed up to {bak.name}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
 
     def _ensure_search_index(self):
         if not self._search_dirty:
@@ -800,8 +835,24 @@ class ConversationStore:
 
     def _save_sessions(self, sessions: list):
         self._sessions = sessions
-        with open(self._sessions_file, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, ensure_ascii=False, indent=2)
+        # Atomic write: serialize to a temp file in the same dir, then
+        # os.replace() (atomic on both Windows and POSIX). This prevents a
+        # crash mid-write from leaving a truncated/partial sessions.json.
+        tmp = self._sessions_file.with_suffix(
+            f".json.tmp-{os.getpid()}-{int(time.time() * 1000)}"
+        )
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(sessions, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._sessions_file)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
         self._search_dirty = True
 
     def _chunk_text(self, text: str) -> list[str]:

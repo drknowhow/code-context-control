@@ -16,6 +16,7 @@ from pathlib import Path
 _agent_tls = threading.local()
 
 from oracle.config import load_config
+from oracle.services.c3_bridge import validate_project_path
 from oracle.services.chat_store import ChatStore
 from oracle.services.cross_memory import CrossMemory
 from oracle.services.health_checker import HealthChecker
@@ -921,6 +922,7 @@ class ChatEngine:
     def _tool_query_memory(
         self, project_path: str, query: str = "", category: str = "", limit: int = 10
     ) -> dict:
+        project_path = validate_project_path(self.scanner, project_path)
         facts = self.reader.read_facts(project_path)
         if category:
             facts = [f for f in facts if f.get("category", "") == category]
@@ -976,9 +978,11 @@ class ChatEngine:
         return {"query": query, "total_matches": len(all_matches), "results": top}
 
     def _tool_project_health(self, project_path: str) -> dict:
+        project_path = validate_project_path(self.scanner, project_path)
         return self.health_checker.check(project_path)
 
     def _tool_analyze_project(self, project_path: str) -> dict:
+        project_path = validate_project_path(self.scanner, project_path)
         return self.insight_engine.analyze_project(project_path)
 
     def _tool_cross_insights(self, project_path: str = "") -> dict:
@@ -1004,11 +1008,13 @@ class ChatEngine:
     def _tool_suggest_action(
         self, project_path: str, action: str, fact_ids: list, reason: str
     ) -> dict:
+        project_path = validate_project_path(self.scanner, project_path)
         data = {"fact_ids": fact_ids, "reason": reason}
         suggestion = self.writer.suggest(project_path, action, data)
         return {"suggestion_id": suggestion.get("id"), "status": "pending", "type": action}
 
     def _tool_read_graph(self, project_path: str) -> dict:
+        project_path = validate_project_path(self.scanner, project_path)
         return self.reader.get_graph_stats(project_path)
 
     def _tool_activity_report(self, date: str = "", since: str = "", until: str = "",

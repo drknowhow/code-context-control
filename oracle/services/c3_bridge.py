@@ -29,6 +29,29 @@ def _noop_facts(*_a, **_kw) -> str:
     return ""
 
 
+def validate_project_path(scanner, project_path: str) -> str:
+    """Resolve ``project_path`` and confirm it is a discovered C3 project.
+
+    Returns the resolved absolute path. Raises ``ValueError`` if the path is
+    empty or is not a member of ``scanner.discover()`` — preventing any caller
+    (chat tools, Discovery API) from reading an arbitrary ``.c3`` project on the
+    machine simply by supplying its path.
+    """
+    if not project_path:
+        raise ValueError("project_path is required")
+    resolved = str(Path(project_path).resolve())
+    try:
+        discovered = scanner.discover() if scanner else []
+    except Exception:
+        discovered = []
+    known = {str(Path(p.get("path", "")).resolve()) for p in discovered if p.get("path")}
+    if resolved not in known:
+        raise ValueError(
+            f"Unknown project: {project_path}. Not a registered C3 project."
+        )
+    return resolved
+
+
 class C3Bridge:
     """Bridge between Oracle and C3 tool handlers with per-project runtime cache."""
 
@@ -43,8 +66,12 @@ class C3Bridge:
     # ── Runtime cache ──────────────────────────────────────────────
 
     def get_runtime(self, project_path: str) -> C3Runtime:
-        """Return cached runtime or build a new one.  LRU eviction at MAX_CACHED."""
-        project_path = str(Path(project_path).resolve())
+        """Return cached runtime or build a new one.  LRU eviction at MAX_CACHED.
+
+        ``project_path`` is validated against discovered projects first, so a
+        runtime can never be built for an arbitrary path on the machine.
+        """
+        project_path = validate_project_path(self.scanner, project_path)
         with self._lock:
             if project_path in self._runtimes:
                 self._access_order.remove(project_path)

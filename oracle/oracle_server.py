@@ -193,10 +193,32 @@ def api_config_get():
     return jsonify(cfg)
 
 
+# Keys that POST /api/config may set. Derived from config DEFAULTS so the
+# allowlist tracks the schema; anything outside this set is rejected. Notably
+# excludes nothing sensitive by accident — but the gate below still requires the
+# Bearer token, so even allowlisted keys can't be flipped by an unauthenticated
+# local process (e.g. POST {"api_require_auth": false} to strip Discovery auth).
+from oracle.config import DEFAULTS as _CONFIG_DEFAULTS  # noqa: E402
+
+_CONFIG_SETTABLE_KEYS = frozenset(_CONFIG_DEFAULTS.keys())
+
+
 @app.route("/api/config", methods=["POST"])
 def api_config_set():
     global _cfg
+    # Require the Bearer token: this endpoint can disable Discovery auth or
+    # repoint ollama_base_url, so it must never be reachable unauthenticated.
+    token = extract_bearer(request.headers.get("Authorization"))
+    if not verify_api_key(token):
+        return jsonify({"error": "unauthorized"}), 401
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
+    # Reject unknown keys rather than blindly cfg.update(body) — an attacker
+    # could otherwise smuggle arbitrary keys into the persisted config.
+    unknown = sorted(k for k in body if k not in _CONFIG_SETTABLE_KEYS)
+    if unknown:
+        return jsonify({"error": "unknown config keys", "keys": unknown}), 400
     cfg = load_config()
     cfg.update(body)
     save_config(cfg)
@@ -515,7 +537,7 @@ def api_chat():
     """Streaming chat with Oracle via SSE."""
     if not _chat_engine:
         return jsonify({"error": "not initialized"}), 500
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     message = data.get("message", "").strip()
     conv_id = data.get("conversation_id") or None
     if not message:
@@ -549,7 +571,7 @@ def api_chat_conversations_list():
 def api_chat_conversations_create():
     if not _chat_store:
         return jsonify({"error": "not initialized"}), 500
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     title = data.get("title")
     conv_id = _chat_store.create_conversation(title)
     return jsonify({"id": conv_id}), 201
@@ -575,7 +597,7 @@ def api_chat_conversation_delete(conv_id):
 def api_chat_conversation_title(conv_id):
     if not _chat_store:
         return jsonify({"error": "not initialized"}), 500
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     title = data.get("title", "").strip()
     if not title:
         return jsonify({"error": "No title provided"}), 400
@@ -596,7 +618,7 @@ def api_chat_command():
     """Execute a slash command."""
     if not _chat_engine:
         return jsonify({"error": "not initialized"}), 500
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     conv_id = data.get("conversation_id")
     command = data.get("command", "").strip()
     if not command:
@@ -719,8 +741,15 @@ def api_discovery_mcp_info():
 
 
 # ── Discovery API key management (local dashboard — unauthenticated, loopback) ──
-def _apikey_status() -> dict:
-    """Status payload for the Discovery API token + connection info."""
+def _apikey_status(reveal: bool = False) -> dict:
+    """Status payload for the Discovery API token + connection info.
+
+    ``reveal`` controls whether the unmasked token is included. It is False for
+    plain ``GET /api/apikey`` status reads (the raw key must never be returned
+    over HTTP unauthenticated) and only True when the caller either presents a
+    valid Bearer token or just created the key via an explicit generate/rotate
+    POST. When False, ``key`` is empty and the snippet carries a placeholder.
+    """
     key = api_auth.peek()
     host = _cfg.get("bind_host", "127.0.0.1")
     port = int(_cfg.get("mcp_port", 3332))
@@ -729,18 +758,19 @@ def _apikey_status() -> dict:
     masked = ""
     if key:
         masked = (key[:4] + "…" + key[-4:]) if len(key) > 12 else "••••"
+    snippet_token = key if (key and reveal) else "<token>"
     snippet = {
         "mcpServers": {
             "c3-oracle": {
                 "type": "http",
                 "url": url,
-                "headers": {"Authorization": f"Bearer {key or '<token>'}"},
+                "headers": {"Authorization": f"Bearer {snippet_token}"},
             }
         }
     }
     return {
         "exists": bool(key),
-        "key": key or "",
+        "key": (key or "") if reveal else "",
         "masked": masked,
         "require_auth": bool(_cfg.get("api_require_auth", True)),
         "api_enabled": bool(_cfg.get("api_enabled", True)),
@@ -754,29 +784,39 @@ def _apikey_status() -> dict:
 
 @app.route("/api/apikey", methods=["GET"])
 def api_apikey_get():
-    """Return the Discovery API token (if any) + connection info."""
+    """Return Discovery API token status + connection info.
+
+    The unmasked token is only included when the caller presents a valid Bearer
+    token; otherwise only the masked form is returned (never the raw key over
+    HTTP unauthenticated).
+    """
     try:
-        return jsonify(_apikey_status())
+        reveal = verify_api_key(extract_bearer(request.headers.get("Authorization")))
+        return jsonify(_apikey_status(reveal=reveal))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/apikey/generate", methods=["POST"])
 def api_apikey_generate():
-    """Create a token if none exists; returns the current status."""
+    """Create a token if none exists; returns the current status.
+
+    Reveals the key in the response: this is an explicit local creation action,
+    so the dashboard can show/copy the just-created token once.
+    """
     try:
         api_auth.get_or_create_key()
-        return jsonify(_apikey_status())
+        return jsonify(_apikey_status(reveal=True))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/apikey/rotate", methods=["POST"])
 def api_apikey_rotate():
-    """Replace the token with a fresh one."""
+    """Replace the token with a fresh one (revealed once for copy)."""
     try:
         api_auth.rotate()
-        return jsonify(_apikey_status())
+        return jsonify(_apikey_status(reveal=True))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -10,6 +10,7 @@ EditLedgerEnricherAgent running in the MCP server background.
 
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,7 +26,7 @@ EDITABLE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
     ".rb", ".c", ".cpp", ".h", ".cs", ".html", ".css",
     ".json", ".yaml", ".yml", ".toml", ".sql", ".md", ".txt",
-    ".sh", ".bat", ".ps1", ".r",
+    ".sh", ".bat", ".ps1", ".r", ".ipynb",
 }
 
 # How many tail lines to scan for version/seq (avoids full-file parse)
@@ -95,8 +96,11 @@ def _next_seq(ledger_file: Path, now: datetime) -> int:
             continue
         eid = entry.get("id", "")
         if eid.startswith(prefix):
+            # ids may carry a random suffix ("..._001_a1b2"); take the leading
+            # numeric run after the prefix so same-second seq counting survives.
+            seq_part = eid[len(prefix):].split("_", 1)[0]
             try:
-                max_seq = max(max_seq, int(eid[len(prefix):]))
+                max_seq = max(max_seq, int(seq_part))
             except ValueError:
                 pass
     return max_seq + 1
@@ -172,7 +176,9 @@ def main():
         git_pending = tracking_level != "minimal"
 
         entry = {
-            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}",
+            # Random suffix prevents id collisions when the hook process and the
+            # server process (services/edit_ledger.py) write within the same second.
+            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}_{uuid.uuid4().hex[:4]}",
             "timestamp": now.isoformat(),
             "session_id": "",
             "file": rel,

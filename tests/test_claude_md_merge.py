@@ -72,6 +72,45 @@ class TestMergeC3Block(unittest.TestCase):
         # User content stays above the appended C3 block.
         self.assertLess(merged.index("Our House Rules"), merged.index(C3_BLOCK_BEGIN))
 
+    def test_out_of_order_markers_do_not_corrupt(self):
+        # END appears BEFORE BEGIN (corrupt/hand-mangled file). The surgical
+        # slice would overlap, so we must NOT do the in-place replace; instead
+        # fall through and append a single clean block.
+        corrupt = (
+            "# My header\nkeep me\n\n"
+            + C3_BLOCK_END + "\nstray\n" + C3_BLOCK_BEGIN + "\nold body\n"
+        )
+        merged = merge_c3_block(corrupt, wrap_c3_block("NEW C3 BODY"))
+        self.assertIn("# My header", merged)
+        self.assertIn("keep me", merged)
+        self.assertIn("NEW C3 BODY", merged)
+        # A valid, well-ordered block now exists.
+        self.assertLess(merged.index(C3_BLOCK_BEGIN), merged.rindex(C3_BLOCK_END))
+
+    def test_duplicate_blocks_collapse_to_one(self):
+        # Two marked regions (e.g. from an old buggy run) collapse to a single
+        # block: first BEGIN .. last END is replaced wholesale.
+        existing = (
+            wrap_c3_block("FIRST OLD") + "\n\nmiddle user text\n\n"
+            + wrap_c3_block("SECOND OLD")
+        )
+        merged = merge_c3_block(existing, wrap_c3_block("NEW C3 BODY"))
+        self.assertEqual(merged.count(C3_BLOCK_BEGIN), 1)
+        self.assertEqual(merged.count(C3_BLOCK_END), 1)
+        self.assertIn("NEW C3 BODY", merged)
+        self.assertNotIn("FIRST OLD", merged)
+        self.assertNotIn("SECOND OLD", merged)
+
+    def test_user_file_opening_with_short_c3_tools_heading_preserved(self):
+        # A genuine user file that merely opens with "## C3 Tools" (NOT the full
+        # legacy "## C3 Tools — MANDATORY" signature) must be preserved, not
+        # wholesale-replaced as a legacy doc.
+        user_file = "## C3 Tools I Like\nMy own notes about tooling.\n"
+        merged = merge_c3_block(user_file, wrap_c3_block(C3_CONTENT))
+        self.assertIn("## C3 Tools I Like", merged)
+        self.assertIn("My own notes about tooling.", merged)
+        self.assertIn(C3_BLOCK_BEGIN, merged)
+
 
 class TestWriteC3InstructionDoc(unittest.TestCase):
     def setUp(self):

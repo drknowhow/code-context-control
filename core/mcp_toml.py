@@ -14,13 +14,32 @@ import re
 from pathlib import Path
 
 
+def _strip_toml_comment(raw: str) -> str:
+    """Strip a trailing ``#`` comment, but only when the ``#`` is outside a
+    quoted string.
+
+    A naive ``raw.split("#", 1)[0]`` truncates values that legitimately contain
+    ``#`` inside quotes (e.g. a Windows path like ``"C:/tools/c#/run.exe"``).
+    """
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(raw):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return raw[:i]
+    return raw
+
+
 def parse_toml_mcp_servers(content: str) -> dict:
     """Parse ``[mcp_servers.<name>]`` sections from TOML content into a dict."""
     servers: dict = {}
     current_server = None
 
     for raw in content.splitlines():
-        line = raw.split("#", 1)[0].strip()
+        line = _strip_toml_comment(raw).strip()
         if not line:
             continue
 
@@ -67,6 +86,11 @@ def upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
     content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
     header = f"[{section}]"
 
+    # When skipping the target section, also skip any of its dotted child
+    # subtables (e.g. ``[mcp_servers.c3.env]`` under ``[mcp_servers.c3]``).
+    # Otherwise a child table is left orphaned beneath the freshly re-appended
+    # section, corrupting the file on re-run.
+    child_prefix = f"{header[:-1]}."  # "[mcp_servers.c3]" -> "[mcp_servers.c3."
     lines = content.splitlines()
     new_lines = []
     skip = False
@@ -76,7 +100,10 @@ def upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
             skip = True
             continue
         if skip and stripped.startswith("["):
-            skip = False
+            # A following section header ends the skip — unless it is a dotted
+            # child of the target section, which we also drop.
+            if not stripped.startswith(child_prefix):
+                skip = False
         if not skip:
             new_lines.append(line)
 

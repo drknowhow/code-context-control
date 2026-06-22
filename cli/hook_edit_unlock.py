@@ -14,7 +14,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cli._hook_utils import emit_additional_context, log_hook_error  # noqa: E402
+from cli._hook_utils import (  # noqa: E402
+    emit_additional_context,
+    log_hook_error,
+    record_json_unlocks,
+)
 
 EDITABLE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
@@ -143,6 +147,10 @@ def main():
             )
         except Exception:
             pass
+
+        # Fix 2: also write the .json unlock map — the .txt list above is read
+        # by NO hook; hook_pretool_enforce.py only consults unlocked_files.json.
+        record_json_unlocks(editable)
 
         # Emit batched nudge with all pending files
         # Prefer c3_edit (no unlock needed). Native Edit is also unlocked via sticky file set.

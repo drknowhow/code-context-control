@@ -235,6 +235,18 @@ def _extract_docstring_js(node, lines: List[str]) -> Optional[str]:
         prev = prev.prev_sibling
     return None
 
+class _SyntheticParent:
+    """Lightweight stand-in node whose only role is to expose a single child.
+
+    Used so an exported declaration node can be re-fed through _walk_js_ts's
+    child-iteration loop and recorded as a section (rather than descended into).
+    """
+    __slots__ = ("children",)
+
+    def __init__(self, child):
+        self.children = [child]
+
+
 def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_section=None):
     for child in node.children:
         if child.type in ('class_declaration', 'abstract_class_declaration', 'interface_declaration', 'type_alias_declaration', 'enum_declaration'):
@@ -365,10 +377,12 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
                 sections.append(section)
 
         elif child.type == 'export_statement':
-            # Drill down
+            # Process the exported declaration node itself (not its children).
+            # Recursing into decl.children would descend INTO the declaration and
+            # skip recording the exported class/function/const as a section.
             decl = next((c for c in child.children if c.type != 'export' and c.type != 'default'), None)
             if decl:
-                _walk_js_ts(decl, lines, sections, parent_section)
+                _walk_js_ts(_SyntheticParent(decl), lines, sections, parent_section)
 
 def _walk_html(node, lines: List[str], sections: List[Dict[str, Any]]):
     """Extract headings and elements with IDs from HTML AST."""
@@ -710,13 +724,25 @@ def _subproc_check(cmd: List[str], content: str, suffix: str, checker: str, time
         if _sys.platform == "win32":
             kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
 
-        r = _subprocess.run(cmd + [tmp], stdin=_subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, **kwargs)
+        # Popen + _kill_proc_tree on timeout: subprocess.run's timeout only kills
+        # the direct child, leaving any grandchild processes (e.g. Rscript -> R)
+        # running. encoding/errors avoid UnicodeDecodeError on non-UTF-8 output.
+        proc = _subprocess.Popen(
+            cmd + [tmp], stdin=_subprocess.DEVNULL,
+            stdout=_subprocess.PIPE, stderr=_subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", **kwargs,
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except _subprocess.TimeoutExpired:
+            _kill_proc_tree(proc)
+            return _result("checker_timeout", checker, detail=f"{cmd[0]} exceeded {timeout}s.")
         return {
             "status": "ok",
             "checker": checker,
-            "returncode": r.returncode,
-            "stdout": r.stdout[:65536],
-            "stderr": r.stderr[:65536],
+            "returncode": proc.returncode,
+            "stdout": (out or "")[:65536],
+            "stderr": (err or "")[:65536],
         }
     except FileNotFoundError:
         return _result("checker_unavailable", checker, detail=f"{cmd[0]} is not installed or not on PATH.")

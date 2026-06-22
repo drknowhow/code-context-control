@@ -377,7 +377,11 @@ class CodeCompressor:
                         decl = decl[:-1].strip()
 
                     if stype == "class":
-                        extracted.append(f"\n{prefix}class {name}:")
+                        # Use the language-appropriate declaration (preserves
+                        # extends/implements/generics/visibility for JS/TS/Java/
+                        # Go/Rust). Fall back to Python-style only when empty.
+                        class_decl = decl if decl else f"class {name}:"
+                        extracted.append(f"\n{prefix}{class_decl}")
                     else:
                         extracted.append(f"{prefix}{decl}")
 

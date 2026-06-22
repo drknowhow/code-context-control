@@ -74,9 +74,46 @@ def get_tool_output(data: dict) -> tuple:
 
 
 def get_tool_input_path(data: dict) -> str:
-    """Extract file path from tool_input, handling both Claude (file_path) and Gemini (path)."""
+    """Extract file path from tool_input, handling Claude (file_path),
+    Gemini (path), and NotebookEdit (notebook_path)."""
     tool_input = data.get("tool_input", {})
-    return tool_input.get("file_path", "") or tool_input.get("path", "")
+    return (
+        tool_input.get("file_path", "")
+        or tool_input.get("path", "")
+        or tool_input.get("notebook_path", "")
+    )
+
+
+def record_json_unlocks(editable: list, project_path: Path | None = None) -> None:
+    """Record file paths as read+edit unlocked in .c3/unlocked_files.json.
+
+    This is the map that hook_pretool_enforce.py actually reads (the plain
+    .txt unlock list is not consumed by any hook). Mirrors the behaviour of
+    cli/hook_c3read._record_json_unlocks so c3_compress/c3_agent sticky
+    unlocks reach the enforcer. Fails silently on I/O errors.
+    """
+    base = project_path if project_path is not None else Path.cwd()
+    json_path = base / ".c3" / "unlocked_files.json"
+    try:
+        existing: dict = {}
+        if json_path.exists():
+            try:
+                existing = json.loads(json_path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            except Exception:
+                existing = {}
+        for fp in editable:
+            if not fp:
+                continue
+            normalized = str(Path(fp).resolve())
+            cats = set(existing.get(normalized, []))
+            cats.update({"read", "edit"})
+            existing[normalized] = sorted(cats)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(existing), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def emit_additional_context(text: str, is_gemini: bool) -> None:

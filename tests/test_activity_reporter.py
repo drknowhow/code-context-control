@@ -125,6 +125,21 @@ class TestActivityReporter(unittest.TestCase):
         d = self.reporter.report(date=today)
         self.assertIn("today", d["window"]["label"])
 
+    def test_not_truncated_under_cap(self):
+        d = self.reporter.report(date=self.DAY)
+        self.assertFalse(d["truncated"])
+        self.assertFalse(d["projects"][0]["truncated"])
+
+    def test_truncated_flag_when_activity_cap_hit(self):
+        # Drop the activity-log cap below the row count so the scan caps out.
+        from unittest import mock
+
+        from oracle.services import activity_reporter as ar
+        with mock.patch.object(ar, "_CAP_ACTIVITY", 3):
+            d = self.reporter.report(date=self.DAY)
+        self.assertTrue(d["truncated"])
+        self.assertTrue(d["projects"][0]["truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()

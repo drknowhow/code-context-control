@@ -9,6 +9,7 @@ Storage: .c3/file_memory/ directory, one JSON file per source file.
 import hashlib
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -44,7 +45,16 @@ class FileMemoryStore:
         self._diag_path = self.store_dir / "_diagnostics.jsonl"
         self._map_cache = {}
         self._search_index = TextIndex()
-        self._rebuild_search_index()
+        # Building the search index reads every tracked record off disk — for a
+        # large project that is tens of thousands of files (~2x that many reads
+        # via list_tracked + get), far too heavy for the constructor, which sits
+        # on the MCP handshake path. Defer it: built lazily on first search(),
+        # mirroring ConversationStore._ensure_search_index.
+        self._search_dirty = True
+        # Guards the lazy index: the first search() build can race a background
+        # update()'s add_or_update on the shared TextIndex. Reentrant so
+        # search() may hold it across _ensure_search_index() + the query.
+        self._search_lock = threading.RLock()
 
     def get(self, rel_path: str) -> Optional[dict]:
         """Load a file's memory record, or None if not tracked."""
@@ -93,7 +103,9 @@ class FileMemoryStore:
                     existing["summary"] = ai_summary
                     existing["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                     self._save(rel_path, existing)
-                self._search_index.add_or_update(rel_path, self._search_doc(existing))
+                with self._search_lock:
+                    if not self._search_dirty:
+                        self._search_index.add_or_update(rel_path, self._search_doc(existing))
                 self._cache_map(rel_path, existing)
                 return existing
             # If we are here, we are forcing a fresh extraction
@@ -115,7 +127,9 @@ class FileMemoryStore:
 
         self._save(rel_path, record)
         self._cache_map(rel_path, record)
-        self._search_index.add_or_update(rel_path, self._search_doc(record))
+        with self._search_lock:
+            if not self._search_dirty:
+                self._search_index.add_or_update(rel_path, self._search_doc(record))
         return record
 
     def get_map(self, rel_path: str) -> Optional[str]:
@@ -262,8 +276,11 @@ class FileMemoryStore:
         return [p for p in tracked if p]
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
+        with self._search_lock:
+            self._ensure_search_index()
+            ranked = self._search_index.search(query, top_k=top_k)
         results = []
-        for rel_path, score in self._search_index.search(query, top_k=top_k):
+        for rel_path, score in ranked:
             record = self.get(rel_path)
             if not record:
                 continue
@@ -365,6 +382,18 @@ class FileMemoryStore:
                 fields.append(child.get("name", ""))
                 fields.append(child.get("type", ""))
         return " ".join(str(field) for field in fields if field)
+
+    def _ensure_search_index(self):
+        """Build the search index on first use (deferred off __init__).
+
+        The build reads every tracked record from disk, so it must never run on
+        the constructor / MCP handshake path. Mirrors ConversationStore.
+        """
+        with self._search_lock:
+            if not self._search_dirty:
+                return
+            self._rebuild_search_index()
+            self._search_dirty = False
 
     def _rebuild_search_index(self):
         docs = {}
@@ -519,12 +548,53 @@ class FileMemoryStore:
         return len(lines)
 
     def _find_brace_block_end(self, lines: list, start: int) -> int:
-        """Find end of a brace-delimited block."""
+        """Find end of a brace-delimited block.
+
+        Counts braces only in *code*, skipping any ``{`` / ``}`` that appear
+        inside string/char/template literals or line/block comments. Without
+        this, a brace inside a string (e.g. ``log("}")``) before the real close
+        would prematurely zero the depth and truncate the block's line range.
+        """
         depth = 0
         found_open = False
+        # Cross-line state: which delimiter we're inside, and whether we're in a
+        # block comment. Strings (", ', `) honor backslash escapes; block
+        # comments and backtick (template/raw) strings span lines.
+        in_string = None        # the active quote char, or None
+        in_block_comment = False
         for i in range(start, len(lines)):
             line = lines[i]
-            for ch in line:
+            j = 0
+            n = len(line)
+            while j < n:
+                ch = line[j]
+                if in_block_comment:
+                    if ch == '*' and j + 1 < n and line[j + 1] == '/':
+                        in_block_comment = False
+                        j += 2
+                        continue
+                    j += 1
+                    continue
+                if in_string is not None:
+                    if ch == '\\' and in_string != '`':
+                        # Escaped char inside a normal string/char literal.
+                        j += 2
+                        continue
+                    if ch == in_string:
+                        in_string = None
+                    j += 1
+                    continue
+                # Not in a string or block comment — look for openers.
+                if ch == '/' and j + 1 < n and line[j + 1] == '/':
+                    break  # rest of the line is a line comment
+                if ch == '/' and j + 1 < n and line[j + 1] == '*':
+                    in_block_comment = True
+                    j += 2
+                    continue
+                if ch in ('"', "'", '`'):
+                    in_string = ch
+                    j += 1
+                    continue
                 if ch == '{':
                     depth += 1
                     found_open = True
@@ -532,6 +602,7 @@ class FileMemoryStore:
                     depth -= 1
                     if found_open and depth == 0:
                         return i + 1  # 1-indexed
+                j += 1
         return len(lines)
 
     def _normalize_type(self, kind: str) -> str:

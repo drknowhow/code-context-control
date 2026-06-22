@@ -179,5 +179,126 @@ class TestHandleEditIntegration(unittest.TestCase):
                          "a = 'ONE'\nb = \"TWO\"\n")
 
 
+class TestNewlinePreservation(unittest.TestCase):
+    """Regression: on Windows, read_text()+write_text() round-trips line
+    endings through os.linesep, rewriting an entire LF-only file to CRLF
+    after a one-line edit. The fix detects + preserves the original EOL."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.svc = _make_svc(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_bytes(self, rel: str, data: bytes) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+    def test_single_edit_preserves_lf(self):
+        self._write_bytes("lf.txt", b"a\nb\nc\n")
+        handle_edit(
+            "lf.txt", "b", "B",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+        )
+        self.assertEqual((self.root / "lf.txt").read_bytes(), b"a\nB\nc\n")
+
+    def test_single_edit_preserves_crlf(self):
+        self._write_bytes("crlf.txt", b"a\r\nb\r\nc\r\n")
+        handle_edit(
+            "crlf.txt", "b", "B",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+        )
+        self.assertEqual((self.root / "crlf.txt").read_bytes(), b"a\r\nB\r\nc\r\n")
+
+    def test_batch_edit_preserves_lf(self):
+        self._write_bytes("lf2.txt", b"a\nb\nc\n")
+        handle_edit(
+            "lf2.txt", "", "",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+            edits='[{"old_string":"a","new_string":"A"},'
+                  '{"old_string":"c","new_string":"C"}]',
+        )
+        self.assertEqual((self.root / "lf2.txt").read_bytes(), b"A\nb\nC\n")
+
+    def test_batch_edit_preserves_crlf(self):
+        self._write_bytes("crlf2.txt", b"a\r\nb\r\nc\r\n")
+        handle_edit(
+            "crlf2.txt", "", "",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+            edits='[{"old_string":"a","new_string":"A"}]',
+        )
+        self.assertEqual((self.root / "crlf2.txt").read_bytes(), b"A\r\nb\r\nc\r\n")
+
+
+class TestBatchNoOp(unittest.TestCase):
+    """Regression: batch mode wrote the file + logged a ledger entry even
+    when zero patches applied (all NOT FOUND/AMBIGUOUS). Fix: only write +
+    log when at least one patch actually modified the content."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.svc = _make_svc(self.root)
+        # Real-ish ledger spy so we can assert it is NOT called.
+        self.svc.edit_ledger = MagicMock()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_bytes(self, rel: str, data: bytes) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+    def test_no_op_batch_does_not_rewrite_or_log(self):
+        self._write_bytes("x.txt", b"a\nb\nc\n")
+        before_mtime = (self.root / "x.txt").stat().st_mtime_ns
+        resp = handle_edit(
+            "x.txt", "", "",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+            edits='[{"old_string":"nope","new_string":"X"}]',
+        )
+        self.assertIn("0/1 patches applied", resp)
+        # File untouched (bytes + mtime unchanged).
+        self.assertEqual((self.root / "x.txt").read_bytes(), b"a\nb\nc\n")
+        self.assertEqual((self.root / "x.txt").stat().st_mtime_ns, before_mtime)
+        # No ledger entry recorded for a no-op batch.
+        self.svc.edit_ledger.log_edit.assert_not_called()
+
+    def test_partial_batch_writes_and_logs(self):
+        self._write_bytes("y.txt", b"a\nb\nc\n")
+        resp = handle_edit(
+            "y.txt", "", "",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+            edits='[{"old_string":"a","new_string":"A"},'
+                  '{"old_string":"nope","new_string":"X"}]',
+        )
+        self.assertIn("1/2 patches applied", resp)
+        self.assertEqual((self.root / "y.txt").read_bytes(), b"A\nb\nc\n")
+
+    def test_non_dict_element_rejected(self):
+        self._write_bytes("z.txt", b"a\nb\nc\n")
+        resp = handle_edit(
+            "z.txt", "", "",
+            summary="", tags="", replace_all=False,
+            svc=self.svc, finalize=_finalize,
+            edits='["not-a-dict"]',
+        )
+        self.assertIn("non-object element", resp)
+        # File untouched.
+        self.assertEqual((self.root / "z.txt").read_bytes(), b"a\nb\nc\n")
+
+
 if __name__ == "__main__":
     unittest.main()

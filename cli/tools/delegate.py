@@ -40,6 +40,7 @@ def _kill_proc_tree(proc):
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True, stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             proc.kill()
@@ -51,8 +52,10 @@ def _kill_proc_tree(proc):
 def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15):
     """communicate() replacement with idle-activity watchdog.
 
-    Monitors stderr for activity. If no stderr output for idle_timeout seconds,
-    kills the process early (catches MCP startup hangs). Also enforces total timeout.
+    Monitors both stdout and stderr for activity. If neither stream produces
+    output for idle_timeout seconds, kills the process early (catches MCP startup
+    hangs) without killing a backend that streams its answer only on stdout.
+    Also enforces total timeout.
 
     Returns (stdout, stderr, status) where status is 'ok', 'timeout', or 'idle_timeout'.
     """
@@ -71,7 +74,7 @@ def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15):
         except (ValueError, OSError):
             pass
 
-    t_out = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_parts), daemon=True)
+    t_out = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_parts, True), daemon=True)
     t_err = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_parts, True), daemon=True)
     t_out.start()
     t_err.start()
@@ -218,10 +221,17 @@ def _run_claude(task: str, context: str, cwd: str | None = None,
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            text=True, cwd=cwd,
+            text=True, encoding="utf-8", errors="replace", cwd=cwd,
             **_popen_kwargs(),
         )
-        output, err = _communicate_with_heartbeat(proc, timeout=timeout, idle_timeout=idle_timeout)
+        output, err, status = _communicate_with_heartbeat(
+            proc, timeout=timeout, idle_timeout=idle_timeout,
+        )
+        if status == "idle_timeout":
+            return (f"[claude:idle_timeout] No stderr activity for {idle_timeout}s "
+                    f"(likely MCP startup hang)"), False
+        if status == "timeout":
+            return f"[claude:timeout] No response after {timeout}s", False
         if proc.returncode == 0 and output.strip():
             return output.strip(), True
         return f"[claude:error] {(err or '').strip() or 'no output'}", False
@@ -307,7 +317,7 @@ def _start_gemini_early(model: str, timeout: int = 45, idle_timeout: int = 15,
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=cwd,
             **_popen_kwargs(),
         )
@@ -344,7 +354,7 @@ def _finish_gemini_early(proc, task: str, context: str,
         except (ValueError, OSError):
             pass
 
-    t_out = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_parts), daemon=True)
+    t_out = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_parts, True), daemon=True)
     t_err = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_parts, True), daemon=True)
     t_out.start()
     t_err.start()
@@ -448,7 +458,7 @@ def _run_gemini(task: str, context: str, model: str,
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=cwd,
             **_popen_kwargs(),
         )
@@ -563,7 +573,7 @@ def _run_codex(task: str, context: str, model: str, sandbox: str,
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=cwd,
             **_popen_kwargs(),
         )
@@ -592,25 +602,18 @@ def _run_codex_resume(follow_up: str, timeout: int = 120,
     """Resume last Codex session with a follow-up prompt."""
     cmd = ["codex", "exec", "--skip-git-repo-check", "resume", "--last"]
     try:
-        import sys
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=cwd,
+            **_popen_kwargs(),
         )
         try:
             stdout, stderr = proc.communicate(input=follow_up, timeout=timeout)
         except subprocess.TimeoutExpired:
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    capture_output=True, stdin=subprocess.DEVNULL,
-                )
-            else:
-                proc.kill()
-            proc.wait(timeout=5)
+            _kill_proc_tree(proc)
             return f"[codex:timeout] Resume timed out after {timeout}s", False
 
         if proc.returncode != 0:
@@ -1166,7 +1169,10 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                 model=fallback, system=tdef["system"],
                 temperature=tdef.get("temperature", 0.3),
                 max_tokens=int(dcfg.get("max_tokens", 512) or 512),
-            )
+                timeout=timeout_s)
+            if retry_resp is None:
+                # Timeout/failure on the fallback — not a valid empty answer.
+                continue
             retry_conf = _estimate_confidence(task_type, retry_resp, count_tokens(retry_resp))
             if retry_conf != "low":
                 resp = retry_resp
