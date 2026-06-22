@@ -25,6 +25,37 @@ def _get_file_lock(path: Path) -> threading.Lock:
         return _file_locks[key]
 
 
+def _read_preserving_newlines(path: Path) -> tuple[str, str]:
+    """Read a file's text and detect its dominant newline style.
+
+    Returns (content, newline) where `content` has all line endings
+    normalized to ``\n`` (so existing replace logic is unchanged) and
+    `newline` is the EOL to write back: ``\r\n`` if CRLF dominates the
+    file, otherwise ``\n``. This avoids Python's text-mode write rewriting
+    every line to ``os.linesep`` on Windows.
+    """
+    raw = path.read_bytes()
+    crlf = raw.count(b"\r\n")
+    lf_only = raw.count(b"\n") - crlf
+    newline = "\r\n" if crlf > lf_only else "\n"
+    content = raw.decode("utf-8")
+    # Normalize to \n internally so replacement matching is EOL-agnostic.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    return content, newline
+
+
+def _write_preserving_newlines(path: Path, content: str, newline: str) -> None:
+    """Write `content` (which uses ``\n``) back using the original EOL style.
+
+    Uses ``newline=""`` so Python performs no translation; we emit the
+    detected EOL explicitly so an LF-only file stays LF-only on Windows.
+    """
+    if newline != "\n":
+        content = content.replace("\n", newline)
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+
+
 # Unicode lookalike substitutions used as a fallback when the literal
 # old_string is not found. Strictly 1:1 (same-length) substitutions so
 # positions are preserved — we locate the match on the normalized string
@@ -131,7 +162,10 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(new_string, encoding="utf-8")
+            # newline="" → write content exactly as given; no os.linesep
+            # translation, so the caller's line endings are preserved verbatim.
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(new_string)
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Create error: {e}", "create error")
@@ -161,15 +195,22 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             return finalize("c3_edit", {"file": file_path},
                             "edits must be a non-empty JSON list", "bad edits param")
 
+        if not all(isinstance(p, dict) for p in edit_list):
+            return finalize("c3_edit", {"file": file_path},
+                            "edits must be a JSON list of objects "
+                            "({old_string, new_string, ...}); a non-object element was found",
+                            "bad edits param")
+
         with file_lock:
             try:
-                content = path.read_text(encoding="utf-8")
+                content, _newline = _read_preserving_newlines(path)
             except Exception as e:
                 return finalize("c3_edit", {"file": file_path},
                                 f"Read error: {e}", "read error")
 
             results = []
             any_normalized = False
+            any_applied = False
             for i, patch in enumerate(edit_list):
                 old = patch.get("old_string", "")
                 new = patch.get("new_string", "")
@@ -190,6 +231,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                     continue
 
                 content = new_content
+                any_applied = True
                 n = count if r_all else 1
                 if used_fallback:
                     any_normalized = True
@@ -202,22 +244,27 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                                 + (" [norm]" if used_fallback else "")
                                 + f" | {desc}")
 
-            try:
-                path.write_text(content, encoding="utf-8")
-            except Exception as e:
-                return finalize("c3_edit", {"file": file_path},
-                                f"Write error: {e}", "write error")
+            # Only touch the file when at least one patch actually changed it —
+            # avoids rewriting (and re-EOL-normalizing) an unchanged file and
+            # logging a phantom ledger entry when every patch missed.
+            if any_applied:
+                try:
+                    _write_preserving_newlines(path, content, _newline)
+                except Exception as e:
+                    return finalize("c3_edit", {"file": file_path},
+                                    f"Write error: {e}", "write error")
 
         # Log batch to ledger as one entry (store each patch's old/new for diff view)
-        batch_detail = {"patches": [
-            {
-                "old_string": p.get("old_string", "")[:_DETAIL_CAP],
-                "new_string": p.get("new_string", "")[:_DETAIL_CAP],
-                **({"summary": p["summary"]} if p.get("summary") else {}),
-            }
-            for p in edit_list if p.get("old_string") is not None
-        ]}
-        _log_to_ledger(rel, summary or f"Batch edit: {len(edit_list)} patches", tag_list, svc, detail=batch_detail)
+        if any_applied:
+            batch_detail = {"patches": [
+                {
+                    "old_string": p.get("old_string", "")[:_DETAIL_CAP],
+                    "new_string": p.get("new_string", "")[:_DETAIL_CAP],
+                    **({"summary": p["summary"]} if p.get("summary") else {}),
+                }
+                for p in edit_list if p.get("old_string") is not None
+            ]}
+            _log_to_ledger(rel, summary or f"Batch edit: {len(edit_list)} patches", tag_list, svc, detail=batch_detail)
 
         applied = sum(1 for r in results if "NOT FOUND" not in r and "AMBIGUOUS" not in r and "skipped" not in r)
         norm_tag = " [unicode-normalized]" if any_normalized else ""
@@ -234,7 +281,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
 
     with file_lock:
         try:
-            content = path.read_text(encoding="utf-8")
+            content, _newline = _read_preserving_newlines(path)
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Read error: {e}", "read error")
@@ -260,7 +307,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
         occurrences = count if replace_all else 1
 
         try:
-            path.write_text(new_content, encoding="utf-8")
+            _write_preserving_newlines(path, new_content, _newline)
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Write error: {e}", "write error")

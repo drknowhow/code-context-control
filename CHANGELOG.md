@@ -6,6 +6,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.39.0] - 2026-06-22
+
+A correctness & security hardening release. A multi-agent audit of C3 surfaced a
+hook-enforcement bypass, several edit-ledger / session-store data-loss races, Windows
+line-ending and subprocess bugs across the c3 tools, installer config-merge data-loss
+risks, and three Oracle security gaps. All are fixed here.
+
+### Security
+
+- **Oracle `POST /api/config` was unauthenticated.** Any local process could
+  `POST {"api_require_auth": false}` to strip authentication off the entire Discovery
+  API, or repoint `ollama_base_url` to exfiltrate prompts. The endpoint now requires the
+  Bearer token and rejects unknown config keys (allowlisted from `DEFAULTS`).
+- **Oracle `GET /api/apikey` leaked the raw token.** It returned the plaintext Bearer
+  token with no auth; it now returns a masked form unless a valid Bearer token is
+  presented (`generate`/`rotate` still reveal the new token once).
+- **Oracle Discovery `project_path` was unvalidated.** Callers could read any `.c3`
+  project on the machine by path; project paths are now validated against discovered
+  projects before any read.
+
+### Fixed
+
+- **Enforcement bypass: any read-only `c3_*` call unlocked native `Edit`/`Write`.** The
+  PreToolUse signal fast-path allowed any native tool whenever *any* fresh c3 signal
+  existed, ignoring per-tool prerequisites. Write-class tools (Edit/Write/MultiEdit) now
+  require a `c3_edit`/`c3_edits`/`c3_agent` signal; read tools are unchanged.
+- **`MultiEdit` and `NotebookEdit` bypassed enforcement and the edit ledger entirely** —
+  no PreToolUse/PostToolUse matcher was registered for them. Both are now enforced and
+  logged.
+- **`c3_edit` rewrote whole LF files as CRLF on Windows.** A one-line edit flipped every
+  line ending; edits now preserve the file's original newline style (single, batch, and
+  create modes).
+- **`c3_edit` batch mode wrote the file and logged a ledger entry even when zero patches
+  applied**, and crashed on a non-dict batch element. It now writes/logs only when a patch
+  actually changed the file, and returns a clear error for malformed batches.
+- **Edit ledger could lose writes.** `tag_edit` did a lock-free full-file rewrite that
+  clobbered concurrent appends, and `log_edit` didn't take the write lock. `tag_edit` now
+  appends a tag patch under lock, `log_edit` is locked, edit ids carry a random suffix to
+  prevent hook/server collisions within the same second, and orphaned patches are logged.
+- **`sessions.json` could be wiped on a corrupt/partial read.** The conversation store now
+  writes atomically (temp + `os.replace`) and, on a parse failure, backs up the corrupt
+  file instead of silently resetting the catalog to empty; `add_turn` index updates are
+  locked.
+- **`c3_delegate(backend="claude")` was 100% broken** (a tuple-unpacking bug failed every
+  call). Fixed; all CLI runners now also decode subprocess output as UTF-8 (cp1252 crash
+  fix) and kill the full process tree on timeout.
+- **JS/TS `export class/function/const` symbols were missing** from compression maps and
+  the file-memory index (the walker descended past the declaration). Exported symbols are
+  now indexed.
+- **`c3_compress` rendered every class with Python `class Name:` syntax** regardless of
+  language; it now uses the language-appropriate declaration.
+- **`c3_read(symbols=...)` could return truncated bodies** when a `}` appeared inside a
+  string or comment; the brace scanner now skips string/char/template literals and
+  comments.
+- **`file_memory` lazy search index had a first-search-vs-background-update race**
+  (introduced with lazy init); build/update/search are now lock-guarded.
+- **Installer config-merge data-loss risks.** `merge_c3_block` could corrupt `CLAUDE.md`
+  on out-of-order/duplicate markers; the global-`CLAUDE.md` writer could delete user
+  `#` headings placed after the managed block; and `upsert_toml_section` orphaned child
+  subtables (e.g. `[mcp_servers.c3.env]`) on re-install. All fixed; the global managed
+  region now uses explicit BEGIN/END markers.
+- **Sticky unlocks from `c3_compress`/`c3_agent` were lost** (written only to a file no
+  hook reads); they now reach the enforcer's `.json` unlock map.
+- Smaller fixes: `c3_read` negative/reversed/comma line specs and `lines=0`; `c3_validate`
+  process-tree kill + UTF-8 on Windows; empty-fact rejection in `c3_memory add`;
+  `context_snapshot` atomic writes + corrupt-latest fallback; `web_security` no longer
+  skips the host allowlist on a missing Host for mutating requests; Oracle chat/config
+  endpoints return JSON errors for bad bodies; Oracle MCP auth toggles apply without a
+  restart; the activity digest flags truncated scans; TOML `#` inside quoted values is no
+  longer stripped.
+
+### Changed
+
+- PreToolUse enforcement now distinguishes read-class from write-class c3 signals — a
+  behavior change for anyone who relied on a read-only c3 call to unlock a native write.
+
 ## [2.38.1] - 2026-06-14
 
 Startup reliability fixes for the MCP server and for the Oracle on Windows.

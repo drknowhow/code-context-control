@@ -19,20 +19,50 @@ async def _deep_type_check(full: Path, ext: str, timeout: int = 15) -> list[str]
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
         return kw
 
+    def _run_with_timeout(cmd: list[str], cwd: str | None = None):
+        """Popen + communicate(timeout); on timeout kill the whole tree.
+
+        subprocess.run(timeout=...) only kills the direct child, orphaning
+        `node` spawned by `npx tsc`. Popen + taskkill /F /T reaps the tree.
+        Returns (stdout, stderr) — empty strings on timeout/error.
+        """
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            cwd=cwd,
+            **_popen_no_window(),
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            return out or "", err or ""
+        except subprocess.TimeoutExpired:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, stdin=subprocess.DEVNULL,
+                    **_popen_no_window(),
+                )
+            else:
+                proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            return "", ""
+
     if ext == ".py":
         exe = shutil.which("pyright")
         if not exe:
             return []
         try:
-            proc = await asyncio.to_thread(
-                subprocess.run,
+            proc_out, proc_err = await asyncio.to_thread(
+                _run_with_timeout,
                 [exe, "--outputjson", str(full)],
-                capture_output=True, text=True, timeout=timeout,
-                stdin=subprocess.DEVNULL,
-                **_popen_no_window(),
             )
             try:
-                data = __import__("json").loads(proc.stdout)
+                data = __import__("json").loads(proc_out)
                 diags = data.get("generalDiagnostics", [])
                 errors = [d for d in diags if d.get("severity") == "error"]
                 warns  = [d for d in diags if d.get("severity") == "warning"]
@@ -48,11 +78,11 @@ async def _deep_type_check(full: Path, ext: str, timeout: int = 15) -> list[str]
                         warnings.append(f"  L{ln}: {d.get('message', '')[:80]}")
             except Exception:
                 # Fallback: count error lines from plain text output
-                lines = (proc.stdout + proc.stderr).splitlines()
+                lines = (proc_out + proc_err).splitlines()
                 errs = [l for l in lines if " - error:" in l or " error " in l.lower()]
                 if errs:
                     warnings.append(f"pyright: {len(errs)} issue(s) — run pyright {full.name} for details")
-        except (subprocess.TimeoutExpired, Exception):
+        except Exception:
             pass
 
     elif ext in (".ts", ".tsx"):
@@ -65,14 +95,12 @@ async def _deep_type_check(full: Path, ext: str, timeout: int = 15) -> list[str]
         if not tsc_args:
             return []
         try:
-            proc = await asyncio.to_thread(
-                subprocess.run,
+            proc_out, proc_err = await asyncio.to_thread(
+                _run_with_timeout,
                 tsc_args,
-                capture_output=True, text=True, timeout=timeout,
-                stdin=subprocess.DEVNULL, cwd=str(full.parent),
-                **_popen_no_window(),
+                str(full.parent),
             )
-            output = proc.stdout + proc.stderr
+            output = proc_out + proc_err
             # tsc output: "file.ts(10,5): error TS2304: Cannot find..."
             errs = re.findall(r"error TS\d+:", output)
             warns = re.findall(r"warning TS\d+:", output)
@@ -86,7 +114,7 @@ async def _deep_type_check(full: Path, ext: str, timeout: int = 15) -> list[str]
                 for line in output.splitlines()[:3]:
                     if "error TS" in line:
                         warnings.append(f"  {line.strip()[:100]}")
-        except (subprocess.TimeoutExpired, Exception):
+        except Exception:
             pass
 
     return warnings

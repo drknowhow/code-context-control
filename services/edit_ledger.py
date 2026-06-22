@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import threading
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,7 +91,7 @@ class EditLedger:
         self._version_cache[rel] = new_v
 
         entry = {
-            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{self._seq_counter:03d}",
+            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{self._seq_counter:03d}_{uuid.uuid4().hex[:4]}",
             "timestamp": now.isoformat(),
             "session_id": session_id or "",
             "file": rel,
@@ -104,8 +105,9 @@ class EditLedger:
         }
         if detail:
             entry["detail"] = detail
-        with open(self.ledger_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        with self._write_lock:
+            with open(self.ledger_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
         if self._total_count is not None:
             self._total_count += 1
         return entry
@@ -159,33 +161,44 @@ class EditLedger:
         return f"v{v}" if v > 0 else "v0"
 
     def tag_edit(self, edit_id: str, tag: str) -> bool:
-        """Add a tag to an existing edit. Rewrites the entry in-place."""
+        """Add a tag to an existing edit by appending a patch entry.
+
+        Append-only: rather than rewriting the whole file (which races with
+        concurrent appends from the hook process and enrich/validate), this
+        writes a ``{"target_id": id, "tags_add": [tag]}`` patch that
+        ``_load_merged`` applies. Returns True if the target edit exists.
+        """
         if not self.ledger_file.exists():
             return False
-        lines = self.ledger_file.read_text(encoding="utf-8").splitlines()
+        # Confirm the target base entry exists before appending a patch.
         found = False
-        new_lines = []
-        for line in lines:
-            if not line.strip():
-                new_lines.append(line)
-                continue
+        try:
+            for line in self.ledger_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if "target_id" not in entry and entry.get("id") == edit_id:
+                    found = True
+                    break
+        except Exception:
+            return False
+        if not found:
+            return False
+        patch = {
+            "target_id": edit_id,
+            "tags_add": [tag],
+            "tagged_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._write_lock:
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                new_lines.append(line)
-                continue
-            if entry.get("id") == edit_id:
-                tags = entry.get("tags", [])
-                if tag not in tags:
-                    tags.append(tag)
-                    entry["tags"] = tags
-                found = True
-                new_lines.append(json.dumps(entry))
-            else:
-                new_lines.append(line)
-        if found:
-            self.ledger_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return found
+                with open(self.ledger_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(patch) + "\n")
+            except Exception:
+                return False
+        return True
 
     # ── Private helpers ───────────────────────────────────────────────
 
@@ -323,9 +336,11 @@ class EditLedger:
         except Exception:
             return []
 
-        # Apply patches — each patch carries git enrichment and/or validation data
+        # Apply patches — each patch carries git enrichment, validation, and/or tags
+        orphaned: list = []
         for target_id, patch_list in patches.items():
             if target_id not in base:
+                orphaned.append(target_id)
                 continue
             for patch in patch_list:
                 if "git" in patch:
@@ -336,6 +351,22 @@ class EditLedger:
                     base[target_id]["valid"] = patch["valid"]
                     if patch.get("errors"):
                         base[target_id]["lint_errors"] = patch["errors"]
+                if patch.get("tags_add"):
+                    tags = base[target_id].get("tags") or []
+                    for t in patch["tags_add"]:
+                        if t not in tags:
+                            tags.append(t)
+                    base[target_id]["tags"] = tags
+        if orphaned:
+            # Best-effort diagnostics — never let logging break the read path.
+            try:
+                print(
+                    f"[edit_ledger] {len(orphaned)} orphaned patch target_id(s) "
+                    f"with no base entry: {orphaned[:10]}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
 
         norm_file = file_filter.replace("\\", "/") if file_filter else None
         results = []

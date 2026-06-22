@@ -102,5 +102,36 @@ class TestGuard(unittest.TestCase):
         self.assertIsNone(r.headers.get("Access-Control-Allow-Origin"))
 
 
+class _FakeRequest:
+    """Minimal stand-in exposing only what check_request reads, so we can
+    simulate a fully absent Host header (Flask's test client always injects one)."""
+
+    def __init__(self, method="POST", host="", headers=None):
+        self.method = method
+        self.host = host
+        self.headers = headers or {}
+
+
+class TestMissingHostGuard(unittest.TestCase):
+    def setUp(self):
+        self.allowed = ws.allowed_hostnames()  # loopback-only (hardened default)
+
+    def test_missing_host_mutating_request_blocked(self):
+        ok, reason = ws.check_request(_FakeRequest(method="POST", host=""), self.allowed)
+        self.assertFalse(ok)
+        self.assertIn("Host", reason)
+
+    def test_missing_host_get_still_allowed(self):
+        ok, _ = ws.check_request(_FakeRequest(method="GET", host=""), self.allowed)
+        self.assertTrue(ok)
+
+    def test_missing_host_mutating_allowed_when_not_loopback_only(self):
+        # An intentional non-loopback deployment widens the allowlist; a missing
+        # Host there is not auto-rejected (the loopback-only hardening lifts).
+        allowed = ws.allowed_hostnames(bind_host="myhost.internal")
+        ok, _ = ws.check_request(_FakeRequest(method="POST", host=""), allowed)
+        self.assertTrue(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

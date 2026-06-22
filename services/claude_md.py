@@ -81,8 +81,11 @@ C3_BLOCK_HEADING = "# C3 — Managed Instructions"
 
 # First line of every legacy (marker-less) C3 instruction doc. Used to detect
 # and replace pre-marker C3 content instead of leaving it duplicated above the
-# new block. Both the compact and nano workflows start with this heading.
-C3_LEGACY_FIRST_LINE = "## C3 Tools"
+# new block. Both the compact and nano workflows start with this exact heading,
+# so the full string (not just "## C3 Tools") is required to avoid mistaking a
+# genuine user file that merely opens with a "## C3 Tools" heading for a
+# replaceable legacy doc.
+C3_LEGACY_FIRST_LINE = "## C3 Tools — MANDATORY"
 
 
 def wrap_c3_block(content: str) -> str:
@@ -98,25 +101,37 @@ def merge_c3_block(existing: str, new_block: str) -> str:
 
     1. If the C3 markers are already present, replace only the marked region and
        preserve everything the user wrote before and after it.
-    2. Legacy (marker-less) C3 docs are recognised by their leading
-       ``## C3 Tools`` heading and replaced wholesale, while any trailing
-       ``# User Notes`` section (the pre-marker convention) is preserved.
+    2. Legacy (marker-less) C3 docs are recognised by their full leading
+       ``## C3 Tools — MANDATORY`` heading (and the absence of markers) and
+       replaced wholesale, while any trailing ``# User Notes`` section (the
+       pre-marker convention) is preserved.
     3. A genuine, user-authored file with neither markers nor the legacy
        signature is never overwritten — the C3 block is appended below it.
     """
     new_block = new_block.strip()
 
     # 1. Markers present → surgical in-place replacement.
+    #
+    #    Use the FIRST BEGIN and the LAST END so a region containing duplicated
+    #    or nested markers collapses to a single clean block. Guard against
+    #    out-of-order markers (an END that precedes the BEGIN): in that corrupt
+    #    case the slice would overlap, so fall through to the append/rewrite
+    #    paths below instead of producing garbage.
     if C3_BLOCK_BEGIN in existing and C3_BLOCK_END in existing:
         start = existing.index(C3_BLOCK_BEGIN)
-        end = existing.index(C3_BLOCK_END) + len(C3_BLOCK_END)
-        before = existing[:start].rstrip()
-        after = existing[end:].lstrip()
-        parts = [p for p in (before, new_block, after) if p]
-        return "\n\n".join(parts) + "\n"
+        end = existing.rindex(C3_BLOCK_END) + len(C3_BLOCK_END)
+        if end > start:
+            before = existing[:start].rstrip()
+            after = existing[end:].lstrip()
+            parts = [p for p in (before, new_block, after) if p]
+            return "\n\n".join(parts) + "\n"
 
     # 2. Legacy marker-less C3 doc → replace head, keep trailing user notes.
-    if existing.lstrip().startswith(C3_LEGACY_FIRST_LINE):
+    #    Require BOTH the full legacy signature AND the absence of the managed
+    #    markers, so a marker-bearing file (handled above, or one with corrupt
+    #    out-of-order markers) is never wholesale-replaced here.
+    has_markers = C3_BLOCK_BEGIN in existing or C3_BLOCK_END in existing
+    if not has_markers and existing.lstrip().startswith(C3_LEGACY_FIRST_LINE):
         tail = ""
         if "# User Notes" in existing:
             tail = existing[existing.index("# User Notes"):].strip()

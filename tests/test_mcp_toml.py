@@ -40,6 +40,19 @@ class TestParse(unittest.TestCase):
         toml = '[other]\nx = 1\n[mcp_servers.a]\ncommand = "c"\n'
         self.assertEqual(set(parse_toml_mcp_servers(toml)), {"a"})
 
+    def test_keeps_hash_inside_quoted_value(self):
+        # A "#" inside a quoted value (e.g. a Windows path "C:/tools/c#/run.exe")
+        # must NOT be treated as a comment and truncated.
+        toml = '[mcp_servers.c3]\ncommand = "C:/tools/c#/run.exe"\n'
+        self.assertEqual(
+            parse_toml_mcp_servers(toml)["c3"]["command"], "C:/tools/c#/run.exe"
+        )
+
+    def test_strips_real_trailing_comment(self):
+        # A genuine comment outside quotes is still stripped.
+        toml = '[mcp_servers.c3]\ncommand = "python"  # the interpreter\n'
+        self.assertEqual(parse_toml_mcp_servers(toml)["c3"]["command"], "python")
+
 
 class TestEscape(unittest.TestCase):
     def test_backslash_to_slash(self):
@@ -72,6 +85,32 @@ class TestUpsertRemove(unittest.TestCase):
         text = f.read_text(encoding="utf-8")
         self.assertIn("[keep]", text)
         self.assertIn("[mcp_servers.c3]", text)
+
+    def test_upsert_drops_orphaned_child_subtable(self):
+        # A child subtable like [mcp_servers.c3.env] under [mcp_servers.c3] must
+        # be removed along with its parent on re-upsert, not left orphaned
+        # beneath the freshly re-appended section (which would corrupt config).
+        f = self._tmp()
+        f.write_text(
+            "[mcp_servers.c3]\n"
+            'command = "old"\n'
+            "[mcp_servers.c3.env]\n"
+            'FOO = "bar"\n'
+            "[keep]\n"
+            "x = 1\n",
+            encoding="utf-8",
+        )
+        upsert_toml_section(f, "mcp_servers.c3", {"command": "new"})
+        text = f.read_text(encoding="utf-8")
+        # Exactly one c3 section header; no orphaned child table remains.
+        self.assertEqual(text.count("[mcp_servers.c3]"), 1)
+        self.assertNotIn("[mcp_servers.c3.env]", text)
+        # Unrelated user section is preserved.
+        self.assertIn("[keep]", text)
+        # Re-parse is clean: c3 has the new command and no stray "c3.env" server.
+        parsed = parse_toml_mcp_servers(text)
+        self.assertEqual(parsed["c3"]["command"], "new")
+        self.assertNotIn("c3.env", parsed)
 
     def test_remove_returns_false_when_absent(self):
         self.assertFalse(remove_toml_section(self._tmp(), "mcp_servers.none"))

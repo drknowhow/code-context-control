@@ -11,17 +11,35 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_hook(tool_name: str, tool_input: dict) -> dict:
-    """Spawn the hook in a throwaway project and parse its stdout JSON."""
+def _run_hook(tool_name: str, tool_input: dict, signal_tool: str | None = None) -> dict:
+    """Spawn the hook in a throwaway project and parse its stdout JSON.
+
+    If signal_tool is given, seed .c3/last_c3_call.json with a fresh signal
+    written by that c3 tool (mirrors hook_c3_signal.py output).
+    """
     tmp = Path(tempfile.mkdtemp())
     try:
         (tmp / ".c3").mkdir()
         (tmp / ".c3" / "activity_log.jsonl").write_text("", encoding="utf-8")
+        if signal_tool is not None:
+            read_unlock = signal_tool in {
+                "c3_search", "c3_compress", "c3_filter",
+                "c3_read", "c3_impact", "c3_validate",
+            }
+            (tmp / ".c3" / "last_c3_call.json").write_text(
+                json.dumps({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "tool": signal_tool,
+                    "read_unlocked": read_unlock,
+                }),
+                encoding="utf-8",
+            )
         shutil.copy(REPO_ROOT / "cli" / "hook_pretool_enforce.py", tmp / "hook.py")
         shutil.copy(REPO_ROOT / "cli" / "_hook_utils.py", tmp / "_hook_utils.py")
 
@@ -86,6 +104,53 @@ class TestEnforcementFlip(unittest.TestCase):
     def test_unknown_tool_passes_through(self):
         r = _run_hook("SomeRandomTool", {})
         self.assertEqual(r, {}, "Unenforced tools must produce no output")
+
+    # ── Fix #1: signal bypass regression ────────────────────────────────────
+    def test_read_signal_does_not_unlock_native_edit(self):
+        """A read-class c3 signal (c3_status) must NOT unlock a native Edit."""
+        r = _run_hook(
+            "Edit",
+            {"file_path": "foo.py", "old_string": "a", "new_string": "b"},
+            signal_tool="c3_status",
+        )
+        hso = r.get("hookSpecificOutput") or {}
+        self.assertEqual(
+            hso.get("permissionDecision"), "deny",
+            f"Edit must stay blocked despite a non-write c3 signal. Got {r}",
+        )
+
+    def test_read_signal_does_not_unlock_native_write(self):
+        r = _run_hook(
+            "Write", {"file_path": "foo.py", "content": "x"},
+            signal_tool="c3_search",
+        )
+        hso = r.get("hookSpecificOutput") or {}
+        self.assertEqual(
+            hso.get("permissionDecision"), "deny",
+            f"Write must stay blocked despite a read-class c3 signal. Got {r}",
+        )
+
+    def test_write_signal_unlocks_native_edit(self):
+        """A write-class c3 signal (c3_edit) unlocks a native Edit."""
+        r = _run_hook(
+            "Edit",
+            {"file_path": "foo.py", "old_string": "a", "new_string": "b"},
+            signal_tool="c3_edit",
+        )
+        self.assertNotIn(
+            "hookSpecificOutput", r,
+            f"Edit must be allowed after a c3_edit signal. Got {r}",
+        )
+
+    def test_agent_signal_unlocks_native_multiedit(self):
+        r = _run_hook(
+            "MultiEdit", {"file_path": "foo.py", "edits": []},
+            signal_tool="c3_agent",
+        )
+        self.assertNotIn(
+            "hookSpecificOutput", r,
+            f"MultiEdit must be allowed after a c3_agent signal. Got {r}",
+        )
 
 
 if __name__ == "__main__":

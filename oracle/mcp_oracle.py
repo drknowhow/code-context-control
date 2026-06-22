@@ -83,14 +83,27 @@ class _BearerAuthMiddleware:
     Implemented at the ASGI layer (not Starlette's ``BaseHTTPMiddleware``) so it
     never buffers responses — MCP streamable-HTTP / SSE responses stream through
     intact. Rejects requests whose ``Authorization`` header fails ``api_auth.verify``.
+
+    Enforcement is decided per request from live config (``api_require_auth``),
+    so toggling auth in the dashboard takes effect without restarting the MCP
+    transport — matching the Flask Discovery guard. ``require_auth`` is only the
+    fallback default if config can't be read.
     """
 
     def __init__(self, app, require_auth: bool = True):
         self.app = app
         self.require_auth = require_auth
 
+    def _enforce(self) -> bool:
+        """Read live ``api_require_auth`` (falls back to the build-time value)."""
+        try:
+            from oracle.config import load_config
+            return bool(load_config().get("api_require_auth", self.require_auth))
+        except Exception:
+            return self.require_auth
+
     async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http" and self.require_auth:
+        if scope.get("type") == "http" and self._enforce():
             headers = dict(scope.get("headers") or [])
             auth = headers.get(b"authorization", b"").decode("latin-1")
             if not api_auth.verify(api_auth.extract_bearer(auth)):
@@ -142,8 +155,10 @@ def build_app(registry, version: str = "", require_auth: bool = True, path: str 
     """Build the Starlette ASGI app for the MCP server (auth middleware attached)."""
     mcp = build_mcp(registry, version)
     app = mcp.http_app(path=path)
-    if require_auth:
-        app.add_middleware(_BearerAuthMiddleware)
+    # Always install the gate; it decides per request from live config whether to
+    # enforce (so enabling auth in the dashboard works without a restart). The
+    # build-time ``require_auth`` is passed as the fallback default only.
+    app.add_middleware(_BearerAuthMiddleware, require_auth=require_auth)
     # Host-header allowlist (defense-in-depth vs DNS rebinding). Added last so it
     # is the outermost middleware and runs before the bearer check.
     from core.web_security import allowed_hostnames

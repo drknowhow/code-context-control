@@ -5,6 +5,8 @@ Saves session state (decisions, files, notes, facts) before /clear,
 provides compact briefings to reinstate context after /clear.
 """
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,8 +144,22 @@ class ContextSnapshot:
         }
 
         path = self.data_dir / f"snap_{snapshot['snapshot_id']}.json"
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(snapshot, f, indent=2)
+        # Atomic write: a partial snapshot (crash mid-dump) is the newest file
+        # and would make _load_snapshot("latest") raise. temp + os.replace
+        # guarantees the snapshot file is either absent or complete.
+        tmp = path.with_suffix(f".json.tmp-{os.getpid()}-{int(time.time() * 1000)}")
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(snapshot, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
         token_count = count_tokens(json.dumps(snapshot))
         return {
@@ -260,20 +276,34 @@ class ContextSnapshot:
         return results
 
     def _load_snapshot(self, snapshot_id: str) -> dict:
-        """Load a snapshot by ID or 'latest'."""
+        """Load a snapshot by ID or 'latest'.
+
+        For 'latest', skip past any corrupt/partial files to the next-newest
+        good snapshot instead of raising.
+        """
         if snapshot_id == "latest":
             files = sorted(self.data_dir.glob("snap_*.json"), reverse=True)
             if not files:
                 return {"error": "No snapshots found"}
-            path = files[0]
-        else:
-            path = self.data_dir / f"snap_{snapshot_id}.json"
+            last_error = None
+            for path in files:
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception as exc:  # corrupt/partial — try next-newest
+                    last_error = exc
+                    continue
+            return {"error": f"No readable snapshots found: {last_error}"}
 
+        path = self.data_dir / f"snap_{snapshot_id}.json"
         if not path.exists():
             return {"error": f"Snapshot not found: {snapshot_id}"}
 
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(path, encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as exc:
+            return {"error": f"Snapshot is corrupt: {snapshot_id}: {exc}"}
 
     def _full_briefing(self, snap: dict) -> str:
         """Level 0: Full briefing with all details."""

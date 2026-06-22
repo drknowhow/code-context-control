@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.38.1"
+__version__ = "2.39.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -4084,7 +4084,11 @@ def _upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
     content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
     header = f"[{section}]"
 
-    # Strip existing section (header + its key=value lines)
+    # Strip existing section (header + its key=value lines). Also strip any
+    # dotted child subtables (e.g. "[mcp_servers.c3.env]" under
+    # "[mcp_servers.c3]") so they are not orphaned beneath the re-appended
+    # section, which would corrupt the file on re-run.
+    child_prefix = f"{header[:-1]}."  # "[mcp_servers.c3]" -> "[mcp_servers.c3."
     lines = content.splitlines()
     new_lines: list[str] = []
     skip = False
@@ -4094,7 +4098,8 @@ def _upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
             skip = True
             continue
         if skip and stripped.startswith("["):
-            skip = False
+            if not stripped.startswith(child_prefix):
+                skip = False
         if not skip:
             new_lines.append(line)
 
@@ -4577,41 +4582,48 @@ def _ensure_global_claude_md() -> None:
 
     existing = global_md.read_text(encoding="utf-8")
 
-    if _GLOBAL_CLAUDE_MD_MARKER not in existing:
-        # User has their own CLAUDE.md — append C3 section
-        merged = existing.rstrip() + "\n\n" + _GLOBAL_CLAUDE_MD_CONTENT
-        global_md.write_text(merged, encoding="utf-8")
-        print(f"Updated {global_md}  (appended C3 enforcement)")
+    # The C3-managed region is delimited by explicit BEGIN/END sentinels (the
+    # same ones used for project instruction docs). This is unambiguous, so
+    # user-written content outside the markers — including H1 headings that
+    # happen to mention "C3" or "Tool Discipline" — is never swallowed.
+    from services.claude_md import C3_BLOCK_BEGIN, C3_BLOCK_END, merge_c3_block
+
+    wrapped = f"{C3_BLOCK_BEGIN}\n{_GLOBAL_CLAUDE_MD_CONTENT.strip()}\n{C3_BLOCK_END}"
+
+    # Markers already present → surgical, marker-bounded replacement.
+    if C3_BLOCK_BEGIN in existing:
+        global_md.write_text(merge_c3_block(existing, wrapped), encoding="utf-8")
+        print(f"Updated {global_md}  (refreshed C3 enforcement)")
         return
 
-    # C3 section exists — replace it with the latest version
-    # Find the C3 section boundaries: starts at the marker, ends at next # heading or EOF
-    start = existing.index(_GLOBAL_CLAUDE_MD_MARKER)
-    # Find the next top-level heading after the C3 section
-    rest = existing[start + len(_GLOBAL_CLAUDE_MD_MARKER):]
-    lines_after = rest.split("\n")
-    end_offset = len(rest)  # default: to EOF
-    running = 0
-    for line in lines_after:
-        running += len(line) + 1
-        # A top-level heading that's NOT part of C3's sub-headings
-        if line.startswith("# ") and "C3" not in line and "Tool Discipline" not in line:
-            end_offset = running - len(line) - 1
-            break
+    # Legacy marker-less C3 region → one-time migration into the marked block.
+    # Bound the region from the legacy heading to the NEXT top-level (``# ``)
+    # heading. C3's own content has exactly one H1 (the legacy heading itself),
+    # so the next H1 reliably marks where user content resumes; we deliberately
+    # do NOT skip H1s containing "C3"/"Tool Discipline" (the old heuristic did,
+    # which is what swallowed user headings).
+    if _GLOBAL_CLAUDE_MD_MARKER in existing:
+        start = existing.index(_GLOBAL_CLAUDE_MD_MARKER)
+        rest = existing[start + len(_GLOBAL_CLAUDE_MD_MARKER):]
+        end_offset = len(rest)  # default: to EOF
+        running = 0
+        for line in rest.split("\n"):
+            running += len(line) + 1
+            if line.startswith("# "):
+                end_offset = running - len(line) - 1
+                break
+        end = start + len(_GLOBAL_CLAUDE_MD_MARKER) + end_offset
+        before = existing[:start].rstrip()
+        after = existing[end:].lstrip()
+        parts = [p for p in (before, wrapped, after) if p]
+        global_md.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+        print(f"Updated {global_md}  (migrated C3 enforcement to markers)")
+        return
 
-    end = start + len(_GLOBAL_CLAUDE_MD_MARKER) + end_offset
-    before = existing[:start].rstrip()
-    after = existing[end:].lstrip()
-
-    parts = []
-    if before:
-        parts.append(before)
-    parts.append(_GLOBAL_CLAUDE_MD_CONTENT.strip())
-    if after:
-        parts.append(after)
-
-    global_md.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
-    print(f"Updated {global_md}  (refreshed C3 enforcement)")
+    # User has their own CLAUDE.md with no C3 content — append the marked block.
+    merged = existing.rstrip() + "\n\n" + wrapped + "\n"
+    global_md.write_text(merged, encoding="utf-8")
+    print(f"Updated {global_md}  (appended C3 enforcement)")
 
 
 def _instruction_documents_for_project() -> list[tuple[str, str]]:
@@ -5019,6 +5031,8 @@ def cmd_install_mcp(args):
             glob_matcher   = "find_files"
             edit_matcher   = "edit_file"
             write_matcher  = "write_file"
+            # Gemini has no MultiEdit / NotebookEdit equivalents.
+            extra_edit_matchers = []
         else:
             shell_matcher  = "Bash"
             read_matcher   = "Read"
@@ -5026,6 +5040,9 @@ def cmd_install_mcp(args):
             glob_matcher   = "Glob"
             edit_matcher   = "Edit"
             write_matcher  = "Write"
+            # Claude Code also exposes MultiEdit (batch edits) and NotebookEdit;
+            # both bypass enforcement/logging unless their matchers are registered.
+            extra_edit_matchers = ["MultiEdit", "NotebookEdit"]
 
         # ── PostToolUse hooks ──
         desired_post_hooks = [
@@ -5120,6 +5137,10 @@ def cmd_install_mcp(args):
                 "matcher": write_matcher,
                 "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]
             },
+            *[
+                {"matcher": m, "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]}
+                for m in extra_edit_matchers
+            ],
         ]
 
         # ── PreToolUse hooks (enforcement — blocks native tools without prior c3_*) ──
@@ -5144,6 +5165,10 @@ def cmd_install_mcp(args):
                 "matcher": write_matcher,
                 "hooks": [{"type": "command", "command": hook_enforce_cmd}]
             },
+            *[
+                {"matcher": m, "hooks": [{"type": "command", "command": hook_enforce_cmd}]}
+                for m in extra_edit_matchers
+            ],
         ]
 
         # Merge: replace existing C3 hooks (so re-running install-mcp updates commands),

@@ -1,5 +1,23 @@
 # Oracle Changelog
 
+## v1.2.1 (2026-06-22)
+
+### Security (C3 v2.39.0)
+- **`POST /api/config`** now requires the Bearer token and an allowlisted key set. It was
+  previously unauthenticated, allowing any local process to disable Discovery auth
+  (`api_require_auth=false`) or repoint `ollama_base_url`.
+- **`GET /api/apikey`** returns a masked token unless a valid Bearer token is presented; it
+  previously leaked the raw token over HTTP. `generate`/`rotate` still reveal the new token
+  once.
+- **Discovery `project_path` validation**: project paths are validated against discovered
+  projects before any read (previously any `.c3` project on the machine was readable by
+  path).
+- **MCP transport auth** now reads live config, so dashboard auth toggles apply without a
+  restart; chat/config endpoints return JSON errors for malformed bodies; the activity
+  digest now flags truncated scans.
+
+---
+
 ## v1.2.0 (2026-06-14)
 
 ### Activity Reporting (C3 v2.38.0)

@@ -53,10 +53,20 @@ def _coerce_lines(val: Any):
             except (json.JSONDecodeError, ValueError):
                 return None
             return parsed if isinstance(parsed, list) else None
+        # Comma-separated integers like "1,2,3" → list of line numbers.
+        if "," in val:
+            try:
+                nums = [int(p.strip()) for p in val.split(",") if p.strip()]
+            except ValueError:
+                return None
+            return nums or None
         try:
             return int(val)
         except ValueError:
-            if "-" in val:  # "start-end" like "22-40"
+            # "start-end" like "22-40". Only treat as a range when both ends
+            # are non-negative ints — a leading "-5" is a (rejected) negative,
+            # not a range. partition on the FIRST "-" preserves that.
+            if "-" in val:
                 a, _, b = val.partition("-")
                 try:
                     return [int(a.strip()), int(b.strip())]
@@ -117,7 +127,19 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
 
     # Resolve ranges
     ranges = []
-    if lines:
+
+    def _add_range(start: int, end: int) -> None:
+        # Swap reversed ranges (e.g. "40-22") and drop non-positive line
+        # numbers — lines are 1-based, so a negative/zero spec is invalid
+        # rather than a relative offset.
+        if start > end:
+            start, end = end, start
+        if end < 1:
+            return
+        start = max(start, 1)
+        ranges.append((start, end))
+
+    if lines is not None:
         if isinstance(lines, int):
             line_specs = [lines]
         elif isinstance(lines, (list, tuple)) and len(lines) == 2 and all(isinstance(x, int) for x in lines):
@@ -129,11 +151,11 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
 
         for spec in line_specs:
             if isinstance(spec, int):
-                ranges.append((spec, spec))
+                _add_range(spec, spec)
             elif isinstance(spec, (list, tuple)) and len(spec) >= 2:
-                ranges.append((int(spec[0]), int(spec[1])))
+                _add_range(int(spec[0]), int(spec[1]))
             elif isinstance(spec, (list, tuple)) and len(spec) == 1:
-                ranges.append((int(spec[0]), int(spec[0])))
+                _add_range(int(spec[0]), int(spec[0]))
 
     # Ensure file_memory index is fresh.
     # When the watcher is running, it handles updates in the background —

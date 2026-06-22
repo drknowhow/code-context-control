@@ -23,6 +23,15 @@ log = logging.getLogger("oracle")
 _MIN_TS = "0000-01-01T00:00:00"
 _MAX_TS = "9999-12-31T23:59:59"
 
+# Per-source scan caps. When a source returns exactly its cap, the day may have
+# more rows than we scanned, so the digest surfaces ``truncated: true`` rather
+# than silently undercounting a very busy day. (Paging is overkill — a flag is
+# enough for a digest.)
+_CAP_ACTIVITY = 10000
+_CAP_SESSIONS = 100
+_CAP_SESSION_STATS = 500
+_CAP_EDITS = 10000
+
 _NARRATE_SYSTEM = (
     "You are C3's activity reporter. Given a JSON digest of a developer's work "
     "across their projects for a time window, write a concise, friendly summary "
@@ -67,6 +76,9 @@ class ActivityReporter:
             "window": window,
             "totals": self._aggregate_totals(proj_reports),
             "projects": proj_reports,
+            # True if any project hit a per-source scan cap (counts may be
+            # undercounted for that project). See _CAP_* constants.
+            "truncated": any(pr.get("truncated") for pr in proj_reports),
             "narrative": None,
         }
         if narrate:
@@ -131,6 +143,7 @@ class ActivityReporter:
             "cost_usd": 0.0,
             "first_activity": None,
             "last_activity": None,
+            "truncated": False,
         }
         # Guard: only read projects that already have a .c3 dir — never create
         # one as a side effect (ActivityLog/SessionManager mkdir on init).
@@ -142,7 +155,10 @@ class ActivityReporter:
         # Activity log → per-type event counts.
         try:
             counts: dict[str, int] = {}
-            for e in ActivityLog(path).get_recent(limit=10000, since=lo, until=hi):
+            rows = list(ActivityLog(path).get_recent(limit=_CAP_ACTIVITY, since=lo, until=hi))
+            if len(rows) >= _CAP_ACTIVITY:
+                base["truncated"] = True
+            for e in rows:
                 etype = e.get("type", "unknown")
                 counts[etype] = counts.get(etype, 0) + 1
                 if e.get("timestamp"):
@@ -156,7 +172,10 @@ class ActivityReporter:
         try:
             sm = SessionManager(path)
             # Sessions started within the window.
-            for s in sm.list_sessions(100):
+            sess_rows = list(sm.list_sessions(_CAP_SESSIONS))
+            if len(sess_rows) >= _CAP_SESSIONS:
+                base["truncated"] = True
+            for s in sess_rows:
                 started = s.get("started", "")
                 if started and lo <= started <= hi:
                     base["sessions"].append({
@@ -169,7 +188,10 @@ class ActivityReporter:
                     })
                     timestamps.append(started)
             # Token / cost from hook-captured session stats.
-            for st in sm.get_session_stats(500):
+            stat_rows = list(sm.get_session_stats(_CAP_SESSION_STATS))
+            if len(stat_rows) >= _CAP_SESSION_STATS:
+                base["truncated"] = True
+            for st in stat_rows:
                 ts = st.get("ts", "")
                 if ts and lo <= ts <= hi:
                     base["tokens"]["input"] += int(st.get("input_tokens", 0) or 0)
@@ -180,7 +202,10 @@ class ActivityReporter:
 
         # Edit ledger → edits vs git mutations (get_history filters >= lo only).
         try:
-            for en in EditLedger(path).get_history(since=lo, limit=10000):
+            edit_rows = list(EditLedger(path).get_history(since=lo, limit=_CAP_EDITS))
+            if len(edit_rows) >= _CAP_EDITS:
+                base["truncated"] = True
+            for en in edit_rows:
                 ts = en.get("timestamp", "")
                 if ts and ts > hi:
                     continue

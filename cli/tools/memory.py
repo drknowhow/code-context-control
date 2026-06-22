@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 def handle_memory(action: str, query: str, fact: str, category: str,
                   top_k: int, svc, finalize, fact_id: str = "") -> str:
     if action == "add":
+        if not fact or not fact.strip():
+            return finalize("c3_memory", {"action": action},
+                            "fact is required to add a memory (got empty/whitespace)",
+                            "missing fact")
         sid = (svc.session_mgr.current_session or {}).get("id", "")
         res = svc.memory.remember(fact, category or "general", sid)
         return finalize("c3_memory", {"action": action},

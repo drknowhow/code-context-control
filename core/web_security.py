@@ -99,6 +99,12 @@ def check_request(request, allowed: set[str]) -> tuple[bool, str]:
     host = _hostname(getattr(request, "host", "") or "")
     if host and host not in allowed:
         return False, f"host '{host}' is not allowlisted"
+    # A missing/empty Host on a state-changing request can't be vetted against
+    # the allowlist, so it slips past the DNS-rebinding defense. When the server
+    # is loopback-only (the default, hardened posture), require Host presence on
+    # mutating methods rather than silently allowing the unverifiable request.
+    if not host and request.method in _MUTATING_METHODS and allowed <= _LOOPBACK_HOSTS:
+        return False, "missing Host header on mutating request"
 
     # 2) Origin check — anti cross-origin CSRF. Browsers always send Origin on
     #    state-changing requests, so a mismatch is a reliable CSRF signal. When
