@@ -133,6 +133,7 @@ class TestActivityReporter(unittest.TestCase):
     def test_truncated_flag_when_activity_cap_hit(self):
         # Drop the activity-log cap below the row count so the scan caps out.
         from unittest import mock
+
         from oracle.services import activity_reporter as ar
         with mock.patch.object(ar, "_CAP_ACTIVITY", 3):
             d = self.reporter.report(date=self.DAY)
