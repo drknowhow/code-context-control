@@ -17,7 +17,7 @@ import time
 
 
 class CircuitBreaker:
-    """Consecutive-failure breaker: closed -> open (after N fails) -> half-open (after cooldown)."""
+    """Consecutive-failure breaker: closed, opens after N fails, half-opens to probe after a cooldown."""
 
     def __init__(
         self,
@@ -55,9 +55,9 @@ class CircuitBreaker:
     def record_failure(self) -> bool:
         """Count a failed call.
 
-        Returns True iff this failure *just* tripped the breaker open (callers
-        can use that edge to emit a one-shot notification). A failed half-open
-        probe restarts the cooldown but does not re-trip.
+        Returns True iff this failure *just* tripped the breaker into the open
+        state, so callers can emit a one-shot notification on that edge. A failed
+        half-open probe restarts the cooldown but does not re-trip.
         """
         with self._lock:
             self._failures += 1

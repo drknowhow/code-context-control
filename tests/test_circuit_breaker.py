@@ -10,7 +10,7 @@ def test_closed_until_threshold_then_opens():
     assert br.record_failure() is False  # 1
     assert br.record_failure() is False  # 2
     assert br.allow()                    # still closed below threshold
-    assert br.record_failure() is True   # 3 -> trips open (edge)
+    assert br.record_failure() is True   # 3 -> trips it open at threshold
     assert not br.allow()                # open, within cooldown
     assert br.is_open
 
