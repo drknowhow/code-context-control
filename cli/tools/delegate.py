@@ -11,10 +11,12 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from core import count_tokens
+from services.circuit_breaker import CircuitBreaker
 
 log = logging.getLogger(__name__)
 
@@ -252,11 +254,20 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
                              file_path: str, svc, dcfg: dict, finalize) -> str:
     """Handle delegation via Claude Code CLI."""
     timeout = int(dcfg.get("claude_timeout", 90))
+    breaker = _backend_breaker("claude", dcfg)
+    if not breaker.allow():
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
+                        "[delegate:degraded] Claude skipped after repeated failures; retrying in "
+                        f"~{breaker.cooldown_remaining()}s. Run 'claude --version' to diagnose.",
+                        "degraded")
     _log_progress(svc, f"[delegate] Routing {task_type} → Claude CLI...")
     output, ok = _run_claude(task, context, cwd=str(svc.project_path), timeout=timeout)
     if not ok:
+        if breaker.record_failure():
+            _notify_backend_degraded(svc, "claude", breaker)
         return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
                         output, "error")
+    breaker.record_success()
     return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
                     output, "ok")
 
@@ -681,6 +692,51 @@ DELEGATE_TASKS = {
 _delegate_cache: dict[str, tuple[str, int]] = {}
 _delegate_metrics = {"total_calls": 0, "tokens_saved": 0}
 
+# Per-backend runtime circuit breakers. Distinct from the install-status flags
+# (_gemini_available etc., which only answer "is the CLI on PATH"): these track
+# *runtime* health so a broken-but-installed backend (expired auth, repeated
+# timeouts) stops re-spawning a 90-120s subprocess on every call. Keyed by
+# backend name and intentionally process-global — backend health (auth, CLI
+# version) is a property of the host, not of any single project.
+_backend_breakers: dict[str, CircuitBreaker] = {}
+_backend_breakers_lock = threading.Lock()
+
+
+def _backend_breaker(name: str, dcfg: dict | None = None) -> CircuitBreaker:
+    """Return (creating on first use) the runtime circuit breaker for a backend."""
+    with _backend_breakers_lock:
+        breaker = _backend_breakers.get(name)
+        if breaker is None:
+            cfg = dcfg or {}
+            breaker = CircuitBreaker(
+                name,
+                failure_threshold=int(cfg.get("breaker_failure_threshold", 3) or 3),
+                cooldown_seconds=float(cfg.get("breaker_cooldown_seconds", 60) or 60),
+            )
+            _backend_breakers[name] = breaker
+        return breaker
+
+
+def _notify_backend_degraded(svc, name: str, breaker: CircuitBreaker) -> None:
+    """Surface a backend trip via the NotificationStore (best-effort, never raises)."""
+    notifications = getattr(svc, "notifications", None)
+    if notifications is None:
+        return
+    try:
+        notifications.add(
+            agent="c3",
+            severity="warning",
+            title=f"Delegate backend degraded: {name}",
+            message=(
+                f"{name} failed {breaker.failure_threshold}x consecutively; c3_delegate "
+                f"will skip it for ~{int(breaker.cooldown_seconds)}s instead of re-spawning "
+                f"the CLI. Run '{name} --version' to diagnose."
+            ),
+            replace_if_unacked=True,
+        )
+    except Exception:
+        pass
+
 
 def get_delegate_metrics() -> dict:
     return dict(_delegate_metrics)
@@ -765,6 +821,13 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
                         "[delegate:error] Codex CLI not available. Run 'codex --version' to diagnose.",
                         "unavailable")
 
+    breaker = _backend_breaker("codex", dcfg)
+    if not breaker.allow():
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "codex"},
+                        "[delegate:degraded] Codex skipped after repeated failures; retrying in "
+                        f"~{breaker.cooldown_remaining()}s. Run 'codex --version' to diagnose.",
+                        "degraded")
+
     # Resolve model/sandbox/reasoning from config or defaults
     cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
     model = dcfg.get("codex_default_model") or cdef.get("model", "gpt-5.3-codex-spark")
@@ -807,10 +870,13 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
     elapsed = round(time.monotonic() - t0, 1)
 
     if not ok:
+        if breaker.record_failure():
+            _notify_backend_degraded(svc, "codex", breaker)
         return finalize("c3_delegate",
                         {"task_type": task_type, "backend": "codex", "model": model, "elapsed": f"{elapsed}s"},
                         output, "error")
 
+    breaker.record_success()
     _delegate_metrics["total_calls"] += 1
     _delegate_cache[ckey] = (output, count_tokens(output))
 
@@ -880,6 +946,13 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
                         "[delegate:error] Gemini CLI not available. Run 'gemini --version' to diagnose.",
                         "unavailable")
 
+    breaker = _backend_breaker("gemini", dcfg)
+    if not breaker.allow():
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "gemini"},
+                        "[delegate:degraded] Gemini skipped after repeated failures; retrying in "
+                        f"~{breaker.cooldown_remaining()}s. Run 'gemini --version' to diagnose.",
+                        "degraded")
+
     # Resolve model from config or defaults
     gdef = GEMINI_MODELS.get(task_type, GEMINI_MODELS.get("ask", {}))
     model = dcfg.get("gemini_default_model") or gdef.get("model", "gemini-2.5-flash")
@@ -919,10 +992,13 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
     elapsed = round(time.monotonic() - t0, 1)
 
     if not ok:
+        if breaker.record_failure():
+            _notify_backend_degraded(svc, "gemini", breaker)
         return finalize("c3_delegate",
                         {"task_type": task_type, "backend": "gemini", "model": model, "elapsed": f"{elapsed}s"},
                         output, "error")
 
+    breaker.record_success()
     _delegate_metrics["total_calls"] += 1
     _delegate_cache[ckey] = (output, count_tokens(output))
 
@@ -1068,9 +1144,11 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         _gemini_avail = (_gemini_available is True) or (
             _gemini_available is None and task_type not in _light_tasks and _is_gemini_on_path()
         )
-        if task_type in heavy_codex and _codex_avail and _codex_available is not False:
+        if (task_type in heavy_codex and _codex_avail and _codex_available is not False
+                and _backend_breaker("codex", dcfg).allow()):
             backend = "codex"
-        elif task_type in heavy_gemini and _gemini_avail and _gemini_available is not False:
+        elif (task_type in heavy_gemini and _gemini_avail and _gemini_available is not False
+                and _backend_breaker("gemini", dcfg).allow()):
             backend = "gemini"
         else:
             backend = "ollama"
