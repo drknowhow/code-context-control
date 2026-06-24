@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.39.1] - 2026-06-24
+
+A small reliability fix for `c3_delegate`.
+
+### Fixed
+
+- **A broken delegate backend re-spawned a subprocess on every call.** When a CLI
+  backend (`gemini`/`codex`/`claude`) was installed but failing at runtime (expired
+  auth, model pulled away, repeated timeouts), `_handle_*_delegate` returned the error
+  without demoting the backend — so every subsequent `c3_delegate` call paid the full
+  90–120s subprocess spawn + timeout again. Each backend now has a thread-safe circuit
+  breaker (`services/circuit_breaker.py`): after N consecutive failures (default 3) it
+  short-circuits for a cooldown (default 60s) with a single half-open probe on recovery,
+  and surfaces a notification when it trips. The `auto` router skips tripped backends and
+  falls back to Ollama. Thresholds are configurable via `delegate_config`
+  (`breaker_failure_threshold`, `breaker_cooldown_seconds`).
+
 ## [2.39.0] - 2026-06-22
 
 A correctness & security hardening release. A multi-agent audit of C3 surfaced a
