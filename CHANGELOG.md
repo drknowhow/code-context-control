@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.41.0] - 2026-06-25
+
+### Fixed
+
+- **`c3_shell` ran commands through `cmd.exe` on Windows, mismatching the native
+  Bash tool.** `_run_sync` used `subprocess.Popen(shell=True)`, which resolves to
+  `cmd.exe` via `COMSPEC` on Windows — while the rest of the environment (the
+  native Bash tool, CLAUDE.md conventions, agent command habits) speaks POSIX via
+  Git Bash. Any bash-flavored command (`ls`, `grep`, `cat`, single quotes,
+  `$VAR`, `/dev/null`, forward-slash flags, heredocs) silently failed under
+  `cmd.exe` and forced a fall back to native Bash, defeating the point of
+  `c3_shell` as a structured drop-in. `c3_shell` now runs commands through Git
+  Bash (`bash -c`) on Windows when a Git-for-Windows `bash.exe` is available, so
+  it speaks the same dialect as the native Bash tool.
+
+### Added
+
+- **`C3_SHELL_BASH` environment override for `c3_shell` shell selection.** Set
+  `C3_SHELL_BASH=0` (or `cmd`/`off`/`false`) to force the legacy `cmd.exe`
+  behavior, or point it at a specific `bash.exe` path to override auto-discovery.
+  Discovery prefers Git-for-Windows install locations and PATH, and deliberately
+  rejects WSL/Store `bash.exe` (System32 / WindowsApps) because its Linux
+  `/mnt/c` path semantics would break `cwd` handling. POSIX platforms are
+  unchanged (`shell=True` → `/bin/sh`).
+
 ## [2.40.0] - 2026-06-25
 
 A Bitbucket Data Center / Server fix batch. A full PR-lifecycle evaluation against a

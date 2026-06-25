@@ -4,12 +4,21 @@ Wraps subprocess.Popen with the Windows-safe pattern from
 services/edit_ledger.py::_git_combined (Popen + taskkill /F /T + stdin=DEVNULL).
 Auto-filters long stdout via handle_filter, auto-logs git mutations
 to the edit ledger, and accounts stdout tokens against session budget.
+
+Shell selection: on Windows, commands are run through Git Bash (bash.exe) when
+it is available, so c3_shell speaks the same POSIX dialect as the native Bash
+tool (forward-slash paths, single quotes, `$VAR`, ls/grep/cat, heredocs). This
+avoids the cmd.exe/POSIX mismatch that forced callers to fall back to native
+Bash for bash-flavored commands. Set C3_SHELL_BASH=0 to force cmd.exe, or point
+C3_SHELL_BASH at a specific bash.exe to override discovery. POSIX platforms are
+unchanged (shell=True → /bin/sh).
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -59,6 +68,58 @@ _MAX_TIMEOUT = 600
 _FILTER_THRESHOLD_LINES = 30
 
 
+# Cache for discovered Git Bash path: [] = uncomputed, [None]/[path] = computed.
+_bash_cache: list = []
+
+
+def _discover_git_bash() -> str | None:
+    """Locate a Git-for-Windows bash.exe, never WSL/System32 bash.
+
+    WSL's bash runs in a Linux subsystem with /mnt/c paths, which would break
+    the Windows `cwd` semantics every caller relies on — so it is rejected.
+    """
+    candidates: list[str] = []
+    for base_env in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(base_env)
+        if base:
+            candidates.append(os.path.join(base, "Git", "bin", "bash.exe"))
+            candidates.append(os.path.join(base, "Git", "usr", "bin", "bash.exe"))
+    candidates.append(r"C:\Program Files\Git\bin\bash.exe")
+    candidates.append(r"C:\Program Files\Git\usr\bin\bash.exe")
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    # Last resort: PATH lookup, but reject WSL/Store bash (System32/WindowsApps).
+    found = shutil.which("bash")
+    if found:
+        low = found.lower()
+        if "system32" not in low and "windowsapps" not in low:
+            return found
+    return None
+
+
+def _select_bash() -> str | None:
+    """Return the bash.exe to run commands through on Windows, else None.
+
+    None means "use the platform default shell" (cmd.exe on Windows via
+    shell=True, /bin/sh on POSIX). Honors the C3_SHELL_BASH override:
+    '0'/'cmd' forces the platform default; an existing file path forces that
+    bash. Discovery is cached after the first call.
+    """
+    if sys.platform != "win32":
+        return None
+    override = os.environ.get("C3_SHELL_BASH")
+    if override is not None:
+        if override.strip().lower() in ("0", "", "cmd", "false", "off"):
+            return None
+        if os.path.isfile(override):
+            return override
+        # Unrecognized override → fall through to discovery.
+    if not _bash_cache:
+        _bash_cache.append(_discover_git_bash())
+    return _bash_cache[0]
+
+
 def _popen_kwargs() -> dict:
     # Force UTF-8 in child processes so Unicode output (→, box-drawing, emoji)
     # doesn't crash on Windows' legacy cp1252 console encoding. setdefault so an
@@ -89,8 +150,17 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
     """Blocking subprocess run with hard kill on timeout. Returns structured dict."""
     start = time.time()
+    bash = _select_bash()
+    if bash:
+        # POSIX dialect via Git Bash — matches the native Bash tool.
+        popen_target: object = [bash, "-c", cmd]
+        use_shell = False
+    else:
+        # Platform default: cmd.exe on Windows, /bin/sh on POSIX.
+        popen_target = cmd
+        use_shell = True
     proc = subprocess.Popen(
-        cmd, shell=True, cwd=cwd,
+        popen_target, shell=use_shell, cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
         **_popen_kwargs(),
