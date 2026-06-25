@@ -221,9 +221,12 @@ Access Token. Tokens live in the **OS keyring** (Windows Credential Manager,
 macOS Keychain, Linux Secret Service) — never in `.c3/config.json`.
 
 ```bash
-# One-time login per server
+# One-time login per server (stored under this project's .c3/config.json)
 c3 bitbucket login --url https://bitbucket.example.com
-#  → prompts for username + PAT (masked)
+#  -> prompts for username + PAT (masked)
+
+# ...or store it globally so every C3 project can use it
+c3 bitbucket login --global --url https://bitbucket.example.com
 
 # Pin defaults so subsequent calls don't need project/repo
 c3 bitbucket set-default --project PROJ --repo my-service
@@ -231,6 +234,16 @@ c3 bitbucket set-default --project PROJ --repo my-service
 # Inspect status
 c3 bitbucket status
 ```
+
+**Account resolution precedence:** the project's `.c3/config.json` wins, but when
+it has no active account C3 falls back to the global `~/.c3/config.json`. So a
+single `login --global` (or any login done from your home directory) is reusable
+across every C3 project — the PAT always lives in the OS keyring, never on disk.
+
+> **Upgrading:** stop the running `c3-mcp` server / CLI before `c3 upgrade`. A live
+> process can hold package files open, leaving pip's `~`-prefixed backup dirs
+> (`~ervices`, `~ools`, …) in `site-packages`; those are inert and safe to delete
+> after the upgrade completes.
 
 The MCP tool dispatches by `action`. Read-only actions: `status`, `whoami`,
 `list_projects`, `list_repos`, `get_repo`, `list_prs`, `get_pr`, `get_pr_diff`,

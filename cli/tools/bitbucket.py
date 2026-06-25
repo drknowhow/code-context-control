@@ -50,7 +50,12 @@ def _cap(resp: str) -> str:
         candidate = "\n".join(lines) + "\n[truncated]"
         if count_tokens(candidate) <= _RESPONSE_TOKEN_CAP:
             return candidate
-    return "\n".join(lines[:20]) + "\n[truncated]"
+    # A single over-long line never splits above; hard-clamp by characters as a
+    # final guard (~4 chars/token) so one huge line can't blow past the cap.
+    head = "\n".join(lines[:20])
+    if count_tokens(head) > _RESPONSE_TOKEN_CAP:
+        head = head[:_RESPONSE_TOKEN_CAP * 4]
+    return head + "\n[truncated]"
 
 
 def _build_client(svc) -> tuple[BitbucketDataCenterClient | None, str]:
@@ -111,20 +116,20 @@ def _format_pr(pr: dict) -> str:
     author = (pr.get("author") or {}).get("user", {}).get("name", "?")
     src = (pr.get("fromRef") or {}).get("displayId", "?")
     dst = (pr.get("toRef") or {}).get("displayId", "?")
-    return f"  #{pr_id} [{state:7}] {src} → {dst}  by {author}\n         {title}"
+    return f"  #{pr_id} [{state:7}] {src} -> {dst}  by {author}\n         {title}"
 
 
 def _format_pr_full(pr: dict) -> str:
     lines = [
-        f"PR #{pr.get('id')} [{pr.get('state')}] — {pr.get('title','')}",
-        f"  {(pr.get('fromRef') or {}).get('displayId')} → {(pr.get('toRef') or {}).get('displayId')}",
+        f"PR #{pr.get('id')} [{pr.get('state')}] -- {pr.get('title','')}",
+        f"  {(pr.get('fromRef') or {}).get('displayId')} -> {(pr.get('toRef') or {}).get('displayId')}",
         f"  Author: {(pr.get('author') or {}).get('user',{}).get('displayName','?')}",
         f"  Version: {pr.get('version')} | Open tasks: {pr.get('openTaskCount', 0)}",
     ]
     reviewers = pr.get("reviewers") or []
     if reviewers:
         rs = ", ".join(
-            f"{r.get('user',{}).get('name','?')}({'✓' if r.get('approved') else '·'})"
+            f"{r.get('user',{}).get('name','?')}({'[x]' if r.get('approved') else '[ ]'})"
             for r in reviewers
         )
         lines.append(f"  Reviewers: {rs}")
@@ -190,7 +195,7 @@ def _act_status(client: BitbucketDataCenterClient | None, err: str, svc) -> str:
         version = props.get("version", "?")
         out.append(f"  Server : OK (version {version})")
     except BitbucketError as exc:
-        out.append(f"  Server : FAIL — {exc}")
+        out.append(f"  Server : FAIL -- {exc}")
     return "\n".join(out)
 
 
@@ -214,7 +219,7 @@ def _act_list_projects(client: BitbucketDataCenterClient, kwargs: dict) -> str:
     for p in projects[:50]:
         lines.append(f"  {p.get('key','?'):16} {p.get('name','?')}")
     if len(projects) > 50:
-        lines.append(f"  … +{len(projects) - 50} more")
+        lines.append(f"  ... +{len(projects) - 50} more")
     return "\n".join(lines)
 
 
@@ -222,11 +227,11 @@ def _act_list_repos(client: BitbucketDataCenterClient, project: str) -> str:
     repos = client.list_repos(project)
     if not repos:
         return f"[bitbucket:repos] {project}: (none)"
-    lines = [f"[bitbucket:repos] {project} — {len(repos)} repo(s)"]
+    lines = [f"[bitbucket:repos] {project} - {len(repos)} repo(s)"]
     for r in repos[:80]:
         lines.append(f"  {r.get('slug','?'):30} {r.get('name','?')}")
     if len(repos) > 80:
-        lines.append(f"  … +{len(repos) - 80} more")
+        lines.append(f"  ... +{len(repos) - 80} more")
     return "\n".join(lines)
 
 
@@ -252,7 +257,7 @@ def _act_list_prs(client, project: str, repo: str, kwargs: dict) -> str:
     )
     if not prs:
         return f"[bitbucket:prs] {project}/{repo} state={state}: (none)"
-    out = [f"[bitbucket:prs] {project}/{repo} state={state} — {len(prs)} PR(s)"]
+    out = [f"[bitbucket:prs] {project}/{repo} state={state} - {len(prs)} PR(s)"]
     for pr in prs:
         out.append(_format_pr(pr))
     return "\n".join(out)
@@ -266,7 +271,7 @@ def _act_get_pr(client, project: str, repo: str, pr_id: int) -> str:
 def _act_get_pr_diff(client, project: str, repo: str, pr_id: int, kwargs: dict) -> str:
     diff = client.get_pr_diff(project, repo, pr_id, context_lines=int(kwargs.get("context_lines", 3)))
     if len(diff) > _DIFF_PREVIEW_CHARS:
-        diff = diff[:_DIFF_PREVIEW_CHARS] + "\n… [diff truncated]"
+        diff = diff[:_DIFF_PREVIEW_CHARS] + "\n... [diff truncated]"
     return f"[bitbucket:diff] {project}/{repo}#{pr_id}\n{diff}"
 
 
@@ -274,7 +279,7 @@ def _act_get_pr_activities(client, project: str, repo: str, pr_id: int) -> str:
     acts = client.get_pr_activities(project, repo, pr_id)
     if not acts:
         return f"[bitbucket:pr-activity] {project}/{repo}#{pr_id}: (none)"
-    out = [f"[bitbucket:pr-activity] {project}/{repo}#{pr_id} — {len(acts)} event(s)"]
+    out = [f"[bitbucket:pr-activity] {project}/{repo}#{pr_id} - {len(acts)} event(s)"]
     for a in acts[:50]:
         out.append(_format_activity(a))
     return "\n".join(out)
@@ -341,11 +346,11 @@ def _act_list_branches(client, project: str, repo: str, kwargs: dict) -> str:
     branches = client.list_branches(project, repo, filter_text=kwargs.get("filter", ""))
     if not branches:
         return f"[bitbucket:branches] {project}/{repo}: (none)"
-    out = [f"[bitbucket:branches] {project}/{repo} — {len(branches)} branch(es)"]
+    out = [f"[bitbucket:branches] {project}/{repo} - {len(branches)} branch(es)"]
     for b in branches[:80]:
         out.append(_format_branch(b))
     if len(branches) > 80:
-        out.append(f"  … +{len(branches) - 80} more")
+        out.append(f"  ... +{len(branches) - 80} more")
     return "\n".join(out)
 
 
@@ -378,7 +383,7 @@ def _act_list_commits(client, project: str, repo: str, kwargs: dict) -> str:
     )
     if not commits:
         return f"[bitbucket:commits] {project}/{repo}: (none)"
-    out = [f"[bitbucket:commits] {project}/{repo} — {len(commits)} commit(s)"]
+    out = [f"[bitbucket:commits] {project}/{repo} - {len(commits)} commit(s)"]
     for c in commits:
         out.append(_format_commit(c))
     return "\n".join(out)
@@ -388,7 +393,7 @@ def _act_list_activity(client, project: str, repo: str, kwargs: dict) -> str:
     acts = client.list_repo_activities(project, repo, limit=int(kwargs.get("limit", 30)))
     if not acts:
         return f"[bitbucket:activity] {project}/{repo}: (none)"
-    out = [f"[bitbucket:activity] {project}/{repo} — {len(acts)} event(s)"]
+    out = [f"[bitbucket:activity] {project}/{repo} - {len(acts)} event(s)"]
     for a in acts:
         out.append(_format_commit(a))
     return "\n".join(out)
@@ -401,7 +406,7 @@ def _act_build_status(client, kwargs: dict) -> str:
     builds = client.get_build_status(commit)
     if not builds:
         return f"[bitbucket:build_status] {commit[:12]}: (none)"
-    out = [f"[bitbucket:build_status] {commit[:12]} — {len(builds)} build(s)"]
+    out = [f"[bitbucket:build_status] {commit[:12]} - {len(builds)} build(s)"]
     for b in builds:
         out.append(_format_build(b))
     return "\n".join(out)
@@ -429,10 +434,10 @@ def _act_list_webhooks(client, project: str, repo: str) -> str:
     hooks = client.list_webhooks(project, repo)
     if not hooks:
         return f"[bitbucket:webhooks] {project}/{repo}: (none)"
-    out = [f"[bitbucket:webhooks] {project}/{repo} — {len(hooks)} hook(s)"]
+    out = [f"[bitbucket:webhooks] {project}/{repo} - {len(hooks)} hook(s)"]
     for h in hooks:
         out.append(
-            f"  #{h.get('id')} [{'on' if h.get('active') else 'off'}] {h.get('name','?')} → {h.get('url','?')}"
+            f"  #{h.get('id')} [{'on' if h.get('active') else 'off'}] {h.get('name','?')} -> {h.get('url','?')}"
         )
         evs = h.get("events") or []
         if evs:
@@ -454,7 +459,7 @@ def _act_create_webhook(client, project: str, repo: str, kwargs: dict) -> str:
         active=bool(kwargs.get("active", True)),
         secret=kwargs.get("secret", ""),
     )
-    return f"[bitbucket:webhook-created] {project}/{repo} #{res.get('id','?')} {name} → {url}"
+    return f"[bitbucket:webhook-created] {project}/{repo} #{res.get('id','?')} {name} -> {url}"
 
 
 def _act_delete_webhook(client, project: str, repo: str, kwargs: dict) -> str:

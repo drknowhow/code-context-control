@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.39.0"
+__version__ = "2.40.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -5577,14 +5577,19 @@ def _bb_cmd_login(args, project_path: str) -> None:
     from services import bitbucket_credentials as bb_creds
     from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
 
+    # --global stores the account in ~/.c3/config.json so it is reusable in
+    # every C3 project (load_bitbucket_config falls back to it automatically).
+    if getattr(args, "use_global", False):
+        project_path = str(Path.home())
+
     base_url = (args.url or "").rstrip("/")
     username = args.username or input(f"Username for {base_url}: ").strip()
     if not username:
-        print("Login cancelled — username required.")
+        print("Login cancelled -- username required.")
         return
     token = args.token or getpass.getpass(f"Personal Access Token for {username}: ").strip()
     if not token:
-        print("Login cancelled — token required.")
+        print("Login cancelled -- token required.")
         return
 
     try:
@@ -5600,10 +5605,13 @@ def _bb_cmd_login(args, project_path: str) -> None:
     if getattr(args, "insecure", False):
         bb_creds.set_verify_tls(False, project_path=project_path)
 
-    print(f"[OK] Stored credentials for {username}@{base_url}")
+    scope = "global (~/.c3)" if getattr(args, "use_global", False) else "project"
+    print(f"[OK] Stored credentials for {username}@{base_url} [{scope}]")
 
-    # Connection probe — non-fatal if it fails (token might be valid but
-    # network blocked at this moment).
+    # Connection probe -- non-fatal if it fails (token might be valid but the
+    # network is blocked right now). Gate success on application-properties
+    # only; whoami enrichment is best-effort so a valid login never prints a
+    # failure (Bitbucket DC has no /users/me).
     try:
         client = BitbucketDataCenterClient(
             base_url=base_url, token=token,
@@ -5611,12 +5619,20 @@ def _bb_cmd_login(args, project_path: str) -> None:
         )
         props = client.application_properties()
         version = props.get("version", "?")
-        user = client.whoami()
         print(f"     Server: {version} ({base_url})")
-        print(f"     Auth as: {user.get('displayName', username)} <{user.get('emailAddress', '?')}>")
     except BitbucketError as exc:
         print(f"[warn] Connection probe failed: {exc}")
-        print("       Token saved anyway — re-test with `c3 bitbucket status`.")
+        print("       Token saved anyway -- re-test with `c3 bitbucket status`.")
+        return
+    try:
+        user = client.whoami()
+        if user:
+            print(
+                f"     Auth as: {user.get('displayName', username)} "
+                f"<{user.get('emailAddress', '?')}>"
+            )
+    except BitbucketError:
+        pass
 
 
 def _bb_cmd_logout(args, project_path: str) -> None:
@@ -5661,7 +5677,7 @@ def _bb_cmd_status(args, project_path: str) -> None:
         return
     token = bb_creds.load_token(active["base_url"], active["username"])
     if not token:
-        print("  Connection: FAIL — no token in keyring")
+        print("  Connection: FAIL -- no token in keyring")
         return
     try:
         client = BitbucketDataCenterClient(
@@ -5671,7 +5687,7 @@ def _bb_cmd_status(args, project_path: str) -> None:
         props = client.application_properties()
         print(f"  Connection: OK (version {props.get('version','?')})")
     except BitbucketError as exc:
-        print(f"  Connection: FAIL — {exc}")
+        print(f"  Connection: FAIL -- {exc}")
 
 
 def _bb_cmd_use(args, project_path: str) -> None:
@@ -6571,6 +6587,15 @@ def _launch_tui() -> None:
 
 
 def main():
+    # Force UTF-8 on the CLI streams so server-supplied text (PR titles, branch
+    # names, diffs) and our own glyphs render cleanly on Windows cp1252 consoles
+    # instead of raising UnicodeEncodeError or mojibaking.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     try:
         from services import error_reporting
         error_reporting.init(component="c3-cli", version=__version__)

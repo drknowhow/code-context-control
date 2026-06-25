@@ -290,15 +290,41 @@ BITBUCKET_DEFAULTS = {
 }
 
 
+def _read_bitbucket_section(config_file: Path) -> dict:
+    """Return the ``bitbucket`` section of a config file, or ``{}``."""
+    if not config_file.exists():
+        return {}
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    section = data.get("bitbucket", {})
+    return section if isinstance(section, dict) else {}
+
+
 def load_bitbucket_config(project_path: str) -> dict:
-    """Load Bitbucket config from .c3/config.json, merged with defaults."""
-    config_file = Path(project_path) / ".c3" / "config.json"
-    overrides = {}
-    if config_file.exists():
+    """Load Bitbucket config from .c3/config.json, merged with defaults.
+
+    Resolution precedence: the project ``<project>/.c3/config.json`` wins, but
+    when it has no active account we fall back to the global
+    ``~/.c3/config.json`` so a one-time ``c3 bitbucket login`` (or
+    ``login --global``) is reusable across every C3 project. The PAT itself
+    always lives in the OS keyring, never in these files.
+    """
+    project_file = Path(project_path) / ".c3" / "config.json"
+    overrides = _read_bitbucket_section(project_file)
+    if not (overrides.get("active") or {}).get("base_url"):
+        # Path.home() raises RuntimeError when no home dir is resolvable (e.g.
+        # a stripped subprocess env); treat that as "no global fallback".
         try:
-            with open(config_file, encoding="utf-8") as f:
-                data = json.load(f)
-            overrides = data.get("bitbucket", {})
+            home_file = Path.home() / ".c3" / "config.json"
+            already_home = home_file.resolve() == project_file.resolve()
         except Exception:
-            pass
+            home_file = None
+            already_home = True
+        if home_file is not None and not already_home:
+            home_overrides = _read_bitbucket_section(home_file)
+            if (home_overrides.get("active") or {}).get("base_url"):
+                overrides = home_overrides
     return {**BITBUCKET_DEFAULTS, **overrides}

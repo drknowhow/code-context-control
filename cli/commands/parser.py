@@ -303,6 +303,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     bb_login.add_argument("--token", help="Personal Access Token (prompted via getpass if omitted — preferred)")
     bb_login.add_argument("--no-set-active", action="store_true", help="Do not switch the active account to this one")
     bb_login.add_argument("--insecure", action="store_true", help="Disable TLS verification (self-signed certs)")
+    bb_login.add_argument("--global", dest="use_global", action="store_true", help="Store the account in the global ~/.c3/config.json so it is reusable in every C3 project")
     bb_login.add_argument("project_path", nargs="?", default=".")
 
     bb_logout = bb_subs.add_parser("logout", help="Remove a Bitbucket account from keyring + config")
