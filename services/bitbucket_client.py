@@ -28,7 +28,15 @@ _TIMEOUT = 30  # seconds
 _API = "/rest/api/1.0"
 _BUILD_API = "/rest/build-status/1.0"
 _BRANCH_UTILS = "/rest/branch-utils/1.0"
-_USER_AGENT = "c3-bitbucket/2.30.0"
+
+try:
+    from importlib.metadata import version as _pkg_version
+
+    _C3_VERSION = _pkg_version("code-context-control")
+except Exception:  # pragma: no cover - package metadata may be unavailable
+    _C3_VERSION = "0.0.0"
+
+_USER_AGENT = f"c3-bitbucket/{_C3_VERSION}"
 
 
 class BitbucketError(RuntimeError):
@@ -80,6 +88,8 @@ class BitbucketDataCenterClient:
         params: dict | None = None,
         api_root: str = _API,
         raw: bool = False,
+        accept: str = "application/json",
+        return_headers: bool = False,
     ) -> Any:
         full_path = f"{api_root}{path}"
         if params:
@@ -92,7 +102,7 @@ class BitbucketDataCenterClient:
 
         headers = {
             "Authorization": f"Bearer {self._token}",
-            "Accept": "application/json",
+            "Accept": accept,
             "User-Agent": _USER_AGENT,
         }
         data: bytes | None = None
@@ -109,14 +119,19 @@ class BitbucketDataCenterClient:
         try:
             with urllib.request.urlopen(req, timeout=self._timeout, context=self._ssl_context()) as resp:
                 payload = resp.read()
+                resp_headers = {k: v for k, v in resp.headers.items()}
                 if raw:
-                    return payload
-                if not payload:
-                    return {}
-                try:
-                    return json.loads(payload.decode("utf-8"))
-                except json.JSONDecodeError:
-                    return {"raw": payload.decode("utf-8", errors="replace")}
+                    body_out: Any = payload
+                elif not payload:
+                    body_out = {}
+                else:
+                    try:
+                        body_out = json.loads(payload.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        body_out = {"raw": payload.decode("utf-8", errors="replace")}
+                if return_headers:
+                    return body_out, resp_headers
+                return body_out
         except urllib.error.HTTPError as exc:
             try:
                 err_payload = json.loads(exc.read().decode("utf-8"))
@@ -168,8 +183,27 @@ class BitbucketDataCenterClient:
         return self._request("GET", "/application-properties")
 
     def whoami(self) -> dict:
-        """The authenticated user (PAT owner)."""
-        return self._request("GET", "/users/me")
+        """The authenticated user (PAT owner).
+
+        Bitbucket Data Center / Server has no ``/users/me`` endpoint (that is a
+        Cloud convention; DC treats ``me`` as a literal username and 404s).
+        Resolve the account from the ``X-AUSERNAME`` header that rides on every
+        authenticated response, then enrich with the user record when possible.
+        """
+        _body, headers = self._request(
+            "GET", "/application-properties", return_headers=True
+        )
+        slug = ""
+        for key, value in (headers or {}).items():
+            if key.lower() == "x-ausername":
+                slug = urllib.parse.unquote(value or "")
+                break
+        if not slug:
+            return {}
+        try:
+            return self._request("GET", f"/users/{urllib.parse.quote(slug)}")
+        except BitbucketError:
+            return {"name": slug, "slug": slug, "displayName": slug}
 
     # ── Projects & repos (read) ───────────────────────────
 
@@ -282,6 +316,7 @@ class BitbucketDataCenterClient:
             f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/diff",
             params={"contextLines": context_lines},
             raw=True,
+            accept="text/plain",
         )
         if isinstance(payload, bytes):
             return payload.decode("utf-8", errors="replace")

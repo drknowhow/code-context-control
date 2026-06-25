@@ -24,8 +24,9 @@ from services.bitbucket_client import (
 class _Resp:
     """Tiny stand-in for the urllib response context manager."""
 
-    def __init__(self, payload: bytes):
+    def __init__(self, payload: bytes, headers: dict | None = None):
         self._payload = payload
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -37,8 +38,8 @@ class _Resp:
         return self._payload
 
 
-def _ok(json_obj):
-    return _Resp(json.dumps(json_obj).encode("utf-8"))
+def _ok(json_obj, headers: dict | None = None):
+    return _Resp(json.dumps(json_obj).encode("utf-8"), headers=headers)
 
 
 class TestBitbucketClient(unittest.TestCase):
@@ -62,6 +63,7 @@ class TestBitbucketClient(unittest.TestCase):
         def fake_urlopen(req, timeout=None, context=None):
             captured["url"] = req.full_url
             captured["auth"] = req.get_header("Authorization")
+            captured["accept"] = req.get_header("Accept")
             captured["method"] = req.get_method()
             return _ok({"version": "8.5.0", "displayName": "Bitbucket"})
 
@@ -70,6 +72,7 @@ class TestBitbucketClient(unittest.TestCase):
 
         self.assertEqual(res["version"], "8.5.0")
         self.assertEqual(captured["auth"], "Bearer t0k3n")
+        self.assertEqual(captured["accept"], "application/json")
         self.assertEqual(captured["method"], "GET")
         self.assertIn("/rest/api/1.0/application-properties", captured["url"])
 
@@ -144,15 +147,21 @@ class TestBitbucketClient(unittest.TestCase):
         self.assertEqual(res["state"], "MERGED")
         self.assertIn("version=4", captured["url"])
 
-    def test_get_pr_diff_returns_text(self):
+    def test_get_pr_diff_requests_text_plain(self):
         diff_bytes = b"diff --git a/x b/x\n+y\n"
+        captured = {}
 
         def fake_urlopen(req, timeout=None, context=None):
+            captured["accept"] = req.get_header("Accept")
+            captured["url"] = req.full_url
             return _Resp(diff_bytes)
 
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
             text = self.client.get_pr_diff("PROJ", "repo", 1)
         self.assertIn("+y", text)
+        # Issue 1: the diff must be content-negotiated as text/plain, not JSON.
+        self.assertEqual(captured["accept"], "text/plain")
+        self.assertIn("/pull-requests/1/diff", captured["url"])
 
     def test_http_error_translated_to_bitbucket_error(self):
         import urllib.error
@@ -197,6 +206,56 @@ class TestBitbucketClient(unittest.TestCase):
             self.client.decline_pr("PROJ", "repo", 3, version=2)
         self.assertIn("version=2", captured["url"])
         self.assertIn("/decline", captured["url"])
+
+    def test_whoami_resolves_via_xausername_header(self):
+        # Issue 2: Data Center has no /users/me; whoami must read X-AUSERNAME
+        # from an authenticated response and enrich via /users/{slug}.
+        calls = []
+
+        def fake_urlopen(req, timeout=None, context=None):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/application-properties"):
+                return _Resp(
+                    json.dumps({"version": "9.4.0"}).encode("utf-8"),
+                    headers={"X-AUSERNAME": "jdoe"},
+                )
+            if "/users/" in req.full_url:
+                return _ok(
+                    {
+                        "name": "jdoe",
+                        "displayName": "Jane Doe",
+                        "emailAddress": "jdoe@example.com",
+                    }
+                )
+            return _ok({})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            user = self.client.whoami()
+
+        self.assertEqual(user.get("displayName"), "Jane Doe")
+        self.assertTrue(any(u.endswith("/application-properties") for u in calls))
+        self.assertTrue(any("/users/jdoe" in u for u in calls))
+        self.assertFalse(any("/users/me" in u for u in calls))
+
+    def test_whoami_without_header_returns_empty(self):
+        def fake_urlopen(req, timeout=None, context=None):
+            return _ok({"version": "9.4.0"})  # no X-AUSERNAME header
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(self.client.whoami(), {})
+
+    def test_user_agent_reflects_package_version(self):
+        # Issue 5: User-Agent must not be the stale hardcoded 2.30.0 literal.
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["ua"] = req.get_header("User-agent")
+            return _ok({"version": "9.4.0"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.application_properties()
+        self.assertTrue(captured["ua"].startswith("c3-bitbucket/"))
+        self.assertNotEqual(captured["ua"], "c3-bitbucket/2.30.0")
 
 
 if __name__ == "__main__":

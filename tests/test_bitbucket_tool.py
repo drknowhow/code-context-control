@@ -174,6 +174,16 @@ class TestBitbucketTool(unittest.TestCase):
         res = tool.handle_bitbucket("list_branches", self.svc, finalize)
         self.assertIn("project and repo are required", res)
 
+    def test_cap_clamps_single_overlong_line(self):
+        # Issue 7: one line with no newlines must still be clamped by chars.
+        long_line = "x" * 200_000
+        out = tool._cap(long_line)
+        self.assertTrue(out.endswith("[truncated]"))
+        self.assertLessEqual(
+            len(out), tool._RESPONSE_TOKEN_CAP * 4 + len("\n[truncated]")
+        )
+        self.assertLess(len(out), len(long_line))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.40.0] - 2026-06-25
+
+A Bitbucket Data Center / Server fix batch. A full PR-lifecycle evaluation against a
+live Data Center server surfaced seven issues in the `c3_bitbucket` tool and `c3 bitbucket`
+CLI; all are fixed here.
+
+### Fixed
+
+- **`get_pr_diff` returned the JSON diff model instead of a unified diff.** `_request`
+  always sent `Accept: application/json`, so Bitbucket content-negotiated to its
+  structured diff object even though `get_pr_diff` requested the raw body. `_request`
+  now takes an `accept` parameter and `get_pr_diff` asks for `text/plain`, yielding a
+  readable `diff --git … / @@ … @@` unified diff. (Issue 1)
+- **`whoami` 404'd on Data Center and made valid logins look failed.** `GET
+  /users/me` is a Bitbucket **Cloud** convention; DC treats `me` as a literal username.
+  `whoami` now resolves the account from the `X-AUSERNAME` response header (carried on
+  every authenticated request) and enriches via `GET /users/{slug}`. The `login`
+  connection probe gates success on `application-properties` only and treats the
+  `whoami` enrichment as best-effort, so a valid token never prints a probe failure.
+  (Issue 2)
+- **Bitbucket account was per-project with no global fallback.** A project that had
+  never run `c3 bitbucket login` reported "no active account" even when the user had
+  logged in elsewhere. `load_bitbucket_config` now falls back to `~/.c3/config.json`
+  when the project has no active account (precedence: project → home → defaults), and a
+  new `c3 bitbucket login --global` writes the home config for reuse everywhere. The
+  PAT still lives only in the OS keyring. (Issue 3)
+- **Unicode output mojibaked / crashed on Windows cp1252 consoles.** Decorative glyphs
+  (`→ — ✓ · …`) are replaced with ASCII (`-> -- [x] [ ] ...`) in the Bitbucket
+  formatters and status output, and the `c3` CLI now reconfigures stdout/stderr to
+  UTF-8 at entry so server-supplied text (PR titles, branch names, diffs) renders
+  cleanly instead of raising `UnicodeEncodeError`. (Issue 4)
+- **Stale `User-Agent`.** `c3-bitbucket/2.30.0` was hardcoded; it is now derived from
+  the installed package version via `importlib.metadata`. (Issue 5)
+- **Response cap could emit one over-long line.** `_cap` reduced output line-by-line
+  but never split a single line; it now hard-clamps by characters as a final guard.
+  (Issue 7)
+
+### Docs
+
+- Documented the `--global` login flag, the project → home account-resolution
+  precedence, and an upgrade-safety note (stop the running server before `c3 upgrade`
+  to avoid pip's `~`-prefixed backup dirs in `site-packages`). (Issue 6)
+
 ## [2.39.1] - 2026-06-24
 
 A small reliability fix for `c3_delegate`.
