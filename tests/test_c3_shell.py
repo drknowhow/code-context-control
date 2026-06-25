@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -209,6 +210,80 @@ class TestShellRealSubprocess(unittest.TestCase):
         out = _run(shell_mod.handle_shell(cmd, "", 10, False, False, svc, _finalize_passthrough))
         self.assertIn("[c3_shell:OK]", out)
         self.assertIn("c3_smoke", out)
+
+
+class _FakePopen:
+    """Captures Popen construction args; emulates a clean exit."""
+
+    last_args: tuple = ()
+    last_kwargs: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        _FakePopen.last_args = args
+        _FakePopen.last_kwargs = kwargs
+        self.returncode = 0
+
+    def communicate(self, timeout=None):
+        return ("out\n", "")
+
+
+class TestShellSelection(unittest.TestCase):
+    """Windows Git Bash discovery/selection and _run_sync shell routing."""
+
+    def setUp(self):
+        shell_mod._bash_cache.clear()
+        os.environ.pop("C3_SHELL_BASH", None)
+
+    def tearDown(self):
+        shell_mod._bash_cache.clear()
+        os.environ.pop("C3_SHELL_BASH", None)
+
+    def test_non_win32_returns_none(self):
+        with patch.object(shell_mod.sys, "platform", "linux"):
+            self.assertIsNone(shell_mod._select_bash())
+
+    def test_env_override_zero_forces_default_shell(self):
+        os.environ["C3_SHELL_BASH"] = "0"
+        with patch.object(shell_mod.sys, "platform", "win32"):
+            self.assertIsNone(shell_mod._select_bash())
+
+    def test_env_override_explicit_path_honored(self):
+        os.environ["C3_SHELL_BASH"] = __file__  # an existing file stands in for bash
+        with patch.object(shell_mod.sys, "platform", "win32"):
+            self.assertEqual(shell_mod._select_bash(), __file__)
+
+    def test_discovers_git_bash_from_program_files(self):
+        base = r"C:\PF"
+        expected = os.path.join(base, "Git", "bin", "bash.exe")
+        with patch.dict(os.environ, {"ProgramFiles": base}, clear=False), \
+                patch.object(shell_mod.os.path, "isfile", lambda p: p == expected):
+            self.assertEqual(shell_mod._discover_git_bash(), expected)
+
+    def test_rejects_wsl_system32_bash(self):
+        with patch.object(shell_mod.os.path, "isfile", lambda p: False), \
+                patch.object(shell_mod.shutil, "which",
+                             return_value=r"C:\Windows\System32\bash.exe"):
+            self.assertIsNone(shell_mod._discover_git_bash())
+
+    def test_accepts_non_system_path_bash_from_which(self):
+        with patch.object(shell_mod.os.path, "isfile", lambda p: False), \
+                patch.object(shell_mod.shutil, "which",
+                             return_value=r"C:\tools\msys\bash.exe"):
+            self.assertEqual(shell_mod._discover_git_bash(), r"C:\tools\msys\bash.exe")
+
+    def test_run_sync_uses_bash_argv_when_selected(self):
+        with patch.object(shell_mod, "_select_bash", return_value="FAKEBASH"), \
+                patch.object(shell_mod.subprocess, "Popen", _FakePopen):
+            shell_mod._run_sync("echo hi", ".", 5)
+        self.assertEqual(_FakePopen.last_args[0], ["FAKEBASH", "-c", "echo hi"])
+        self.assertIs(_FakePopen.last_kwargs["shell"], False)
+
+    def test_run_sync_falls_back_to_default_shell_string(self):
+        with patch.object(shell_mod, "_select_bash", return_value=None), \
+                patch.object(shell_mod.subprocess, "Popen", _FakePopen):
+            shell_mod._run_sync("echo hi", ".", 5)
+        self.assertEqual(_FakePopen.last_args[0], "echo hi")
+        self.assertIs(_FakePopen.last_kwargs["shell"], True)
 
 
 if __name__ == "__main__":
