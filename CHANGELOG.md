@@ -6,6 +6,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Stream A — Honest measurement layer (P1)
+
+- **Structured per-tool token accounting.** New
+  `cli.tools._helpers.finalize_with_tokens()` +
+  `SessionManager.record_tool_tokens()` let tools report measured
+  `(raw_tokens, optimized_tokens)` explicitly instead of encoding them in
+  summary strings for regex-scraping. The legacy summary parser
+  (`_parse_summary_token_pair`) remains as a fallback for tools not yet
+  migrated; structured reporting suppresses it per-call to prevent double
+  counting. `c3_read` is migrated as the reference tool.
+- **Per-tool telemetry JSONL.** Every MCP tool call now appends one record to
+  `.c3/tool_telemetry.jsonl` (`ts, session_id, tool, action, response_tokens,
+  raw_tokens, optimized_tokens, duration_ms, source`) from the
+  `track_response` seam. Writes are failure-safe: telemetry errors can never
+  break a tool response. C3 can now answer "how many tokens did c3_filter
+  save this week?".
+- **Aggregation query.** New `services.telemetry.aggregate_tool_telemetry(
+  project_path, days=7)` returns per-tool calls, response tokens, and
+  estimated savings over the last N days (not yet surfaced in `c3_status`).
+- **Honest labeling.** Session `token_usage` savings key renamed
+  `estimated_saved` → `estimated_saved_vs_full_read`: the "raw" side of the
+  pair is a full-file-read baseline (a counterfactual), so savings are
+  estimates vs that baseline, not measurements of real agent behavior.
+- **README claims reconciled with code.** The compression claim now matches
+  `c3_compress` ("structural map at 40-70% of the original token count,
+  30-60% smaller" — previously "70%-smaller"), and the dashboard's "448K
+  tokens saved (89.9%)" figure is annotated as an illustrative example
+  measured against the full-read baseline.
+- **Session benchmark baseline de-strawmanned.** The "without C3" path in
+  `services/session_benchmark.py` now models a competent agent: one targeted
+  grep (matching lines + context, not full-file dumps) and each needed file
+  read at most ONCE (partial when very large, mirroring native Read's line
+  cap) — instead of 3-4 repeated full reads per scenario. Baseline read steps
+  record which files they ingest (`StepResult.detail = "reads:..."`), and a
+  new test asserts the at-most-once property.
+
 ## [2.41.0] - 2026-06-25
 
 ### Fixed

@@ -30,7 +30,7 @@ A thin **local** layer that sits between your IDE and your repo. Every AI tool c
 
 | Without C3 | With C3 |
 |---|---|
-| `Read` the whole 2,000-line file | `c3_compress` returns a 70%-smaller structural map → `c3_read(symbols=...)` for the exact function |
+| `Read` the whole 2,000-line file | `c3_compress` returns a structural map at 40-70% of the original token count (30-60% smaller) → `c3_read(symbols=...)` for the exact function |
 | `Grep` the whole repo blindly | `c3_search` returns ranked candidates with TF-IDF + symbol awareness |
 | Dump full `pytest` output into the prompt | `c3_filter` distills 500 lines → 30 actionable ones |
 | Edit, hope it compiled | `c3_edit` writes via a ledger + `c3_validate` runs `pyright`/`tsc` automatically |
@@ -135,7 +135,7 @@ c3 ui                             # opens http://127.0.0.1:3333
   <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/ui_dashboard.png" alt="C3 per-project dashboard" width="900">
 </p>
 
-Real metrics from a real project: **448K tokens saved** (89.9% rate), 208 files indexed, 20 sessions, codebase breakdown by language, current-session live counters (in/out tokens, cache reads, services online), and a stream of recent tool calls and file changes.
+Illustrative example from one project's dashboard (numbers vary by project): **448K tokens saved** (89.9% rate) — C3's estimate versus a full-file-read baseline — plus 208 files indexed, 20 sessions, codebase breakdown by language, current-session live counters (in/out tokens, cache reads, services online), and a stream of recent tool calls and file changes.
 
 ### 3. Edit Ledger — every AI-driven edit tracked
 

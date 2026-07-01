@@ -8,6 +8,8 @@ from typing import Any
 
 from core import count_tokens
 
+from cli.tools._helpers import finalize_with_tokens
+
 
 def _coerce_list(val: Any) -> list[str] | None:
     """Coerce symbols from string/JSON to list. MCP clients sometimes serialize lists as strings."""
@@ -206,8 +208,12 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
             resp = (f"[read:error] Ambiguous symbols found in {file_path}:\n"
                     + "\n".join(disambiguation_msgs)
                     + "\nTry using exact regex (e.g., '^symbol_name$') or the specific symbol name.")
-            return finalize("c3_read", {"file": file_path, "symbols": symbols},
-                            resp, f"{full_file_tokens()}->0tok")
+            resp_tok = count_tokens(resp)
+            return finalize_with_tokens(
+                finalize, svc, "c3_read", {"file": file_path, "symbols": symbols},
+                resp, f"{full_file_tokens()}->{resp_tok}tok",
+                raw_tokens=full_file_tokens(), optimized_tokens=resp_tok,
+                response_tokens=resp_tok)
 
         for m in matches:
             ranges.append(m["range"])
@@ -241,15 +247,21 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     if not ranges and symbols:
         file_map = svc.file_memory.get_or_build_map(rel_path)
         resp = f"[read:{file_path}] symbols not found: {symbols}. Showing file map:\n{file_map}"
-        return finalize("c3_read", {"file": file_path, "symbols": symbols},
-                        resp, f"{full_file_tokens()}->{count_tokens(file_map)}tok")
+        map_tok = count_tokens(file_map)
+        return finalize_with_tokens(
+            finalize, svc, "c3_read", {"file": file_path, "symbols": symbols},
+            resp, f"{full_file_tokens()}->{map_tok}tok",
+            raw_tokens=full_file_tokens(), optimized_tokens=map_tok)
 
     if not ranges:
         file_map = svc.file_memory.get_or_build_map(rel_path)
         map_tok = count_tokens(file_map)
         resp = file_map
-        return finalize("c3_read", {"file": file_path},
-                        resp, f"{full_file_tokens()}->{map_tok}tok")
+        return finalize_with_tokens(
+            finalize, svc, "c3_read", {"file": file_path},
+            resp, f"{full_file_tokens()}->{map_tok}tok",
+            raw_tokens=full_file_tokens(), optimized_tokens=map_tok,
+            response_tokens=map_tok)
     else:
         # Sort and merge overlapping ranges
         ranges.sort()
@@ -279,5 +291,7 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     tokens = count_tokens(final_content)
     summary = f"{full_file_tokens()}->{tokens}tok" if tokens < full_file_tokens() else f"{tokens}tok"
     resp = f"{final_content}"
-    return finalize("c3_read", {"file": file_path, "symbols": symbols}, resp, summary,
-                    response_tokens=tokens)
+    return finalize_with_tokens(
+        finalize, svc, "c3_read", {"file": file_path, "symbols": symbols}, resp, summary,
+        raw_tokens=full_file_tokens(), optimized_tokens=tokens,
+        response_tokens=tokens)

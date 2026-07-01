@@ -8,6 +8,46 @@ def maybe_related_facts(svc, topic: str, top_k: int = 3, width: int = 100) -> st
     return ""
 
 
+# ── Structured token accounting (honest measurement layer) ──────────────────
+
+def finalize_with_tokens(finalize, svc, tool_name: str, args: dict,
+                         response: str, summary: str = "", *,
+                         raw_tokens=None, optimized_tokens=None,
+                         duration_ms=None, **finalize_kwargs) -> str:
+    """Finalize a tool response with STRUCTURED token accounting.
+
+    This is the primary accounting path: tools pass explicitly measured
+    (raw_tokens, optimized_tokens) values instead of encoding them in the
+    summary string for SessionManager to regex-scrape
+    (SessionManager._parse_summary_token_pair remains as a fallback for
+    tools not yet migrated).
+
+    Semantics — be honest about what these numbers mean:
+      raw_tokens        full-read baseline: the token cost of ingesting the
+                        entire un-optimized source. A counterfactual — the
+                        model would not necessarily have read the whole file.
+      optimized_tokens  what C3 actually returned for this operation.
+
+    Savings derived from the pair are labeled
+    ``estimated_saved_vs_full_read`` in session token_usage and in the
+    per-tool telemetry JSONL (.c3/tool_telemetry.jsonl).
+
+    Failure-safe: accounting errors never break the tool response. Any extra
+    keyword args (e.g. response_tokens) are forwarded to ``finalize``.
+    """
+    try:
+        session_mgr = getattr(svc, "session_mgr", None)
+        if session_mgr is not None and (
+                raw_tokens is not None or optimized_tokens is not None
+                or duration_ms is not None):
+            session_mgr.record_tool_tokens(
+                tool_name, raw_tokens=raw_tokens,
+                optimized_tokens=optimized_tokens, duration_ms=duration_ms)
+    except Exception:
+        pass
+    return finalize(tool_name, args, response, summary, **finalize_kwargs)
+
+
 # ── Ghost-file path validation ───────────────────────────────────────────────
 
 # Python builtin / typing names that should never be file paths
