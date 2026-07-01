@@ -1415,17 +1415,34 @@ class KeyFileVersionAgent(BackgroundAgent):
             return
 
         sample = changed[:self.max_changes_per_notice]
-        files = ", ".join(item["file"] for item in sample)
+        files = ", ".join(self._describe_change(item) for item in sample)
         if len(changed) > len(sample):
             files += f" (+{len(changed) - len(sample)} more)"
         dirty = sum(1 for item in changed if (item.get("git", {}) or {}).get("dirty"))
         severity = "warning" if dirty else "info"
         target = self.ide_name if self.agent_target in ("", "current", None) else self.agent_target
+        # replace_if_unacked: update the pending notice in place instead of
+        # appending an identical warning every cycle — the store bumps
+        # count/last_seen so repeat drift stays visible without pile-up.
         self.notify(
             severity,
             "Key file versions changed",
             f"{files}. Tailored target: {target}. Git dirty: {dirty}.",
+            replace_if_unacked=True,
         )
+
+    @staticmethod
+    def _describe_change(item: dict) -> str:
+        """Actionable per-file detail: 'cli/mcp_server.py (3f2a1bc->9d4e2aa)'."""
+        old = (item.get("previous_hash") or "")[:7]
+        new = (item.get("current_hash") or "")[:7]
+        if not item.get("exists", True):
+            detail = f"{old or '?'}->deleted"
+        elif old or new:
+            detail = f"{old or 'new'}->{new or '?'}"
+        else:
+            detail = "changed"
+        return f"{item.get('file', '?')} ({detail})"
 
 
 class EditLedgerEnricherAgent(BackgroundAgent):

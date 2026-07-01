@@ -7,6 +7,7 @@ Removed views (available via REST API/CLI):
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cli.hook_ghost_files import cleanup_ghost_files, scan_ghost_files
@@ -262,20 +263,60 @@ def _sessions_view(svc, finalize):
     return finalize("c3_status", {"view": "sessions"}, resp, f"{len(recent)}sess")
 
 
+# Actionable lines shown before the "+N more" tail kicks in.
+_NOTIF_MAX_SHOWN = 10
+
+
+def _format_notification_line(n: dict) -> str:
+    """One actionable line: severity, agent, title, message detail, and a
+    '(xN, last HH:MM)' suffix for records the store collapsed from duplicates.
+    """
+    line = f"[{n.get('severity', 'info')}] {n.get('agent', '?')}: {n.get('title', '')}"
+    msg = " ".join((n.get("message") or "").split())
+    if msg:
+        if len(msg) > 120:
+            msg = msg[:117] + "..."
+        line += f" — {msg}"
+    try:
+        count = max(1, int(n.get("count", 1) or 1))
+    except (TypeError, ValueError):
+        count = 1
+    if count > 1:
+        last = _format_last_seen(n.get("last_seen") or n.get("timestamp") or "")
+        line += f" (x{count}, last {last})" if last else f" (x{count})"
+    return line
+
+
+def _format_last_seen(iso: str) -> str:
+    """ISO timestamp (UTC) -> local 'HH:MM'. Empty string on parse failure."""
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _notifications_view(svc, finalize):
     """Actionable warnings + critical only. Info events are archived,
     not surfaced here — 'File maps updated' is not news worth paging on.
     Use the web UI activity log or the REST API with severities='info'
     to inspect them.
+
+    Duplicates are collapsed by the store into one record with a count;
+    the list is capped at _NOTIF_MAX_SHOWN lines with a '+N more' tail.
     """
-    pending = svc.notifications.get_unacknowledged(limit=20)  # actionable by default
+    pending = svc.notifications.get_unacknowledged(limit=50)  # actionable by default
     info_count = svc.notifications.get_suppressed_info_count()
     if not pending:
         tail = f" ({info_count} info events archived)" if info_count else ""
         return f"No actionable notifications.{tail}"
     lines = [f"# Actionable ({len(pending)})"]
-    for n in pending:
-        lines.append(f"[{n['severity']}] {n['agent']}: {n['title']}")
+    for n in pending[:_NOTIF_MAX_SHOWN]:
+        lines.append(_format_notification_line(n))
+    if len(pending) > _NOTIF_MAX_SHOWN:
+        lines.append(f"... +{len(pending) - _NOTIF_MAX_SHOWN} more")
     if info_count:
         lines.append(f"\n(+{info_count} info events archived — not shown)")
     return finalize("c3_status", {"view": "notifications"},
