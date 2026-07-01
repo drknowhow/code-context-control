@@ -6475,6 +6475,24 @@ def cmd_upgrade(args):
     print("  In each project, run  c3 init . --force  to apply any migrations.")
 
 
+def _stdio_is_interactive() -> bool:
+    """True when stdin AND stdout are attached to a real terminal.
+
+    Used to decide whether bare `c3` may launch the full-screen TUI. With
+    redirected stdio (pytest capture_output, CI, shell pipes) a TUI child
+    would inherit our pipe handles and keep them open past our own death;
+    on Windows the caller's communicate() then blocks forever because
+    subprocess timeouts kill only the direct child, never the tree.
+    """
+    try:
+        return bool(
+            sys.stdin is not None and sys.stdin.isatty()
+            and sys.stdout is not None and sys.stdout.isatty()
+        )
+    except Exception:
+        return False
+
+
 def _launch_tui() -> None:
     """Launch the interactive TUI — what `c3` with no arguments does.
 
@@ -6524,8 +6542,16 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        # Bare `c3` launches the interactive TUI (replaces the old c3.bat wrapper).
-        _launch_tui()
+        # Bare `c3` launches the interactive TUI (replaces the old c3.bat
+        # wrapper) — but only when attached to a real console. With redirected
+        # stdio there is no terminal for a full-screen app anyway, and the TUI
+        # child would inherit our stdout/stderr pipe handles and hold them
+        # open past our own death (a caller's communicate() then hangs forever
+        # on Windows). Print help instead of spawning anything.
+        if _stdio_is_interactive():
+            _launch_tui()
+        else:
+            parser.print_help()
         return
 
     commands = {
