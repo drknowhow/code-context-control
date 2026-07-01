@@ -4,6 +4,29 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### CLI smoke-test Windows pipe hang fixed
+
+- **Bare `c3` no longer spawns the TUI into redirected stdio.** With piped
+  stdout/stderr (pytest `capture_output`, CI, shell pipes), the no-args path
+  used to launch the `tui/main.py` child, which inherited the caller's pipe
+  handles and held them open past the parent's death — on Windows,
+  `subprocess.run(timeout=...)` kills only the direct child, so the caller's
+  `communicate()` blocked forever. `c3` with no arguments now launches the
+  TUI only when stdin AND stdout are a real terminal, and prints `--help`
+  otherwise (`_stdio_is_interactive()` gate in `cli/c3.py`). Interactive use
+  is unchanged.
+- **Hang-proof smoke-test runner.** `tests/test_cli_smoke.py` replaced its
+  `subprocess.run(timeout=...)` helper with the repo's Popen +
+  `stdin=DEVNULL` + communicate-with-timeout + `taskkill /F /T` tree-kill
+  pattern (POSIX: own session + `killpg`), with explicit UTF-8 decoding. A
+  future regression now FAILS in bounded time with a clear message instead
+  of hanging pytest and orphaning processes.
+- `tests/test_cli_smoke.py` — previously excluded from suite runs because
+  `test_no_args_prints_help_and_exits_zero` hung indefinitely on Windows —
+  is now safe to run (verified 3 consecutive full-file runs, ~1-2s each).
+
 ## [2.42.0] - 2026-07-01
 
 ### Honest measurement layer
