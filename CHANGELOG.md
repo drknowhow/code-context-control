@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Stream E — Compressor large-file fast path (P8a)
+
+- **Large-file fast path in `services/compressor.py`.** Files at or above
+  `LARGE_FILE_LINE_THRESHOLD` (10,000 lines) or `LARGE_FILE_BYTE_THRESHOLD`
+  (200 KB) — both configurable module constants — now skip the full regex/AST
+  structural pipeline. Instead they return a cheap header (size, line count,
+  detected language, up to 30 import/signature lines from a bounded scan of
+  the first 64 KB) plus explicit guidance to use `c3_compress(mode='diff')`,
+  `c3_read(lines=[start,end])`, or `c3_search` to target sections. The result
+  keeps the standard contract (`compressed`/`mode`/`filepath` + token-savings
+  keys) so callers and raw->compressed accounting are unaffected; `diff` and
+  `summary` modes are exempt, and pre-existing content-hash cache entries
+  still win over the fast path.
+- **Per-extension AST parse-failure memo.** When tree-sitter parsing raises
+  for a file extension, the failure is memoized (per-process
+  `AST_PARSE_FAILURES` dict) so subsequent files with that extension skip
+  straight to the regex/generic fallback instead of re-attempting a
+  known-failing parse. A parser returning `None` (unsupported language) is
+  not memoized; render failures fall back per-file without memoizing.
+
 ## [2.41.0] - 2026-06-25
 
 ### Fixed
