@@ -69,6 +69,44 @@ for ext in ['.tsx', '.jsx']:
     STRUCTURE_PATTERNS[ext] = STRUCTURE_PATTERNS['.ts'].copy()
 
 
+# ── Large-file fast path (P8a) ──────────────────────────────────────────────
+# Files exceeding EITHER threshold skip the full regex/AST structural pipeline
+# and get a cheap header built from a bounded scan of the file head instead.
+# Module-level so deployments (and tests) can tune them.
+LARGE_FILE_LINE_THRESHOLD = 10_000       # fast path when line count >= this
+LARGE_FILE_BYTE_THRESHOLD = 200 * 1024   # fast path when file size >= this (~200 KB)
+LARGE_FILE_SCAN_BYTES = 64 * 1024        # bounded scan window for the header preview
+LARGE_FILE_PREVIEW_LINES = 30            # max import/signature lines in the preview
+
+LARGE_FILE_GUIDANCE = (
+    "file too large for full compression — use c3_compress(mode='diff'), "
+    "c3_read(lines=[start,end]), or c3_search to target sections"
+)
+
+# Human-readable language names for the fast-path header (keys are lowercase
+# extensions — compress_file lowercases the suffix before lookup). Display
+# names only; this does NOT add compression support for new languages.
+_EXT_LANGUAGE_NAMES = {
+    '.py': 'Python',
+    '.js': 'JavaScript', '.jsx': 'JavaScript (JSX)',
+    '.ts': 'TypeScript', '.tsx': 'TypeScript (TSX)',
+    '.r': 'R',
+    '.go': 'Go', '.rs': 'Rust', '.java': 'Java', '.c': 'C', '.cpp': 'C++',
+    '.cs': 'C#', '.rb': 'Ruby', '.php': 'PHP', '.swift': 'Swift',
+    '.kt': 'Kotlin', '.scala': 'Scala', '.lua': 'Lua', '.pl': 'Perl',
+    '.html': 'HTML', '.htm': 'HTML', '.css': 'CSS',
+    '.json': 'JSON', '.yaml': 'YAML', '.yml': 'YAML', '.toml': 'TOML',
+    '.xml': 'XML', '.md': 'Markdown', '.sh': 'Shell', '.ps1': 'PowerShell',
+    '.bat': 'Batch', '.sql': 'SQL', '.csv': 'CSV', '.txt': 'Plain text',
+}
+
+# Per-process memo of extensions whose AST/tree-sitter parse RAISED:
+# {ext: "ExcType: message"}. Once an extension lands here, subsequent files
+# with the same extension skip the AST attempt and go straight to
+# regex/generic extraction instead of re-attempting a known-failing parse.
+AST_PARSE_FAILURES: dict = {}
+
+
 PROTECTED_COMPRESS_FILES = {
     "cli/c3.py",
     "cli/ui.html",
@@ -169,6 +207,26 @@ class CodeCompressor:
                 except Exception:
                     pass
 
+        # Large-file fast path (P8a): files exceeding either threshold skip
+        # the full regex/AST structural pipeline and get a cheap bounded-scan
+        # header instead. Runs AFTER the cache check so pre-existing cache
+        # entries (keyed on content hash) still win. diff/summary are exempt:
+        # diff is the recommended targeted alternative and summary delegates
+        # to the router.
+        if mode not in ("diff", "summary"):
+            line_count = content.count("\n")
+            if content and not content.endswith("\n"):
+                line_count += 1
+            try:
+                byte_size = filepath.stat().st_size
+            except OSError:
+                byte_size = len(content.encode("utf-8", errors="replace"))
+            if (line_count >= LARGE_FILE_LINE_THRESHOLD
+                    or byte_size >= LARGE_FILE_BYTE_THRESHOLD):
+                return self._compress_large_file(
+                    filepath, content, content_hash, ext, mode,
+                    byte_size, line_count)
+
         if mode == "diff":
             return self._diff_compress(filepath, content)
 
@@ -257,17 +315,119 @@ class CodeCompressor:
 
         return savings
 
+    def _compress_large_file(self, filepath: Path, content: str,
+                             content_hash: str, ext: str, mode: str,
+                             byte_size: int, line_count: int) -> dict:
+        """Large-file fast path (P8a): cheap structural header, bounded scan.
+
+        Skips the full regex/AST pipeline entirely. The result keeps the same
+        contract as a normal compress result — ``compressed``/``mode``/
+        ``filepath`` plus the measure_savings keys — so callers and the
+        raw->compressed token accounting are unaffected.
+        """
+        language = _EXT_LANGUAGE_NAMES.get(ext, ext.lstrip(".") or "unknown")
+        preview = self._scan_head_signatures(content, ext)
+
+        parts = [
+            f"# {filepath.name} ({ext}) — {line_count} lines, "
+            f"{byte_size:,} bytes — {language} [large-file fast path]",
+            f"# NOTE: {LARGE_FILE_GUIDANCE}",
+        ]
+        if preview:
+            scanned_kb = max(1, LARGE_FILE_SCAN_BYTES // 1024)
+            parts.append(
+                f"\n## Imports/signatures from the first ~{scanned_kb} KB "
+                f"(max {LARGE_FILE_PREVIEW_LINES} lines):")
+            parts.extend(preview)
+        result = "\n".join(parts)
+
+        savings = measure_savings(content, result)
+        savings["compressed"] = result
+        savings["mode"] = mode
+        savings["filepath"] = str(filepath)
+        savings["fast_path"] = "large_file"
+        savings["line_count"] = line_count
+        savings["byte_size"] = byte_size
+
+        # Same bookkeeping as the normal path: hash for diff mode + cache
+        # store under the standard content-hash key. Existing disk-cache
+        # entries are untouched (same key format, and the earlier cache check
+        # already returned them before reaching this point).
+        self._file_hashes[str(filepath)] = content_hash
+        cache_key = f"{content_hash}_{mode}{ext}.json"
+        if len(self._mem_cache) >= self._MEM_CACHE_MAX:
+            keys = list(self._mem_cache.keys())
+            for k in keys[:len(keys) // 4]:
+                del self._mem_cache[k]
+        self._mem_cache[cache_key] = dict(savings)
+        cache_file = self.cache_dir / cache_key
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(savings, f, indent=2)
+        except Exception:
+            pass
+
+        return savings
+
+    def _scan_head_signatures(self, content: str, ext: str) -> list:
+        """Bounded scan for the large-file fast path header.
+
+        Collects up to LARGE_FILE_PREVIEW_LINES import/signature lines from
+        the first ~LARGE_FILE_SCAN_BYTES characters of the file (chars ≈
+        bytes for typical source). Uses the extension's STRUCTURE_PATTERNS
+        when known, else a generic declaration heuristic. Never scans beyond
+        the window — that bound is the whole point of the fast path.
+        """
+        window = content[:LARGE_FILE_SCAN_BYTES]
+        if len(content) > len(window):
+            # Drop the trailing partial line so regexes only see whole lines
+            cut = window.rfind("\n")
+            if cut > 0:
+                window = window[:cut]
+
+        patterns = STRUCTURE_PATTERNS.get(ext)
+        found = []
+        for line in window.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if patterns:
+                for pattern in patterns.values():
+                    if re.match(pattern, stripped, re.MULTILINE):
+                        found.append(stripped)
+                        break
+            else:
+                lowered = stripped.lower()
+                if (any(kw in lowered for kw in (
+                        'import', 'require', 'include', 'function', 'class ',
+                        'def ', 'module', 'export', 'package '))
+                        or re.match(r'^[A-Za-z_]\w*\s*[=({<]', stripped)):
+                    found.append(stripped)
+            if len(found) >= LARGE_FILE_PREVIEW_LINES:
+                break
+        return found
+
     def _extract_structure(self, content: str, ext: str, mode: str) -> str:
         """Extract structural elements from source code."""
-        # 1. Try Tree-sitter AST extraction first (if available and not disabled)
-        if HAS_TREE_SITTER:
+        # 1. Try Tree-sitter AST extraction first (if available and not
+        #    disabled). Extensions whose parse previously RAISED in this
+        #    process are memoized in AST_PARSE_FAILURES and skip straight to
+        #    regex/generic — no repeated attempt-and-catch per file (P8a).
+        if HAS_TREE_SITTER and ext not in AST_PARSE_FAILURES:
+            sections = None
             try:
                 sections = extract_sections_ast(content, ext)
-                if sections:
+            except Exception as exc:
+                # Memoize the parse failure for this extension so later files
+                # with the same extension go straight to the regex fallback.
+                AST_PARSE_FAILURES[ext] = f"{type(exc).__name__}: {exc}"
+            if sections:
+                try:
                     return self._render_ast_sections(sections, content, mode)
-            except Exception:
-                # Fall back to regex on any AST failure
-                pass
+                except Exception:
+                    # Render failure is not a parser failure — do not memoize;
+                    # fall back to regex for this file only.
+                    pass
 
         # 2. Fall back to regex-based extraction
         lines = content.split('\n')
