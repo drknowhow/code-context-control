@@ -4,6 +4,35 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Response boilerplate diet — headers off by default, structured accounting everywhere
+
+- **Per-call "raw->optimized tok" ratio headers removed by default.**
+  `c3_filter` keeps its actionable one-word method tag (`[filter:pass1]`,
+  `[extract:.log]`); the token pair and %-saved suffix are gone. Compress
+  batch reports drop per-file `(12345->678tok)` tags; transcript search drops
+  per-item full session UUIDs, relevance scores, and token counts (~40
+  tokens/item). New `hybrid.show_token_ratios` config flag (default `false`,
+  same convention as `show_savings_footer`) restores the old headers for
+  debugging.
+- **search/compress/filter/memory migrated to structured token accounting.**
+  `c3_search` (code+semantic), `c3_compress` (map/dense_map, smart-family,
+  batch), and `c3_filter` (text + file modes) now report
+  `(raw_tokens, optimized_tokens)` via `finalize_with_tokens()` →
+  `SessionManager.record_tool_tokens()` instead of encoding them in summary
+  strings for the legacy regex fallback to scrape. Telemetry records for
+  these tools are now `source: "structured"`. (`c3_memory` emits no token
+  pairs — nothing to migrate.)
+- **`c3_memory(action='recall')` no longer prints per-fact salience scores.**
+  Opt back in with `include_scores=True` (scores are computed on demand;
+  explicit request overrides the small-recall fast path).
+- **`c3_status(view='budget')` breakdown is adaptive.** Only tools actually
+  used this session (non-zero tokens) are listed — no fixed six-slot row —
+  and ONE aggregate `[savings]` line (est. saved vs full-read baseline,
+  measured ops) carries the session-level story that per-call headers used
+  to repeat.
+
 ## [2.42.0] - 2026-07-01
 
 ### Honest measurement layer

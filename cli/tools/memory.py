@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 
 
 def handle_memory(action: str, query: str, fact: str, category: str,
-                  top_k: int, svc, finalize, fact_id: str = "") -> str:
+                  top_k: int, svc, finalize, fact_id: str = "",
+                  include_scores: bool = False) -> str:
     if action == "add":
         if not fact or not fact.strip():
             return finalize("c3_memory", {"action": action},
@@ -17,8 +18,9 @@ def handle_memory(action: str, query: str, fact: str, category: str,
     if action == "recall":
         session_id = (svc.session_mgr.current_session or {}).get("id", "")
         results = svc.memory.recall(query, top_k=top_k, session_id=session_id)
-        # Small recalls skip scoring + graph spreading to stay fast —
-        # agents using top_k<=3 want quick lookups, not full enrichment.
+        # Small recalls skip graph spreading to stay fast — agents using
+        # top_k<=3 want quick lookups, not full enrichment. (Salience scoring
+        # is opt-in via include_scores, independent of this.)
         fast_mode = top_k <= 3
         backend = "tfidf"
         if svc.vector_store:
@@ -43,9 +45,11 @@ def handle_memory(action: str, query: str, fact: str, category: str,
             if len(recalled_ids) >= 2:
                 graph.record_co_recall(recalled_ids[:top_k])
 
-        # Enrich results with salience scores (skipped in fast_mode)
+        # Enrich results with salience scores — opt-in only. Per-fact scores
+        # on every recall were display boilerplate; callers who want them ask
+        # via include_scores=True (explicit request overrides fast_mode).
         scorer = getattr(svc, "memory_scorer", None)
-        if scorer and not fast_mode:
+        if scorer and include_scores:
             for r in results:
                 if r.get("id"):
                     s = scorer.score(r, graph)
@@ -75,7 +79,8 @@ def handle_memory(action: str, query: str, fact: str, category: str,
                             f"[memory:recall:{query}] 0 results (backend:{backend})", "0")
         parts = []
         for f in results[:top_k]:
-            sal = f" sal={f['salience']:.2f}/{f['tier']}" if f.get("salience") is not None else ""
+            sal = (f" sal={f['salience']:.2f}/{f['tier']}"
+                   if include_scores and f.get("salience") is not None else "")
             parts.append(f"[{f['category']}]{sal} {f['fact']}")
         if activated_extra:
             parts.append(f"  [graph:activated] {len(activated_extra)} related facts:")

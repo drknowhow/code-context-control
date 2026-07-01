@@ -10,6 +10,8 @@ from pathlib import Path
 
 from core import count_tokens
 
+from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+
 
 def _run_memory_mcp_cli(args: list, cwd: str, timeout: int = 30) -> tuple:
     """Run codebase-memory-mcp CLI and return (success, output_or_error)."""
@@ -139,23 +141,32 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
         res = (svc.file_memory.get_or_build_dense_map(rel)
                if mode == "dense_map"
                else svc.file_memory.get_or_build_map(rel))
+        # Structured accounting: pass the (full-read baseline, map) pair via
+        # record_tool_tokens() instead of a "raw->maptok" summary for the
+        # legacy regex fallback to scrape.
+        raw_tokens = None
         map_tokens = 0
         try:
             raw_tokens = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
             map_tokens = count_tokens(res)
-            summary = f"{raw_tokens}->{map_tokens}tok"
+            summary = mode
         except Exception:
             summary = "mapped"
-        return finalize("c3_compress", {"file_path": file_path, "mode": mode}, res, summary,
-                        response_tokens=map_tokens)
+        return finalize_with_tokens(
+            finalize, svc, "c3_compress", {"file_path": file_path, "mode": mode},
+            res, summary,
+            raw_tokens=raw_tokens, optimized_tokens=map_tokens or None,
+            response_tokens=map_tokens)
 
     res = svc.compressor.compress_file(str(full), mode)
     if "error" in res:
         return f"Error: {res['error']}"
     resp = res['compressed']
-    summary = f"{res['original_tokens']}->{res['compressed_tokens']}tok"
-    return finalize("c3_compress", {"file_path": file_path},
-                    resp + maybe_facts(svc, Path(file_path).name), summary)
+    return finalize_with_tokens(
+        finalize, svc, "c3_compress", {"file_path": file_path},
+        resp + maybe_facts(svc, Path(file_path).name), mode,
+        raw_tokens=res.get('original_tokens'),
+        optimized_tokens=res.get('compressed_tokens'))
 
 
 def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
@@ -166,12 +177,13 @@ def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
     results = {}
 
     def _do_one(fp):
+        """Returns (fp, compressed_text, raw_tokens, optimized_tokens, error)."""
         try:
             full = Path(svc.project_path) / fp
             if not full.exists():
                 full = Path(fp)
             if not full.exists():
-                return fp, None, "not found"
+                return fp, None, None, None, "not found"
 
             if mode in ("map", "dense_map"):
                 rel = str(full.resolve().relative_to(
@@ -182,34 +194,50 @@ def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
                 try:
                     raw_tok = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
                     map_tok = count_tokens(res)
-                    return fp, res, f"{raw_tok}->{map_tok}tok"
+                    return fp, res, raw_tok, map_tok, None
                 except Exception:
-                    return fp, res, "mapped"
+                    return fp, res, None, None, None
             else:
                 res = svc.compressor.compress_file(str(full), mode)
                 if "error" in res:
-                    return fp, None, res["error"]
-                return fp, res["compressed"], f"{res['original_tokens']}->{res['compressed_tokens']}tok"
+                    return fp, None, None, None, res["error"]
+                return (fp, res["compressed"], res.get("original_tokens"),
+                        res.get("compressed_tokens"), None)
         except Exception as e:
-            return fp, None, str(e)
+            return fp, None, None, None, str(e)
 
     with ThreadPoolExecutor(max_workers=min(len(paths), 8)) as pool:
         futures = {pool.submit(_do_one, fp): fp for fp in paths}
         for fut in as_completed(futures):
-            fp, compressed, summary = fut.result()
-            results[fp] = (compressed, summary)
+            fp, compressed, raw_tok, opt_tok, err = fut.result()
+            results[fp] = (compressed, raw_tok, opt_tok, err)
 
+    ratios = show_token_ratios(svc)
     parts = []
     total_ok = 0
+    total_raw = 0
+    total_opt = 0
+    measured = 0
     for fp in paths:
-        compressed, summary = results.get(fp, (None, "unknown"))
+        compressed, raw_tok, opt_tok, err = results.get(fp, (None, None, None, "unknown"))
         if compressed:
-            parts.append(f"## {fp} ({summary})\n{compressed}")
+            tag = ""
+            if raw_tok is not None and opt_tok is not None:
+                measured += 1
+                total_raw += raw_tok
+                total_opt += opt_tok
+                if ratios:
+                    tag = f" ({raw_tok}->{opt_tok}tok)"
+            parts.append(f"## {fp}{tag}\n{compressed}")
             total_ok += 1
         else:
-            parts.append(f"## {fp} — ERROR: {summary}")
+            parts.append(f"## {fp} — ERROR: {err}")
 
     header = f"[compress:batch] {total_ok}/{len(paths)} files ({mode})"
     body = header + "\n\n" + "\n\n".join(parts)
-    return finalize("c3_compress", {"file_path": ",".join(paths), "mode": mode, "batch": True},
-                    body, f"batch {total_ok}/{len(paths)}")
+    return finalize_with_tokens(
+        finalize, svc, "c3_compress",
+        {"file_path": ",".join(paths), "mode": mode, "batch": True},
+        body, f"batch {total_ok}/{len(paths)}",
+        raw_tokens=total_raw if measured else None,
+        optimized_tokens=total_opt if measured else None)

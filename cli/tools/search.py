@@ -7,6 +7,8 @@ from pathlib import Path
 
 from core import count_tokens
 
+from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+
 # Hard cap: responses above this are truncated to avoid filling context.
 _RESPONSE_TOKEN_CAP = 2400
 
@@ -173,6 +175,7 @@ def _transcript_search(query, top_k, max_tokens, svc, finalize):
         srcs = ",".join(sorted(available_names))
         return finalize("c3_search", {"action": "transcript"},
                         f"[transcript:{query}] 0 results sources:{srcs}", "0")
+    ratios = show_token_ratios(svc)
     parts = []
     total_tokens = 0
     emitted = 0
@@ -188,14 +191,23 @@ def _transcript_search(query, top_k, max_tokens, svc, finalize):
             ts_str = ""
         source = r.get("source") or r.get("turn_source") or "manual"
         role = r.get("role", "")
-        session_id = r.get("session_id", "")
-        header = f"--- {source}:{session_id} [{ts_str}] role:{role} score:{r['score']}"
+        session_id = str(r.get("session_id", ""))
+        if ratios:
+            # Debug view: full session id + relevance score (old header).
+            header = f"--- {source}:{session_id} [{ts_str}] role:{role} score:{r['score']}"
+        else:
+            # Minimal per-item header — full UUIDs and scores were ~40 tokens
+            # of boilerplate per result the model does nothing with.
+            header = f"--- {source}:{session_id[:8]} {ts_str} {role}".rstrip()
         text = r.get("text", "")
         parts.extend([header, text])
         emitted += 1
         if emitted >= top_k:
             break
-    resp = f"[transcript:{query}] {emitted}r,{total_tokens}tok\n" + "\n".join(parts)
+    head = f"[transcript:{query}] {emitted}r"
+    if ratios:
+        head += f",{total_tokens}tok"
+    resp = head + "\n" + "\n".join(parts)
     return finalize("c3_search", {"action": "transcript"}, resp, f"{emitted}r")
 
 
@@ -221,8 +233,10 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
 
     resp = "\n".join(lines)
     resp += maybe_facts(svc, query, top_k=2)
-    return finalize("c3_search", {"query": query, "action": "semantic"}, resp,
-                    f"{len(results)}r,{total_tokens}tok", response_tokens=total_tokens)
+    return finalize_with_tokens(
+        finalize, svc, "c3_search", {"query": query, "action": "semantic"}, resp,
+        f"{len(results)}r",
+        optimized_tokens=total_tokens, response_tokens=total_tokens)
 
 
 def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
@@ -255,10 +269,14 @@ def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
 
     resp = "\n".join(lines)
     resp += maybe_facts(svc, query, top_k=2)
+    # Structured accounting: the (full-read baseline, returned) pair flows via
+    # record_tool_tokens() instead of being regex-scraped from the summary.
     full_tokens = sum(r.get("file_tokens", r["tokens"]) for r in deduped)
-    summary = f"{full_tokens}->{total_tokens}tok" if total_tokens < full_tokens else f"{len(deduped)}r"
-    return finalize("c3_search", {"query": query, "top_k": top_k}, resp, summary,
-                    response_tokens=total_tokens)
+    return finalize_with_tokens(
+        finalize, svc, "c3_search", {"query": query, "top_k": top_k}, resp,
+        f"{len(deduped)}r",
+        raw_tokens=full_tokens, optimized_tokens=total_tokens,
+        response_tokens=total_tokens)
 
 
 def _append_prefetch(resp: str, query: str, top_k: int, svc) -> str:

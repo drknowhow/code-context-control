@@ -89,15 +89,30 @@ def _budget_view(svc, detailed, finalize):
     if c3_calls + native_calls > 0:
         lines.append(f"[c3_adoption] {adoption}% ({c3_calls}c3/{native_calls}native)")
 
-    # Per-tool token breakdown
+    # Per-tool token breakdown — adaptive: only tools actually used this
+    # session (non-zero tokens), no fixed-width padding.
     by_tool = snap.get("by_tool", {})
-    if by_tool:
-        sorted_tools = sorted(by_tool.items(), key=lambda x: -x[1])
-        shown = sorted_tools[:6]
+    used_tools = sorted(((n, t) for n, t in by_tool.items() if t > 0),
+                        key=lambda x: -x[1])
+    if used_tools:
+        shown = used_tools[:6]
         breakdown = " | ".join(f"{n}:{t}tok" for n, t in shown)
-        if len(sorted_tools) > 6:
-            breakdown += f" (+{len(sorted_tools) - 6} more)"
+        if len(used_tools) > 6:
+            breakdown += f" (+{len(used_tools) - 6} more)"
         lines.append(f"[breakdown] {breakdown}")
+
+    # ONE aggregate savings line — the session-level story lives here, not in
+    # per-call response headers. Fed by structured record_tool_tokens()
+    # accounting; labeled honestly (full-read baseline is a counterfactual).
+    try:
+        usage = (svc.session_mgr.current_session or {}).get("token_usage") or {}
+        saved = int(usage.get("estimated_saved_vs_full_read", 0) or 0)
+        ops = int(usage.get("measured_ops", 0) or 0)
+        if saved > 0:
+            lines.append(f"[savings] ~{format_token_count(saved)} est. saved "
+                         f"vs full-read baseline ({ops} measured ops)")
+    except Exception:
+        pass
 
     if detailed:
         stats = svc.indexer.get_stats()
