@@ -4,9 +4,9 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.42.0] - 2026-07-01
 
-### Stream A — Honest measurement layer (P1)
+### Honest measurement layer
 
 - **Structured per-tool token accounting.** New
   `cli.tools._helpers.finalize_with_tokens()` +
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cap) — instead of 3-4 repeated full reads per scenario. Baseline read steps
   record which files they ingest (`StepResult.detail = "reads:..."`), and a
   new test asserts the at-most-once property.
-### Stream B — Hook dispatcher, consolidated enforcement state (P2+P3)
+### Hook dispatcher, consolidated enforcement state
 
 - **One hook process per event instead of up to three.** New `cli/hook_dispatch.py`
   reads the hook JSON from stdin once and runs all applicable sub-hooks
@@ -85,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   propagation, end-to-end round-trip), `tests/test_hook_state.py` (state
   layer), `tests/test_hook_smoke.py` (session_stats, auto_snapshot,
   ghost_files, c3_signal, c3read, edit_unlock, edit_ledger, terse_advisor).
-### Stream C — Notification dedup + KeyFileVersion detail (P4)
+### Notification dedup + KeyFileVersion detail
 
 - **NotificationStore collapses duplicates instead of piling them up.** An
   identical unacknowledged (agent, title, message) now merges into the existing
@@ -106,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chars) plus a "(xN, last HH:MM)" suffix for collapsed records; the list is
   capped at 10 lines with a "... +N more" tail. `get_pending_summary()` gains
   the same "(xN)" suffix.
-### Stream D — Delegate backend cascade + filter pass-2 backoff (P7)
+### Delegate backend cascade + filter pass-2 backoff
 
 - **`c3_delegate` backend='auto' now cascades through healthy backends instead of
   falling straight to Ollama.** Auto routing walks an ordered preference list per
@@ -133,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note, no-healthy-backend error, explicit-backend no-reroute) and
   `tests/test_filter_backoff.py` (per-call timeout forwarding, suspension after
   consecutive slow calls, one-shot note, cooldown recovery, fast path untouched).
-### Stream E — Compressor large-file fast path (P8a)
+### Compressor large-file fast path
 
 - **Large-file fast path in `services/compressor.py`.** Files at or above
   `LARGE_FILE_LINE_THRESHOLD` (10,000 lines) or `LARGE_FILE_BYTE_THRESHOLD`
