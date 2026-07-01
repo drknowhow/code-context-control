@@ -4,6 +4,51 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Ghost-file generation fixed at the source
+
+- **Root cause (proven).** The recurring 0-byte "ghost" files in the project
+  root (`tuple[int`, `Optional[str]`, `L88`, `3.0.0`, `dict`, `{new`, …) were
+  **generated**, not merely detected too late. They come from
+  **CVE-2024-24576 / "BatBadBut"**: a spawn site resolves a CLI name
+  (`claude`, `gemini`, `codex`, `aider`) via `shutil.which`, which on Windows
+  returns a `.cmd`/`.bat` shim (e.g. `…\npm\gemini.CMD`). Launching a batch
+  shim with an argv **list** runs it through an implicit `cmd.exe /c`, and
+  Python's `subprocess.list2cmdline` escapes quotes with `\"` (the MSVCRT
+  convention) — which **cmd.exe does not honour**. When prompt/diff/code text
+  carried as an argument contains an *odd* number of `"` (docstring fences,
+  diff string literals), cmd.exe's quote state desyncs and any following
+  `>`/`<`/`&`/`|` becomes a real redirect. `… > tuple[int, str]` writes a
+  0-byte file named `tuple[int`; `flask>=3.0.0` writes `3.0.0`; `> L88` writes
+  `L88`. Reproduced exactly on CPython 3.14.4 / Windows 11; the running
+  interpreter does not neutralise it. (Note: `services/parser.py`'s native
+  syntax checkers were a **red herring** — they write content to a temp file
+  and only pass the temp *path* as an argument, so no code text ever reaches a
+  shell.)
+- **Fix at every spawn site.** New `services/win_subprocess.py::harden_win_argv`
+  rewrites a batch-shim invocation (Windows + `argv[0]` is `.cmd`/`.bat` only)
+  into an explicit `cmd.exe /d /s /c "<line>"` **string** with cmd.exe-correct
+  quoting (each argument double-quoted, embedded `"` doubled to `""`), passed
+  straight to `subprocess` so `list2cmdline` never re-mangles it. The `""`
+  doubling is simultaneously valid for the downstream argv parser, so the CLI
+  still receives the intended text. Applied to `cli/tools/delegate.py`
+  (`_run_claude`/`_run_gemini`/`_run_codex`), `services/e2e_benchmark.py`
+  (provider + multi-turn runs), `services/e2e_evaluator.py` (AI judge), and
+  `services/bench/external/{aider_polyglot,swe_bench}.py`. Argument-list
+  invocation and `stdin=DEVNULL` are preserved; POSIX and `.exe` targets are
+  untouched.
+- **Defense-in-depth sweep as a library.** `cli/hook_ghost_files.py` now exposes
+  `sweep_ghost_files(root)` (scan + delete in one call). The long-lived
+  `EditLedgerEnricherAgent` (runs in the MCP server with cwd = project root)
+  calls it each tick, so stray artifacts are cleaned even in the **main
+  checkout while edits happen in a worktree**, where no PostToolUse hook fires.
+- **Regression tests.** `tests/test_ghost_generation.py` drives every fixed
+  site's argv shape and the observed adversarial payloads (`-> tuple[int, str]`,
+  backticks, `{`, `)`, `>=`, `|`, `&`) through the hardened path in a temp cwd
+  and asserts **zero** new files appear — plus a control test proving the old
+  plain-list path still ghosts on this box (so the fix stays load-bearing).
+
 ## [2.42.0] - 2026-07-01
 
 ### Honest measurement layer

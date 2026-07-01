@@ -41,6 +41,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from services.win_subprocess import harden_win_argv
+
 # Polyglot-benchmark exercise structure:
 #   {repo}/{language}/exercises/practice/{exercise}/
 #     .meta/config.json           -> files.solution = primary edit target(s)
@@ -318,7 +320,7 @@ class AiderPolyglotBenchmark:
             t0 = time.monotonic()
             try:
                 proc = subprocess.run(
-                    cmd,
+                    harden_win_argv(cmd),
                     cwd=workspace,
                     capture_output=True,
                     text=True,

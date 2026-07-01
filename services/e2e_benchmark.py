@@ -24,6 +24,7 @@ from pathlib import Path
 from core import count_tokens
 from services.e2e_evaluator import EvalScore, Evaluator
 from services.e2e_tasks import DIFFICULTY_WEIGHTS, E2ETask, build_prompt
+from services.win_subprocess import harden_win_argv
 
 
 def _unicode_safe() -> bool:
@@ -235,7 +236,7 @@ class CLIProvider:
         t0 = time.perf_counter()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                harden_win_argv(cmd), capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 env=env, encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
@@ -330,7 +331,7 @@ class CLIProvider:
                 cmd1 += ["--model", self.model]
 
             result1 = subprocess.run(
-                cmd1, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                harden_win_argv(cmd1), capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 env=env, encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL, creationflags=_cflags,
             )
@@ -355,7 +356,7 @@ class CLIProvider:
                 cmd2 += ["--model", self.model]
 
             result2 = subprocess.run(
-                cmd2, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                harden_win_argv(cmd2), capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 env=env, encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL, creationflags=_cflags,
             )

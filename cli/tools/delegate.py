@@ -17,6 +17,7 @@ from pathlib import Path
 
 from core import count_tokens
 from services.circuit_breaker import CircuitBreaker
+from services.win_subprocess import harden_win_argv
 
 log = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ def _run_claude(task: str, context: str, cwd: str | None = None,
     cmd = [exe, "-p", prompt, "--output-format", "text"]
     try:
         proc = subprocess.Popen(
-            cmd,
+            harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", cwd=cwd,
@@ -466,7 +467,7 @@ def _run_gemini(task: str, context: str, model: str,
 
     try:
         proc = subprocess.Popen(
-            cmd,
+            harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
@@ -581,7 +582,7 @@ def _run_codex(task: str, context: str, model: str, sandbox: str,
     ]
     try:
         proc = subprocess.Popen(
-            cmd,
+            harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",

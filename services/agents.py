@@ -1465,6 +1465,26 @@ class EditLedgerEnricherAgent(BackgroundAgent):
         self._verified_ids: set = set()  # track already-verified entries
 
     def check(self):
+        # Ghost-file sweep — belt-and-suspenders defense. Root-cause fixes live at
+        # the subprocess spawn sites (services/win_subprocess.py), but this agent
+        # runs in the long-lived MCP server with cwd = project root, so it can also
+        # clean any stray 0-byte artifact that lands in the main checkout (where a
+        # worktree's PostToolUse hook never fires). Cheap, non-recursive, quiet.
+        if self.project_path:
+            try:
+                from cli.hook_ghost_files import sweep_ghost_files
+                swept = sweep_ghost_files(self.project_path)
+                if swept:
+                    self.notify(
+                        "info",
+                        "Ghost files swept",
+                        f"Removed {len(swept)} stray 0-byte file(s) from project root: "
+                        f"{', '.join(swept[:8])}",
+                        replace_if_unacked=True,
+                    )
+            except Exception:
+                pass
+
         # Git enrichment — processes entries marked git_pending=True
         enriched_count = self.edit_ledger.enrich_pending(batch=10)
 
