@@ -106,6 +106,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chars) plus a "(xN, last HH:MM)" suffix for collapsed records; the list is
   capped at 10 lines with a "... +N more" tail. `get_pending_summary()` gains
   the same "(xN)" suffix.
+### Stream D — Delegate backend cascade + filter pass-2 backoff (P7)
+
+- **`c3_delegate` backend='auto' now cascades through healthy backends instead of
+  falling straight to Ollama.** Auto routing walks an ordered preference list per
+  task type — heavy tasks (review/diagnose/improve/test): codex → gemini → ollama;
+  light tasks: ollama first, then codex/gemini only when Ollama is down — skipping
+  any backend that is disabled, not installed, or whose circuit breaker is open.
+  The cascade decision is surfaced in the response and metadata (e.g.
+  `[delegate] codex breaker open, retry ~42s -> routed to gemini`), and when *no*
+  backend is healthy the error now lists every skip reason instead of returning a
+  generic Ollama failure. Explicitly requested backends are never silently
+  rerouted: an explicit `backend=` with an open breaker still returns the clear
+  degraded error with cooldown remaining. (`cli/tools/delegate.py`)
+- **`OutputFilter` pass-2 (Ollama summarization) gained a per-call timeout and
+  adaptive backoff.** Each pass-2 call now passes a hard timeout to
+  `ollama.generate` (default 2s, `filter_pass2_timeout`); the last 3 latencies
+  are tracked (`filter_pass2_latency_window`) and if all of them run into the
+  timeout, pass-2 is suspended for a cooldown window (default 5 min,
+  `filter_pass2_suspend_seconds`) so a slow Ollama no longer stalls every
+  filtered tool output. The suspension is noted once per window in the filter
+  output (`[filter:fast] pass2 suspended, slow ollama`), the result dict gains a
+  `pass2_suspended` flag, and the filter metrics now track `pass2_calls`,
+  `pass2_timeouts`, and `pass2_suspended`. (`services/output_filter.py`)
+- Tests: `tests/test_delegate_cascade.py` (cascade selection matrix, cascade
+  note, no-healthy-backend error, explicit-backend no-reroute) and
+  `tests/test_filter_backoff.py` (per-call timeout forwarding, suspension after
+  consecutive slow calls, one-shot note, cooldown recovery, fast path untouched).
 
 ## [2.41.0] - 2026-06-25
 
