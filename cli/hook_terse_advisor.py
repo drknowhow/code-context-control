@@ -123,6 +123,64 @@ def _terse_active(entries: list) -> bool:
     return False
 
 
+def run(payload: dict, project_path: Path | None = None) -> dict | None:
+    """Core logic — importable by the dispatcher and tests.
+
+    Returns {"_text": "..."} carrying the user-visible nudge or None.
+    """
+    state = _load_state()
+
+    # Permanent dismiss
+    if state.get("dismissed"):
+        return None
+
+    # Snooze check
+    remind_after = state.get("remind_after")
+    if remind_after:
+        try:
+            if datetime.now(timezone.utc) < datetime.fromisoformat(remind_after):
+                return None
+        except Exception:
+            pass
+
+    session_id = payload.get("session_id", "")
+    transcript_path = payload.get("transcript_path", "")
+    if not transcript_path:
+        return None
+
+    # Only nudge once per session
+    if session_id and state.get("last_nudge_session") == session_id:
+        return None
+
+    entries = _read_tail(transcript_path, _SCAN_ENTRIES)
+    if not entries:
+        return None
+
+    # Skip if terse already active
+    if _terse_active(entries):
+        return None
+
+    # Check verbosity
+    char_count = _last_assistant_char_count(entries)
+    if char_count < _VERBOSE_THRESHOLD:
+        return None
+
+    # Update state
+    state["last_nudge_session"] = session_id
+    _save_state(state)
+
+    bar = "─" * 52
+    return {
+        "_text": (
+            f"\n{bar}\n"
+            f"[C3] Verbose response (~{char_count} chars). /terse saves ~50% output tokens.\n"
+            "     Type /terse to activate.\n"
+            "     Silence: c3 terse dismiss  |  Snooze 24h: c3 terse later\n"
+            f"{bar}"
+        )
+    }
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -131,55 +189,9 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        state = _load_state()
-
-        # Permanent dismiss
-        if state.get("dismissed"):
-            sys.exit(0)
-
-        # Snooze check
-        remind_after = state.get("remind_after")
-        if remind_after:
-            try:
-                if datetime.now(timezone.utc) < datetime.fromisoformat(remind_after):
-                    sys.exit(0)
-            except Exception:
-                pass
-
-        session_id = data.get("session_id", "")
-        transcript_path = data.get("transcript_path", "")
-        if not transcript_path:
-            sys.exit(0)
-
-        # Only nudge once per session
-        if session_id and state.get("last_nudge_session") == session_id:
-            sys.exit(0)
-
-        entries = _read_tail(transcript_path, _SCAN_ENTRIES)
-        if not entries:
-            sys.exit(0)
-
-        # Skip if terse already active
-        if _terse_active(entries):
-            sys.exit(0)
-
-        # Check verbosity
-        char_count = _last_assistant_char_count(entries)
-        if char_count < _VERBOSE_THRESHOLD:
-            sys.exit(0)
-
-        # Nudge
-        bar = "─" * 52
-        print(f"\n{bar}")
-        print(f"[C3] Verbose response (~{char_count} chars). /terse saves ~50% output tokens.")
-        print("     Type /terse to activate.")
-        print("     Silence: c3 terse dismiss  |  Snooze 24h: c3 terse later")
-        print(bar)
-
-        # Update state
-        state["last_nudge_session"] = session_id
-        _save_state(state)
-
+        output = run(data)
+        if output and output.get("_text"):
+            print(output["_text"])
     except Exception as exc:
         log_hook_error("hook_terse_advisor", exc)
 

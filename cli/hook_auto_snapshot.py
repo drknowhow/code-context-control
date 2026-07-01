@@ -52,9 +52,11 @@ def _call_server(port: int, stop_hook_data: dict) -> bool:
         return False
 
 
-def _fallback_snapshot(stop_hook_data: dict) -> None:
+def _fallback_snapshot(stop_hook_data: dict, base: Path | None = None) -> None:
     """Lightweight file-based snapshot when the UI server is not running."""
-    c3_dir = Path(".c3")
+    if base is None:
+        base = Path.cwd()
+    c3_dir = base / ".c3"
     if not c3_dir.exists():
         return
 
@@ -116,6 +118,19 @@ def _fallback_snapshot(stop_hook_data: dict) -> None:
         json.dump(snapshot, f, indent=2)
 
 
+def run(payload: dict, project_path: Path | None = None):
+    """Core logic — importable by the dispatcher and tests. Returns None."""
+    base = project_path if project_path is not None else Path.cwd()
+    port = _find_server_port(str(base))
+
+    if port and _call_server(port, payload):
+        return None
+
+    # Server not running or unreachable — fallback
+    _fallback_snapshot(payload, base)
+    return None
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -124,14 +139,7 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        project_path = str(Path.cwd())
-        port = _find_server_port(project_path)
-
-        if port and _call_server(port, data):
-            sys.exit(0)
-
-        # Server not running or unreachable — fallback
-        _fallback_snapshot(data)
+        run(data)
     except Exception as exc:
         log_hook_error("hook_auto_snapshot", exc)
 

@@ -39,6 +39,57 @@ from cli._hook_utils import (  # noqa: E402
 )
 
 
+def run(payload: dict, project_path: Path | None = None) -> dict | None:
+    """Core logic — importable by the dispatcher and tests.
+
+    Returns {"tool_result": ...} when the output was replaced by a filtered
+    version, {"additionalContext": ...} for hints, or None.
+    """
+    # Normalize Gemini tool names to Claude equivalents
+    tool_name = normalize_tool_name(payload.get("tool_name", ""))
+    if tool_name != "Bash":
+        return None
+
+    output, _is_gemini = get_tool_output(payload)
+    if not output or not isinstance(output, str):
+        return None
+    line_count = output.count("\n") + 1
+
+    from core.config import load_hybrid_config
+    from services.output_filter import OutputFilter
+
+    base = project_path if project_path is not None else Path.cwd()
+    config = load_hybrid_config(str(base))
+
+    if config.get("HYBRID_DISABLE_TIER1"):
+        return None
+
+    # Filter medium/large outputs; short outputs still get hints.
+    if len(output) >= 200:
+        filt = OutputFilter(config)
+        result = filt.filter(output, use_llm=True)
+
+        # Only replace if meaningful savings (>10%)
+        if result["savings_pct"] > 10:
+            # Store original for c3_raw retrieval
+            raw_cache = Path(base) / ".c3" / "last_raw_output.txt"
+            raw_cache.parent.mkdir(parents=True, exist_ok=True)
+            raw_cache.write_text(output, encoding="utf-8")
+
+            filtered = result["filtered"]
+            if not filtered.startswith("[c3:filter"):
+                prefix = f"[c3:filter:pass{result['pass_used']}|{result['savings_pct']}%saved] "
+                filtered = prefix + filtered
+
+            return {"tool_result": filtered}
+
+    # Output was not replaced - provide hints.
+    hints = _build_hints(output, line_count=line_count)
+    if hints:
+        return {"additionalContext": hints}
+    return None
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -46,51 +97,15 @@ def main():
             return
 
         data = json.loads(raw)
+        _, is_gemini = get_tool_output(data)
 
-        # Normalize Gemini tool names to Claude equivalents
-        tool_name = normalize_tool_name(data.get("tool_name", ""))
-        if tool_name != "Bash":
+        output = run(data)
+        if not output:
             return
-
-        output, is_gemini = get_tool_output(data)
-        if not output or not isinstance(output, str):
-            return
-        line_count = output.count("\n") + 1
-
-        from core.config import load_hybrid_config
-        from services.output_filter import OutputFilter
-
-        # Determine project path from cwd
-        project_path = str(Path.cwd())
-        config = load_hybrid_config(project_path)
-
-        if config.get("HYBRID_DISABLE_TIER1"):
-            return
-
-        # Filter medium/large outputs; short outputs still get hints.
-        if len(output) >= 200:
-            filt = OutputFilter(config)
-            result = filt.filter(output, use_llm=True)
-
-            # Only replace if meaningful savings (>10%)
-            if result["savings_pct"] > 10:
-                # Store original for c3_raw retrieval
-                raw_cache = Path(project_path) / ".c3" / "last_raw_output.txt"
-                raw_cache.parent.mkdir(parents=True, exist_ok=True)
-                raw_cache.write_text(output, encoding="utf-8")
-
-                filtered = result["filtered"]
-                if not filtered.startswith("[c3:filter"):
-                    prefix = f"[c3:filter:pass{result['pass_used']}|{result['savings_pct']}%saved] "
-                    filtered = prefix + filtered
-
-                emit_filtered_output(filtered, is_gemini)
-                return
-
-        # Output was not replaced - provide hints.
-        hints = _build_hints(output, line_count=line_count)
-        if hints:
-            emit_additional_context(hints, is_gemini)
+        if output.get("tool_result") is not None:
+            emit_filtered_output(output["tool_result"], is_gemini)
+        elif output.get("additionalContext"):
+            emit_additional_context(output["additionalContext"], is_gemini)
 
     except Exception as _e:
         log_hook_error("hook_filter", _e)
