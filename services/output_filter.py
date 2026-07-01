@@ -7,7 +7,8 @@ Pass 2 (optional): If pass1 output > threshold tokens, use Ollama LLM for
 """
 import re
 import threading
-from collections import Counter, defaultdict
+import time
+from collections import Counter, defaultdict, deque
 
 from core import count_tokens
 from services.ollama_client import OllamaClient
@@ -80,6 +81,17 @@ class OutputFilter:
         self.llm_threshold = self.config.get("filter_llm_threshold", 500)
         self._lock = threading.Lock()
 
+        # Pass-2 adaptive backoff: a slow Ollama must not stall every filtered
+        # tool output. Each pass-2 call gets a hard per-call timeout; if the
+        # last N calls all ran into it, pass-2 is suspended for a cooldown
+        # window and the skip is noted once in the filter output.
+        self.pass2_timeout = max(0.1, float(self.config.get("filter_pass2_timeout", 2.0)))
+        self.pass2_latency_window = max(1, int(self.config.get("filter_pass2_latency_window", 3)))
+        self.pass2_suspend_seconds = max(0.0, float(self.config.get("filter_pass2_suspend_seconds", 300.0)))
+        self._pass2_latencies: deque[float] = deque(maxlen=self.pass2_latency_window)
+        self._pass2_suspended_until = 0.0
+        self._pass2_suspend_noted = False
+
         # Metrics
         self.metrics = {
             "calls": 0,
@@ -87,13 +99,17 @@ class OutputFilter:
             "filtered_tokens": 0,
             "llm_calls": 0,
             "total_savings_pct": 0.0,
+            "pass2_calls": 0,
+            "pass2_timeouts": 0,
+            "pass2_suspended": 0,
         }
 
     def filter(self, text: str, use_llm: bool = True) -> dict:
         """Run the two-pass filter pipeline.
 
         Returns dict with: filtered, raw_tokens, filtered_tokens, savings_pct,
-                           pass_used (1 or 2), llm_used (bool)
+                           pass_used (1 or 2), llm_used (bool),
+                           pass2_suspended (bool — adaptive backoff active)
         """
         if not text or not text.strip():
             return {
@@ -103,6 +119,7 @@ class OutputFilter:
                 "savings_pct": 0,
                 "pass_used": 0,
                 "llm_used": False,
+                "pass2_suspended": False,
             }
 
         raw_tokens = count_tokens(text)
@@ -122,15 +139,22 @@ class OutputFilter:
             result_text = compact
             pass1_tokens = count_tokens(compact)
 
-        # Pass 2: LLM summarization if still too large
+        # Pass 2: LLM summarization if still too large (skipped while the
+        # adaptive backoff has pass-2 suspended after consecutive slow calls).
         if use_llm and pass1_tokens > self.llm_threshold:
             if not self.config.get("HYBRID_DISABLE_TIER1"):
-                llm_result = self._pass2(result_text, raw_text=text)
-                if llm_result:
-                    result_text = llm_result
-                    llm_used = True
-                    pass_used = 2
+                if self._pass2_is_suspended():
+                    note = self._pass2_suspension_note()
+                    if note:
+                        result_text = f"{note}\n{result_text}"
+                else:
+                    llm_result = self._pass2(result_text, raw_text=text)
+                    if llm_result:
+                        result_text = llm_result
+                        llm_used = True
+                        pass_used = 2
 
+        pass2_suspended = self._pass2_is_suspended()
         filtered_tokens = count_tokens(result_text)
         savings_pct = round((1 - filtered_tokens / raw_tokens) * 100, 1) if raw_tokens > 0 else 0
 
@@ -154,6 +178,7 @@ class OutputFilter:
             "savings_pct": savings_pct,
             "pass_used": pass_used,
             "llm_used": llm_used,
+            "pass2_suspended": pass2_suspended,
         }
 
     def get_metrics(self) -> dict:
@@ -475,14 +500,48 @@ class OutputFilter:
 
         prompt = f"Summarize this terminal output:\n\n{smart_context}"
 
+        t0 = time.monotonic()
         result = self.ollama.generate(
             prompt=prompt,
             model=self.filter_model,
             system=system,
             temperature=0.1,
             max_tokens=200,
+            timeout=self.pass2_timeout,
         )
+        self._record_pass2_latency(time.monotonic() - t0)
 
         if result and count_tokens(result) < count_tokens(filtered_text):
             return f"[c3:filter:llm] {result.strip()}"
         return None
+
+    # ── Pass-2 adaptive backoff ──────────────────────────
+
+    def _pass2_is_suspended(self) -> bool:
+        """True while pass-2 is on cooldown after consecutive slow calls."""
+        with self._lock:
+            return time.monotonic() < self._pass2_suspended_until
+
+    def _pass2_suspension_note(self) -> str:
+        """One-shot header note; emitted once per suspension window."""
+        with self._lock:
+            if self._pass2_suspend_noted:
+                return ""
+            self._pass2_suspend_noted = True
+            return "[filter:fast] pass2 suspended, slow ollama"
+
+    def _record_pass2_latency(self, elapsed: float) -> None:
+        """Track a pass-2 call's wall latency and suspend pass-2 if the last
+        ``pass2_latency_window`` calls all ran into the per-call timeout."""
+        timed_out = elapsed >= self.pass2_timeout
+        with self._lock:
+            self.metrics["pass2_calls"] += 1
+            if timed_out:
+                self.metrics["pass2_timeouts"] += 1
+            self._pass2_latencies.append(elapsed)
+            window_full = len(self._pass2_latencies) == self.pass2_latency_window
+            if window_full and all(lat >= self.pass2_timeout for lat in self._pass2_latencies):
+                self._pass2_suspended_until = time.monotonic() + self.pass2_suspend_seconds
+                self._pass2_suspend_noted = False
+                self._pass2_latencies.clear()
+                self.metrics["pass2_suspended"] += 1

@@ -738,6 +738,72 @@ def _notify_backend_degraded(svc, name: str, breaker: CircuitBreaker) -> None:
         pass
 
 
+def _cascade_order(task_type: str, dcfg: dict) -> list[str]:
+    """Ordered backend preference for backend='auto' routing.
+
+    Heavy tasks (review/diagnose/improve/test by default) prefer the cloud
+    CLIs and degrade gracefully: codex -> gemini -> ollama. Light tasks stay
+    local-first and only fall over to a cloud CLI when Ollama itself is down:
+    ollama -> codex -> gemini.
+    """
+    heavy_codex = set(dcfg.get("codex_task_types", ["review", "diagnose", "improve", "test"]))
+    heavy_gemini = set(dcfg.get("gemini_task_types", ["review", "diagnose", "improve", "test"]))
+    order: list[str] = []
+    if task_type in heavy_codex:
+        order.append("codex")
+    if task_type in heavy_gemini:
+        order.append("gemini")
+    if order:
+        order.append("ollama")
+        return order
+    return ["ollama", "codex", "gemini"]
+
+
+def _cascade_skip_reason(name: str, dcfg: dict, svc) -> str | None:
+    """Why backend ``name`` should be skipped during auto cascade (None = usable).
+
+    Non-mutating and cheap: consults the breaker's allow() peek (which does not
+    consume the half-open probe), cached install state, PATH presence, and the
+    ~30s-cached Ollama availability check. No delegate subprocess is spawned.
+    """
+    breaker = _backend_breaker(name, dcfg)
+    if not breaker.allow():
+        return f"breaker open, retry ~{breaker.cooldown_remaining()}s"
+    if name == "ollama":
+        ollama = getattr(svc, "ollama_client", None)
+        if ollama is None:
+            return "no client"
+        try:
+            if not ollama.is_available():
+                return "unreachable"
+        except Exception:
+            return "unreachable"
+        return None
+    if name in ("codex", "gemini"):
+        if not dcfg.get(f"{name}_enabled", False):
+            return "disabled"
+        known = _codex_available if name == "codex" else _gemini_available
+        if known is False:
+            return "unavailable"
+        if known is None:
+            on_path = _is_codex_on_path() if name == "codex" else _is_gemini_on_path()
+            if not on_path:
+                return "not on PATH"
+        return None
+    return "unknown backend"
+
+
+def _with_cascade_note(finalize, note: str):
+    """Wrap finalize so the auto-cascade decision lands in metadata + response."""
+    def wrapped(tool, meta, output, status, **kw):
+        meta = dict(meta or {})
+        meta["cascade"] = note
+        if isinstance(output, str) and note not in output:
+            output = f"{note}\n{output}"
+        return finalize(tool, meta, output, status, **kw)
+    return wrapped
+
+
 def get_delegate_metrics() -> dict:
     return dict(_delegate_metrics)
 
@@ -1130,28 +1196,30 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
     # --- Backend routing ---------------------------------------------------
     if backend == "auto":
-        # Priority: Codex > Gemini > Ollama for heavy tasks
-        heavy_codex = set(dcfg.get("codex_task_types", ["review", "diagnose", "improve", "test"]))
-        heavy_gemini = set(dcfg.get("gemini_task_types", ["review", "diagnose", "improve", "test"]))
-        # For heavy tasks, prefer cloud CLIs when available (faster than Ollama).
-        # "Available" = pre-warm health check passed OR found on PATH.
-        # The `enabled` config flag remains the primary gate, but availability
-        # on-PATH is enough to prefer cloud over slow Ollama for heavy tasks.
-        _light_tasks = {"ask", "explain", "summarize", "docstring"}
-        _codex_avail = (_codex_available is True) or (
-            _codex_available is None and task_type not in _light_tasks and _is_codex_on_path()
-        )
-        _gemini_avail = (_gemini_available is True) or (
-            _gemini_available is None and task_type not in _light_tasks and _is_gemini_on_path()
-        )
-        if (task_type in heavy_codex and _codex_avail and _codex_available is not False
-                and _backend_breaker("codex", dcfg).allow()):
-            backend = "codex"
-        elif (task_type in heavy_gemini and _gemini_avail and _gemini_available is not False
-                and _backend_breaker("gemini", dcfg).allow()):
-            backend = "gemini"
-        else:
-            backend = "ollama"
+        # Cascade: walk the ordered preference list for this task type and use
+        # the first backend that is enabled, installed, and whose breaker is
+        # closed. Heavy tasks: codex -> gemini -> ollama. Light tasks: ollama
+        # first, cloud CLIs only when Ollama itself is down.
+        skips: list[str] = []
+        chosen = ""
+        for cand in _cascade_order(task_type, dcfg):
+            reason = _cascade_skip_reason(cand, dcfg, svc)
+            if reason is None:
+                chosen = cand
+                break
+            skips.append(f"{cand} {reason}")
+        if not chosen:
+            detail = "; ".join(skips) or "no backends configured"
+            return finalize("c3_delegate",
+                            {"task_type": task_type, "backend": "auto", "cascade": detail},
+                            f"[delegate:error] No healthy backend for auto routing ({detail}). "
+                            "Run c3_delegate task_type='available' to diagnose.",
+                            "unavailable")
+        backend = chosen
+        if skips:
+            cascade_note = f"[delegate] {'; '.join(skips)} -> routed to {chosen}"
+            _log_progress(svc, cascade_note)
+            finalize = _with_cascade_note(finalize, cascade_note)
 
     if backend == "codex":
         _log_progress(svc, f"[delegate] Routing {task_type} → Codex...")
