@@ -48,6 +48,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from services.win_subprocess import harden_win_argv
+
 
 @dataclass
 class SWEBenchTask:
@@ -292,7 +294,7 @@ def _run_aider_on_task(
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd, cwd=workspace, capture_output=True, text=True, timeout=timeout,
+            harden_win_argv(cmd), cwd=workspace, capture_output=True, text=True, timeout=timeout,
         )
         latency = round(time.monotonic() - t0, 1)
         inp, out, cost = _parse_aider_tokens_cost(proc.stdout + proc.stderr)

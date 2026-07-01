@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 
 from services.e2e_tasks import GroundTruth
+from services.win_subprocess import harden_win_argv
 
 
 @dataclass
@@ -349,7 +350,8 @@ class Evaluator:
             cmd = self._build_judge_command(judge_prompt)
             t0 = time.perf_counter()
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=90, env=env,
+                harden_win_argv(cmd), capture_output=True, text=True, timeout=90, env=env,
+                stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
             latency = (time.perf_counter() - t0) * 1000

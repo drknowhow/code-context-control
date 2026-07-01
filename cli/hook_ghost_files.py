@@ -212,6 +212,21 @@ def cleanup_ghost_files(ghosts: list[dict]) -> list[str]:
     return deleted
 
 
+def sweep_ghost_files(project_root) -> list[str]:
+    """Scan *project_root* and delete any ghost files in one call.
+
+    Convenience wrapper (scan + cleanup) so callers outside the Bash PostToolUse
+    hook — e.g. long-lived MCP-server background agents whose cwd is the project
+    root, or git worktrees where no PostToolUse hook runs — can self-clean the
+    root. Returns the list of deleted file names (empty if none). Never raises.
+    """
+    try:
+        root = project_root if isinstance(project_root, Path) else Path(project_root)
+        return cleanup_ghost_files(scan_ghost_files(root))
+    except Exception:
+        return []
+
+
 # Tools whose output can carry shell-meta text that leaks into 0-byte files:
 # native shells, c3_shell (its `N->Mtok` filter header), and file reads whose
 # content has `-> Type` hints. A downstream shell sees `> word` and creates an
