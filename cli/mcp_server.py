@@ -423,9 +423,10 @@ async def c3_session(action: str, data: str = "", reasoning: str = "",
 @mcp.tool()
 async def c3_memory(action: str, query: str = "", fact: str = "",
               category: str = "", top_k: int = 3,
-              fact_id: str = "", ctx: Context = None) -> str:
+              fact_id: str = "", include_scores: bool = False,
+              ctx: Context = None) -> str:
     """Durable facts — cross-session knowledge. Read-only actions safe in plan mode.
-    Retrieve: recall (search), index (compact IDs+snippets, then fetch), fetch (full text by fact_id="id1,id2"), query (multi-source: facts+sessions+files).
+    Retrieve: recall (search; include_scores=True adds per-fact salience), index (compact IDs+snippets, then fetch), fetch (full text by fact_id="id1,id2"), query (multi-source: facts+sessions+files).
     Write:    add (fact+category, empty category→'general'), update (fact_id+fact), delete (fact_id).
     Browse:   list (category='' shows all; 'foo' filters), export (markdown).
     Audit:    review (health), ground (verify against code), score (salience), graph (edges), trends, lifespan, consolidate, consolidate_deep."""
@@ -435,7 +436,7 @@ async def c3_memory(action: str, query: str = "", fact: str = "",
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     return await asyncio.to_thread(handle_memory, action, query, fact, category, top_k, svc, finalize,
-                                   fact_id=fact_id)
+                                   fact_id=fact_id, include_scores=include_scores)
 
 
 @mcp.tool()

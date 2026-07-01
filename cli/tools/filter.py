@@ -12,6 +12,8 @@ from pathlib import Path
 
 from core import count_tokens
 
+from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+
 
 def handle_filter(file_path: str, text: str, pattern: str, max_lines: int,
                   depth: str, use_llm: bool, svc, finalize) -> str:
@@ -62,13 +64,19 @@ def _filter_text(text: str, depth: str, svc, finalize) -> str:
 
     filtered_tokens = count_tokens(result_text)
     raw_tokens = res['raw_tokens']
-    savings_pct = round((1 - filtered_tokens / raw_tokens) * 100, 1) if raw_tokens > 0 else 0
 
-    header = f"[filter:{method}] {raw_tokens}→{filtered_tokens}tok ({savings_pct}%saved)"
+    # The method tag is actionable signal (which pass ran); the token ratio is
+    # boilerplate — shown only under the show_token_ratios debug flag. The
+    # (raw, filtered) pair still flows to accounting structurally below.
+    header = f"[filter:{method}]"
+    if show_token_ratios(svc):
+        savings_pct = round((1 - filtered_tokens / raw_tokens) * 100, 1) if raw_tokens > 0 else 0
+        header = f"[filter:{method}] {raw_tokens}→{filtered_tokens}tok ({savings_pct}%saved)"
     resp = f"{header}\n{result_text}"
-    return finalize("c3_filter", {"depth": depth},
-                    resp, f"{raw_tokens}→{filtered_tokens}tok",
-                    response_tokens=filtered_tokens)
+    return finalize_with_tokens(
+        finalize, svc, "c3_filter", {"depth": depth}, resp, method,
+        raw_tokens=raw_tokens, optimized_tokens=filtered_tokens,
+        response_tokens=filtered_tokens)
 
 
 def _heuristic_collapse(text: str) -> str | None:
@@ -279,7 +287,12 @@ def _filter_file(full: Path, file_path: str, pattern: str, max_lines: int,
         extracted = "\n".join(lines[:max_lines])
 
     res_tok = count_tokens(extracted)
-    saved = round((1 - res_tok / orig_tok) * 100) if orig_tok > 0 else 0
-    return finalize("c3_filter", {"file": file_path, "pattern": pattern},
-                    f"[extract:{ext}] {orig_tok}->{res_tok}tok ({saved}% saved)\n{extracted}",
-                    f"{orig_tok}->{res_tok}tok")
+    header = f"[extract:{ext}]"
+    if show_token_ratios(svc):
+        saved = round((1 - res_tok / orig_tok) * 100) if orig_tok > 0 else 0
+        header = f"[extract:{ext}] {orig_tok}->{res_tok}tok ({saved}% saved)"
+    return finalize_with_tokens(
+        finalize, svc, "c3_filter", {"file": file_path, "pattern": pattern},
+        f"{header}\n{extracted}", "extract",
+        raw_tokens=orig_tok, optimized_tokens=res_tok,
+        response_tokens=res_tok)

@@ -8,6 +8,26 @@ def maybe_related_facts(svc, topic: str, top_k: int = 3, width: int = 100) -> st
     return ""
 
 
+# ── Response boilerplate diet (P6) ───────────────────────────────────────────
+
+def show_token_ratios(svc) -> bool:
+    """Debug flag: restore per-call "raw->optimized tok" ratio headers.
+
+    Off by default — the ratio header was ~100-200 tokens/session of
+    boilerplate the model does nothing with. Accounting no longer depends on
+    the displayed header: migrated tools report (raw_tokens, optimized_tokens)
+    structurally via finalize_with_tokens(). Set
+    ``{"hybrid": {"show_token_ratios": true}}`` in .c3/config.json to see the
+    old headers again (same convention as SHOW_SAVINGS_SUMMARY /
+    show_savings_footer).
+    """
+    try:
+        return bool((getattr(svc, "hybrid_config", None) or {}).get(
+            "show_token_ratios", False))
+    except Exception:
+        return False
+
+
 # ── Structured token accounting (honest measurement layer) ──────────────────
 
 def finalize_with_tokens(finalize, svc, tool_name: str, args: dict,
