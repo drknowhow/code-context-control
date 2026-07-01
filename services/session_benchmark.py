@@ -4,6 +4,14 @@ Simulates multi-turn AI coding workflows end-to-end, comparing
 "with C3" vs "without C3" paths across realistic scenarios like
 bug investigation, feature exploration, code review, etc.
 
+The "without C3" baseline models a COMPETENT agent, not a strawman:
+one targeted grep (matching lines + context, not full-file dumps) and each
+needed file read at most ONCE (partial when very large, mirroring native
+Read's line cap). Repeated full re-reads of the same file are not modeled —
+an agent keeps already-read content in context. Baseline read steps record
+which files they read in StepResult.detail ("reads:a.py;b.py") so tests can
+verify the at-most-once property.
+
 Measures cumulative token usage, latency, quality, and session longevity.
 Generates a visual HTML report.
 """
@@ -183,6 +191,65 @@ class SessionBenchmark:
     def _rel(self, path: Path) -> str:
         return str(path.relative_to(self.project_path)).replace("\\", "/")
 
+    # ─── Honest baseline modeling ─────────────────────────────
+    # The "without C3" baseline models a COMPETENT agent, not a strawman:
+    # one targeted grep (matching lines + context, like ripgrep output — not
+    # full-file dumps), then reading each needed file at most ONCE (partial
+    # when very large, mirroring native Read's line cap). No repeated full
+    # re-reads: an agent keeps already-read content in context.
+
+    # Native Read defaults to ~2000 lines per call; a competent agent reads
+    # a very large file partially, not repeatedly.
+    BASELINE_READ_MAX_LINES = 2000
+    # Cap grep matches surfaced per file (agents skim, they don't ingest
+    # unbounded match lists).
+    BASELINE_GREP_MAX_MATCHES_PER_FILE = 20
+
+    @classmethod
+    def _read_once_tokens(cls, content: str) -> int:
+        """Token cost of reading a file ONCE (capped like native Read)."""
+        lines = content.splitlines()
+        if len(lines) <= cls.BASELINE_READ_MAX_LINES:
+            return count_tokens(content)
+        return count_tokens("\n".join(lines[:cls.BASELINE_READ_MAX_LINES]))
+
+    def _baseline_grep(self, terms: list, limit_files: int = 5,
+                       context: int = 2, scan=None) -> tuple:
+        """Model a targeted grep: matching lines with +/- context lines.
+
+        Returns (grep_output_text, matched_rel_paths). This replaces the old
+        strawman that concatenated the FULL content of every matching file.
+        """
+        scan = scan if scan is not None else self.files[:30]
+        terms = [t.lower() for t in terms if t]
+        out_lines = []
+        matched = []
+        for fpath, content, _ in scan:
+            low = content.lower()
+            if not terms or not any(t in low for t in terms):
+                continue
+            rel = self._rel(fpath)
+            matched.append(rel)
+            lines = content.splitlines()
+            hits = 0
+            for i, line in enumerate(lines):
+                if any(t in line.lower() for t in terms):
+                    lo = max(0, i - context)
+                    hi = min(len(lines), i + context + 1)
+                    for j in range(lo, hi):
+                        out_lines.append(f"{rel}:{j + 1}:{lines[j]}")
+                    hits += 1
+                    if hits >= self.BASELINE_GREP_MAX_MATCHES_PER_FILE:
+                        break
+            if len(matched) >= limit_files:
+                break
+        return "\n".join(out_lines), matched
+
+    @staticmethod
+    def _reads_detail(rel_paths) -> str:
+        """Machine-checkable record of which files a baseline step read."""
+        return "reads:" + ";".join(rel_paths)
+
     def _build_fixtures(self):
         """Create log, JSONL, and terminal fixtures for log-related scenarios."""
         fixture_dir = self.project_path / ".c3" / "session_benchmark" / "fixtures"
@@ -322,7 +389,10 @@ class SessionBenchmark:
         map_ok = "[file_map] Could not" not in map_text and "[file_map:error]" not in map_text
         result.steps_c3.append(StepResult("map_structure", "c3_compress(map)", map_tokens, lat, 100.0 if map_ok else 60.0))
 
-        # Step 3: c3_read to extract specific symbol
+        # Step 3: c3_read to extract specific symbol.
+        # When symbol extraction is unavailable (e.g. unsupported file type),
+        # the honest fallback is a single capped read — same model as the
+        # baseline — NOT an uncapped full-file ingest.
         t0 = time.perf_counter()
         if symbols and record and record.get("sections"):
             target_sections = [s for s in record["sections"] if s["name"] == symbols[0]]
@@ -333,10 +403,10 @@ class SessionBenchmark:
                 read_tokens = count_tokens(extracted)
                 read_quality = 100.0
             else:
-                read_tokens = count_tokens(target_content)
+                read_tokens = self._read_once_tokens(target_content)
                 read_quality = 70.0
         else:
-            read_tokens = count_tokens(target_content)
+            read_tokens = self._read_once_tokens(target_content)
             read_quality = 70.0
         lat = (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("read_symbol", "c3_read", read_tokens, lat, read_quality))
@@ -348,38 +418,39 @@ class SessionBenchmark:
         err_msg = f"Found {len(errors)} errors" if errors else "No errors"
         result.steps_c3.append(StepResult("validate", "c3_validate", count_tokens(err_msg), lat, 100.0))
 
-        # ── WITHOUT C3 (baseline) ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
+        # One targeted grep (matches + context, not full-file dumps), then
+        # the suspect file is read ONCE. Symbol narrowing and eyeball
+        # validation happen over content already in context — no re-reads.
 
-        # Step 1: lexical grep + read full files
+        # Step 1: targeted grep — matching lines with context
         t0 = time.perf_counter()
         terms = [t for t in re.findall(r"[A-Za-z_]+", query.lower()) if len(t) > 2]
-        baseline_context = []
-        for fpath, content, _ in self.files[:20]:
-            low = content.lower()
-            if any(term in low for term in terms):
-                baseline_context.append(content)
-                if len(baseline_context) >= 5:
-                    break
-        if not baseline_context:
-            baseline_context = [self.sample[0][1]]
+        grep_text, grep_hits = self._baseline_grep(terms, limit_files=5, scan=self.files[:20])
         lat = (time.perf_counter() - t0) * 1000
-        base_tokens = count_tokens("\n\n".join(baseline_context))
-        # Baseline grep: check if target was among the matched files
-        base_hit = any(target_rel in str(fp).replace("\\", "/") for fp, c, _ in self.files[:20] if any(t in c.lower() for t in terms))
-        base_search_quality = 100.0 if base_hit else (75.0 if baseline_context else 50.0)
-        result.steps_baseline.append(StepResult("grep_search", "native", base_tokens, lat, base_search_quality))
+        base_tokens = count_tokens(grep_text) if grep_text else 50  # empty-result output still costs a little
+        base_hit = target_rel in grep_hits
+        base_search_quality = 100.0 if base_hit else (75.0 if grep_hits else 50.0)
+        result.steps_baseline.append(StepResult("grep_search", "native", base_tokens, lat,
+                                                base_search_quality, detail="grep matches + context"))
 
-        # Step 2: read full file
+        # Step 2: read the suspect file ONCE (partial when very large)
         t0 = time.perf_counter()
         full_content = target_path.read_text(encoding="utf-8", errors="replace")
+        read_tokens_once = self._read_once_tokens(full_content)
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_full_file", "native", count_tokens(full_content), lat, 100.0))
+        result.steps_baseline.append(StepResult("read_target_once", "native", read_tokens_once, lat,
+                                                100.0, detail=self._reads_detail([target_rel])))
 
-        # Step 3: read full file again (no surgical read)
-        result.steps_baseline.append(StepResult("read_full_for_symbol", "native", count_tokens(full_content), 0.1, 100.0))
+        # Step 3: narrow to the symbol using content already in context
+        # (no extra input tokens)
+        result.steps_baseline.append(StepResult("narrow_in_context", "native", 0, 0.1, 100.0,
+                                                detail="symbol located in already-read content"))
 
-        # Step 4: read full file to "validate" visually
-        result.steps_baseline.append(StepResult("visual_validation", "native", count_tokens(full_content), 0.1, 80.0))
+        # Step 4: eyeball validation from context — free, but no machine
+        # syntax check (quality penalty)
+        result.steps_baseline.append(StepResult("visual_validation", "native", 0, 0.1, 80.0,
+                                                detail="no syntax checker; visual only"))
 
         return result
 
@@ -435,36 +506,37 @@ class SessionBenchmark:
                     extracted = "\n".join(lines[s["line_start"]-1:s["line_end"]])
                     surgical_tokens += count_tokens(extracted)
             else:
-                surgical_tokens += count_tokens(content)
+                # Honest fallback: single capped read, same as baseline model
+                surgical_tokens += self._read_once_tokens(content)
             surgical_lat += (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("read_symbols", "c3_read", surgical_tokens, surgical_lat, 100.0))
 
-        # ── WITHOUT C3 ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
 
-        # Step 1: grep for related files + read them all
+        # Step 1: targeted grep for the feature name (matches + context)
         t0 = time.perf_counter()
-        base_context = []
-        for fpath, content, _ in self.files[:30]:
-            if explore_files[0][0].stem.lower() in content.lower():
-                base_context.append(content)
-                if len(base_context) >= 5:
-                    break
-        if not base_context:
-            base_context = [f[1] for f in explore_files[:5]]
+        grep_text, _ = self._baseline_grep([explore_files[0][0].stem.lower()], limit_files=5)
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("grep_discover", "native", count_tokens("\n\n".join(base_context)), lat, 100.0))
+        result.steps_baseline.append(StepResult("grep_discover", "native",
+                                                count_tokens(grep_text) if grep_text else 50,
+                                                lat, 100.0, detail="grep matches + context"))
 
-        # Step 2: read all files fully
+        # Step 2: read each related file ONCE (partial when very large)
         t0 = time.perf_counter()
         full_tokens = 0
+        read_rels = []
         for fpath, content, _ in explore_files:
             fpath.read_text(encoding="utf-8", errors="replace")
-            full_tokens += count_tokens(content)
+            full_tokens += self._read_once_tokens(content)
+            read_rels.append(self._rel(fpath))
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_all_files", "native", full_tokens, lat, 100.0))
+        result.steps_baseline.append(StepResult("read_all_files_once", "native", full_tokens, lat,
+                                                100.0, detail=self._reads_detail(read_rels)))
 
-        # Step 3: re-read for symbol understanding (no compression)
-        result.steps_baseline.append(StepResult("reread_for_symbols", "native", full_tokens, 0.1, 100.0))
+        # Step 3: symbol understanding from content already in context —
+        # no re-read, no extra input tokens
+        result.steps_baseline.append(StepResult("symbols_in_context", "native", 0, 0.1, 100.0,
+                                                detail="symbols understood from already-read content"))
 
         return result
 
@@ -509,9 +581,10 @@ class SessionBenchmark:
                     extracted = "\n".join(lines[s["line_start"]-1:s["line_end"]])
                     read_tokens += count_tokens(extracted)
                 else:
-                    read_tokens += count_tokens(content)
+                    # Honest fallback: single capped read, same as baseline
+                    read_tokens += self._read_once_tokens(content)
             else:
-                read_tokens += count_tokens(content)
+                read_tokens += self._read_once_tokens(content)
             read_lat += (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("read_flagged", "c3_read", read_tokens, read_lat, 100.0))
 
@@ -557,23 +630,28 @@ class SessionBenchmark:
         quality = round(cache_hits / review_count * 100, 1) if review_count else 0
         result.steps_c3.append(StepResult("validate_cached", "c3_validate", cache_tokens, cache_lat, quality))
 
-        # ── WITHOUT C3 ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
 
-        # Step 1: read all files fully
+        # Step 1: read each file under review ONCE (partial when very large)
         t0 = time.perf_counter()
-        full_tokens = sum(count_tokens(c) for _, c, _ in review_files)
+        full_tokens = sum(self._read_once_tokens(c) for _, c, _ in review_files)
+        read_rels = [self._rel(f) for f, _, _ in review_files]
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_all_review", "native", full_tokens, lat, 100.0))
+        result.steps_baseline.append(StepResult("read_all_review_once", "native", full_tokens, lat,
+                                                100.0, detail=self._reads_detail(read_rels)))
 
-        # Step 2: re-read flagged files fully
-        flagged_tokens = sum(count_tokens(c) for _, c, _ in review_files[:3])
-        result.steps_baseline.append(StepResult("read_flagged_full", "native", flagged_tokens, 0.1, 100.0))
+        # Step 2: review flagged sections from content already in context
+        result.steps_baseline.append(StepResult("review_in_context", "native", 0, 0.1, 100.0,
+                                                detail="flagged sections already in context"))
 
-        # Step 3: re-read for "visual validation" (no syntax checker)
-        result.steps_baseline.append(StepResult("visual_validate", "native", full_tokens, 0.1, 80.0))
+        # Step 3: visual validation from context — free, but no machine
+        # syntax check (quality penalty)
+        result.steps_baseline.append(StepResult("visual_validate", "native", 0, 0.1, 80.0,
+                                                detail="no syntax checker; visual only"))
 
-        # Step 4: re-read again for second validation pass (no cache — full re-read)
-        result.steps_baseline.append(StepResult("re_validate_full", "native", full_tokens, 0.1, 80.0))
+        # Step 4: second validation pass — still visual, still no checker
+        result.steps_baseline.append(StepResult("visual_revalidate", "native", 0, 0.1, 80.0,
+                                                detail="no syntax checker; visual only"))
 
         return result
 
@@ -618,31 +696,31 @@ class SessionBenchmark:
         lat = (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("search_error_code", "c3_search", count_tokens(context), lat, 100.0))
 
-        # ── WITHOUT C3 ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
 
-        # Step 1: read full log
+        # Step 1: read the log ONCE (an agent without a filter must ingest it)
         t0 = time.perf_counter()
         log_path.read_text(encoding="utf-8", errors="replace")
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_full_log", "native", log_tokens, lat, 100.0))
+        result.steps_baseline.append(StepResult("read_full_log", "native", log_tokens, lat, 100.0,
+                                                detail=self._reads_detail([self._rel(log_path)])))
 
-        # Step 2: read full terminal output
+        # Step 2: read the terminal output ONCE
         t0 = time.perf_counter()
         terminal_path.read_text(encoding="utf-8", errors="replace")
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_full_terminal", "native", count_tokens(terminal_text), lat, 100.0))
+        result.steps_baseline.append(StepResult("read_full_terminal", "native", count_tokens(terminal_text),
+                                                lat, 100.0,
+                                                detail=self._reads_detail([self._rel(terminal_path)])))
 
-        # Step 3: grep + read full files for error context
+        # Step 3: targeted grep for error-related code (matches + context,
+        # not full-file dumps)
         t0 = time.perf_counter()
-        grep_context = []
-        for fpath, content, _ in self.files[:20]:
-            if "error" in content.lower() or "exception" in content.lower():
-                grep_context.append(content)
-                if len(grep_context) >= 3:
-                    break
+        grep_text, _ = self._baseline_grep(["error", "exception"], limit_files=3, scan=self.files[:20])
         lat = (time.perf_counter() - t0) * 1000
-        base_tokens = count_tokens("\n\n".join(grep_context)) if grep_context else 0
-        result.steps_baseline.append(StepResult("grep_error_code", "native", base_tokens, lat, 100.0))
+        result.steps_baseline.append(StepResult("grep_error_code", "native",
+                                                count_tokens(grep_text) if grep_text else 50,
+                                                lat, 100.0, detail="grep matches + context"))
 
         return result
 
@@ -691,7 +769,8 @@ class SessionBenchmark:
                 extracted = "\n".join(lines[s["line_start"]-1:s["line_end"]])
                 impl_tokens += count_tokens(extracted)
         if not impl_tokens:
-            impl_tokens = count_tokens(target_content)
+            # Honest fallback: single capped read, same as baseline model
+            impl_tokens = self._read_once_tokens(target_content)
         lat = (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("read_implementation", "c3_read", impl_tokens, lat, 100.0))
 
@@ -701,28 +780,31 @@ class SessionBenchmark:
         lat = (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("map_impact", "c3_compress(map)", count_tokens(map_text), lat, 100.0))
 
-        # ── WITHOUT C3 ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
 
-        # Step 1: grep for callers + read full files
+        # Step 1: targeted grep for callers (matches + context)
         t0 = time.perf_counter()
-        base_context = []
-        for fpath, content, _ in self.files[:30]:
-            if target_path.stem.lower() in content.lower():
-                base_context.append(content)
-                if len(base_context) >= 5:
-                    break
+        grep_text, _ = self._baseline_grep([target_path.stem.lower()], limit_files=5)
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("grep_callers", "native", count_tokens("\n\n".join(base_context)), lat, 100.0))
+        result.steps_baseline.append(StepResult("grep_callers", "native",
+                                                count_tokens(grep_text) if grep_text else 50,
+                                                lat, 100.0, detail="grep matches + context"))
 
-        # Step 2: read all caller files fully
-        full_tokens = sum(count_tokens(c) for _, c, _ in impact_files)
-        result.steps_baseline.append(StepResult("read_all_callers", "native", full_tokens, 0.1, 100.0))
+        # Step 2: read each caller file ONCE (partial when very large)
+        caller_tokens = sum(self._read_once_tokens(c) for _, c, _ in impact_files)
+        caller_rels = [self._rel(f) for f, _, _ in impact_files]
+        result.steps_baseline.append(StepResult("read_callers_once", "native", caller_tokens, 0.1,
+                                                100.0, detail=self._reads_detail(caller_rels)))
 
-        # Step 3: read target fully
-        result.steps_baseline.append(StepResult("read_full_target", "native", count_tokens(target_content), 0.1, 100.0))
+        # Step 3: read the target ONCE
+        result.steps_baseline.append(StepResult("read_target_once", "native",
+                                                self._read_once_tokens(target_content), 0.1, 100.0,
+                                                detail=self._reads_detail([target_rel])))
 
-        # Step 4: re-read target for impact assessment
-        result.steps_baseline.append(StepResult("reread_for_impact", "native", count_tokens(target_content), 0.1, 100.0))
+        # Step 4: impact assessment from content already in context —
+        # no re-read
+        result.steps_baseline.append(StepResult("impact_in_context", "native", 0, 0.1, 100.0,
+                                                detail="impact assessed from already-read content"))
 
         return result
 
@@ -771,7 +853,8 @@ class SessionBenchmark:
                 for s in target:
                     entry_tokens += count_tokens("\n".join(lines[s["line_start"]-1:s["line_end"]]))
             else:
-                entry_tokens += count_tokens(content)
+                # Honest fallback: single capped read, same as baseline model
+                entry_tokens += self._read_once_tokens(content)
             entry_lat += (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("read_entry_points", "c3_read", entry_tokens, entry_lat, 100.0))
 
@@ -781,40 +864,44 @@ class SessionBenchmark:
         lat = (time.perf_counter() - t0) * 1000
         result.steps_c3.append(StepResult("search_patterns", "c3_search", count_tokens(ctx2), lat, 100.0))
 
-        # ── WITHOUT C3 ──
+        # ── WITHOUT C3 (honest baseline: competent agent) ──
 
-        # Step 1: read project root listing + README (simulate)
+        # Step 1: read project root listing + README ONCE (simulate)
         t0 = time.perf_counter()
         readme_path = self.project_path / "README.md"
         readme_tokens = 0
+        readme_rels = []
         if readme_path.exists():
-            readme_tokens = count_tokens(readme_path.read_text(encoding="utf-8", errors="replace"))
+            readme_tokens = self._read_once_tokens(
+                readme_path.read_text(encoding="utf-8", errors="replace"))
+            readme_rels = [self._rel(readme_path)]
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_readme", "native", max(readme_tokens, 200), lat, 100.0))
+        result.steps_baseline.append(StepResult("read_readme", "native", max(readme_tokens, 200), lat,
+                                                100.0, detail=self._reads_detail(readme_rels)))
 
-        # Step 2: read all key files fully
+        # Step 2: read each key file ONCE (partial when very large)
         t0 = time.perf_counter()
         full_tokens = 0
+        key_rels = []
         for fpath, content, _ in explore_files:
             fpath.read_text(encoding="utf-8", errors="replace")
-            full_tokens += count_tokens(content)
+            full_tokens += self._read_once_tokens(content)
+            key_rels.append(self._rel(fpath))
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("read_all_key_files", "native", full_tokens, lat, 100.0))
+        result.steps_baseline.append(StepResult("read_key_files_once", "native", full_tokens, lat,
+                                                100.0, detail=self._reads_detail(key_rels)))
 
-        # Step 3: re-read entry files for understanding
-        entry_full = sum(count_tokens(c) for _, c, _ in explore_files[:2])
-        result.steps_baseline.append(StepResult("reread_entries", "native", entry_full, 0.1, 100.0))
+        # Step 3: entry points understood from content already in context
+        result.steps_baseline.append(StepResult("entries_in_context", "native", 0, 0.1, 100.0,
+                                                detail="entry files already in context"))
 
-        # Step 4: grep for config patterns + read results
+        # Step 4: targeted grep for config patterns (matches + context)
         t0 = time.perf_counter()
-        config_context = []
-        for fpath, content, _ in self.files[:30]:
-            if "config" in content.lower() or "setting" in content.lower():
-                config_context.append(content)
-                if len(config_context) >= 3:
-                    break
+        grep_text, _ = self._baseline_grep(["config", "setting"], limit_files=3)
         lat = (time.perf_counter() - t0) * 1000
-        result.steps_baseline.append(StepResult("grep_patterns", "native", count_tokens("\n\n".join(config_context)), lat, 100.0))
+        result.steps_baseline.append(StepResult("grep_patterns", "native",
+                                                count_tokens(grep_text) if grep_text else 50,
+                                                lat, 100.0, detail="grep matches + context"))
 
         return result
 

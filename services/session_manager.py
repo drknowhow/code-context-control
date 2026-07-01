@@ -10,6 +10,7 @@ Maintains compressed state between Claude Code sessions:
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,7 @@ from typing import Optional
 from core import count_tokens
 from core.ide import detect_ide, load_ide_config
 from services.git_context import GitContext
+from services.telemetry import append_telemetry_record
 
 
 class SessionManager:
@@ -67,6 +69,13 @@ class SessionManager:
 
         self._budget_file = self.project_path / ".c3" / "context_budget.json"
         self._budget_thresholds = self._load_budget_thresholds()
+
+        # Per-tool-call accounting handoff. A tool call's structured token
+        # data (record_tool_tokens) and its args-derived action are stashed
+        # here between log_tool_call() and track_response(), which run
+        # sequentially on the same handler thread. Thread-local keeps
+        # concurrent tool calls from clobbering each other.
+        self._tool_call_local = threading.local()
 
     @staticmethod
     def _normalize_source_system(source_system: Optional[str]) -> Optional[str]:
@@ -130,7 +139,10 @@ class SessionManager:
             "key_changes": [],
             "context_notes": [],
             "tool_calls": [],
-            "token_usage": {"estimated_saved": 0, "estimated_used": 0, "measured_ops": 0},
+            # estimated_saved_vs_full_read is an ESTIMATE against a
+            # full-file-read baseline (what ingesting the whole source would
+            # have cost) — not measured against real agent behavior.
+            "token_usage": {"estimated_saved_vs_full_read": 0, "estimated_used": 0, "measured_ops": 0},
             "context_budget": {
                 "response_tokens": 0,
                 "call_count": 0,
@@ -179,12 +191,75 @@ class SessionManager:
             "result_summary": result_summary[:200],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        # Heuristic savings estimate from summaries like "122288->5085tok".
-        self._update_token_usage_estimate(result_summary)
+        # Stash the sub-action for the telemetry record emitted later in
+        # track_response() (same handler thread).
+        try:
+            if isinstance(args, dict):
+                action = str(args.get("action") or args.get("mode") or "")
+            else:
+                action = ""
+            self._tool_call_local.action = action
+        except Exception:
+            pass
+        # Legacy fallback: heuristic savings estimate scraped from summaries
+        # like "122288->5085tok". Skipped when the tool already reported
+        # structured tokens via record_tool_tokens() for this call.
+        self._update_token_usage_estimate(tool_name, result_summary)
+
+    # ─── Token accounting (estimates vs full-read baseline) ──
+
+    def record_tool_tokens(self, tool_name: str, raw_tokens: Optional[int] = None,
+                           optimized_tokens: Optional[int] = None,
+                           duration_ms: Optional[float] = None) -> None:
+        """Structured per-call token accounting — the PRIMARY path.
+
+        Tools call this (via cli.tools._helpers.finalize_with_tokens) with
+        explicitly measured values instead of encoding them in summary
+        strings for regex-scraping (_parse_summary_token_pair remains only
+        as a fallback for tools not yet migrated).
+
+        raw_tokens is a full-read baseline: the token cost of ingesting the
+        entire un-optimized source. optimized_tokens is what C3 actually
+        returned. The difference is accumulated as
+        token_usage["estimated_saved_vs_full_read"] — an estimate against
+        that counterfactual baseline, not a measurement of real agent
+        behavior.
+        """
+        if not self.current_session:
+            self.start_session()
+        raw = self._coerce_token_count(raw_tokens)
+        optimized = self._coerce_token_count(optimized_tokens)
+        if raw is not None and optimized is not None:
+            self._accumulate_token_usage(raw, optimized)
+        # Hand off to track_response() for the telemetry record. Keyed by
+        # tool name so a stale entry from an aborted call can't be
+        # mis-attributed to a different tool on the same thread.
+        self._tool_call_local.pending = {
+            "tool": tool_name,
+            "raw_tokens": raw,
+            "optimized_tokens": optimized,
+            "duration_ms": duration_ms,
+            "source": "structured",
+        }
+
+    @staticmethod
+    def _coerce_token_count(value) -> Optional[int]:
+        """Coerce to a non-negative int, or None."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            n = int(value)
+        except (ValueError, TypeError):
+            return None
+        return n if n >= 0 else None
 
     @staticmethod
     def _parse_summary_token_pair(result_summary: str) -> tuple[int, int] | None:
-        """Parse token pair from summary text, returning (raw_tokens, optimized_tokens)."""
+        """LEGACY fallback: parse "raw->optimized tok" out of a summary string.
+
+        Returns (raw_tokens, optimized_tokens). Only used for tools that have
+        not migrated to the structured record_tool_tokens() path.
+        """
         if not result_summary:
             return None
         m = re.search(r"(\d+)\s*->\s*(\d+)\s*tok\b", result_summary, re.IGNORECASE)
@@ -199,18 +274,49 @@ class SessionManager:
             return None
         return raw, optimized
 
-    def _update_token_usage_estimate(self, result_summary: str) -> None:
-        """Update session token_usage from tool result summaries."""
+    def _accumulate_token_usage(self, raw: int, optimized: int) -> None:
+        """Accumulate one measured (raw, optimized) pair into token_usage.
+
+        "estimated_saved_vs_full_read" is labeled as such because raw is a
+        full-file-read baseline — a counterfactual, not observed behavior.
+        """
         if not self.current_session:
             return
+        token_usage = self.current_session.setdefault("token_usage", {})
+        token_usage["estimated_saved_vs_full_read"] = (
+            int(token_usage.get("estimated_saved_vs_full_read", 0)) + max(0, raw - optimized))
+        token_usage["estimated_used"] = int(token_usage.get("estimated_used", 0)) + optimized
+        token_usage["measured_ops"] = int(token_usage.get("measured_ops", 0)) + 1
+
+    def _update_token_usage_estimate(self, tool_name: str, result_summary: str) -> None:
+        """Fallback token accounting scraped from tool result summaries.
+
+        Skipped when structured values were already recorded for this call
+        via record_tool_tokens() (prevents double-counting).
+        """
+        if not self.current_session:
+            return
+        pending = getattr(self._tool_call_local, "pending", None)
+        if pending is not None:
+            if pending.get("tool") == tool_name and pending.get("source") == "structured":
+                # Structured accounting already ran for this call.
+                return
+            # Stale entry (aborted call / different tool) — discard.
+            self._tool_call_local.pending = None
         pair = self._parse_summary_token_pair(result_summary)
         if not pair:
             return
         raw, optimized = pair
-        token_usage = self.current_session.setdefault("token_usage", {})
-        token_usage["estimated_saved"] = int(token_usage.get("estimated_saved", 0)) + max(0, raw - optimized)
-        token_usage["estimated_used"] = int(token_usage.get("estimated_used", 0)) + optimized
-        token_usage["measured_ops"] = int(token_usage.get("measured_ops", 0)) + 1
+        self._accumulate_token_usage(raw, optimized)
+        # Still surface the parsed pair to telemetry, marked as
+        # summary-scraped so downstream consumers know the provenance.
+        self._tool_call_local.pending = {
+            "tool": tool_name,
+            "raw_tokens": raw,
+            "optimized_tokens": optimized,
+            "duration_ms": None,
+            "source": "summary",
+        }
 
     def reset_budget(self, initial_tokens: int = 0) -> None:
         """Reset the current session's context budget (typically after /clear)."""
@@ -963,9 +1069,45 @@ class SessionManager:
         # Track infra overhead separately
         if tool_name in self._C3_INFRA_TOOLS:
             budget["infra_tokens"] = budget.get("infra_tokens", 0) + tokens
+        # Per-tool telemetry JSONL (failure-safe; never breaks the response)
+        self._emit_tool_telemetry(tool_name, tokens)
         # Persist every 5 calls
         if budget["call_count"] % 5 == 0:
             self._persist_budget()
+
+    def _emit_tool_telemetry(self, tool_name: str, response_tokens: int) -> None:
+        """Append one per-tool-call record to .c3/tool_telemetry.jsonl.
+
+        Consumes the pending structured/summary token data stashed on this
+        thread by record_tool_tokens() / log_tool_call(). Failure-safe:
+        telemetry errors are swallowed so they can never break a tool
+        response.
+        """
+        try:
+            pending = getattr(self._tool_call_local, "pending", None)
+            if pending is not None and pending.get("tool") != tool_name:
+                pending = None  # stale entry from an aborted call
+            action = getattr(self._tool_call_local, "action", "") or ""
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "session_id": (self.current_session or {}).get("id", ""),
+                "tool": tool_name,
+                "action": action,
+                "response_tokens": int(response_tokens),
+                "raw_tokens": pending.get("raw_tokens") if pending else None,
+                "optimized_tokens": pending.get("optimized_tokens") if pending else None,
+                "duration_ms": pending.get("duration_ms") if pending else None,
+                "source": pending.get("source") if pending else None,
+            }
+            append_telemetry_record(self.project_path, record)
+        except Exception:
+            pass
+        finally:
+            try:
+                self._tool_call_local.pending = None
+                self._tool_call_local.action = ""
+            except Exception:
+                pass
 
     def _persist_budget(self) -> None:
         """Write current budget snapshot to .c3/context_budget.json."""

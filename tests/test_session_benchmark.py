@@ -190,6 +190,36 @@ class TestSessionBenchmarkIntegration(unittest.TestCase):
                     f"{r.name}: expected non-negative savings, got {r.token_savings_pct}%"
                 )
 
+    def test_baseline_reads_each_file_at_most_once(self):
+        """The honest baseline must not model repeated reads of the same file.
+
+        Baseline read steps record the files they ingest in
+        StepResult.detail as "reads:a.py;b.py". Within a scenario, no file
+        may be read more than once by the baseline (the old strawman
+        re-read the same file 3-4 times).
+        """
+        checked_any = False
+        for r in self.results:
+            if "Error" in r.description:
+                continue
+            read_counts: dict = {}
+            for step in r.steps_baseline:
+                detail = getattr(step, "detail", "") or ""
+                if not detail.startswith("reads:"):
+                    continue
+                for rel in detail[len("reads:"):].split(";"):
+                    rel = rel.strip()
+                    if rel:
+                        read_counts[rel] = read_counts.get(rel, 0) + 1
+                        checked_any = True
+            for rel, count in read_counts.items():
+                self.assertLessEqual(
+                    count, 1,
+                    f"{r.name}: baseline read {rel!r} {count} times — "
+                    "the honest baseline must read each file at most once"
+                )
+        self.assertTrue(checked_any, "Baseline read steps should record reads: details")
+
     def test_session_longevity_projection(self):
         """Session longevity projections should be reasonable."""
         lon = self.report["session_longevity"]
