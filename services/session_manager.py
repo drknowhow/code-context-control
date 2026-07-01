@@ -374,6 +374,10 @@ class SessionManager:
         # Update analytics
         self._update_analytics()
 
+        # Retention: cap .c3/sessions to the newest N files (older ones are
+        # gzip-archived). Snapshot restore uses .c3/snapshots — unaffected.
+        self._enforce_session_cap()
+
         result = {
             "session_id": self.current_session["id"],
             "saved_to": str(session_file),
@@ -384,6 +388,31 @@ class SessionManager:
         }
         self.current_session = None
         return result
+
+    def _enforce_session_cap(self) -> None:
+        """Keep only the newest ``retention.sessions_max_files`` session files.
+
+        Older session_*.json files are gzip-archived into .c3/archive (or
+        deleted when ``sessions_archive`` is False). Failure-safe: retention
+        problems never break session saving.
+        """
+        try:
+            from services.retention import (
+                archive_dir_for,
+                cap_session_files,
+                load_retention_config,
+            )
+            cfg = load_retention_config(str(self.project_path))
+            if not cfg.get("enabled", True):
+                return
+            max_files = int(cfg.get("sessions_max_files", 50))
+            if max_files <= 0:
+                return
+            dest = (archive_dir_for(str(self.project_path))
+                    if cfg.get("sessions_archive", True) else None)
+            cap_session_files(self.data_dir, max_files=max_files, archive_dir=dest)
+        except Exception:
+            pass
 
     def load_session(self, session_id: str = "latest") -> dict:
         """Load a previous session's context."""

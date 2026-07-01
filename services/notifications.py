@@ -216,6 +216,45 @@ class NotificationStore:
                 lines.append(f"{prefix} {e['agent']}: {e['title']} — {e['message']}{repeat}")
             return "\n".join(lines)
 
+    def rotate_acknowledged(self, archive_fn, min_age_minutes: int = 120) -> int:
+        """Move old acknowledged entries out of the live file (storage retention).
+
+        ``archive_fn(entries) -> bool`` receives the entries to move and must
+        persist them (e.g. services.retention.write_archive_entries into a
+        gzip archive), returning truthy on success. The live file is only
+        rewritten AFTER archiving succeeds, so records are never dropped.
+
+        Unacknowledged entries always stay. Acknowledged entries younger
+        than ``min_age_minutes`` also stay, so add()'s post-ack cooldown
+        suppression window keeps working. Returns the count moved.
+        """
+        with self._lock:
+            entries = self._read_all()
+            horizon = datetime.now(timezone.utc) - timedelta(
+                minutes=max(0, min_age_minutes))
+
+            def _old_enough(e: dict) -> bool:
+                try:
+                    dt = datetime.fromisoformat(_recency_key(e))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt < horizon
+                except (ValueError, TypeError):
+                    return True  # unparseable timestamp — treat as old
+
+            move = [e for e in entries
+                    if e.get("acknowledged") and _old_enough(e)]
+            if not move:
+                return 0
+            try:
+                if not archive_fn(move):
+                    return 0
+            except Exception:
+                return 0
+            move_ids = {id(e) for e in move}
+            self._write_all([e for e in entries if id(e) not in move_ids])
+            return len(move)
+
     def collapse_duplicates(self) -> int:
         """Retro-cleanup: merge unacknowledged duplicates into one record each.
 

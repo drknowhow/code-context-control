@@ -33,12 +33,20 @@ Note: this is LOCAL-ONLY measurement data written inside the project's
 leaves the machine.
 """
 
+import gzip
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 TELEMETRY_RELPATH = Path(".c3") / "tool_telemetry.jsonl"
+
+# Rotated archives written by services.retention:
+# tool_telemetry.<YYYY-MM-DD>[_HHMMSS][-N].jsonl[.gz]
+_ARCHIVE_NAME_RE = re.compile(
+    r"^tool_telemetry\.(\d{4}-\d{2}-\d{2})(?:_\d{6})?(?:-\d+)?\.jsonl(?:\.gz)?$"
+)
 
 # Fields every record should carry (missing ones are filled with defaults).
 _RECORD_DEFAULTS = {
@@ -80,9 +88,35 @@ def append_telemetry_record(project_path, record: dict) -> bool:
         line = json.dumps(full, ensure_ascii=False, default=str)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        _maybe_rotate(project_path, path)
         return True
     except Exception:
         return False
+
+
+def _maybe_rotate(project_path, path: Path) -> None:
+    """Cheap per-append size check; rotate the live log into the archive.
+
+    The reader (``read_telemetry_records``) spans live file + archives, so
+    aggregation windows keep working across rotations. Failure-safe.
+    """
+    try:
+        from services.retention import (
+            archive_dir_for,
+            load_retention_config,
+            mb_to_bytes,
+            rotate_jsonl,
+        )
+        cfg = load_retention_config(project_path)
+        if not cfg.get("enabled", True):
+            return
+        rotate_jsonl(
+            path,
+            mb_to_bytes(cfg.get("telemetry_max_mb", 5)),
+            archive_dir_for(project_path),
+        )
+    except Exception:
+        pass
 
 
 def _parse_ts(value) -> Optional[datetime]:
@@ -98,16 +132,52 @@ def _parse_ts(value) -> Optional[datetime]:
     return dt
 
 
-def read_telemetry_records(project_path, since: Optional[datetime] = None) -> list:
-    """Read telemetry records, optionally filtered to ``ts >= since``.
+def _telemetry_archives(project_path, since: Optional[datetime]) -> list:
+    """Rotated telemetry archives that can still contain in-window records.
 
-    Malformed lines and records with unparseable timestamps (when a window
-    is requested) are skipped. Never raises for missing/corrupt files.
+    An archive rotated on day D only holds records with ``ts`` <= its
+    rotation instant, so files whose encoded date is before ``since``'s day
+    are skipped entirely (per-record filtering handles the boundary day).
+    ``since=None`` (all-records queries) includes every archive.
+    Returned oldest-first. Never raises.
     """
-    path = telemetry_path(project_path)
+    out = []
+    try:
+        archive_dir = Path(project_path) / ".c3" / "archive"
+        if not archive_dir.exists():
+            return out
+        since_day = None
+        if since is not None:
+            aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+            since_day = aware.astimezone(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+        for f in archive_dir.iterdir():
+            m = _ARCHIVE_NAME_RE.match(f.name)
+            if not m or not f.is_file():
+                continue
+            try:
+                fdate = datetime.strptime(m.group(1), "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if since_day is not None and fdate < since_day:
+                continue
+            out.append(f)
+        out.sort(key=lambda p: p.name)
+    except Exception:
+        return out
+    return out
+
+
+def _read_jsonl_records(path: Path, since: Optional[datetime]) -> list:
+    """Read one live or archived (.gz) JSONL file, filtered to ``ts >= since``."""
     records = []
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        if path.name.endswith(".gz"):
+            handle = gzip.open(path, "rt", encoding="utf-8", errors="replace")
+        else:
+            handle = open(path, encoding="utf-8", errors="replace")
+        with handle as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -125,6 +195,22 @@ def read_telemetry_records(project_path, since: Optional[datetime] = None) -> li
                 records.append(rec)
     except Exception:
         return records
+    return records
+
+
+def read_telemetry_records(project_path, since: Optional[datetime] = None) -> list:
+    """Read telemetry records, optionally filtered to ``ts >= since``.
+
+    Spans the live file AND rotated archives in ``.c3/archive`` when the
+    requested window extends past the live file (archives whose rotation
+    date precedes the window are skipped without being opened). Malformed
+    lines and records with unparseable timestamps (when a window is
+    requested) are skipped. Never raises for missing/corrupt files.
+    """
+    records: list = []
+    for archive in _telemetry_archives(project_path, since):
+        records.extend(_read_jsonl_records(archive, since))
+    records.extend(_read_jsonl_records(telemetry_path(project_path), since))
     return records
 
 

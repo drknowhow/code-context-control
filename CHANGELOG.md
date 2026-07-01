@@ -4,6 +4,46 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Storage retention & rotation
+
+- **Shared retention manager.** New `services/retention.py`:
+  `rotate_jsonl()` moves an oversized live JSONL into
+  `.c3/archive/<name>.<UTC-date>.jsonl.gz` (atomic rename — writers
+  open-append per write, so the next append recreates a fresh file; if the
+  gzip step fails the uncompressed archive survives, so records are never
+  lost), plus `purge_archives(keep_days=90)` for long-term TTL and a
+  rate-limited `RetentionManager` sweep that piggybacks on the existing
+  `EditLedgerEnricherAgent` cadence (no new agent thread). Config knobs
+  live in `.c3/config.json` under a `"retention"` section.
+- **Size-capped JSONL stores.** `activity_log.jsonl` (~5MB) and
+  `tool_telemetry.jsonl` (~5MB) rotate at write time via a cheap per-append
+  size check; `notifications.jsonl` (~2MB) archives old *acknowledged*
+  entries on the sweep (unacked and recently-acked entries stay live so the
+  ack-cooldown suppression keeps working). The telemetry reader now spans
+  the live file **and** rotated archives, so day-window aggregations keep
+  working across rotations (archives older than the window are skipped
+  without being opened).
+- **Edit-ledger rotation with audit integrity.** `edit_ledger.jsonl`
+  (~10MB) rotates structure-aware: only entries older than
+  `edit_ledger_keep_days` (14) that are not awaiting the enricher
+  (`git_pending` without a git patch) are archived — together with every
+  patch that targets them — and the gzip archive is written *before* the
+  live file is rewritten, so no record is ever dropped or duplicated.
+  Version tombstones (`{"_c3_rotation": 1, "file", "version"}`) keep
+  per-file version numbering continuous for both `EditLedger` and the
+  PostToolUse hook. Edit-ledger archives are exempt from the 90-day purge
+  by default (`edit_ledger_archive_keep_days: 0` = keep forever).
+- **Session snapshot cap.** `.c3/sessions/` is capped at the newest 50
+  `session_*.json` files (`sessions_max_files`); older ones are
+  gzip-archived (or deleted with `sessions_archive: false`). Context
+  snapshots (`.c3/snapshots/`, the `c3_session` restore path) are untouched.
+- **File-memory pruning.** New `FileMemoryStore.prune_stale()` removes
+  records whose source file no longer exists in the repo (fixes the
+  tracked-vs-indexed drift, e.g. 387 records vs 252 real files), run from
+  the retention sweep.
+
 ## [2.42.0] - 2026-07-01
 
 ### Honest measurement layer

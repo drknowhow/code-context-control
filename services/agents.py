@@ -1455,16 +1455,27 @@ class EditLedgerEnricherAgent(BackgroundAgent):
     """
 
     def __init__(self, edit_ledger, validation_cache, notifications,
-                 delegate_config=None, project_path=None,
+                 delegate_config=None, project_path=None, retention=None,
                  enabled=True, interval=30, **kwargs):
         super().__init__("EditLedgerEnricher", interval, notifications, enabled, **kwargs)
         self.edit_ledger = edit_ledger
         self.validation_cache = validation_cache
         self.delegate_config = delegate_config or {}
         self.project_path = project_path
+        self.retention = retention  # services.retention.RetentionManager or None
         self._verified_ids: set = set()  # track already-verified entries
 
     def check(self):
+        # Storage retention sweep (P5): rotation/archival for the .c3 JSONL
+        # stores, session cap, and file-memory pruning. Piggybacks on this
+        # agent's cadence (no dedicated agent); the manager rate-limits
+        # itself (~5 min) and is failure-safe.
+        if self.retention is not None:
+            try:
+                self.retention.maybe_run()
+            except Exception:
+                pass
+
         # Git enrichment — processes entries marked git_pending=True
         enriched_count = self.edit_ledger.enrich_pending(batch=10)
 
@@ -1786,6 +1797,7 @@ def create_agents(services, notifications, config=None, ollama=None) -> list:
                 validation_cache=getattr(services, 'validation_cache', None),
                 delegate_config=getattr(services, 'delegate_config', None),
                 project_path=getattr(services, 'project_path', None),
+                retention=getattr(services, 'retention', None),
                 notifications=notifications,
                 **_cfg("EditLedgerEnricher", {
                     "enabled": True, "interval": 10, "use_ai": False,

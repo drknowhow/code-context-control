@@ -275,6 +275,52 @@ class FileMemoryStore:
                 continue
         return [p for p in tracked if p]
 
+    def prune_stale(self) -> list[str]:
+        """Remove records whose source file no longer exists on disk.
+
+        Deleted/renamed files used to leave their file_memory records behind
+        forever (tracked-count drift vs the real index). Called periodically
+        by the retention sweep. Records that fail to parse are left alone
+        (unreadable is not the same as stale). Returns the pruned relative
+        paths. Never raises.
+        """
+        pruned: list[str] = []
+        try:
+            for store_file in list(self.store_dir.glob("*.json")):
+                if store_file.name.startswith("_"):
+                    continue
+                try:
+                    with open(store_file, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except Exception:
+                    continue
+                rel = data.get("path", "")
+                if not rel:
+                    continue
+                try:
+                    if (self.project_path / rel).exists():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    store_file.unlink()
+                except OSError:
+                    continue
+                pruned.append(rel)
+                self._map_cache.pop(rel.replace("\\", "/"), None)
+        except Exception:
+            return pruned
+        if pruned:
+            with self._search_lock:
+                if not self._search_dirty:
+                    for rel in pruned:
+                        try:
+                            self._search_index.remove(rel)
+                        except Exception:
+                            self._search_dirty = True
+                            break
+        return pruned
+
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         with self._search_lock:
             self._ensure_search_index()

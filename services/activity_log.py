@@ -6,9 +6,16 @@ from pathlib import Path
 
 
 class ActivityLog:
-    """Persistent activity log stored as .c3/activity_log.jsonl."""
+    """Persistent activity log stored as .c3/activity_log.jsonl.
+
+    Size-capped: when the live file exceeds the configured threshold
+    (retention.activity_log_max_mb, default 5MB) it is rotated into
+    .c3/archive/activity_log.<date>.jsonl.gz. Readers here only scan the
+    live file, which the rotation keeps bounded.
+    """
 
     def __init__(self, project_path: str):
+        self.project_path = str(project_path)
         self.log_file = Path(project_path) / ".c3" / "activity_log.jsonl"
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -25,7 +32,31 @@ class ActivityLog:
         }
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
+        self._maybe_rotate()
         return entry
+
+    def _maybe_rotate(self) -> None:
+        """Cheap per-append size check; rotate into the archive when over cap.
+
+        Failure-safe: retention problems must never break event logging.
+        """
+        try:
+            from services.retention import (
+                archive_dir_for,
+                load_retention_config,
+                mb_to_bytes,
+                rotate_jsonl,
+            )
+            cfg = load_retention_config(self.project_path)
+            if not cfg.get("enabled", True):
+                return
+            rotate_jsonl(
+                self.log_file,
+                mb_to_bytes(cfg.get("activity_log_max_mb", 5)),
+                archive_dir_for(self.project_path),
+            )
+        except Exception:
+            pass
 
     def get_recent(self, limit: int = 100, event_type: str = None,
                     since: str = None, until: str = None) -> list:
