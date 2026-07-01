@@ -13,6 +13,22 @@ from pathlib import Path
 # How long to suppress a repeated agent+title after it has been acknowledged.
 _COOLDOWN_MINUTES = {"critical": 5, "warning": 30, "info": 60}
 
+# Duplicate collapse: keep the most severe label when merging records.
+_SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+
+def _recency_key(entry: dict) -> str:
+    """Sort key: last occurrence of a (possibly collapsed) notification."""
+    return entry.get("last_seen") or entry.get("timestamp", "")
+
+
+def _entry_count(entry: dict) -> int:
+    """Occurrence count of a (possibly collapsed) record; legacy rows count as 1."""
+    try:
+        return max(1, int(entry.get("count", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
 
 class NotificationStore:
     """Thread-safe JSONL notification store for background agents."""
@@ -21,18 +37,27 @@ class NotificationStore:
         self._file = Path(project_path) / ".c3" / "notifications.jsonl"
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Retro-cleanup runs at most once per store instance, lazily on first
+        # access, so pre-existing duplicate backlogs self-heal without a
+        # dedicated maintenance pass.
+        self._collapsed = False
 
     def add(self, agent: str, severity: str, title: str, message: str,
             ai_enhanced: bool = False, replace_if_unacked: bool = False) -> dict | None:
-        """Append a notification. Dedup: skip if same agent+title+message already unacknowledged.
+        """Append a notification. Dedup: an identical (agent, title, message)
+        that is still unacknowledged collapses into the existing record — its
+        ``count`` is bumped and ``last_seen`` refreshed instead of appending a
+        duplicate line.
 
         severity: 'info', 'warning', 'critical'
         replace_if_unacked: if True and an unacked notification with the same agent+title
-            already exists, update its message in-place instead of appending a new entry.
-            Use for high-frequency agents (budget, index) to prevent pile-up.
+            already exists, update its message/severity in-place (bumping
+            count/last_seen) instead of appending a new entry. Use for
+            high-frequency agents (budget, index, key-file drift) to prevent pile-up.
         Returns the entry if written/updated, None if deduped.
         """
         with self._lock:
+            self._maybe_collapse_locked()
             message_hash = hashlib.md5((message or "").encode("utf-8")).hexdigest()[:12]
             cooldown = timedelta(minutes=_COOLDOWN_MINUTES.get(severity, 30))
             now = datetime.now(timezone.utc)
@@ -45,12 +70,19 @@ class NotificationStore:
                         # Update in-place — prevents repeated pile-up for chatty agents
                         existing["message"] = message
                         existing["message_hash"] = message_hash
+                        existing["severity"] = severity
                         existing["timestamp"] = now.isoformat()
+                        existing["last_seen"] = now.isoformat()
+                        existing["count"] = _entry_count(existing) + 1
                         existing["ai_enhanced"] = ai_enhanced
                         self._write_all(entries)
                         return existing
-                    # Same notification still pending — dedup if message matches
+                    # Same notification still pending — collapse into the
+                    # existing record instead of appending a duplicate.
                     if existing.get("message_hash") == message_hash:
+                        existing["count"] = _entry_count(existing) + 1
+                        existing["last_seen"] = now.isoformat()
+                        self._write_all(entries)
                         return None
                 else:
                     # Already acknowledged — suppress if within cooldown window
@@ -71,6 +103,8 @@ class NotificationStore:
                 "message": message,
                 "message_hash": message_hash,
                 "timestamp": now.isoformat(),
+                "last_seen": now.isoformat(),
+                "count": 1,
                 "acknowledged": False,
                 "ai_enhanced": ai_enhanced,
             }
@@ -81,6 +115,7 @@ class NotificationStore:
     def get_pending_count(self) -> int:
         """Return count of unacknowledged warning/critical notifications without consuming them."""
         with self._lock:
+            self._maybe_collapse_locked()
             return sum(
                 1 for e in self._read_all()
                 if not e.get("acknowledged")
@@ -102,17 +137,19 @@ class NotificationStore:
         if severities is None:
             severities = self._ACTIONABLE
         with self._lock:
+            self._maybe_collapse_locked()
             entries = [
                 e for e in self._read_all()
                 if not e.get("acknowledged")
                 and (not severities or e.get("severity") in severities)
             ]
-            entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            entries.sort(key=_recency_key, reverse=True)
             return entries[:limit]
 
     def get_suppressed_info_count(self) -> int:
         """Count of unacknowledged 'info' notifications not shown in actionable view."""
         with self._lock:
+            self._maybe_collapse_locked()
             return sum(
                 1 for e in self._read_all()
                 if not e.get("acknowledged") and e.get("severity") == "info"
@@ -122,7 +159,7 @@ class NotificationStore:
         """Return all notifications (including acknowledged) for the activity console, newest first."""
         with self._lock:
             entries = self._read_all()
-            entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            entries.sort(key=_recency_key, reverse=True)
             return entries[:limit]
 
     def acknowledge(self, notification_id: str) -> bool:
@@ -149,6 +186,7 @@ class NotificationStore:
         Auto-acknowledges those included. Returns empty string if none.
         """
         with self._lock:
+            self._maybe_collapse_locked()
             entries = self._read_all()
             pending = [
                 e for e in entries
@@ -156,7 +194,7 @@ class NotificationStore:
                 and e.get("severity") in ("warning", "critical")
             ]
             # Newest first
-            pending.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            pending.sort(key=_recency_key, reverse=True)
             pending = pending[:3]
 
             if not pending:
@@ -173,8 +211,63 @@ class NotificationStore:
             lines = ["[c3:agents]"]
             for e in pending:
                 prefix = "!!" if e["severity"] == "critical" else "!"
-                lines.append(f"{prefix} {e['agent']}: {e['title']} — {e['message']}")
+                count = _entry_count(e)
+                repeat = f" (x{count})" if count > 1 else ""
+                lines.append(f"{prefix} {e['agent']}: {e['title']} — {e['message']}{repeat}")
             return "\n".join(lines)
+
+    def collapse_duplicates(self) -> int:
+        """Retro-cleanup: merge unacknowledged duplicates into one record each.
+
+        Unacknowledged entries sharing (agent, title) collapse into the most
+        recent record, which absorbs the group's total ``count``, the max
+        ``last_seen``, and the highest severity. The newest message wins —
+        older same-title messages are stale snapshots of the same condition.
+        Acknowledged history is never touched. Returns the number of duplicate
+        records removed.
+        """
+        with self._lock:
+            self._collapsed = True
+            return self._collapse_locked()
+
+    def _maybe_collapse_locked(self):
+        """Run the duplicate collapse once per store instance. Caller must hold _lock."""
+        if self._collapsed:
+            return
+        self._collapsed = True
+        try:
+            self._collapse_locked()
+        except Exception:
+            pass  # maintenance is best-effort — never break reads/writes
+
+    def _collapse_locked(self) -> int:
+        """Merge unacked duplicates (same agent+title). Caller must hold _lock."""
+        entries = self._read_all()
+        groups: dict[tuple, list] = {}
+        for e in entries:
+            if e.get("acknowledged"):
+                continue
+            groups.setdefault((e.get("agent"), e.get("title")), []).append(e)
+
+        drop_ids: set[int] = set()
+        removed = 0
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            survivor = max(group, key=_recency_key)
+            survivor["count"] = sum(_entry_count(e) for e in group)
+            survivor["last_seen"] = max(_recency_key(e) for e in group)
+            survivor["severity"] = max(
+                (e.get("severity", "info") for e in group),
+                key=lambda s: _SEVERITY_RANK.get(s, 0),
+            )
+            for e in group:
+                if e is not survivor:
+                    drop_ids.add(id(e))
+                    removed += 1
+        if removed:
+            self._write_all([e for e in entries if id(e) not in drop_ids])
+        return removed
 
     def _read_all(self) -> list:
         """Read all entries from JSONL file. Caller must hold _lock."""

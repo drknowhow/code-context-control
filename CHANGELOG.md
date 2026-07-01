@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Stream C — Notification dedup + KeyFileVersion detail (P4)
+
+- **NotificationStore collapses duplicates instead of piling them up.** An
+  identical unacknowledged (agent, title, message) now merges into the existing
+  record, bumping a `count` field and refreshing `last_seen`, so every agent
+  benefits — not just the ones opting into `replace_if_unacked` (which now also
+  bumps count/last_seen and updates severity). A lazy retro-cleanup pass
+  (`collapse_duplicates()`, run once per store instance on first access) merges
+  pre-existing unacked duplicate backlogs by (agent, title), keeping the newest
+  message, summed count, max last_seen, and highest severity — the live
+  13-duplicate KeyFileVersion backlog self-heals on next access.
+- **KeyFileVersionAgent warnings are now actionable and non-duplicating.**
+  Messages include per-file detail ("cli/mcp_server.py (3f2a1bc->9d4e2aa)",
+  with "new->" / "->deleted" for created/removed files), and the agent updates
+  its pending notice in place (`replace_if_unacked=True`) instead of appending
+  an identical "Key file versions changed" line every 3-minute cycle.
+- **`c3_status(view='notifications')` renders collapsed duplicates and caps the
+  list.** Each actionable line now carries the message detail (truncated at 120
+  chars) plus a "(xN, last HH:MM)" suffix for collapsed records; the list is
+  capped at 10 lines with a "... +N more" tail. `get_pending_summary()` gains
+  the same "(xN)" suffix.
+
 ## [2.41.0] - 2026-06-25
 
 ### Fixed
