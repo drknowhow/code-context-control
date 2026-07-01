@@ -31,6 +31,7 @@ from services.metrics import MetricsCollector
 from services.notifications import NotificationStore
 from services.ollama_client import OllamaClient
 from services.output_filter import OutputFilter
+from services.retention import RetentionManager
 from services.retrieval_broker import MemoryRetrievalBroker
 from services.router import ModelRouter
 from services.session_manager import SessionManager
@@ -80,6 +81,7 @@ class C3Runtime:
     memory_graph: Optional[MemoryGraph] = None
     memory_consolidator: Optional[MemoryConsolidator] = None
     memory_grounder: Optional[MemoryGrounder] = None
+    retention: Optional[RetentionManager] = None
 
 
 def _load_agent_config(project_path: Path) -> dict:
@@ -246,6 +248,14 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         file_memory=file_memory,
     )
 
+    # Storage retention & rotation (P5) — sweeps run via EditLedgerEnricherAgent
+    retention = RetentionManager(
+        str(project),
+        edit_ledger=edit_ledger,
+        notifications=notifications,
+        file_memory=file_memory,
+    )
+
     # Ollama probe deferred to background — shaves ~2s off startup.
     # Runtime starts with ollama_available=False; background thread updates it.
     import threading as _t
@@ -290,6 +300,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         memory_graph=memory_graph,
         memory_consolidator=memory_consolidator,
         memory_grounder=memory_grounder,
+        retention=retention,
     )
     runtime.agents = create_agents(
         runtime,

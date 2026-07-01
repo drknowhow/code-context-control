@@ -8,15 +8,27 @@ command instead of 3 separate subprocesses.
 """
 
 import json
+import os
 import subprocess
 import sys
 import threading
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from services.git_context import GitContext
+
+# Marker key on version-tombstone lines written by rotate_if_needed().
+# Tombstones carry {"file", "version"} so version numbering survives
+# archival of a file's entries (both this module's cache and the
+# hook's ledger scan pick them up); every other reader skips them.
+ROTATION_KEY = "_c3_rotation"
+
+
+def _is_rotation_marker(entry: dict) -> bool:
+    """True for rotation/version-tombstone lines (not real ledger records)."""
+    return ROTATION_KEY in entry
 
 
 class EditLedger:
@@ -50,6 +62,17 @@ class EditLedger:
             try:
                 entry = json.loads(line)
             except (json.JSONDecodeError, ValueError):
+                continue
+            if _is_rotation_marker(entry):
+                # Version tombstone: max version of a file whose entries
+                # were archived — merge so numbering continues from there.
+                f = entry.get("file", "")
+                try:
+                    v_num = int(str(entry.get("version", "v0")).lstrip("v"))
+                    if f:
+                        self._version_cache[f] = max(self._version_cache.get(f, 0), v_num)
+                except (ValueError, AttributeError):
+                    pass
                 continue
             if "target_id" in entry:  # skip patch entries
                 continue
@@ -138,8 +161,8 @@ class EditLedger:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if "target_id" in entry:  # skip patch entries
-                    continue
+                if "target_id" in entry or _is_rotation_marker(entry):
+                    continue  # skip patch entries and rotation tombstones
                 total += 1
                 type_counts[entry.get("change_type", "unknown")] += 1
                 file_counts[entry.get("file", "unknown")] += 1
@@ -199,6 +222,190 @@ class EditLedger:
             except Exception:
                 return False
         return True
+
+    # ── Retention (P5) ────────────────────────────────────────────────
+
+    def rotate_if_needed(self, max_bytes: int, archive_dir,
+                         keep_days: int = 14) -> dict | None:
+        """Archive old, fully-enriched entries once the ledger exceeds ``max_bytes``.
+
+        Audit integrity: the ledger is NEVER truncated silently. Eligible
+        records (base entries older than ``keep_days`` that are not awaiting
+        the enricher, plus every patch targeting them) are written to a gzip
+        archive in ``archive_dir`` FIRST; only after the archive exists is
+        the live file rewritten without them. Entries still carrying
+        ``git_pending`` with no git patch are always retained, so the
+        EditLedgerEnricherAgent's pending-patch flow is unaffected.
+
+        Version continuity: for any file whose entries were all archived, a
+        tombstone line ``{"_c3_rotation": 1, "file": ..., "version": "vN"}``
+        is kept at the top of the live file. Both ``_ensure_cache`` and the
+        PostToolUse hook's ledger scan read ``file``/``version`` pairs, so
+        the next edit becomes vN+1 instead of restarting at v1.
+
+        Concurrency: runs under the write lock (in-process appends are
+        serialized); hook processes append-open per write, and any bytes a
+        hook appends while we rebuild are carried over verbatim before the
+        atomic ``os.replace``. If the final rewrite fails, the just-written
+        archive is removed again so no records are ever duplicated or lost.
+
+        Returns a summary dict, or None when no rotation happened. Never raises.
+        """
+        try:
+            if max_bytes <= 0 or not self.ledger_file.exists():
+                return None
+            if self.ledger_file.stat().st_size < max_bytes:
+                return None
+        except OSError:
+            return None
+        try:
+            from services.retention import write_archive_lines
+        except Exception:
+            return None
+
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=max(0, keep_days))).isoformat()
+        with self._write_lock:
+            try:
+                raw = self.ledger_file.read_bytes()
+            except OSError:
+                return None
+            read_size = len(raw)
+            parsed = []  # (line, entry-or-None)
+            for line in raw.decode("utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if not isinstance(entry, dict):
+                        entry = None
+                except (json.JSONDecodeError, ValueError):
+                    entry = None
+                parsed.append((line, entry))
+
+            # Pass 1: classify — which base ids exist, which have git patches.
+            bases: dict = {}
+            git_patched: set = set()
+            for _, entry in parsed:
+                if entry is None or _is_rotation_marker(entry):
+                    continue
+                if "target_id" in entry:
+                    if "git" in entry:
+                        git_patched.add(entry["target_id"])
+                    continue
+                eid = entry.get("id")
+                if eid:
+                    bases[eid] = entry
+
+            def _is_pending(e: dict) -> bool:
+                return bool(e.get("git_pending")) and e.get("id") not in git_patched
+
+            archive_ids = {
+                eid for eid, e in bases.items()
+                if e.get("timestamp", "") and e["timestamp"] < cutoff
+                and not _is_pending(e)
+            }
+            if not archive_ids:
+                return None
+
+            # Pass 2: split lines, track per-file max versions + live files.
+            archived_lines: list = []
+            retained_lines: list = []
+            versions: dict = {}      # file → max version int (all bases + old tombstones)
+            retained_files: set = set()
+
+            def _bump(fname, v_str):
+                try:
+                    v = int(str(v_str or "v0").lstrip("v"))
+                except (ValueError, AttributeError):
+                    return
+                if fname:
+                    versions[fname] = max(versions.get(fname, 0), v)
+
+            for line, entry in parsed:
+                if entry is None:
+                    retained_lines.append(line)   # unparseable — keep, conservative
+                    continue
+                if _is_rotation_marker(entry):
+                    # Old tombstone: fold its version into the new set, then archive it.
+                    _bump(entry.get("file", ""), entry.get("version"))
+                    archived_lines.append(line)
+                    continue
+                if "target_id" in entry:
+                    tid = entry["target_id"]
+                    if tid in archive_ids:
+                        archived_lines.append(line)
+                    elif tid in bases:
+                        retained_lines.append(line)
+                    else:
+                        # Orphaned patch (target already archived / missing).
+                        pts = (entry.get("enriched_at") or entry.get("validated_at")
+                               or entry.get("tagged_at") or "")
+                        if pts and pts < cutoff:
+                            archived_lines.append(line)
+                        else:
+                            retained_lines.append(line)
+                    continue
+                fname = entry.get("file", "")
+                _bump(fname, entry.get("version"))
+                if entry.get("id") in archive_ids:
+                    archived_lines.append(line)
+                else:
+                    retained_lines.append(line)
+                    if fname:
+                        retained_files.add(fname)
+
+            # Archive FIRST — records exist in two places before any removal.
+            gz = write_archive_lines(archive_dir, "edit_ledger", archived_lines)
+            if gz is None:
+                return None
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            tombstones = [
+                json.dumps({ROTATION_KEY: 1, "file": fname, "version": f"v{v}",
+                            "timestamp": now_iso, "archived_to": gz.name})
+                for fname, v in sorted(versions.items())
+                if fname not in retained_files
+            ]
+
+            tmp = self.ledger_file.with_name(
+                f"{self.ledger_file.name}.tmp.{os.getpid()}")
+            try:
+                content = "\n".join(tombstones + retained_lines)
+                if content:
+                    content += "\n"
+                # Cross-process append guard: carry over anything a hook
+                # appended past our original read offset while we worked.
+                try:
+                    with open(self.ledger_file, "rb") as fh:
+                        fh.seek(read_size)
+                        extra = fh.read().decode("utf-8", errors="replace")
+                    if extra.strip():
+                        content += extra if extra.endswith("\n") else extra + "\n"
+                except OSError:
+                    pass
+                tmp.write_text(content, encoding="utf-8")
+                os.replace(tmp, self.ledger_file)
+            except Exception:
+                # Rewrite failed: live file untouched — remove the archive so
+                # the next attempt can't duplicate records.
+                for p in (gz, tmp):
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+                return None
+
+            # Versions are unchanged (tombstones preserve maxima); only the
+            # live base-entry count shrank.
+            if self._total_count is not None:
+                self._total_count = max(0, self._total_count - len(archive_ids))
+            return {
+                "archived_entries": len(archive_ids),
+                "archived_lines": len(archived_lines),
+                "tombstones": len(tombstones),
+                "archive": str(gz),
+            }
 
     # ── Private helpers ───────────────────────────────────────────────
 
@@ -327,6 +534,8 @@ class EditLedger:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                if _is_rotation_marker(entry):
+                    continue  # version tombstones are not history entries
                 if "target_id" in entry:
                     patches.setdefault(entry["target_id"], []).append(entry)
                 else:
@@ -399,6 +608,8 @@ class EditLedger:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                if _is_rotation_marker(entry):
+                    continue
                 if "target_id" in entry and "git" in entry:
                     already_patched.add(entry["target_id"])
                 elif "target_id" not in entry and entry.get("git_pending") and entry.get("file"):
@@ -447,6 +658,8 @@ class EditLedger:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                if _is_rotation_marker(entry):
+                    continue  # tombstones carry "file" but are not edits
                 if "target_id" in entry and "valid" in entry:
                     already_validated.add(entry["target_id"])
                 elif "target_id" not in entry and entry.get("file"):
