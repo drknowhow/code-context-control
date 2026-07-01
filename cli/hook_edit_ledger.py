@@ -126,90 +126,105 @@ def _detect_change_type(tool_name: str, tool_input: dict) -> str:
     return "modified"
 
 
+def run(payload: dict, project_path: Path | None = None) -> dict | None:
+    """Core logic — importable by the dispatcher and tests.
+
+    Returns {"_text": "..."} carrying the user-visible ledger confirmation
+    (plain stdout, not model context) or None.
+    """
+    tool_name = normalize_tool_name(payload.get("tool_name", ""))
+
+    if tool_name not in ("Edit", "Write", "NotebookEdit"):
+        return None
+
+    file_path = get_tool_input_path(payload)
+    if not file_path:
+        return None
+
+    # Filter to editable extensions
+    if Path(file_path).suffix.lower() not in EDITABLE_EXTS:
+        return None
+
+    if project_path is None:
+        project_path = Path.cwd()
+    c3_dir = project_path / ".c3"
+    if not c3_dir.exists():
+        return None  # Not a C3 project
+
+    # Load config and check if edit ledger is enabled
+    config = load_hybrid_config(str(project_path))
+    ledger_cfg = config.get("edit_ledger", {})
+    if not ledger_cfg.get("enabled", True):
+        return None
+    tracking_level = ledger_cfg.get("tracking_level", "standard")
+
+    ledger_file = c3_dir / "edit_ledger.jsonl"
+
+    # Make file path relative
+    try:
+        rel = str(Path(file_path).resolve().relative_to(project_path.resolve()))
+    except ValueError:
+        rel = file_path
+    rel = rel.replace("\\", "/")
+
+    now = datetime.now(timezone.utc)
+    tool_input = payload.get("tool_input", {}) or {}
+    change_type = _detect_change_type(tool_name, tool_input)
+
+    # Git info is enriched asynchronously by EditLedgerEnricherAgent.
+    # Mark as pending so the enricher knows to process this entry.
+    git_pending = tracking_level != "minimal"
+
+    entry = {
+        # Random suffix prevents id collisions when the hook process and the
+        # server process (services/edit_ledger.py) write within the same second.
+        "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}_{uuid.uuid4().hex[:4]}",
+        "timestamp": now.isoformat(),
+        "session_id": "",
+        "file": rel,
+        "change_type": change_type,
+        "summary": change_type if tracking_level == "minimal" else _extract_summary(tool_name, tool_input),
+        "lines_changed": None,
+        "version": _next_version(ledger_file, rel),
+        "git": {},
+        "diff_summary": "",
+        "git_pending": git_pending,
+        "tags": ["auto"] if ledger_cfg.get("auto_tag", True) else [],
+    }
+
+    # Detailed mode: include code snippets for richer diffs
+    if tracking_level == "detailed":
+        detail = {}
+        old_str = tool_input.get("old_string")
+        new_str = tool_input.get("new_string")
+        if old_str is not None:
+            detail["old_string"] = old_str[:200]
+        if new_str is not None:
+            detail["new_string"] = new_str[:200]
+        if detail:
+            entry["detail"] = detail
+
+    with open(ledger_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    return {
+        "_text": (
+            f"[c3:ledger] {rel} {entry['version']} auto-logged. "
+            f"Call c3_edits(action='log', file='{rel}', summary='...', tags='...') "
+            f"to add a semantic summary."
+        )
+    }
+
+
 def main():
     try:
         raw = sys.stdin.read()
         if not raw.strip():
             return
 
-        data = json.loads(raw)
-        tool_name = normalize_tool_name(data.get("tool_name", ""))
-
-        if tool_name not in ("Edit", "Write", "NotebookEdit"):
-            return
-
-        file_path = get_tool_input_path(data)
-        if not file_path:
-            return
-
-        # Filter to editable extensions
-        if Path(file_path).suffix.lower() not in EDITABLE_EXTS:
-            return
-
-        project_path = Path.cwd()
-        c3_dir = project_path / ".c3"
-        if not c3_dir.exists():
-            return  # Not a C3 project
-
-        # Load config and check if edit ledger is enabled
-        config = load_hybrid_config(str(project_path))
-        ledger_cfg = config.get("edit_ledger", {})
-        if not ledger_cfg.get("enabled", True):
-            return
-        tracking_level = ledger_cfg.get("tracking_level", "standard")
-
-        ledger_file = c3_dir / "edit_ledger.jsonl"
-
-        # Make file path relative
-        try:
-            rel = str(Path(file_path).resolve().relative_to(project_path.resolve()))
-        except ValueError:
-            rel = file_path
-        rel = rel.replace("\\", "/")
-
-        now = datetime.now(timezone.utc)
-        tool_input = data.get("tool_input", {})
-        change_type = _detect_change_type(tool_name, tool_input)
-
-        # Git info is enriched asynchronously by EditLedgerEnricherAgent.
-        # Mark as pending so the enricher knows to process this entry.
-        git_pending = tracking_level != "minimal"
-
-        entry = {
-            # Random suffix prevents id collisions when the hook process and the
-            # server process (services/edit_ledger.py) write within the same second.
-            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}_{uuid.uuid4().hex[:4]}",
-            "timestamp": now.isoformat(),
-            "session_id": "",
-            "file": rel,
-            "change_type": change_type,
-            "summary": change_type if tracking_level == "minimal" else _extract_summary(tool_name, tool_input),
-            "lines_changed": None,
-            "version": _next_version(ledger_file, rel),
-            "git": {},
-            "diff_summary": "",
-            "git_pending": git_pending,
-            "tags": ["auto"] if ledger_cfg.get("auto_tag", True) else [],
-        }
-
-        # Detailed mode: include code snippets for richer diffs
-        if tracking_level == "detailed":
-            detail = {}
-            old_str = tool_input.get("old_string")
-            new_str = tool_input.get("new_string")
-            if old_str is not None:
-                detail["old_string"] = old_str[:200]
-            if new_str is not None:
-                detail["new_string"] = new_str[:200]
-            if detail:
-                entry["detail"] = detail
-
-        with open(ledger_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-
-        print(f"[c3:ledger] {rel} {entry['version']} auto-logged. "
-              f"Call c3_edits(action='log', file='{rel}', summary='...', tags='...') "
-              f"to add a semantic summary.")
+        output = run(json.loads(raw))
+        if output and output.get("_text"):
+            print(output["_text"])
 
     except Exception as _e:
         log_hook_error("hook_edit_ledger", _e)

@@ -4448,7 +4448,7 @@ def _uninstall_mcp_all(project_path: str):
                     # Remove hooks
                     hooks = settings.get("hooks", {}).get("PostToolUse", [])
                     new_hooks = []
-                    c3_hook_files = {"hook_filter.py", "hook_read.py", "hook_c3read.py"}
+                    c3_hook_files = {"hook_filter.py", "hook_read.py", "hook_c3read.py", "hook_dispatch.py"}
                     for h in hooks:
                         if h.get("matcher") in ("Bash", "Read", "mcp__c3__c3_read"):
                             h["hooks"] = [hook for hook in h.get("hooks", [])
@@ -5011,17 +5011,16 @@ def cmd_install_mcp(args):
         # file; "cmd /c …" returns "cmd: command not found"). The single-quoted paths are
         # correct — bash strips them and re-quotes for cmd.exe, preserving spaces/parens.
         _hook_prefix = "cmd.exe /c " if sys.platform == "win32" else ""
-        hook_filter_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_filter.py'))}"
-        hook_read_cmd      = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_read.py'))}"
-        hook_c3read_cmd    = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
-        hook_enforce_cmd   = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_pretool_enforce.py'))}"
-        hook_edit_unlock_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_edit_unlock.py'))}"
-        hook_edit_ledger_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_edit_ledger.py'))}"
-        hook_ghost_files_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_ghost_files.py'))}"
-        hook_session_stats_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_session_stats.py'))}"
-        hook_auto_snapshot_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_auto_snapshot.py'))}"
-        hook_terse_advisor_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_terse_advisor.py'))}"
-        hook_c3_signal_cmd = f"{_hook_prefix}{shlex.quote(sys.executable)} {shlex.quote(str(cli_dir / 'hook_c3_signal.py'))}"
+        # v2.42: single dispatcher script per hook event instead of N separate
+        # per-hook commands. One interpreter spawn per event; the dispatcher
+        # (cli/hook_dispatch.py) runs all applicable sub-hooks in-process.
+        _dispatch_base = (
+            f"{_hook_prefix}{shlex.quote(sys.executable)} "
+            f"{shlex.quote(str(cli_dir / 'hook_dispatch.py'))}"
+        )
+        hook_pretool_cmd  = f"{_dispatch_base} pretool"
+        hook_posttool_cmd = f"{_dispatch_base} posttool"
+        hook_stop_cmd     = f"{_dispatch_base} stop"
 
         # Tool matcher names differ by IDE: Gemini uses snake_case built-in names.
         if profile.name == "gemini":
@@ -5045,130 +5044,48 @@ def cmd_install_mcp(args):
             extra_edit_matchers = ["MultiEdit", "NotebookEdit"]
 
         # ── PostToolUse hooks ──
+        # Matcher set is unchanged from pre-v2.42; every matcher now points at
+        # the single posttool dispatcher (which sub-hooks run for which tool
+        # moved into cli/hook_dispatch.py). One spawn per event instead of
+        # up to three.
+        _post_matcher_names = [
+            shell_matcher,
+            read_matcher,
+            "mcp__c3__c3_read",
+            "mcp__c3__c3_shell",
+            "mcp__c3__c3_search",
+            "mcp__c3__c3_compress",
+            "mcp__c3__c3_filter",
+            "mcp__c3__c3_memory",
+            "mcp__c3__c3_validate",
+            "mcp__c3__c3_edit",
+            "mcp__c3__c3_edits",
+            "mcp__c3__c3_impact",
+            "mcp__c3__c3_status",
+            "mcp__c3__c3_delegate",
+            "mcp__c3__c3_session",
+            "mcp__c3__c3_agent",
+            edit_matcher,
+            write_matcher,
+            *extra_edit_matchers,
+        ]
         desired_post_hooks = [
-            {
-                "matcher": shell_matcher,
-                "hooks": [
-                    {"type": "command", "command": hook_filter_cmd},
-                    {"type": "command", "command": hook_ghost_files_cmd},
-                ]
-            },
-            {
-                "matcher": read_matcher,
-                "hooks": [
-                    {"type": "command", "command": hook_read_cmd},
-                    {"type": "command", "command": hook_ghost_files_cmd},
-                ]
-            },
-            {
-                "matcher": "mcp__c3__c3_read",
-                "hooks": [
-                    {"type": "command", "command": hook_c3read_cmd},
-                    {"type": "command", "command": hook_c3_signal_cmd},
-                    {"type": "command", "command": hook_ghost_files_cmd},
-                ]
-            },
-            {
-                "matcher": "mcp__c3__c3_shell",
-                "hooks": [
-                    {"type": "command", "command": hook_c3_signal_cmd},
-                    {"type": "command", "command": hook_ghost_files_cmd},
-                ]
-            },
-            {
-                "matcher": "mcp__c3__c3_search",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_compress",
-                "hooks": [
-                    {"type": "command", "command": hook_edit_unlock_cmd},
-                    {"type": "command", "command": hook_c3_signal_cmd},
-                ]
-            },
-            {
-                "matcher": "mcp__c3__c3_filter",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_memory",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_validate",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_edit",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_edits",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_impact",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_status",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_delegate",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_session",
-                "hooks": [{"type": "command", "command": hook_c3_signal_cmd}]
-            },
-            {
-                "matcher": "mcp__c3__c3_agent",
-                "hooks": [
-                    {"type": "command", "command": hook_edit_unlock_cmd},
-                    {"type": "command", "command": hook_c3_signal_cmd},
-                ]
-            },
-            {
-                "matcher": edit_matcher,
-                "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]
-            },
-            {
-                "matcher": write_matcher,
-                "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]
-            },
-            *[
-                {"matcher": m, "hooks": [{"type": "command", "command": hook_edit_ledger_cmd}]}
-                for m in extra_edit_matchers
-            ],
+            {"matcher": m, "hooks": [{"type": "command", "command": hook_posttool_cmd}]}
+            for m in _post_matcher_names
         ]
 
         # ── PreToolUse hooks (enforcement — blocks native tools without prior c3_*) ──
+        _pre_matcher_names = [
+            read_matcher,
+            grep_matcher,
+            glob_matcher,
+            edit_matcher,
+            write_matcher,
+            *extra_edit_matchers,
+        ]
         desired_pre_hooks = [
-            {
-                "matcher": read_matcher,
-                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
-            },
-            {
-                "matcher": grep_matcher,
-                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
-            },
-            {
-                "matcher": glob_matcher,
-                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
-            },
-            {
-                "matcher": edit_matcher,
-                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
-            },
-            {
-                "matcher": write_matcher,
-                "hooks": [{"type": "command", "command": hook_enforce_cmd}]
-            },
-            *[
-                {"matcher": m, "hooks": [{"type": "command", "command": hook_enforce_cmd}]}
-                for m in extra_edit_matchers
-            ],
+            {"matcher": m, "hooks": [{"type": "command", "command": hook_pretool_cmd}]}
+            for m in _pre_matcher_names
         ]
 
         # Merge: replace existing C3 hooks (so re-running install-mcp updates commands),
@@ -5198,18 +5115,19 @@ def cmd_install_mcp(args):
             {
                 "matcher": "",
                 "hooks": [
-                    {"type": "command", "command": hook_session_stats_cmd},
-                    {"type": "command", "command": hook_auto_snapshot_cmd},
-                    {"type": "command", "command": hook_terse_advisor_cmd},
+                    {"type": "command", "command": hook_stop_cmd},
                 ]
             },
         ]
         stop_event = "Stop"
         # Replace only C3's own stop hooks (identified by our hook scripts) and
         # keep every user-added stop hook — including matcher-less ones, which
-        # are the normal shape for Stop hooks.
+        # are the normal shape for Stop hooks. The pre-v2.42 script names stay
+        # in this tuple so re-running install-mcp migrates old per-hook
+        # entries to the dispatcher.
         _c3_stop_scripts = (
             "hook_session_stats.py", "hook_auto_snapshot.py", "hook_terse_advisor.py",
+            "hook_dispatch.py",
         )
 
         def _is_c3_stop_hook(entry: dict) -> bool:
@@ -5259,9 +5177,9 @@ def cmd_install_mcp(args):
             json.dump(settings, f, indent=2)
 
         print(f"Wrote {settings_path}")
-        print(f"  Hooks ({hook_event}): {shell_matcher} (filter+ghost) + {read_matcher}/{edit_matcher}/{write_matcher} (ledger) + c3_read/c3_compress/c3_agent (unlock)")
-        print(f"  Hooks ({pre_event}): {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
-        print("  Hooks (Stop): session_stats + auto_snapshot")
+        print(f"  Hooks ({hook_event}): dispatcher (1 spawn/event) — filter/ghost/read-guard/ledger/unlock/signal via cli/hook_dispatch.py posttool")
+        print(f"  Hooks ({pre_event}): dispatcher — {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
+        print("  Hooks (Stop): dispatcher — session_stats + auto_snapshot + terse_advisor")
         if profile.name == "claude-code":
             print("  Claude MCP prompt settings enabled for this project")
         if perm_tier and profile.name == "claude-code":

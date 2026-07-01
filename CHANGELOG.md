@@ -6,6 +6,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Stream B — Hook dispatcher, consolidated enforcement state (P2+P3)
+
+- **One hook process per event instead of up to three.** New `cli/hook_dispatch.py`
+  reads the hook JSON from stdin once and runs all applicable sub-hooks
+  **in-process** (each `cli/hook_*.py` now exposes an importable
+  `run(payload, project_path=None)`; the `python <hook>.py` entry points remain
+  for backward compatibility). `c3 install-mcp` registers
+  `hook_dispatch.py <pretool|posttool|stop>` per matcher — a native `Read`
+  now costs 2 interpreter spawns (PreToolUse + PostToolUse) instead of 3, a
+  `Bash` call 1 instead of 2, and `mcp__c3__c3_read` 1 instead of 3
+  (~150 ms saved per avoided spawn on Windows). Sub-hook outputs compose per
+  Claude Code hook semantics: deny beats allow, `additionalContext` strings
+  concatenate, `tool_result` replacements are preserved.
+- **Consolidated enforcement state: `.c3/enforcement_state.json`.** Replaces the
+  three-mechanism seam (`last_c3_call.json` signal file, `unlocked_files.json`
+  sticky map, four independent writer sites) that produced the v2.39.0
+  enforcement bypass. All reads/writes now go through one shared module
+  (`cli/_hook_utils.py`) with atomic writes (temp file + `os.replace`). Legacy
+  files are still **read** as a fallback for one release; only the new file is
+  written.
+- **Session-scoped enforcement state.** Hook payload `session_id` is stored in
+  the state file; state written by a different Claude Code session is treated
+  as stale (the old signal file survived `/clear` and leaked unlocks across
+  sessions). Stale state degrades to the advisory path — never a surprise
+  hard-deny from another session's leftovers.
+- **Hook failures are visible.** Critical failures — a sub-hook module that no
+  longer imports, or corrupted enforcement-state JSON (now quarantined to
+  `enforcement_state.json.corrupt`) — emit a short
+  `[c3:hook-error] <hook>: <reason>; see .c3/hook_errors.log` additionalContext
+  warning instead of only logging. Non-critical sub-hook crashes stay log-only
+  and never kill the remaining sub-hooks.
+- **Migration:** re-running `c3 install-mcp` cleanly replaces the old per-hook
+  settings entries (same matchers, commands swapped for the dispatcher; old C3
+  Stop-hook commands are detected by script name and removed). `c3 uninstall`
+  also removes dispatcher entries. No enforcement-policy changes: advisory
+  read-class / blocked write-class split and all redirect messages are
+  unchanged.
+- **Tests for the previously uncovered hooks** (8 of 11 had none):
+  `tests/test_hook_pretool_enforce.py` (allow/deny matrix incl. stale TTL,
+  corrupted state, legacy fallback, session mismatch),
+  `tests/test_hook_dispatch.py` (output composition, crash isolation, deny
+  propagation, end-to-end round-trip), `tests/test_hook_state.py` (state
+  layer), `tests/test_hook_smoke.py` (session_stats, auto_snapshot,
+  ghost_files, c3_signal, c3read, edit_unlock, edit_ledger, terse_advisor).
+
 ## [2.41.0] - 2026-06-25
 
 ### Fixed

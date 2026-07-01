@@ -223,6 +223,36 @@ _GHOST_TRIGGER_TOOLS = (
 )
 
 
+def run(payload: dict, project_path: Path | None = None) -> dict | None:
+    """Core logic — importable by the dispatcher and tests."""
+    tool_name = payload.get("tool_name", "")
+
+    if tool_name not in _GHOST_TRIGGER_TOOLS:
+        return None
+
+    project_root = project_path if project_path is not None else Path.cwd()
+
+    ghosts = scan_ghost_files(project_root)
+    if not ghosts:
+        return None
+
+    # Auto-delete ghost files
+    deleted = cleanup_ghost_files(ghosts)
+    if not deleted:
+        return None
+
+    names = ", ".join(f'"{n}"' for n in deleted)
+    return {
+        "additionalContext": (
+            f"[c3:ghost-cleanup] Deleted {len(deleted)} ghost file(s) from project root: {names}. "
+            f"These were created by shell metacharacter misinterpretation in Bash commands "
+            f"(e.g., `> dict` from `-> dict` in Python type annotations, "
+            f"or `> =3.0.0` from `>=3.0.0` in pip specifiers). "
+            f"Tip: quote Bash commands carefully to avoid shell redirects."
+        )
+    }
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -230,31 +260,11 @@ def main():
             return
 
         data = json.loads(raw)
-        tool_name = data.get("tool_name", "")
-
-        if tool_name not in _GHOST_TRIGGER_TOOLS:
-            return
-
         is_gemini = isinstance(data.get("tool_response", ""), dict)
-        project_root = Path.cwd()
 
-        ghosts = scan_ghost_files(project_root)
-        if not ghosts:
-            return
-
-        # Auto-delete ghost files
-        deleted = cleanup_ghost_files(ghosts)
-
-        if deleted:
-            names = ", ".join(f'"{n}"' for n in deleted)
-            msg = (
-                f"[c3:ghost-cleanup] Deleted {len(deleted)} ghost file(s) from project root: {names}. "
-                f"These were created by shell metacharacter misinterpretation in Bash commands "
-                f"(e.g., `> dict` from `-> dict` in Python type annotations, "
-                f"or `> =3.0.0` from `>=3.0.0` in pip specifiers). "
-                f"Tip: quote Bash commands carefully to avoid shell redirects."
-            )
-            emit_additional_context(msg, is_gemini)
+        output = run(data)
+        if output and output.get("additionalContext"):
+            emit_additional_context(output["additionalContext"], is_gemini)
 
     except Exception as _e:
         log_hook_error("hook_ghost_files", _e)

@@ -66,6 +66,132 @@ def _check_c3_used(project_path: Path, rel_path: str, allowed_tools=None) -> boo
     return False
 
 
+def run(payload: dict, project_path: Path | None = None) -> dict | None:
+    """Core logic \u2014 importable by the dispatcher and tests."""
+    # Normalize Gemini tool names to Claude equivalents
+    tool_name = normalize_tool_name(payload.get("tool_name", ""))
+    if tool_name not in ("Read", "FindFiles", "SearchText"):
+        return None
+
+    result_text, _is_gemini = get_tool_output(payload)
+    if not result_text or not isinstance(result_text, str):
+        return None
+
+    base = project_path if project_path is not None else Path.cwd()
+
+    if tool_name == "FindFiles":
+        if not _check_c3_used(base, "", allowed_tools=["c3_search"]):
+            return {
+                "additionalContext": (
+                    "\u26a0\ufe0f [c3:enforce] Standard file discovery is fallback-only in this project.\n\n"
+                    "Before `FindFiles`, use a core C3 discovery tool:\n"
+                    "  c3_search(query=\"<your pattern>\", action=\"files\")\n\n"
+                    "Use `FindFiles` only after a C3 result narrows the target."
+                )
+            }
+        return None
+
+    if tool_name == "SearchText":
+        if not _check_c3_used(base, "", allowed_tools=["c3_search", "c3_compress", "c3_read"]):
+            return {
+                "additionalContext": (
+                    "\u26a0\ufe0f [c3:enforce] Standard text search is fallback-only in this project.\n\n"
+                    "Before `SearchText`, use a core C3 tool first:\n"
+                    "  c3_search(query=\"<symbol or concept>\", action=\"code\")\n"
+                    "  c3_compress(file_path=\"<candidate file>\", mode=\"map\")\n\n"
+                    "Use `SearchText` only after C3 narrows the scope."
+                )
+            }
+        return None
+
+    # Read tool: extract file_path from tool_input (Claude: file_path, Gemini: path)
+    tool_input = payload.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path", "") or tool_input.get("path", "")
+    if not file_path:
+        return None
+    project_path = base
+
+    line_count = result_text.count("\n") + 1
+
+    try:
+        rel_path = str(Path(file_path).resolve().relative_to(project_path.resolve()))
+    except ValueError:
+        rel_path = file_path
+    rel_path = rel_path.replace("\\", "/")
+
+    queue_path = project_path / ".c3" / "file_memory" / "_queue.txt"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(queue_path, "a", encoding="utf-8") as handle:
+            handle.write(rel_path + "\n")
+    except Exception:
+        pass
+
+    # Clear this file from edit-unlock pending list (Edit prerequisite satisfied)
+    pending_path = project_path / ".c3" / "edit_unlock_pending.txt"
+    try:
+        if pending_path.exists():
+            pending = set(
+                line.strip() for line in
+                pending_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+            # Match against both the raw file_path and the rel_path
+            to_remove = set()
+            fp_norm = file_path.replace("\\", "/").strip("/")
+            rel_norm = rel_path.replace("\\", "/").strip("/")
+            for p in pending:
+                p_norm = p.replace("\\", "/").strip("/")
+                if p_norm == fp_norm or p_norm == rel_norm or fp_norm.endswith(p_norm) or rel_norm.endswith(p_norm):
+                    to_remove.add(p)
+            if to_remove:
+                pending -= to_remove
+                pending_path.write_text(
+                    "\n".join(sorted(pending)) + "\n" if pending else "",
+                    encoding="utf-8",
+                )
+    except Exception:
+        pass
+
+    ext = Path(rel_path).suffix.lower()
+    code_and_doc_exts = {
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
+        ".rb", ".c", ".cpp", ".h", ".cs", ".r", ".R",
+        ".html", ".css", ".json", ".yaml", ".yml", ".sql", ".md",
+    }
+    data_exts = {".log", ".txt", ".jsonl"}
+
+    if ext not in code_and_doc_exts and ext not in data_exts:
+        return None
+
+    is_data_file = ext in data_exts
+    required_tools = DATA_PRE_READ_TOOLS if is_data_file else CODE_PRE_READ_TOOLS
+    if _check_c3_used(project_path, rel_path, allowed_tools=required_tools):
+        return None
+
+    if is_data_file:
+        return {
+            "additionalContext": (
+                f"\u26a0\ufe0f [c3:enforce] STOP. You read `{rel_path}` without running a core C3 data tool first.\n\n"
+                "STRICT PREREQUISITE for `.log`/`.txt`/`.jsonl`:\n"
+                f"  1. c3_filter(file_path=\"{rel_path}\", pattern=\"<optional pattern>\")\n"
+                "  2. Read only the extracted signal if needed\n\n"
+                "Use standard `Read` only after `c3_filter` narrows the result."
+            )
+        }
+
+    return {
+        "additionalContext": (
+            f"\u26a0\ufe0f [c3:enforce] STOP. You read `{rel_path}` ({line_count} lines) without using a core C3 tool first.\n\n"
+            "Required workflow before standard `Read`:\n"
+            f"  1. c3_search(query=\"{Path(rel_path).name}\", action=\"code\") or c3_compress(file_path=\"{rel_path}\", mode=\"map\")\n"
+            f"  2. c3_read(file_path=\"{rel_path}\", symbols=['ClassName', 'func_name']) or c3_read(file_path=\"{rel_path}\", lines=[[start, end]])\n"
+            "  3. Use standard `Read` only for a narrow follow-up if C3 output is insufficient\n\n"
+            "Core C3 tools are mandatory here: `c3_search`, `c3_compress`, `c3_read`."
+        )
+    }
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -73,125 +199,11 @@ def main():
             return
 
         data = json.loads(raw)
+        is_gemini = isinstance(data.get("tool_response", ""), dict)
 
-        # Normalize Gemini tool names to Claude equivalents
-        tool_name = normalize_tool_name(data.get("tool_name", ""))
-        if tool_name not in ("Read", "FindFiles", "SearchText"):
-            return
-
-        result_text, is_gemini = get_tool_output(data)
-        if not result_text or not isinstance(result_text, str):
-            return
-
-        project_path = Path.cwd()
-
-        if tool_name == "FindFiles":
-            if not _check_c3_used(project_path, "", allowed_tools=["c3_search"]):
-                emit_additional_context(
-                    "\u26a0\ufe0f [c3:enforce] Standard file discovery is fallback-only in this project.\n\n"
-                    "Before `FindFiles`, use a core C3 discovery tool:\n"
-                    "  c3_search(query=\"<your pattern>\", action=\"files\")\n\n"
-                    "Use `FindFiles` only after a C3 result narrows the target.",
-                    is_gemini,
-                )
-            return
-
-        if tool_name == "SearchText":
-            if not _check_c3_used(project_path, "", allowed_tools=["c3_search", "c3_compress", "c3_read"]):
-                emit_additional_context(
-                    "\u26a0\ufe0f [c3:enforce] Standard text search is fallback-only in this project.\n\n"
-                    "Before `SearchText`, use a core C3 tool first:\n"
-                    "  c3_search(query=\"<symbol or concept>\", action=\"code\")\n"
-                    "  c3_compress(file_path=\"<candidate file>\", mode=\"map\")\n\n"
-                    "Use `SearchText` only after C3 narrows the scope.",
-                    is_gemini,
-                )
-            return
-
-        # Read tool: extract file_path from tool_input (Claude: file_path, Gemini: path)
-        tool_input = data.get("tool_input", {})
-        file_path = tool_input.get("file_path", "") or tool_input.get("path", "")
-        if not file_path:
-            return
-
-        line_count = result_text.count("\n") + 1
-
-        try:
-            rel_path = str(Path(file_path).resolve().relative_to(project_path.resolve()))
-        except ValueError:
-            rel_path = file_path
-        rel_path = rel_path.replace("\\", "/")
-
-        queue_path = project_path / ".c3" / "file_memory" / "_queue.txt"
-        queue_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(queue_path, "a", encoding="utf-8") as handle:
-                handle.write(rel_path + "\n")
-        except Exception:
-            pass
-
-        # Clear this file from edit-unlock pending list (Edit prerequisite satisfied)
-        pending_path = project_path / ".c3" / "edit_unlock_pending.txt"
-        try:
-            if pending_path.exists():
-                pending = set(
-                    line.strip() for line in
-                    pending_path.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                )
-                # Match against both the raw file_path and the rel_path
-                to_remove = set()
-                fp_norm = file_path.replace("\\", "/").strip("/")
-                rel_norm = rel_path.replace("\\", "/").strip("/")
-                for p in pending:
-                    p_norm = p.replace("\\", "/").strip("/")
-                    if p_norm == fp_norm or p_norm == rel_norm or fp_norm.endswith(p_norm) or rel_norm.endswith(p_norm):
-                        to_remove.add(p)
-                if to_remove:
-                    pending -= to_remove
-                    pending_path.write_text(
-                        "\n".join(sorted(pending)) + "\n" if pending else "",
-                        encoding="utf-8",
-                    )
-        except Exception:
-            pass
-
-        ext = Path(rel_path).suffix.lower()
-        code_and_doc_exts = {
-            ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
-            ".rb", ".c", ".cpp", ".h", ".cs", ".r", ".R",
-            ".html", ".css", ".json", ".yaml", ".yml", ".sql", ".md",
-        }
-        data_exts = {".log", ".txt", ".jsonl"}
-
-        if ext not in code_and_doc_exts and ext not in data_exts:
-            return
-
-        is_data_file = ext in data_exts
-        required_tools = DATA_PRE_READ_TOOLS if is_data_file else CODE_PRE_READ_TOOLS
-        if _check_c3_used(project_path, rel_path, allowed_tools=required_tools):
-            return
-
-        if is_data_file:
-            emit_additional_context(
-                f"\u26a0\ufe0f [c3:enforce] STOP. You read `{rel_path}` without running a core C3 data tool first.\n\n"
-                "STRICT PREREQUISITE for `.log`/`.txt`/`.jsonl`:\n"
-                f"  1. c3_filter(file_path=\"{rel_path}\", pattern=\"<optional pattern>\")\n"
-                "  2. Read only the extracted signal if needed\n\n"
-                "Use standard `Read` only after `c3_filter` narrows the result.",
-                is_gemini,
-            )
-            return
-
-        emit_additional_context(
-            f"\u26a0\ufe0f [c3:enforce] STOP. You read `{rel_path}` ({line_count} lines) without using a core C3 tool first.\n\n"
-            "Required workflow before standard `Read`:\n"
-            f"  1. c3_search(query=\"{Path(rel_path).name}\", action=\"code\") or c3_compress(file_path=\"{rel_path}\", mode=\"map\")\n"
-            f"  2. c3_read(file_path=\"{rel_path}\", symbols=['ClassName', 'func_name']) or c3_read(file_path=\"{rel_path}\", lines=[[start, end]])\n"
-            "  3. Use standard `Read` only for a narrow follow-up if C3 output is insufficient\n\n"
-            "Core C3 tools are mandatory here: `c3_search`, `c3_compress`, `c3_read`.",
-            is_gemini,
-        )
+        output = run(data)
+        if output and output.get("additionalContext"):
+            emit_additional_context(output["additionalContext"], is_gemini)
     except Exception as _e:
         log_hook_error("hook_read", _e)
 
