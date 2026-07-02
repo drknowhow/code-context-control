@@ -211,11 +211,14 @@ class ProjectManager:
             pass
         return latest_raw
 
-    def add_project(self, path: str, name: str = None) -> dict:
+    def add_project(self, path: str, name: str = None, parent_path: str = None) -> dict:
         path = str(Path(path).resolve())
         projects = self._read_projects()
         for p in projects:
             if p["path"] == path:
+                if parent_path is not None:
+                    p["parent_path"] = str(Path(parent_path).resolve())
+                    self._write_projects(projects)
                 return p
         cfg = self._read_project_config(path)
         entry = {
@@ -227,9 +230,25 @@ class ProjectManager:
             "tags": [],
             "notes": "",
         }
+        if parent_path:
+            entry["parent_path"] = str(Path(parent_path).resolve())
         projects.append(entry)
         self._write_projects(projects)
         return entry
+
+    def set_parent(self, path: str, parent_path: str | None) -> bool:
+        """Set or clear a project's sub-project link in the registry."""
+        path = str(Path(path).resolve())
+        projects = self._read_projects()
+        for p in projects:
+            if p["path"] == path:
+                if parent_path:
+                    p["parent_path"] = str(Path(parent_path).resolve())
+                else:
+                    p.pop("parent_path", None)
+                self._write_projects(projects)
+                return True
+        return False
 
     def remove_project(self, path: str) -> bool:
         path = str(Path(path).resolve())
@@ -576,6 +595,15 @@ class ProjectManager:
             entry["ide"] = cfg["ide"]
 
         self._write_projects(projects)
+
+        # If the moved project designates sub-projects, repair their links
+        # (child back-links + registry parent_path re-derived via rel_path).
+        try:
+            from services.subprojects import SubprojectManager
+            SubprojectManager(new_path).reconcile(fix=True)
+        except Exception:
+            pass
+
         return {"transferred": True, "old_path": old_path, "new_path": new_path}
 
     def merge_projects(self, source_path: str, target_path: str, cleanup: str = "keep") -> dict:

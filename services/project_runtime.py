@@ -42,8 +42,13 @@ class ProjectRuntimeCache:
     server and any other caller share one implementation.
     """
 
-    def __init__(self, ide_name: str = "claude-code", max_cached: int = 4):
+    def __init__(self, ide_name: str = "claude-code", max_cached: int | None = None):
         self._ide_name = ide_name
+        if max_cached is None:
+            try:
+                max_cached = int(os.environ.get("C3_RUNTIME_CACHE_SIZE", "8"))
+            except ValueError:
+                max_cached = 8
         self._max = max(1, int(max_cached))
         self._runtimes: dict[str, C3Runtime] = {}
         self._order: list[str] = []

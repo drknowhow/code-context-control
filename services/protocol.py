@@ -228,11 +228,19 @@ class CompressionProtocol:
         term_freq = {}
         skip_dirs = {'node_modules', '.git', '__pycache__', '.c3', 'venv'}
         code_exts = {'.py', '.js', '.ts', '.tsx', '.jsx', '.r', '.R'}
+        try:
+            from services.subprojects import make_excluder
+            _sub_excluded = make_excluder(self.project_path)
+        except Exception:
+            def _sub_excluded(_p):
+                return False
 
         for fpath in self.project_path.rglob('*'):
             if not fpath.is_file() or fpath.suffix not in code_exts:
                 continue
             if any(skip in fpath.parts for skip in skip_dirs):
+                continue
+            if _sub_excluded(fpath):
                 continue
 
             try:

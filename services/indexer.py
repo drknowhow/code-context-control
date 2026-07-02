@@ -76,6 +76,17 @@ class CodeIndex:
             '.makefile', '.cmake',
         }
 
+        # Sub-project exclusion: designated child folders carry their own
+        # .c3 index, so the parent skips them (relative-path-prefix match —
+        # name-based skip_dirs would catch same-named siblings).
+        try:
+            from services.subprojects import exclusion_prefixes, is_excluded
+            self.exclude_prefixes = exclusion_prefixes(self.project_path)
+            self._is_excluded = is_excluded
+        except Exception:
+            self.exclude_prefixes = []
+            self._is_excluded = None
+
     def build_index(self, max_files: int = 500) -> dict:
         """Build the full code index."""
         self.documents = {}
@@ -95,6 +106,13 @@ class CodeIndex:
                 continue
             if any(skip in fpath.parts for skip in self.skip_dirs):
                 continue
+            if self.exclude_prefixes:
+                try:
+                    if self._is_excluded(fpath.relative_to(self.project_path).parts,
+                                         self.exclude_prefixes):
+                        continue
+                except ValueError:
+                    pass
 
             try:
                 content = fpath.read_text(errors='replace')

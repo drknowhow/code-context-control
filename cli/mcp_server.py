@@ -391,9 +391,10 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
 @mcp.tool()
 async def c3_search(query: str, action: str = "code", top_k: int = 3,
               max_tokens: int = 1200, prefetch: bool = False,
-              ctx: Context = None) -> str:
+              scope: str = "", ctx: Context = None) -> str:
     """FIND candidates. Use to discover which files/symbols are relevant (read-only, plan-mode safe).
     action: 'code' (TF-IDF content), 'exact' (regex), 'files' (by name), 'transcript', 'semantic'.
+    scope: '' current project | 'all' also searches linked sub-projects | '<name>' one sub-project.
     prefetch: auto-compress top results. Next step: c3_compress/c3_read on hits."""
     svc = _svc(ctx)
 
@@ -401,7 +402,8 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     return await asyncio.to_thread(handle_search, query, action, top_k, max_tokens, svc,
-                                   finalize, maybe_related_facts, prefetch=prefetch)
+                                   finalize, maybe_related_facts, prefetch=prefetch,
+                                   scope=scope)
 
 
 @mcp.tool()
@@ -424,19 +426,20 @@ async def c3_session(action: str, data: str = "", reasoning: str = "",
 async def c3_memory(action: str, query: str = "", fact: str = "",
               category: str = "", top_k: int = 3,
               fact_id: str = "", include_scores: bool = False,
-              ctx: Context = None) -> str:
+              scope: str = "", ctx: Context = None) -> str:
     """Durable facts — cross-session knowledge. Read-only actions safe in plan mode.
     Retrieve: recall (search; include_scores=True adds per-fact salience), index (compact IDs+snippets, then fetch), fetch (full text by fact_id="id1,id2"), query (multi-source: facts+sessions+files).
     Write:    add (fact+category, empty category→'general'), update (fact_id+fact), delete (fact_id).
     Browse:   list (category='' shows all; 'foo' filters), export (markdown).
-    Audit:    review (health), ground (verify against code), score (salience), graph (edges), trends, lifespan, consolidate, consolidate_deep."""
+    Audit:    review (health), ground (verify against code), score (salience), graph (edges), trends, lifespan, consolidate, consolidate_deep.
+    scope (recall): '' config default | 'all' union linked sub-project facts | '<name>' one sub-project | 'project' this project only."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     return await asyncio.to_thread(handle_memory, action, query, fact, category, top_k, svc, finalize,
-                                   fact_id=fact_id, include_scores=include_scores)
+                                   fact_id=fact_id, include_scores=include_scores, scope=scope)
 
 
 @mcp.tool()
@@ -756,6 +759,8 @@ async def c3_project(
     Discover: list (registry), scan (registry+filesystem), info, register, unregister.
     Read    : search, read, compress, status, memory, impact, edits, validate, filter.
     Write   : edit, shell, memory(add/update/delete) — require allow_write=true; logged to that project's ledger.
+    Sub-projects (project = the PARENT): subprojects (tree+rollup), sub_add (target=folder, tag=name; allow_write),
+      sub_remove (target=name|path, mode=unlink|clear; allow_write), sub_cascade (mode=update|reindex|health; health is read-only).
     project = registered name OR absolute path (.c3 required). list/scan need no project.
     search_action/mem_action/edits_action pick the sub-op for those verbs."""
     svc = _svc(ctx)

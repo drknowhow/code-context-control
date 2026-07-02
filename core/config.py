@@ -54,6 +54,13 @@ DEFAULTS = {
         "compound_max_compress": 5,       # Max files to compress in compound workflows
         "delegate_in_workflows": True,    # Allow Ollama delegation in compound workflows
     },
+    # Sub-projects: linked child .c3 branches governed by this parent
+    "subprojects": {
+        "memory_rollup": True,            # Parent recall unions child facts (tagged by origin)
+        "search_fanout": True,            # c3_search scope='all' fans out to children
+        "parent_memory_visible": False,   # Reserved (v2): children seeing parent facts
+        "max_children_per_query": 8,      # Cap on children queried per federated call
+    },
 }
 
 

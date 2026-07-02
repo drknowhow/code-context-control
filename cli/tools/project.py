@@ -23,11 +23,14 @@ from services.project_runtime import (
 _MEMORY_WRITE = {"add", "update", "delete", "consolidate", "consolidate_deep", "ground"}
 # Dispatch verbs that mutate the target project.
 _WRITE_OPS = {"edit", "shell"}
-_DISCOVERY_OPS = {"list", "scan", "info", "register", "unregister"}
+_DISCOVERY_OPS = {"list", "scan", "info", "register", "unregister", "subprojects"}
 _READ_OPS = {
     "search", "read", "compress", "status", "memory",
     "impact", "edits", "validate", "filter",
 }
+# Sub-project governance verbs (project = the PARENT). sub_add/sub_remove and
+# cascade update/reindex mutate the target tree -> allow_write required.
+_SUB_OPS = {"subprojects", "sub_add", "sub_remove", "sub_cascade"}
 
 
 def _foreign_finalize(_name, _args, resp, _summ="", **_kw):
@@ -116,6 +119,97 @@ def _do_register(project: str) -> str:
 
     entry = ProjectManager().add_project(str(path.resolve()))
     return f"Registered: {entry['name']}  ({entry['path']})"
+
+
+def _do_subprojects(action: str, project: str, *, target: str = "", tag: str = "",
+                    mode: str = "", allow_write: bool = False,
+                    from_project: str = "") -> str:
+    """Sub-project governance on a parent project (tree/add/remove/cascade)."""
+    try:
+        resolved = resolve_project(project)
+    except ValueError as e:
+        return f"[c3_project:error] {e}"
+    from services.subprojects import (
+        VALID_CASCADE_OPS,
+        VALID_REMOVE_MODES,
+        SubprojectManager,
+    )
+
+    sm = SubprojectManager(resolved["path"])
+
+    def _blocked(label):
+        return (f"[c3_project:blocked] '{label}' would modify project "
+                f"'{resolved['name']}'. Re-run with allow_write=true to proceed.")
+
+    def _audit(label):
+        try:
+            from services.activity_log import ActivityLog
+            ActivityLog(resolved["path"]).log("cross_project_write", {
+                "action": label, "from_project": from_project,
+            })
+        except Exception:
+            pass
+
+    if action == "subprojects":
+        tree = sm.tree()
+        if not tree["children"]:
+            return (f"No sub-projects designated in {tree['parent']['name']}. "
+                    "Designate one: c3_project(action='sub_add', project='<parent>', "
+                    "target='<folder>', allow_write=true)")
+        out = [f"Sub-projects of {tree['parent']['name']} ({tree['rollup']['children']}):"]
+        for c in tree["children"]:
+            out.append(f"  - {c['name']:<24} {c['status']:<16} "
+                       f"alerts:{c['notification_count']:<3} {c['rel_path']}")
+        r = tree["rollup"]
+        out.append(f"  rollup: {r['notifications']} alert(s), {r['issues']} issue(s)")
+        return "\n".join(out)
+
+    if action == "sub_add":
+        if not allow_write:
+            return _blocked("sub_add")
+        if not (target or "").strip():
+            return ("[c3_project:error] sub_add requires target='<folder>' "
+                    "(relative to the parent). Optional: tag='<display name>'.")
+        res = sm.add(target, name=(tag or None))
+        if not res.get("added"):
+            return f"[c3_project:error] {res.get('error')}"
+        _audit("sub_add")
+        verb = "Adopted (existing .c3 kept)" if res.get("adopted") else "Initialized"
+        return f"{verb}: {res['name']}  ({res['path']}) — parent index now excludes it."
+
+    if action == "sub_remove":
+        if not allow_write:
+            return _blocked("sub_remove")
+        if not (target or "").strip():
+            return "[c3_project:error] sub_remove requires target='<name|path>'."
+        m = mode if mode in VALID_REMOVE_MODES else "unlink"
+        res = sm.remove(target, mode=m)
+        if not res.get("removed"):
+            return f"[c3_project:error] {res.get('error')}"
+        _audit(f"sub_remove/{m}")
+        verb = "Cleared (.c3 wiped, unregistered)" if m == "clear" else "Unlinked (now top-level)"
+        return f"{verb}: {res.get('name')}  ({res.get('path')})"
+
+    if action == "sub_cascade":
+        op = (mode or "").strip().lower()
+        if op not in VALID_CASCADE_OPS:
+            return ("[c3_project:error] sub_cascade requires "
+                    f"mode='{'|'.join(VALID_CASCADE_OPS)}'.")
+        if op != "health" and not allow_write:
+            return _blocked(f"sub_cascade/{op}")
+        res = sm.cascade(op)
+        if op != "health":
+            _audit(f"sub_cascade/{op}")
+        rows = []
+        for r in res["results"]:
+            mark = "OK" if r["ok"] else "FAIL"
+            extra = f" -- {r.get('error')}" if r.get("error") else ""
+            rows.append(f"  [{mark:<4}] {r['name']:<24} {r['elapsed_ms']:>6}ms{extra}")
+        s = res["summary"]
+        return (f"cascade {op} on {resolved['name']}: {s['ok']}/{s['total']} ok, "
+                f"{s['failed']} failed\n" + "\n".join(rows))
+
+    return f"[c3_project:error] Unhandled sub-project op '{action}'."
 
 
 def _do_unregister(project: str) -> str:
@@ -216,7 +310,8 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
             "[c3_project:error] action required. "
             f"Discovery: {', '.join(sorted(_DISCOVERY_OPS))}. "
             f"Read: {', '.join(sorted(_READ_OPS))}. "
-            f"Write (allow_write=true): {', '.join(sorted(_WRITE_OPS))}.",
+            f"Write (allow_write=true): {', '.join(sorted(_WRITE_OPS))}. "
+            "Sub-projects: sub_add, sub_remove, sub_cascade.",
             "error")
 
     # ── Discovery (no foreign runtime needed) ──────────────────────────
@@ -228,6 +323,12 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
         return done(_do_register(project), "register project")
     if action == "unregister":
         return done(_do_unregister(project), "unregister project")
+    if action in _SUB_OPS:
+        return done(
+            _do_subprojects(action, project, target=target, tag=tag, mode=mode,
+                            allow_write=allow_write,
+                            from_project=str(getattr(svc, "project_path", ""))),
+            action)
 
     if action not in _READ_OPS and action not in _WRITE_OPS:
         return done(

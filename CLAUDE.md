@@ -17,7 +17,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 7. **VALIDATE**: `c3_validate(file_path)` — after edits or before reporting done. Runs deep type check (pyright/tsc) automatically if installed
 8. **LOG**: `c3_session(action='log')` for decisions. `c3_session(action='snapshot')` before /clear
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
-10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
+10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`, or `login --global` for a home config reusable across projects; account resolution precedence is project → home). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
 11. **CROSS-PROJECT** (v2.31.0+): `c3_project(action='list|scan|info|search|read|edit|shell|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. `list`/`scan` need no project; reads (search/read/compress/status/memory/impact/edits/validate/filter) run freely; writes (`edit`, `shell`, memory add/update/delete) require `allow_write=true` and are logged to the target project's ledger.
 
 ## Plan mode
@@ -33,6 +33,7 @@ In plan mode, all c3_* read tools (search, read, compress, filter, validate, sta
 
 ```
 claude-companion - v2/
+  .gitattributes
   .gitignore
   .manifest.swo
   .manifest.swp
@@ -47,8 +48,7 @@ claude-companion - v2/
   SECURITY.md
   THIRD_PARTY_LICENSES.md
   c3.bat
-  install.bat
-  ... +3 more
+  ... +5 more
   .claude/
     settings.local.json
   .codex/
@@ -84,17 +84,18 @@ claude-companion - v2/
     hook_auto_snapshot.py
     hook_c3_signal.py
     hook_c3read.py
+    hook_dispatch.py
     hook_edit_ledger.py
     hook_edit_unlock.py
     hook_filter.py
     hook_ghost_files.py
     hook_pretool_enforce.py
     hook_read.py
-    hook_session_stats.py
-    ... +9 more
+    ... +11 more
     commands/ (3 files)
     guide/ (7 files)
-    tools/ (18 files)
+    hub_ui/ (2 files)
+    tools/ (19 files)
     ui/ (5 files)
   code_context_control.egg-info/
     SOURCES.txt
@@ -125,7 +126,7 @@ claude-companion - v2/
     mcp_oracle.py
     oracle.html
     oracle_server.py
-    services/ (16 files)
+    services/ (17 files)
   oracle-guide/
     README.md
     api-reference.md
@@ -142,32 +143,32 @@ claude-companion - v2/
     benchmark_dashboard.py
     bitbucket_client.py
     bitbucket_credentials.py
+    circuit_breaker.py
     claude_md.py
     compressor.py
     context_snapshot.py
     conversation_store.py
     doc_index.py
     e2e_benchmark.py
-    e2e_evaluator.py
-    ... +35 more
+    ... +40 more
     bench/ (1 files)
   tests/
+    test_activity_reporter.py
     test_aider_polyglot.py
     test_bitbucket_cli_smoke.py
     test_bitbucket_client.py
+    test_bitbucket_config_fallback.py
     test_bitbucket_credentials.py
     test_bitbucket_tool.py
     test_c3_shell.py
+    test_circuit_breaker.py
+    test_claude_md_merge.py
     test_cli_smoke.py
+    test_compressor_large_file.py
+    test_delegate_cascade.py
     test_e2e_benchmark.py
-    test_edit_normalization.py
-    test_enforcement_flip.py
-    test_federated_graph.py
-    test_ghost_files.py
-    test_git_branch_awareness.py
-    test_hub_server_smoke.py
-    test_install_mcp_entrypoint.py
-    ... +24 more
+    test_edit_ledger_hook.py
+    ... +48 more
   tui/
     __init__.py
     backend.py
@@ -193,8 +194,5 @@ Python (Modern)
 
 ## Key Facts (use c3_memory for more)
 
-- [architecture] File Memory system: FileMemoryStore in services/file_memory.py provides persistent structural index of so
-- c3_delegate now supports allow_model_fallback/fallback_models and resolves nearest installed Ollama model when the reque
-- ConversationStore sync now supports source='all|claude|imports', and sessions/turns persist normalized source labels for
-- SessionManager.parse_claude_session_tokens now resolves Claude transcript dirs via project slug candidates and constrain
-- `c3 benchmark` now provides a repeatable local benchmark for compression savings, retrieval token reduction, and groundi
+- Session summary (20260701): Decision: Deep 4-agent evaluation of C3 completed (tool surface, hooks, services, claims-vs-
+- Session summary (20260701): Files (modified): README.md, services/subprojects.py, services/project_manager.py, services/

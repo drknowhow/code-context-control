@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -311,8 +312,68 @@ def _win_find_ide(cmd: str) -> str:
 
 # ─── Routes: static ──────────────────────────────────────────────────────────
 
+# JS load order for the concatenated hub UI build (mirrors cli/server.py).
+# ui/* files are SHARED with the per-project UI — reference, don't copy.
+_HUB_JS_FILES = [
+    "ui/theme.js",
+    "ui/icons.js",
+    "ui/api.js",
+    "ui/shared.js",
+    "hub_ui/state.js",
+    "hub_ui/components/toasts.js",
+    "hub_ui/components/topbar.js",
+    "hub_ui/components/sidebar.js",
+    "hub_ui/components/add_project.js",
+    "hub_ui/components/summary_bar.js",
+    "hub_ui/components/project_card.js",
+    "hub_ui/components/project_tree.js",
+    "hub_ui/components/session_drawer.js",
+    "hub_ui/components/drill_panel.js",
+    "hub_ui/components/drill_views.js",
+    "hub_ui/components/drill_health.js",
+    "hub_ui/components/config_editor.js",
+    "hub_ui/components/mcp_manager.js",
+    "hub_ui/components/global_search.js",
+    "hub_ui/components/modals.js",
+    "hub_ui/components/settings_modal.js",
+    "hub_ui/app.js",
+]
+
+
+def _build_hub_html() -> str:
+    """Concatenate hub_ui.html shell + all JS component files into one response."""
+    cli_dir = Path(__file__).parent
+    shell_path = cli_dir / "hub_ui.html"
+    if not shell_path.exists():
+        return "<h1>C3 Hub UI not found.</h1>"
+
+    shell = shell_path.read_text(encoding="utf-8")
+
+    js_parts = []
+    for rel in _HUB_JS_FILES:
+        js_path = cli_dir / rel
+        if js_path.exists():
+            js_parts.append(f"    // ═══ {rel} ═══\n" + js_path.read_text(encoding="utf-8"))
+
+    return shell.replace("/* __C3_HUB_SCRIPTS__ */", "\n\n".join(js_parts))
+
+
+# Cache the built HTML (rebuilt on first request; cleared on server restart)
+_hub_html_cache: str | None = None
+
+
 @app.route("/")
 def index():
+    global _hub_html_cache
+    if _hub_html_cache is None:
+        _hub_html_cache = _build_hub_html()
+    from flask import Response
+    return Response(_hub_html_cache, mimetype="text/html")
+
+
+@app.route("/legacy")
+def index_legacy():
+    """Frozen pre-2.44 hub UI — escape hatch for one release, then removed."""
     return send_from_directory(str(Path(__file__).parent), "hub.html")
 
 
@@ -370,6 +431,15 @@ def api_hub_config_set():
         cfg["projects_view"] = projects_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
+    if "sidebar_group" in data:
+        cfg["sidebar_group"] = str(data["sidebar_group"]).strip()
+    if "sidebar_collapsed" in data:
+        cfg["sidebar_collapsed"] = bool(data["sidebar_collapsed"])
+    if "runtime_cache_size" in data:
+        try:
+            cfg["runtime_cache_size"] = max(1, int(data["runtime_cache_size"]))
+        except (ValueError, TypeError):
+            return jsonify({"error": "runtime_cache_size must be an integer"}), 400
     _write_hub_config(cfg)
     return jsonify({"saved": True, "config": cfg})
 
@@ -401,8 +471,10 @@ def _notification_count(project_path: str) -> int:
 def api_projects_list():
     try:
         projects = _pm().list_projects()
+        parent_paths = {os.path.normcase(p["parent_path"]) for p in projects if p.get("parent_path")}
         for p in projects:
             p["notification_count"] = _notification_count(p.get("path", ""))
+            p["is_parent"] = os.path.normcase(p.get("path", "")) in parent_paths
         return jsonify(projects)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -431,7 +503,13 @@ def api_projects_remove():
     if not path:
         return jsonify({"error": "path is required"}), 400
     try:
-        return jsonify({"removed": _pm().remove_project(path)})
+        resolved = os.path.normcase(str(Path(path).resolve()))
+        orphans = [p.get("path") for p in _pm().list_projects()
+                   if p.get("parent_path") and os.path.normcase(p["parent_path"]) == resolved]
+        result = {"removed": _pm().remove_project(path)}
+        if result["removed"] and orphans:
+            result["orphaned_children"] = orphans
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1064,6 +1142,523 @@ def api_batch_cancel():
         return jsonify({"cancelled": True})
 
 
+# ── Sub-projects: linked child .c3 branches (v2.44.0) ─────────────────────
+
+def _sub_manager(parent: str):
+    from services.subprojects import SubprojectManager
+    return SubprojectManager(str(_resolve_project_path(parent)))
+
+
+def _parse_json_tail(output: str):
+    """Extract the trailing JSON object from CLI output (init noise precedes it)."""
+    lines = (output or "").splitlines()
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("{"):
+            try:
+                return json.loads("\n".join(lines[i:]))
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+@app.route("/api/projects/subprojects", methods=["GET"])
+def api_subprojects_tree():
+    """Parent + children + rollup. Query: ?parent=<path>"""
+    parent = (request.args.get("parent") or "").strip()
+    if not parent:
+        return jsonify({"error": "parent is required"}), 400
+    try:
+        return jsonify(_sub_manager(parent).tree())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/subprojects/validate", methods=["POST"])
+def api_subprojects_validate():
+    """Pre-flight a designation. Body: {parent, folder}"""
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    folder = (data.get("folder") or "").strip()
+    if not parent or not folder:
+        return jsonify({"error": "parent and folder are required"}), 400
+    try:
+        return jsonify(_sub_manager(parent).validate(folder))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/subprojects/add", methods=["POST"])
+def api_subprojects_add():
+    """Designate a sub-folder (full init + link). Body: {parent, folder, name?, ide?}
+
+    Runs through the CLI subprocess for isolation, consistent with run-init.
+    """
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    folder = (data.get("folder") or "").strip()
+    if not parent or not folder:
+        return jsonify({"error": "parent and folder are required"}), 400
+    args = ["sub", "add", folder, "--parent", parent, "--json"]
+    name = (data.get("name") or "").strip()
+    if name:
+        args += ["--name", name]
+    ide = (data.get("ide") or "").strip()
+    if ide and ide != "unknown":
+        args += ["--ide", ide]
+    res = _run_c3(args, timeout=300)
+    payload = _parse_json_tail(res.get("output", ""))
+    ok = res.get("success") and bool((payload or {}).get("added"))
+    body = {"success": ok, "result": payload, "output": res.get("output", "")}
+    return jsonify(body), (201 if ok else 500)
+
+
+@app.route("/api/projects/subprojects/remove", methods=["POST"])
+def api_subprojects_remove():
+    """Unlink (Promote) or clear a sub-project. Body: {parent, ref, mode: unlink|clear}"""
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    ref = (data.get("ref") or "").strip()
+    mode = (data.get("mode") or "unlink").strip()
+    if not parent or not ref:
+        return jsonify({"error": "parent and ref are required"}), 400
+    if mode not in ("unlink", "clear"):
+        return jsonify({"error": "mode must be unlink|clear"}), 400
+    args = ["sub", "remove", ref, "--parent", parent, "--json", "--yes"]
+    if mode == "clear":
+        args.append("--clear")
+    res = _run_c3(args, timeout=300)
+    payload = _parse_json_tail(res.get("output", ""))
+    ok = res.get("success") and bool((payload or {}).get("removed"))
+    body = {"success": ok, "result": payload, "output": res.get("output", "")}
+    return jsonify(body), (200 if ok else 500)
+
+
+@app.route("/api/projects/subprojects/reconcile", methods=["POST"])
+def api_subprojects_reconcile():
+    """Consistency check/repair. Body: {parent, fix?, prune?}"""
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    if not parent:
+        return jsonify({"error": "parent is required"}), 400
+    try:
+        return jsonify(_sub_manager(parent).reconcile(
+            fix=bool(data.get("fix")), prune=bool(data.get("prune"))))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+_sub_cascade_state = {
+    "running": False, "cancelled": False, "results": [],
+    "current": None, "current_index": 0, "total": 0,
+    "done": False, "error": None, "op": None, "parent": None,
+}
+_sub_cascade_lock = threading.Lock()
+
+
+def _sub_cascade_worker(op: str, targets: list):
+    """Per-child cascade in a background thread (progress + cancel like batch init)."""
+    global _sub_cascade_state
+    for i, child in enumerate(targets):
+        with _sub_cascade_lock:
+            if _sub_cascade_state["cancelled"]:
+                break
+            _sub_cascade_state["current"] = child.get("name") or child.get("path")
+            _sub_cascade_state["current_index"] = i
+        path = child.get("path")
+        t0 = time.time()
+        row = {"path": path, "name": child.get("name"), "success": False, "output": ""}
+        try:
+            if child.get("status") == "missing_folder":
+                row["output"] = "missing_folder"
+            elif child.get("status") == "missing_c3" and op != "update":
+                row["output"] = "missing_c3"
+            elif op == "update":
+                res = _run_c3(["init", path, "--force"], timeout=600)
+                row["success"] = bool(res.get("success"))
+                row["output"] = res.get("output", "")
+            elif op == "reindex":
+                from services.doc_index import DocIndex
+                from services.indexer import CodeIndex
+                r = CodeIndex(path).build_index()
+                try:
+                    DocIndex(path).build()
+                except Exception:
+                    pass
+                row["success"] = True
+                row["output"] = (f"{r.get('files_indexed', 0)} files, "
+                                 f"{r.get('chunks_created', 0)} chunks")
+            elif op == "health":
+                from cli.c3 import _check_c3_health
+                info = _check_c3_health(path)
+                row["success"] = bool(info.get("healthy"))
+                row["output"] = "healthy" if row["success"] else "; ".join(info.get("issues", []))
+        except Exception as e:
+            row["output"] = str(e)
+        row["elapsed_ms"] = int((time.time() - t0) * 1000)
+        with _sub_cascade_lock:
+            _sub_cascade_state["results"].append(row)
+    with _sub_cascade_lock:
+        _sub_cascade_state["running"] = False
+        _sub_cascade_state["done"] = True
+        _sub_cascade_state["current"] = None
+
+
+@app.route("/api/projects/subprojects/cascade", methods=["POST"])
+def api_subprojects_cascade():
+    """Start an async cascade. Body: {parent, op: update|reindex|health, include_parent?}"""
+    global _sub_cascade_state
+    with _sub_cascade_lock:
+        if _sub_cascade_state["running"]:
+            return jsonify({"error": "Cascade already in progress"}), 409
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    op = (data.get("op") or "").strip()
+    if not parent:
+        return jsonify({"error": "parent is required"}), 400
+    if op not in ("update", "reindex", "health"):
+        return jsonify({"error": "op must be update|reindex|health"}), 400
+    try:
+        sm = _sub_manager(parent)
+        targets = sm.list()
+        if data.get("include_parent"):
+            targets.append({"name": "(parent)", "path": sm.parent_path, "status": "ok"})
+        if not targets:
+            return jsonify({"error": "No sub-projects designated"}), 400
+        with _sub_cascade_lock:
+            _sub_cascade_state = {
+                "running": True, "cancelled": False, "results": [],
+                "current": None, "current_index": 0, "total": len(targets),
+                "done": False, "error": None, "op": op, "parent": sm.parent_path,
+            }
+        t = threading.Thread(target=_sub_cascade_worker, args=(op, targets), daemon=True)
+        t.start()
+        return jsonify({"started": True, "total": len(targets), "op": op})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/subprojects/cascade/status", methods=["GET"])
+def api_subprojects_cascade_status():
+    with _sub_cascade_lock:
+        return jsonify(dict(_sub_cascade_state))
+
+
+@app.route("/api/projects/subprojects/cascade/cancel", methods=["POST"])
+def api_subprojects_cascade_cancel():
+    with _sub_cascade_lock:
+        if not _sub_cascade_state["running"]:
+            return jsonify({"cancelled": False, "message": "No cascade in progress"})
+        _sub_cascade_state["cancelled"] = True
+        return jsonify({"cancelled": True})
+
+
+# ── Drill-in inspection + cross-project search + config editor (v2.44.0) ──
+# Read-only endpoints borrow in-process C3Runtimes from a hub-owned LRU cache
+# (no per-project UI server needed); config writes audit to the target project.
+
+_hub_rt_cache = None
+_hub_rt_lock = threading.Lock()
+
+
+def _get_runtime(path: str):
+    """Borrow an in-process C3Runtime for inspection (LRU-cached, lazy import)."""
+    global _hub_rt_cache
+    with _hub_rt_lock:
+        if _hub_rt_cache is None:
+            from services.project_runtime import ProjectRuntimeCache
+            try:
+                size = max(1, int(_read_hub_config().get("runtime_cache_size", 8) or 8))
+            except Exception:
+                size = 8
+            _hub_rt_cache = ProjectRuntimeCache(max_cached=size)
+    return _hub_rt_cache.get(path)
+
+
+def _shutdown_runtime_cache():
+    """Best-effort release of cached runtimes (called before restart/stop)."""
+    global _hub_rt_cache
+    with _hub_rt_lock:
+        cache, _hub_rt_cache = _hub_rt_cache, None
+    if cache is not None:
+        try:
+            cache.shutdown()
+        except Exception:
+            pass
+
+
+@app.route("/api/projects/browse", methods=["POST"])
+def api_projects_browse():
+    """Directory listing for the folder picker (dirs only, never file contents).
+
+    Body: {path}. Same trust level as /api/projects/open — loopback + CSRF guard.
+    """
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = Path(path).resolve()
+    except OSError as e:
+        return jsonify({"error": str(e)}), 400
+    if not resolved.is_dir():
+        return jsonify({"error": f"Not a directory: {resolved}"}), 404
+    registered = {os.path.normcase(p.get("path", "")) for p in _pm()._read_projects()}
+    dirs = []
+    try:
+        for child in sorted(resolved.iterdir(), key=lambda c: c.name.lower()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            dirs.append({
+                "name": child.name,
+                "path": str(child),
+                "has_c3": (child / ".c3").is_dir(),
+                "registered": os.path.normcase(str(child)) in registered,
+            })
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    parent = str(resolved.parent) if resolved.parent != resolved else None
+    return jsonify({"path": str(resolved), "parent": parent, "dirs": dirs})
+
+
+@app.route("/api/projects/inspect", methods=["POST"])
+def api_projects_inspect():
+    """Drill-in data views. Body: {path, view: overview|memory|ledger|sessions, query?, file?, limit?}"""
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    view = (data.get("view") or "overview").strip().lower()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        from services.project_runtime import resolve_project
+        resolved = resolve_project(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        rt = _get_runtime(resolved["path"])
+    except ValueError as e:
+        return jsonify({"error": str(e), "needs_init": True}), 409
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        limit = max(1, min(int(data.get("limit") or 50), 500))
+    except (TypeError, ValueError):
+        limit = 50
+    query = (data.get("query") or "").strip()
+
+    try:
+        if view == "overview":
+            details = _pm().get_project_details(resolved["path"]) or {}
+            ledger_total = 0
+            if rt.edit_ledger:
+                try:
+                    ledger_total = int(rt.edit_ledger.get_stats().get("total", 0))
+                except Exception:
+                    ledger_total = 0
+            counts = {
+                "facts": len(rt.memory.facts),
+                "edits": ledger_total,
+                "sessions": len(rt.session_mgr.list_sessions(500)),
+                "notifications": _notification_count(resolved["path"]),
+            }
+            return jsonify({"project": details, "counts": counts})
+        if view == "memory":
+            if query:
+                return jsonify({"results": rt.memory.recall(query, top_k=min(limit, 20))})
+            return jsonify({"facts": rt.memory.facts, "total": len(rt.memory.facts)})
+        if view == "ledger":
+            if not rt.edit_ledger:
+                return jsonify({"history": [], "stats": {}})
+            file_filter = (data.get("file") or "").strip()
+            return jsonify({
+                "history": rt.edit_ledger.get_history(file=file_filter or None, limit=limit),
+                "stats": rt.edit_ledger.get_stats(),
+            })
+        if view == "sessions":
+            return jsonify({"sessions": rt.session_mgr.list_sessions(limit)})
+        return jsonify({"error": f"unknown view '{view}'"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/search/global", methods=["POST"])
+def api_search_global():
+    """Cross-project search. Body: {query, kind: code|memory|both, projects?, top_k?}"""
+    data = request.get_json(force=True) or {}
+    query = (data.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    kind = (data.get("kind") or "both").strip().lower()
+    if kind not in ("code", "memory", "both"):
+        return jsonify({"error": "kind must be code|memory|both"}), 400
+    try:
+        top_k = max(1, min(int(data.get("top_k") or 3), 10))
+    except (TypeError, ValueError):
+        top_k = 3
+    t0 = time.time()
+
+    wanted = data.get("projects") or []
+    wanted_norm = ({os.path.normcase(str(Path(p).resolve())) for p in wanted if p}
+                   if wanted else None)
+
+    candidates, skipped = [], []
+    for p in _pm().list_projects():
+        ppath = p.get("path") or ""
+        if wanted_norm is not None and os.path.normcase(ppath) not in wanted_norm:
+            continue
+        if not Path(ppath).is_dir():
+            skipped.append({"path": ppath, "reason": "not accessible"})
+            continue
+        if not (Path(ppath) / ".c3").is_dir():
+            skipped.append({"path": ppath, "reason": "not initialized"})
+            continue
+        candidates.append(p)
+    if len(candidates) > 10:
+        for p in candidates[10:]:
+            skipped.append({"path": p.get("path"), "reason": "over per-request cap (10)"})
+        candidates = candidates[:10]
+
+    results = []
+    for p in candidates:
+        row = {"project": {"name": p.get("name"), "path": p.get("path")},
+               "code": [], "memory": [], "error": None}
+        try:
+            rt = _get_runtime(p["path"])
+            if kind in ("code", "both"):
+                for r in rt.indexer.search(query, top_k=top_k, max_tokens=600):
+                    row["code"].append({
+                        "file": r.get("file"), "name": r.get("name"),
+                        "type": r.get("type"), "lines": r.get("lines"),
+                        "score": r.get("score"),
+                        "snippet": (r.get("content") or "")[:300],
+                    })
+            if kind in ("memory", "both"):
+                for f in rt.memory.recall(query, top_k=top_k):
+                    row["memory"].append({"id": f.get("id"), "fact": f.get("fact"),
+                                          "category": f.get("category")})
+        except Exception as e:
+            row["error"] = str(e)
+        results.append(row)
+
+    return jsonify({"query": query, "projects_searched": len(candidates),
+                    "elapsed_ms": int((time.time() - t0) * 1000),
+                    "results": results, "skipped": skipped})
+
+
+_CONFIG_READ_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "bitbucket", "meta")
+_CONFIG_WRITE_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "meta")
+_CONFIG_REFUSED_KEYS = ("version", "project_path", "permission_tier", "subprojects", "parent")
+
+
+def _config_defaults(section: str) -> dict:
+    from core import config as core_config
+    return {
+        "hybrid": core_config.DEFAULTS,
+        "agents": core_config.AGENT_DEFAULTS,
+        "delegate": core_config.DELEGATE_DEFAULTS,
+        "proxy": core_config.PROXY_DEFAULTS,
+        "bitbucket": core_config.BITBUCKET_DEFAULTS,
+        "mcp": {"mode": "direct"},
+        "meta": {},
+    }.get(section, {})
+
+
+@app.route("/api/projects/config", methods=["GET"])
+def api_projects_config_get():
+    """Structured .c3/config.json read. Query: ?path=...&section=hybrid|agents|..."""
+    path = (request.args.get("path") or "").strip()
+    section = (request.args.get("section") or "").strip().lower()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    cfg_file = resolved / ".c3" / "config.json"
+    if not cfg_file.exists():
+        return jsonify({"error": "not initialized", "needs_init": True}), 409
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"config unreadable: {e}"}), 500
+    if section:
+        if section not in _CONFIG_READ_SECTIONS:
+            return jsonify({"error": f"section must be one of {list(_CONFIG_READ_SECTIONS)}"}), 400
+        return jsonify({"path": str(resolved), "section": section,
+                        "config": cfg.get(section) or {},
+                        "defaults": _config_defaults(section)})
+    return jsonify({"path": str(resolved),
+                    "config": {k: cfg.get(k) for k in _CONFIG_READ_SECTIONS if k in cfg},
+                    "defaults": {k: _config_defaults(k) for k in _CONFIG_READ_SECTIONS}})
+
+
+@app.route("/api/projects/config", methods=["PUT"])
+def api_projects_config_put():
+    """Whitelisted section write: deep-merge, atomic replace, audited on the target."""
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    section = (data.get("section") or "").strip().lower()
+    values = data.get("values")
+    if not path or not section:
+        return jsonify({"error": "path and section are required"}), 400
+    if section not in _CONFIG_WRITE_SECTIONS:
+        return jsonify({"error": f"section must be one of {list(_CONFIG_WRITE_SECTIONS)}"}), 400
+    if not isinstance(values, dict):
+        return jsonify({"error": "values must be an object"}), 400
+    for refused in _CONFIG_REFUSED_KEYS:
+        if refused in values:
+            return jsonify({"error": f"'{refused}' cannot be edited here"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    cfg_file = resolved / ".c3" / "config.json"
+    if not cfg_file.exists():
+        return jsonify({"error": "not initialized", "needs_init": True}), 409
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"config unreadable: {e}"}), 500
+
+    current = cfg.get(section)
+    merged = dict(current) if isinstance(current, dict) else {}
+    defaults = _config_defaults(section)
+    for key, val in values.items():
+        base = merged.get(key, defaults.get(key))
+        if isinstance(base, dict) and isinstance(val, dict):
+            sub = dict(base)
+            sub.update(val)
+            merged[key] = sub
+        elif isinstance(defaults.get(key), bool) and not isinstance(val, bool):
+            merged[key] = str(val).strip().lower() in ("1", "true", "yes", "on")
+        elif (isinstance(defaults.get(key), int) and not isinstance(defaults.get(key), bool)
+              and not isinstance(val, (int, float)) ):
+            try:
+                merged[key] = int(val)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"'{key}' must be an integer"}), 400
+        else:
+            merged[key] = val
+    cfg[section] = merged
+    tmp = cfg_file.with_name("config.json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    os.replace(tmp, cfg_file)
+    try:
+        ActivityLog(str(resolved)).log("hub_config_write", {
+            "section": section, "keys": sorted(values.keys()), "source": "hub"})
+    except Exception:
+        pass
+    return jsonify({"saved": True, "section": section, "config": merged})
+
+
 @app.route("/api/projects/run-mcp", methods=["POST"])
 def api_run_mcp():
     data = request.get_json(force=True) or {}
@@ -1302,6 +1897,7 @@ def api_hub_service_stop():
     def _exit():
         import time
         time.sleep(0.4)
+        _shutdown_runtime_cache()
         os._exit(0)
     threading.Thread(target=_exit, daemon=True).start()
     return jsonify(result)
@@ -1336,6 +1932,7 @@ def api_hub_restart():
         else:
             kwargs["start_new_session"] = True
         subprocess.Popen([sys.executable, "-c", launcher], **kwargs)
+        _shutdown_runtime_cache()
         os._exit(0)
 
     threading.Thread(target=_restart, daemon=True).start()

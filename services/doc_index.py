@@ -160,12 +160,22 @@ class DocIndex:
             "coverage", ".pytest_cache",
         }
 
+        # Designated sub-projects keep their own doc index.
+        try:
+            from services.subprojects import make_excluder
+            _sub_excluded = make_excluder(self.project_path)
+        except Exception:
+            def _sub_excluded(_p):
+                return False
+
         files = []
 
         # Markdown docs
         for ext in ("*.md", "*.mdx", "*.rst", "*.adoc"):
             for fpath in self.project_path.rglob(ext):
                 if any(skip in fpath.parts for skip in skip_dirs):
+                    continue
+                if _sub_excluded(fpath):
                     continue
                 rel = str(fpath.relative_to(self.project_path))
                 files.append((rel, fpath))
@@ -190,6 +200,8 @@ class DocIndex:
                 if not fpath.is_file():
                     continue
                 if fpath.suffix.lower() not in code_exts:
+                    continue
+                if _sub_excluded(fpath):
                     continue
                 rel = str(fpath.relative_to(self.project_path))
                 if rel not in seen:

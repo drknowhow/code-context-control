@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 def handle_memory(action: str, query: str, fact: str, category: str,
                   top_k: int, svc, finalize, fact_id: str = "",
-                  include_scores: bool = False) -> str:
+                  include_scores: bool = False, scope: str = "") -> str:
     if action == "add":
         if not fact or not fact.strip():
             return finalize("c3_memory", {"action": action},
@@ -74,7 +74,23 @@ def handle_memory(action: str, query: str, fact: str, category: str,
             if session_id:
                 precontext = svc.preloader.preload(query, session_id, top_k=top_k)
 
-        if not results and not activated_extra and not precontext:
+        # Sub-project rollup: union linked children's facts (tagged by origin).
+        # On by default via hybrid.subprojects.memory_rollup; scope overrides:
+        # ''/config-default, 'all', '<child name>', 'project'/'self' = off.
+        sub_lines = []
+        scope_clean = (scope or "").strip()
+        if scope_clean not in ("project", "self"):
+            try:
+                from core.config import load_hybrid_config
+                sub_cfg = load_hybrid_config(getattr(svc, "project_path", "")).get("subprojects") or {}
+                if scope_clean or bool(sub_cfg.get("memory_rollup", True)):
+                    from cli.tools.federate import federated_recall
+                    sub_lines = federated_recall(query, top_k, svc,
+                                                 scope=scope_clean or "all")
+            except Exception:
+                sub_lines = []
+
+        if not results and not activated_extra and not precontext and not sub_lines:
             return finalize("c3_memory", {"action": action},
                             f"[memory:recall:{query}] 0 results (backend:{backend})", "0")
         parts = []
@@ -86,7 +102,10 @@ def handle_memory(action: str, query: str, fact: str, category: str,
             parts.append(f"  [graph:activated] {len(activated_extra)} related facts:")
             for f in activated_extra[:3]:
                 parts.append(f"    [{f.get('category','')}] {f['fact'][:80]}")
-        recall_text = f"[recall:{query}] {len(results)} facts (backend:{backend})\n" + "\n".join(parts)
+        parts.extend(sub_lines)
+        recall_text = (f"[recall:{query}] {len(results)} facts (backend:{backend}"
+                       + (f", +{len(sub_lines)} sub-project" if sub_lines else "")
+                       + ")\n" + "\n".join(parts))
 
         if precontext:
             recall_text = precontext + recall_text

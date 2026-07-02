@@ -32,14 +32,17 @@ SKIP_DIRS = {
 class _ChangeHandler(FileSystemEventHandler):
     """Collects file change events."""
 
-    def __init__(self):
+    def __init__(self, excluder=None):
         super().__init__()
         self._lock = threading.Lock()
         self._changes = []
+        self._excluder = excluder  # sub-project folders tracked by their own .c3
 
     def _should_track(self, path: str) -> bool:
         p = Path(path)
         if any(skip in p.parts for skip in SKIP_DIRS):
+            return False
+        if self._excluder is not None and self._excluder(path):
             return False
         return p.suffix.lower() in CODE_EXTENSIONS
 
@@ -86,7 +89,12 @@ class CodeWatcher:
 
     def __init__(self, project_path: str):
         self.project_path = str(Path(project_path).resolve())
-        self._handler = _ChangeHandler()
+        try:
+            from services.subprojects import make_excluder
+            excluder = make_excluder(self.project_path)
+        except Exception:
+            excluder = None
+        self._handler = _ChangeHandler(excluder)
         self._observer = Observer()
         self._observer.daemon = True
         self._file_memory = None

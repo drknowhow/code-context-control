@@ -138,6 +138,33 @@ def build_parser(version: str, parse_cli_ide_arg):
     )
     p_projects.add_argument("--name", default=None, help="Display name (for add)")
 
+    p_sub = subparsers.add_parser("sub", help="Manage sub-projects (linked child .c3 branches)")
+    p_sub.add_argument(
+        "sub_cmd",
+        nargs="?",
+        choices=["add", "list", "remove", "run", "check"],
+        default="list",
+        help="Sub-command (default: list)",
+    )
+    p_sub.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Folder (add), sub-project name/path (remove), or operation update|reindex|health (run)",
+    )
+    p_sub.add_argument("--parent", default=".", help="Parent project path (default: current directory)")
+    p_sub.add_argument("--name", default=None, help="Display name for the sub-project (add)")
+    p_sub.add_argument("--ide", default=None, type=parse_cli_ide_arg, help="IDE for the sub-project init (add)")
+    p_sub.add_argument("--no-reindex-parent", action="store_true", help="Skip the parent reindex after add/remove")
+    p_sub.add_argument("--no-init", action="store_true", help="Link only; skip running init in the folder (add)")
+    p_sub.add_argument("--clear", action="store_true", help="Also wipe the sub-project's .c3 and unregister it (remove; default keeps .c3)")
+    p_sub.add_argument("--yes", action="store_true", help="Skip confirmation prompts")
+    p_sub.add_argument("--include-parent", action="store_true", help="Also run the operation on the parent (run)")
+    p_sub.add_argument("--mcp", action="store_true", help="Also reinstall MCP config on update (run update)")
+    p_sub.add_argument("--fix", action="store_true", help="Repair links from the parent config (check)")
+    p_sub.add_argument("--prune", action="store_true", help="With --fix: drop entries whose folder is gone (check)")
+    p_sub.add_argument("--json", action="store_true", help="Emit JSON output")
+
     p_perms = subparsers.add_parser("permissions",
         help="Manage Claude Code permissions — show | preview <tier> | diff | clean | <tier>")
     p_perms.add_argument("tier", nargs="?", default="show",

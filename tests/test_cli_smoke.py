@@ -114,6 +114,19 @@ class TestCliSmoke(unittest.TestCase):
         # Either help text or interactive intro — must not crash.
         self.assertGreater(len(proc.stdout) + len(proc.stderr), 0)
 
+    def test_sub_help(self):
+        proc = _run("sub", "--help")
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        for token in ("add", "remove", "check", "--parent", "--clear"):
+            self.assertIn(token, proc.stdout)
+
+    def test_sub_list_outside_project_is_friendly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            proc = _run("sub", "list", "--parent", td)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertIn("No .c3 found", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.43.0"
+__version__ = "2.44.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -1051,6 +1051,10 @@ def cmd_init(args):
     # â”€â”€ Non-interactive (--clear) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if getattr(args, "clear", False):
         print("\n[--clear] Wiping C3 files...")
+        parent_link = (load_config(project_path) or {}).get("parent") or {}
+        if parent_link.get("path"):
+            print(f"  [!] This project is a sub-project of {parent_link['path']}")
+            print("      The parent still lists it -- run 'c3 sub check --fix' there.")
         _uninstall_mcp_all(project_path)
         if c3_dir.exists():
             shutil.rmtree(c3_dir)
@@ -5733,6 +5737,137 @@ def cmd_projects(args):
             print(f"  Port {s['port']:>5}  {s.get('project_name', '?'):<25}  {s.get('project_path', '')}")
 
 
+def cmd_sub(args):
+    """Manage sub-projects: designated sub-folders with linked .c3 branches."""
+    parent = str(Path(getattr(args, "parent", ".") or ".").resolve())
+    if not (Path(parent) / CONFIG_DIR).is_dir():
+        print(f"No .c3 found in {parent}. Run 'c3 init' there first.")
+        return
+    # Import after the cheap guard — the registry module needs a resolvable home.
+    from services.subprojects import VALID_CASCADE_OPS, SubprojectManager
+
+    sm = SubprojectManager(parent)
+    sub = getattr(args, "sub_cmd", "list") or "list"
+    target = getattr(args, "target", None)
+    as_json = getattr(args, "json", False)
+
+    if sub == "add":
+        if not target:
+            print("Usage: c3 sub add <folder> [--parent PATH] [--name NAME]")
+            return
+        result = sm.add(
+            target,
+            name=getattr(args, "name", None),
+            ide=getattr(args, "ide", None),
+            run_init=not getattr(args, "no_init", False),
+            reindex_parent=not getattr(args, "no_reindex_parent", False),
+        )
+        if as_json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result.get("added"):
+            print(f"Failed: {result.get('error')}")
+            return
+        verb = "Adopted (existing .c3 kept)" if result.get("adopted") else "Initialized"
+        print(f"\n[OK] {verb}: {result['name']}  ({result['path']})")
+        code = (result.get("parent_reindex") or {}).get("code")
+        if code:
+            print(f"  Parent reindexed: {code.get('files_indexed', '?')} files, "
+                  f"{code.get('chunks_created', '?')} chunks (sub-project now excluded)")
+
+    elif sub == "list":
+        report = sm.reconcile(fix=False)  # report-only consistency pass
+        children = sm.list()
+        if as_json:
+            print(json.dumps({"children": children, "orphans": report.get("orphans", [])}, indent=2))
+            return
+        if not children:
+            print("No sub-projects designated. Use `c3 sub add <folder>`.")
+            return
+        fmt = "{:<22} {:<16} {:>6} {:>7}  {}"
+        print(fmt.format("NAME", "STATUS", "FACTS", "ALERTS", "REL PATH"))
+        print("-" * 76)
+        for c in children:
+            print(fmt.format(
+                (c.get("name") or "?")[:21],
+                c.get("status", "?"),
+                c.get("facts_count", 0),
+                c.get("notification_count", 0),
+                c.get("rel_path", ""),
+            ))
+        issues = sum(1 for c in children if c["status"] != "ok")
+        line = f"\n{len(children)} sub-project(s)"
+        if issues:
+            line += f" -- {issues} with issues (run `c3 sub check --fix`)"
+        if report.get("orphans"):
+            line += f" -- {len(report['orphans'])} registry orphan(s)"
+        print(line)
+
+    elif sub == "remove":
+        if not target:
+            print("Usage: c3 sub remove <name|path> [--clear] [--yes]")
+            return
+        mode = "clear" if getattr(args, "clear", False) else "unlink"
+        if mode == "clear" and not getattr(args, "yes", False):
+            print("This will DELETE the sub-project's .c3 directory and instruction docs.")
+            confirm = input("Type 'clear' to confirm: ").strip().lower()
+            if confirm != "clear":
+                print("Aborted.")
+                return
+        result = sm.remove(target, mode=mode,
+                           reindex_parent=not getattr(args, "no_reindex_parent", False))
+        if as_json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result.get("removed"):
+            print(f"Failed: {result.get('error')}")
+            return
+        print(f"\n[OK] {'Cleared' if mode == 'clear' else 'Unlinked'}: "
+              f"{result.get('name')}  ({result.get('path')})")
+        for w in result.get("warnings", []):
+            print(f"  warning: {w}")
+
+    elif sub == "run":
+        if target not in VALID_CASCADE_OPS:
+            print(f"Usage: c3 sub run {{{'|'.join(VALID_CASCADE_OPS)}}} [--include-parent] [--json]")
+            return
+        result = sm.cascade(target,
+                            include_parent=getattr(args, "include_parent", False),
+                            mcp=getattr(args, "mcp", False))
+        if as_json:
+            print(json.dumps(result, indent=2))
+            return
+        for row in result["results"]:
+            mark = "OK  " if row["ok"] else "FAIL"
+            extra = f" -- {row.get('error')}" if row.get("error") else ""
+            print(f"  [{mark}] {row['name']:<22} {row['elapsed_ms']:>6}ms{extra}")
+        s = result["summary"]
+        print(f"\n{target}: {s['ok']}/{s['total']} ok, {s['failed']} failed")
+
+    elif sub == "check":
+        result = sm.reconcile(fix=getattr(args, "fix", False),
+                              prune=getattr(args, "prune", False))
+        if as_json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result["children"] and not result["orphans"] and not result["pruned"]:
+            print("No sub-projects designated.")
+            return
+        for c in result["children"]:
+            print(f"  [{c['status']:<16}] {c.get('name') or '?':<22} {c.get('rel_path', '')}")
+        for o in result["orphans"]:
+            print(f"  [orphan_registry ] {o}")
+        for f in result.get("fixed", []):
+            print(f"  fixed: {f.get('action')} -> {f.get('path') or f.get('rel_path')}")
+        for p in result.get("pruned", []):
+            print(f"  pruned: {p.get('rel_path')}")
+        if result["ok"]:
+            print("\nAll links consistent.")
+        else:
+            hint = "" if getattr(args, "fix", False) else " Run `c3 sub check --fix` to repair."
+            print(f"\nIssues found.{hint}")
+
+
 def cmd_session_benchmark(args):
     """Run real-world session workflow benchmark."""
     if getattr(args, "command", "") == "session-benchmark":
@@ -6577,6 +6712,7 @@ def main():
         "terse": cmd_terse,
         "ui": cmd_ui,
         "projects": cmd_projects,
+        "sub": cmd_sub,
         "hub": cmd_hub,
         "bitbucket": cmd_bitbucket,
         "oracle": cmd_oracle,

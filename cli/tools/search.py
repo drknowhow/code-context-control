@@ -35,9 +35,24 @@ def _cap_response(resp: str) -> str:
 
 
 def handle_search(query: str, action: str, top_k: int, max_tokens: int,
-                  svc, finalize, maybe_facts, prefetch: bool = False) -> str:
+                  svc, finalize, maybe_facts, prefetch: bool = False,
+                  scope: str = "") -> str:
     top_k = max(1, min(int(top_k), 10))
     max_tokens = min(max(200, int(max_tokens)), _RESPONSE_TOKEN_CAP)
+
+    # Sub-project fan-out: scope='all' (parent + children) or '<child name>'.
+    scope = (scope or "").strip()
+    if scope and scope not in ("project", "self"):
+        try:
+            from core.config import load_hybrid_config
+            sub_cfg = load_hybrid_config(getattr(svc, "project_path", "")).get("subprojects") or {}
+            fanout_enabled = bool(sub_cfg.get("search_fanout", True))
+        except Exception:
+            fanout_enabled = True
+        if fanout_enabled:
+            from cli.tools.federate import federated_search
+            return federated_search(query, action, top_k, max_tokens, svc,
+                                    finalize, maybe_facts, scope)
 
     if action == "exact":
         return _exact_search(query, top_k, max_tokens, svc, finalize)

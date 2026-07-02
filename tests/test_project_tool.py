@@ -283,5 +283,88 @@ class TestHandleProject(unittest.TestCase):
         sentinel.assert_not_called()
 
 
+# ── Sub-project ops (v2.44.0) ──────────────────────────────────────────────
+
+
+class TestSubprojectOps(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.reg_file = self.base / "projects.json"
+        self.parent = _make_c3_project(self.base, "parent")
+        (self.parent / ".c3" / "config.json").write_text(json.dumps({
+            "meta": {"name": "parent"},
+            "subprojects": [{"name": "api", "rel_path": "api", "added_at": "x"}],
+        }), encoding="utf-8")
+        child = self.parent / "api"
+        (child / ".c3").mkdir(parents=True)
+        (child / ".c3" / "config.json").write_text(json.dumps(
+            {"parent": {"name": "parent", "path": str(self.parent.resolve())}}),
+            encoding="utf-8")
+        _write_registry(self.reg_file, [
+            {"name": "parent", "path": str(self.parent)},
+            {"name": "api", "path": str(child),
+             "parent_path": str(self.parent.resolve())},
+        ])
+        from services import project_manager as pm_mod
+        self._patches = [
+            mock.patch.object(pr, "_PROJECTS_FILE", self.reg_file),
+            mock.patch.object(pm_mod, "_PROJECTS_FILE", self.reg_file),
+            mock.patch.object(pm_mod, "_REGISTRY_FILE", self.base / "registry.json"),
+        ]
+        for p in self._patches:
+            p.start()
+        self.home = _StubSvc(str(self.base / "home"))
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def test_subprojects_tree_renders(self):
+        finalize, _ = _captured_finalize()
+        resp = tool.handle_project("subprojects", self.home, finalize, project="parent")
+        self.assertIn("Sub-projects of parent", resp)
+        self.assertIn("api", resp)
+        self.assertIn("rollup:", resp)
+
+    def test_sub_add_blocked_without_allow_write(self):
+        finalize, _ = _captured_finalize()
+        resp = tool.handle_project("sub_add", self.home, finalize,
+                                   project="parent", target="newsub")
+        self.assertIn("[c3_project:blocked]", resp)
+
+    def test_sub_remove_blocked_without_allow_write(self):
+        finalize, _ = _captured_finalize()
+        resp = tool.handle_project("sub_remove", self.home, finalize,
+                                   project="parent", target="api")
+        self.assertIn("[c3_project:blocked]", resp)
+
+    def test_sub_cascade_update_blocked_without_allow_write(self):
+        finalize, _ = _captured_finalize()
+        resp = tool.handle_project("sub_cascade", self.home, finalize,
+                                   project="parent", mode="update")
+        self.assertIn("[c3_project:blocked]", resp)
+
+    def test_sub_cascade_health_is_read_only(self):
+        finalize, _ = _captured_finalize()
+        with mock.patch("cli.c3._check_c3_health",
+                        return_value={"healthy": True, "issues": []}):
+            resp = tool.handle_project("sub_cascade", self.home, finalize,
+                                       project="parent", mode="health")
+        self.assertIn("1/1 ok", resp)
+
+    def test_sub_remove_unlink_with_flag(self):
+        finalize, _ = _captured_finalize()
+        with mock.patch("services.subprojects.SubprojectManager._reindex_parent",
+                        return_value={}):
+            resp = tool.handle_project("sub_remove", self.home, finalize,
+                                       project="parent", target="api",
+                                       allow_write=True)
+        self.assertIn("Unlinked", resp)
+        cfg = json.loads((self.parent / ".c3" / "config.json").read_text())
+        self.assertNotIn("subprojects", cfg)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,73 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.0] - 2026-07-02
+
+### Sub-projects: linked child `.c3` branches under one parent
+
+- **Designate sub-folders as governed sub-projects.** `c3 sub add <folder>`
+  runs a full init in the folder (or *adopts* an existing `.c3`) and links it
+  three ways: the parent's `.c3/config.json` gains a `subprojects` list
+  (POSIX `rel_path` is the source of truth), the child config gains a `parent`
+  back-link, and the child's registry entry in `~/.c3/projects.json` gains
+  `parent_path`. New `services/subprojects.py` (`SubprojectManager`) owns
+  designation, validation (depth-1 only, containment enforced, adopt vs init),
+  unlink/clear removal, consistency reconciliation (`c3 sub check [--fix
+  --prune]` — statuses `ok/missing_folder/missing_c3/backlink_broken/
+  unregistered` + registry-orphan cleanup), and cascade operations
+  (`c3 sub run update|reindex|health [--include-parent] [--json]`).
+- **Parent index excludes children.** Designated folders are skipped by the
+  parent's code index, doc index, compression dictionary, and file watcher via
+  relative-path-prefix matching (a child named `api` does *not* shadow a
+  root-level `api/` sibling). The parent reindexes automatically on
+  add/remove; `c3 init --clear` on a child warns about the remaining parent
+  link. `transfer_project` repairs child links after a move.
+- **Federated search & memory rollup.** `c3_search(scope='all')` fans out to
+  linked children (per-scope sections `=== [sub:name] ===`, 60/40 parent/child
+  token split, per-child failures isolated); `scope='<name>'` targets one
+  child. `c3_memory` recall unions child facts tagged `[sub:name][category]`
+  (on by default; `hybrid.subprojects.memory_rollup: false` or
+  `scope='project'` disables). `c3_project` gains `subprojects` (tree +
+  rollup), `sub_add`, `sub_remove`, and `sub_cascade` actions (writes require
+  `allow_write=true` and audit to the target's activity log). New
+  `hybrid.subprojects` config block; runtime cache default 4 → 8
+  (`C3_RUNTIME_CACHE_SIZE` env override).
+- **Hub endpoints.** `GET /api/projects/subprojects` (tree + rollup),
+  `POST …/add|remove|validate|reconcile`, async `POST …/cascade` +
+  `status`/`cancel` polling; `GET /api/projects` entries now carry
+  `parent_path`/`is_parent`; removing a parent reports `orphaned_children`.
+
+### Project Hub v2: modular UI + full project capabilities
+
+- **Monolith retired.** The 187 KB `hub.html` is replaced at `/` by a modular
+  React bundle (`cli/hub_ui.html` shell + `cli/hub_ui/*` components,
+  concatenated server-side exactly like the per-project UI) sharing
+  `cli/ui/theme.js` design tokens — one design system across both UIs. The old
+  hub remains frozen at `/legacy` for one release as an escape hatch.
+- **Modern/minimal redesign.** Slim project rows (status dot, version chip,
+  alert chip, one mono meta line, primary action, kebab menu) — everything
+  else moved into a **drill-in panel** (click a project): Overview, Memory,
+  Ledger, Sessions, Health, Budget, Config, and MCP tabs, served without
+  launching the per-project UI server (`POST /api/projects/inspect`, backed by
+  a hub-owned in-process runtime LRU; size via hub config
+  `runtime_cache_size`).
+- **Cross-project search.** Ctrl/Cmd-K overlay queries code + memory across
+  all registered projects (`POST /api/search/global`, per-project buckets,
+  broken indexes isolated per row, 10-project cap per request).
+- **Structured config editing.** `GET/PUT /api/projects/config` edits
+  whitelisted `.c3/config.json` sections (hybrid/agents/delegate/proxy/mcp/
+  meta) with typed controls, defaults for reset, atomic writes, and a
+  `hub_config_write` audit event on the target project. Protected keys
+  (`version`, `project_path`, `permission_tier`, `subprojects`, `parent`)
+  are refused.
+- **Sub-project tree.** Parents render as collapsible trees with client-side
+  rollup chips; designate via a FolderPicker (`POST /api/projects/browse` +
+  validate pre-check); promote/unlink from the child row; cascade
+  update/reindex/health with progress toasts.
+- **Fixes.** Hub config no longer silently drops `sidebar_group` /
+  `sidebar_collapsed`; new `runtime_cache_size` key; wheel packaging gains
+  explicit `cli/ui/*` + `cli/hub_ui/*` globs.
+
 ## [2.43.0] - 2026-07-02
 
 ### Ghost-file generation fixed at the source
