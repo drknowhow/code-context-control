@@ -133,9 +133,11 @@ claude-companion - v2/
     __init__.py
     config.py
     mcp_oracle.py
-    oracle.html
+    oracle.html        (legacy UI, served at /legacy for one release)
+    oracle_ui.html     (UI shell; JS concatenated from ui/ at serve time)
     oracle_server.py
-    services/ (16 files)
+    services/ (18 files)
+    ui/ (12 files + chat/ 6 files)
   oracle-guide/
     README.md
     api-reference.md

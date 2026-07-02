@@ -406,5 +406,146 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
 
 
+class TestDelegateCliBackends(unittest.TestCase):
+    """Wave 2: agents with codex/gemini/claude/auto backends route through
+    cli.tools.delegate against a read-only shim of the target project."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.proj = str((Path(self.tmp.name) / "proj").resolve())
+        (Path(self.proj) / ".c3").mkdir(parents=True)
+
+        self.agent_cfg = {
+            "id": "codex_agent", "name": "Codex Agent", "active": True,
+            "system_prompt": "You are precise.", "model": "m",
+            "backend": "codex", "task_type": "ask",
+        }
+        patcher = mock.patch.object(
+            ce, "load_config", return_value={"agents": [dict(self.agent_cfg)]}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.sink: queue.Queue = queue.Queue()
+        ce._agent_tls.agent_sink = self.sink
+        ce._agent_tls.parent_tool_id = "p1"
+        self.addCleanup(lambda: setattr(ce._agent_tls, "agent_sink", None))
+        self.addCleanup(lambda: setattr(ce._agent_tls, "parent_tool_id", None))
+        self.addCleanup(lambda: setattr(ce._agent_tls, "conv_state", None))
+
+        class _Scanner:
+            def discover(inner, force=False):
+                return [{"path": self.proj, "has_c3": True}]
+
+        self.runtime = mock.Mock()
+        self.runtime.delegate_config = {"enabled": True, "codex_memory_bridge": True,
+                                        "codex_default_sandbox": "workspace-write"}
+        bridge = mock.Mock()
+        bridge.get_runtime = mock.Mock(return_value=self.runtime)
+
+        self.engine = ChatEngine(
+            bridge=_FakeBridge([], supports=False),
+            reader=mock.Mock(), writer=mock.Mock(), cross_memory=mock.Mock(),
+            health_checker=mock.Mock(), insight_engine=mock.Mock(),
+            scanner=_Scanner(), store=_FakeStore(), c3_bridge=bridge,
+        )
+
+        self.delegate_calls: list[dict] = []
+
+        def fake_handle_delegate(task, task_type, context, file_path, svc,
+                                 finalize, backend="ollama"):
+            self.delegate_calls.append({
+                "task": task, "task_type": task_type, "context": context,
+                "svc": svc, "backend": backend,
+            })
+            return f"[delegate:{backend}] done"
+
+        import cli.tools.delegate as delegate_mod
+        patcher = mock.patch.object(delegate_mod, "handle_delegate", fake_handle_delegate)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_codex_backend_routes_through_shim(self):
+        result = self.engine._tool_delegate_task("codex_agent", "do it",
+                                                 project_path=self.proj)
+        self.assertEqual(result["backend"], "codex")
+        self.assertEqual(result["project"], self.proj)
+        self.assertIn("done", result["result"])
+        call = self.delegate_calls[0]
+        self.assertEqual(call["backend"], "codex")
+        self.assertEqual(call["context"], "You are precise.")
+        # The shim is the write-suppression contract:
+        shim = call["svc"]
+        dcfg = shim.delegate_config
+        self.assertIs(dcfg["codex_memory_bridge"], False)
+        self.assertIs(dcfg["gemini_memory_bridge"], False)
+        self.assertEqual(dcfg["codex_default_sandbox"], "read-only")
+        self.assertIs(shim.notifications, None)
+        self.assertIs(dcfg["enabled"], True)  # target's own keys preserved
+
+    def test_missing_project_gives_instructive_error(self):
+        result = self.engine._tool_delegate_task("codex_agent", "do it")
+        self.assertIn("project_path", result["error"])
+        self.assertEqual(self.delegate_calls, [])
+
+    def test_focused_project_fallback(self):
+        ce._agent_tls.conv_state = {"focused_projects": [{"path": self.proj}]}
+        result = self.engine._tool_delegate_task("codex_agent", "do it")
+        self.assertEqual(result["project"], self.proj)
+        self.assertEqual(len(self.delegate_calls), 1)
+
+    def test_unregistered_project_rejected(self):
+        rogue = str((Path(self.tmp.name) / "rogue").resolve())
+        (Path(rogue) / ".c3").mkdir(parents=True)
+        result = self.engine._tool_delegate_task("codex_agent", "do it",
+                                                 project_path=rogue)
+        self.assertIn("error", result)
+        self.assertEqual(self.delegate_calls, [])
+
+    def test_unknown_backend_errors(self):
+        self.agent_cfg["backend"] = "warp-drive"
+        with mock.patch.object(ce, "load_config",
+                               return_value={"agents": [dict(self.agent_cfg)]}):
+            result = self.engine._tool_delegate_task("codex_agent", "x")
+        self.assertIn("unknown backend", result["error"])
+
+    def test_lifecycle_events_emitted(self):
+        self.engine._tool_delegate_task("codex_agent", "do it", project_path=self.proj)
+        kinds = []
+        while True:
+            try:
+                kinds.append(self.sink.get_nowait()["type"])
+            except queue.Empty:
+                break
+        self.assertIn("agent_start", kinds)
+        self.assertIn("agent_done", kinds)
+
+
+class TestOracleDelegateRuntimeShim(unittest.TestCase):
+    def test_passthrough_and_overrides(self):
+        from oracle.services.c3_bridge import _OracleDelegateRuntime
+
+        class _Runtime:
+            project_path = "C:/proj"
+            delegate_config = {"enabled": True, "codex_timeout": 99}
+            notifications = "REAL-STORE"
+            ollama_client = "CLIENT"
+
+        cb_msgs = []
+        shim = _OracleDelegateRuntime(_Runtime(), progress_cb=cb_msgs.append)
+        self.assertEqual(shim.project_path, "C:/proj")       # passthrough
+        self.assertEqual(shim.ollama_client, "CLIENT")       # passthrough
+        self.assertIsNone(shim.notifications)                # suppressed
+        dcfg = shim.delegate_config
+        self.assertIs(dcfg["codex_memory_bridge"], False)
+        self.assertIs(dcfg["gemini_memory_bridge"], False)
+        self.assertEqual(dcfg["codex_default_sandbox"], "read-only")
+        self.assertEqual(dcfg["codex_timeout"], 99)          # preserved
+        shim._agent_progress_cb("hello")
+        self.assertEqual(cb_msgs, ["hello"])
+
+
 if __name__ == "__main__":
     unittest.main()

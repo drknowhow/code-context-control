@@ -4,6 +4,122 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.49.0] - Unreleased
+
+### Oracle Wave 3: UI v3 concat bundle + `c3 oracle serve` + docs refresh
+
+#### UI architecture
+
+- **The 4,181-line `oracle.html` monolith is gone.** The dashboard now
+  follows the hub v2 concat architecture: an `oracle_ui.html` shell (CSS +
+  markup + `__C3_ORACLE_SCRIPTS__` token) plus **18 `oracle/ui/` modules**
+  split at section boundaries (core, busy, theme_tabs, crossgraph, header,
+  projects, insights, activity, suggestions, settings, agents,
+  `chat/{markdown,conversations,stream_renderer,toolbar,input,send}`, and
+  `app.js` — the init IIFE — last), concatenated server-side by
+  `_build_oracle_html()` with per-file markers. `GET /` serves the cached
+  bundle; **`GET /legacy` serves the frozen monolith for one release**, then
+  it will be removed. Extraction was verbatim (proven by a line-multiset
+  diff: the only delta is the `ORACLE_BUILD_TIME` bump) — zero behavior
+  change by construction.
+- Deliberate deviation from the original Wave-3 design: **no React/babel
+  runtime**. The Oracle UI logic is entirely vanilla imperative JS; the
+  transferable part of the hub pattern is the module structure + build
+  pipeline, and wrapping unowned vanilla code in a framework would have
+  added a CDN/transpile failure surface for zero owned UI.
+
+#### CLI
+
+- **`c3 oracle serve`** (alias `start`, `--port`, `--no-browser`) launches
+  the Oracle dashboard — no more `python oracle/oracle_server.py` required
+  (it still works). Lazy import keeps bare `c3` startup fast.
+
+#### Packaging
+
+- `pyproject.toml` package-data globs for `oracle/ui/*.js` +
+  `oracle/ui/chat/*.js` (the `"*"` globs only match a package's top level);
+  wheel inspection confirms all 18 modules + shell + legacy ship.
+
+#### Docs
+
+- `oracle-guide/` caught up a full product generation: chat subsystem + SSE
+  event protocol, C3Bridge, federated graph, security model (session cookie
+  + write gate), the 8-tab bundle UI, all missing config keys (incl. Wave
+  1–2 additions), missing endpoint families (`/api/apikey/*`, `/api/chat/*`,
+  `/api/graph/federated/*`, `/api/activity/digest/latest`), Discovery tool
+  list (c3_project/c3_artifacts/scope), and changelog entries v1.3.0 (Waves
+  1–2) / v1.4.0 (Wave 3) with a catch-up block for the previously
+  undocumented v2.32–v2.38 era features.
+
+## [2.48.0] - Unreleased
+
+### Oracle Wave 2: capability catch-up
+
+#### New Discovery/chat tools
+
+- **`c3_project`** (read tier) — cross-project operations by registered
+  project NAME or path: registry listing, project info, sub-project tree, and
+  read-only proxied ops (search/read/compress/status/memory/impact/edits/
+  validate). Deny-by-default allowlist; the wrapper signature has no
+  `allow_write` and no write-op params, and the registry drops undeclared
+  keys, so write verbs cannot reach `handle_project` from any transport.
+  `scan` is excluded (it reveals unregistered `.c3` projects, outside the
+  Oracle's discovered-project trust boundary), and every resolution is
+  re-validated against discovered projects (the resolver alone accepts any
+  on-disk `.c3` folder).
+- **`c3_artifacts`** (read tier) — agent-config version history for one
+  project: list/history/show/diff/status. `scan` (mutates the target's
+  manifest despite the handler's READ_ACTIONS listing) and `restore` are
+  blocked. Both tools appear on MCP + OpenAPI automatically via `TOOL_SPECS`.
+
+#### Sub-project awareness (v2.44 parent/child model)
+
+- `ProjectScanner` carries the registry's `parent_path` (previously dropped)
+  and enriches every project with `is_subproject` / `parent_path` (child
+  config back-link as fallback; broken links degrade to top-level) /
+  `subproject_rel_paths` / `subproject_count` — `/api/projects` and the
+  `list_projects` tool surface hierarchy for free.
+- `FederatedGraph` gains a **serve-time `parent_child` overlay** applied on
+  both fresh builds and cache hits: hierarchy lives in `.c3/config.json`,
+  which the facts-mtime cache key never sees, so it is recomputed per serve
+  and never baked into the cache file. Project-level links only.
+- `c3_search_cross` / `c3_edits_cross` gain an optional **`scope`** param:
+  `''` = all projects, `'top'` = top-level only, or a project name/path =
+  that project plus its direct sub-projects.
+
+#### Scheduled activity digest
+
+- The review loop now emits the cross-project activity digest when due —
+  config-gated (`digest_enabled` default **false**: current behavior
+  preserved), live-read each cycle (no restart to toggle), pre-stamped
+  `last_digest_at` (no double-digest from `run_now`), persisted to
+  `~/.c3/oracle/activity_digests/<date>.json` + `latest.json` with retention
+  pruning (`digest_retention_days`) and an optional one-line JSONL notify
+  sink (`digest_notify_file`). `digest_narrate` stays opt-in (cloud LLM
+  call). New `GET /api/activity/digest/latest`; the Activity tab shows a
+  last-scheduled-digest banner and Settings gains the toggle + interval.
+
+#### Multi-backend agents
+
+- `delegate_task` agents gain a per-agent **backend**: `ollama` (default,
+  unchanged nested tool loop) or `codex`/`gemini`/`claude`/`auto` routed
+  through `cli.tools.delegate` against `_OracleDelegateRuntime` — a read-only
+  shim of the target project's runtime that forces the codex/gemini memory
+  bridges off, suppresses NotificationStore writes, and pins the codex
+  sandbox to read-only. CLI backends require a concrete registered project
+  (explicit `project_path` → conversation's focused project → instructive
+  error; never silently picked) and honor the target project's own
+  backend-enablement config. Agent modal gains a backend selector.
+
+#### Tests
+
+- 50 new tests: bridge wrapper contracts (`test_c3_bridge_project_artifacts.py`,
+  incl. a pin that the Oracle's blocked-memory set equals
+  `cli.tools.project._MEMORY_WRITE`), registry allow_write kill-switch pins,
+  sub-project enrichment + scoping (`test_oracle_subproject_awareness.py`),
+  hierarchy overlay on fresh AND cached graph builds, digest scheduling
+  (`test_review_digest.py`), and CLI-backend delegate routing + shim contract.
+
 ## [2.47.0] - Unreleased
 
 ### Oracle Wave 1: security + core hardening/unification

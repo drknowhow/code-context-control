@@ -93,6 +93,8 @@ def _init_services():
     _chat_store = ChatStore()
     _c3_bridge = C3Bridge(scanner=_scanner)
     _federated = FederatedGraph(reader=_reader, cross_memory=_cross_memory, ollama_bridge=_bridge)
+    # Reporter before ReviewAgent: the review loop emits the scheduled digest.
+    _activity_reporter = ActivityReporter(scanner=_scanner, ollama_bridge=_bridge)
     _agent = ReviewAgent(
         scanner=_scanner,
         reader=_reader,
@@ -102,8 +104,8 @@ def _init_services():
         writer=_writer,
         interval=int(_cfg.get("review_interval_seconds", 1800)),
         federated_graph=_federated,
+        activity_reporter=_activity_reporter,
     )
-    _activity_reporter = ActivityReporter(scanner=_scanner, ollama_bridge=_bridge)
     _chat_engine = ChatEngine(
         bridge=_bridge,
         reader=_reader,
@@ -185,11 +187,71 @@ def _local_write_guard():
 
 
 # ── Static ────────────────────────────────────────────────
+
+# JS load order for the concatenated Oracle UI build (mirrors cli/hub_server.py).
+# One shared script scope: function declarations hoist across files, and
+# app.js (the init IIFE) must stay LAST.
+_ORACLE_JS_FILES = [
+    "ui/core.js",
+    "ui/busy.js",
+    "ui/theme_tabs.js",
+    "ui/crossgraph.js",
+    "ui/header.js",
+    "ui/projects.js",
+    "ui/insights.js",
+    "ui/activity.js",
+    "ui/suggestions.js",
+    "ui/settings.js",
+    "ui/agents.js",
+    "ui/chat/markdown.js",
+    "ui/chat/conversations.js",
+    "ui/chat/stream_renderer.js",
+    "ui/chat/toolbar.js",
+    "ui/chat/input.js",
+    "ui/chat/send.js",
+    "ui/app.js",
+]
+
+
+def _build_oracle_html() -> str:
+    """Concatenate oracle_ui.html shell + all JS module files into one response."""
+    oracle_dir = Path(__file__).parent
+    shell_path = oracle_dir / "oracle_ui.html"
+    if not shell_path.exists():
+        return "<h1>Oracle UI not found.</h1>"
+
+    shell = shell_path.read_text(encoding="utf-8")
+
+    js_parts = []
+    for rel in _ORACLE_JS_FILES:
+        js_path = oracle_dir / rel
+        if js_path.exists():
+            js_parts.append(f"// ═══ {rel} ═══\n" + js_path.read_text(encoding="utf-8"))
+
+    return shell.replace("/* __C3_ORACLE_SCRIPTS__ */", "\n\n".join(js_parts))
+
+
+# Cache the built HTML (built on first request; cleared on server restart).
+_oracle_html_cache: str | None = None
+
+
 @app.route("/")
 def index():
-    resp = send_from_directory(os.path.dirname(__file__), "oracle.html")
+    global _oracle_html_cache
+    if _oracle_html_cache is None:
+        _oracle_html_cache = _build_oracle_html()
+    resp = Response(_oracle_html_cache, mimetype="text/html")
     # Issue the dashboard session cookie only to loopback browsers; remote
     # viewers (LAN bind) can read GET dashboards but cannot mutate.
+    if local_session.is_loopback(request.remote_addr):
+        local_session.attach_cookie(resp)
+    return resp
+
+
+@app.route("/legacy")
+def index_legacy():
+    """Frozen pre-bundle Oracle UI — escape hatch for one release, then removed."""
+    resp = send_from_directory(os.path.dirname(__file__), "oracle.html")
     if local_session.is_loopback(request.remote_addr):
         local_session.attach_cookie(resp)
     return resp
@@ -668,6 +730,23 @@ def api_chat_conversation_state(conv_id):
 
 
 # ── Activity digest (Oracle UI) ───────────────────────────
+@app.route("/api/activity/digest/latest", methods=["GET"])
+def api_activity_digest_latest():
+    """Most recent SCHEDULED digest (written by the review loop), or null.
+
+    On-demand digests via /api/activity/digest are not persisted here; this
+    serves ~/.c3/oracle/activity_digests/latest.json.
+    """
+    latest = ORACLE_DIR / "activity_digests" / "latest.json"
+    try:
+        if latest.is_file():
+            return Response(latest.read_text(encoding="utf-8"),
+                            mimetype="application/json")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"digest": None, "generated_at": None})
+
+
 @app.route("/api/activity/digest", methods=["GET"])
 def api_activity_digest():
     """Cross-project activity digest for the Oracle UI.

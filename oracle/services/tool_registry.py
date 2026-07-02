@@ -157,12 +157,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "c3_search_cross",
         "tier": TIER_READ,
-        "description": "Code-intelligence search across ALL projects. No project_path needed.",
+        # scope: '' = all projects, 'top' = top-level only, or a project
+        # name/path = that project plus its sub-projects.
+        "description": "Code-intelligence search across ALL projects (or a scoped subset). No project_path needed.",
         "parameters": _obj(
             {
                 "query": {"type": "string", "description": "What to search for."},
                 "action": {"type": "string", "default": "code", "description": "Search mode (code|exact|files|semantic)."},
                 "top_k": {"type": "integer", "default": 3, "description": "Max hits."},
+                "scope": {"type": "string", "default": "", "description": "'' = all projects, 'top' = top-level projects only, or a project name/path = that project plus its sub-projects."},
             },
             ["query"],
         ),
@@ -260,13 +263,84 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "c3_edits_cross",
         "tier": TIER_READ,
-        "description": "Query edit ledgers across ALL projects. No project_path needed.",
+        "description": "Query edit ledgers across ALL projects (or a scoped subset). No project_path needed.",
         "parameters": _obj(
             {
                 "action": {"type": "string", "default": "history", "description": "history|stats."},
                 "tag": {"type": "string", "default": "", "description": "Optional tag filter."},
                 "limit": {"type": "integer", "default": 20, "description": "Max records."},
+                "scope": {"type": "string", "default": "", "description": "'' = all projects, 'top' = top-level projects only, or a project name/path = that project plus its sub-projects."},
             }
+        ),
+    },
+    {
+        # NOTE: no allow_write property — the bridge signature has no write-op
+        # params and call_tool drops undeclared keys, so write verbs can never
+        # reach handle_project from any transport.
+        "name": "c3_project",
+        "tier": TIER_READ,
+        "description": (
+            "Cross-project operations by registered project NAME or path: registry listing, "
+            "project info, sub-project tree, and read-only proxied ops (search/read/compress/"
+            "status/memory/impact/edits/validate). Read-only: registration, sub-project "
+            "changes, edit and shell actions are blocked — use suggest_action for writes."
+        ),
+        "parameters": _obj(
+            {
+                "action": {
+                    "type": "string", "default": "list",
+                    "enum": ["list", "info", "subprojects", "search", "read", "compress",
+                             "status", "memory", "impact", "edits", "validate"],
+                    "description": "Operation to run.",
+                },
+                "project": {"type": "string", "default": "",
+                            "description": "Registered project name or absolute path (required for all actions except 'list')."},
+                "query": {"type": "string", "default": "", "description": "Search/memory query."},
+                "file_path": {"type": "string", "default": "", "description": "Target file for read/compress/validate."},
+                "symbols": {"type": "string", "default": "", "description": "Symbol names for action='read'."},
+                "lines": {"type": "string", "default": "", "description": "Line range for action='read'."},
+                "mode": {"type": "string", "default": "map", "description": "Compress mode."},
+                "view": {"type": "string", "default": "health", "description": "Status view (budget|health|sessions)."},
+                "top_k": {"type": "integer", "default": 5, "description": "Max search results."},
+                "max_tokens": {"type": "integer", "default": 1200, "description": "Search token budget."},
+                "search_action": {"type": "string", "default": "code", "description": "Search mode for action='search'."},
+                "mem_action": {"type": "string", "default": "recall", "description": "Read-only memory actions only (recall|query|list|score|graph|trends|index|fetch|export)."},
+                "category": {"type": "string", "default": "", "description": "Memory category filter."},
+                "fact_id": {"type": "string", "default": "", "description": "Fact id(s) for mem_action='fetch'."},
+                "edits_action": {"type": "string", "default": "history", "description": "history|versions|stats."},
+                "file": {"type": "string", "default": "", "description": "Edit-ledger file filter."},
+                "tag": {"type": "string", "default": "", "description": "Edit-ledger tag filter."},
+                "limit": {"type": "integer", "default": 50, "description": "Max records."},
+                "target": {"type": "string", "default": "", "description": "Symbol for action='impact'."},
+            },
+            ["action"],
+        ),
+    },
+    {
+        "name": "c3_artifacts",
+        "tier": TIER_READ,
+        "description": (
+            "Agent-config artifact tracking for one project (read-only): inventory, version "
+            "history, show a stored version, diff versions, status. Covers instruction docs "
+            "(CLAUDE.md/AGENTS.md), settings/hooks, MCP configs, skills/agents/commands. "
+            "'scan' and 'restore' are blocked in Oracle (they mutate the target project)."
+        ),
+        "parameters": _obj(
+            {
+                "project_path": _PROJECT_PATH,
+                "action": {
+                    "type": "string", "default": "list",
+                    "enum": ["list", "history", "show", "diff", "status"],
+                    "description": "Read-only artifact view.",
+                },
+                "artifact": {"type": "string", "default": "", "description": "Artifact id, unique prefix, or path (for show/history/diff)."},
+                "cls": {"type": "string", "default": "", "description": "Class filter (instructions|settings|mcp|skills|...)."},
+                "provider": {"type": "string", "default": "", "description": "Provider filter (claude|gemini|codex|...)."},
+                "version": {"type": "integer", "default": 0, "description": "Version for show/diff (0 = latest)."},
+                "against": {"type": "integer", "default": 0, "description": "Baseline version for diff (0 = live file)."},
+                "limit": {"type": "integer", "default": 50, "description": "Max history events."},
+            },
+            ["project_path"],
         ),
     },
     # ── action tier: safe, non-code-edit ──
@@ -295,11 +369,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "delegate_task",
         "tier": TIER_ACTION,
-        "description": "Delegate a sub-task to a configured Oracle agent and return its result.",
+        "description": (
+            "Delegate a sub-task to a configured Oracle agent and return its result. "
+            "Agents may run on Ollama (default) or a CLI backend (codex/gemini/claude/auto) "
+            "inside a registered project's workspace, read-only."
+        ),
         "parameters": _obj(
             {
                 "agent_id": {"type": "string", "description": "ID of an active Oracle agent."},
                 "task": {"type": "string", "description": "Detailed instructions for the agent."},
+                "project_path": {"type": "string", "default": "", "description": "Required when the agent's backend is codex/gemini/claude/auto (CLI backends run inside a registered project)."},
             },
             ["agent_id", "task"],
         ),

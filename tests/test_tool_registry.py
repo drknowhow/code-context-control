@@ -81,6 +81,38 @@ class TestToolRegistry(unittest.TestCase):
         name, _args = self.exec.calls[-1]
         self.assertEqual(name, "activity_report")
 
+    def test_project_and_artifacts_are_read_tier(self):
+        read_only = set(ToolRegistry(self.exec, max_tier=TIER_READ).tool_names())
+        self.assertIn("c3_project", read_only)
+        self.assertIn("c3_artifacts", read_only)
+
+    def test_no_spec_declares_allow_write(self):
+        # The write-verb kill switch: allow_write must not exist as a declared
+        # parameter anywhere, so call_tool's undeclared-key drop strips it.
+        for spec in TOOL_SPECS:
+            self.assertNotIn("allow_write", spec["parameters"]["properties"],
+                             f"{spec['name']} must not declare allow_write")
+
+    def test_call_tool_drops_allow_write_for_c3_project(self):
+        reg = ToolRegistry(self.exec, max_tier=TIER_READ)
+        out = reg.call_tool("c3_project", {"action": "list", "allow_write": True})
+        self.assertTrue(out["ok"])
+        _name, args = self.exec.calls[-1]
+        self.assertNotIn("allow_write", args)
+
+    def test_project_enum_excludes_write_and_scan_verbs(self):
+        spec = next(s for s in TOOL_SPECS if s["name"] == "c3_project")
+        allowed = set(spec["parameters"]["properties"]["action"]["enum"])
+        for forbidden in ("edit", "shell", "register", "unregister", "scan",
+                          "sub_add", "sub_remove", "sub_cascade", "filter"):
+            self.assertNotIn(forbidden, allowed)
+
+    def test_artifacts_enum_excludes_scan_and_restore(self):
+        spec = next(s for s in TOOL_SPECS if s["name"] == "c3_artifacts")
+        allowed = set(spec["parameters"]["properties"]["action"]["enum"])
+        self.assertNotIn("scan", allowed)
+        self.assertNotIn("restore", allowed)
+
     def test_openapi_has_path_per_tool(self):
         reg = ToolRegistry(self.exec, max_tier=TIER_ACTION)
         spec = reg.openapi_spec("http://127.0.0.1:3331/")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -140,7 +141,7 @@ class FederatedGraph:
 
         cached = self._try_cached(project_paths, min_sim, top_k, max_per)
         if cached is not None and not force:
-            return cached
+            return self._apply_hierarchy(cached, project_paths)
 
         projects: list[dict] = []
         nodes: list[dict] = []
@@ -227,7 +228,7 @@ class FederatedGraph:
             },
         }
         self._save_cache(result)
-        return result
+        return self._apply_hierarchy(result, project_paths)
 
     def invalidate(self):
         try:
@@ -237,6 +238,55 @@ class FederatedGraph:
             pass
 
     # ── Internals ───────────────────────────────────────────────────
+
+    def _apply_hierarchy(self, result: dict, project_paths: list[str]) -> dict:
+        """Serve-time overlay of parent/child project links.
+
+        Hierarchy lives in ``.c3/config.json``, which the mtime cache key
+        (facts files) never sees — recomputing per serve keeps it fresh
+        without invalidating the expensive embedding cache. Applied to both
+        fresh builds and cache hits, AFTER the cache write so nothing stale
+        is baked in. Project-level links only: fact-level hierarchy edges
+        would pollute similarity clustering.
+        """
+        links = self._hierarchy(project_paths)
+        result["hierarchy"] = links
+        parent_by_child = {link["child"]: link["parent"] for link in links}
+        for proj in result.get("projects", []):
+            proj["parent_slug"] = parent_by_child.get(proj.get("slug"), "")
+        result.setdefault("stats", {})["parent_child"] = len(links)
+        return result
+
+    def _hierarchy(self, project_paths: list[str]) -> list[dict]:
+        """``parent_child`` project links for children whose parent is also in
+        ``project_paths`` (depth-1 model). Best-effort per project."""
+        def _key(p: str) -> str:
+            return os.path.normcase(str(Path(p).resolve()))
+
+        by_key: dict[str, str] = {}
+        for p in project_paths:
+            try:
+                by_key[_key(p)] = p
+            except Exception:
+                continue
+        links: list[dict] = []
+        for p in project_paths:
+            try:
+                from services.subprojects import _read_config
+                back = _read_config(p).get("parent") or {}
+                parent = str(back.get("path") or "")
+                if not parent:
+                    continue
+                parent_in_set = by_key.get(_key(parent))
+                if parent_in_set:
+                    links.append({
+                        "parent": _slugify(parent_in_set),
+                        "child": _slugify(p),
+                        "type": "parent_child",
+                    })
+            except Exception:
+                continue
+        return links
 
     def _try_cached(self, project_paths: list[str], min_sim: float,
                     top_k: int, max_per: int) -> dict | None:

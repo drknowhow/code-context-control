@@ -46,19 +46,35 @@
 ```
 oracle/
   __init__.py              # Package marker
-  oracle_server.py         # Flask app + entry point (404 lines)
-  oracle.html              # Web UI dashboard with toast notifications (673 lines)
+  oracle_server.py         # Flask app + entry point (~1,070 lines)
+  oracle_ui.html           # Web UI shell (concat bundle: served at / with oracle/ui/*.js inlined)
+  oracle.html              # Frozen legacy single-file UI, served at /legacy for one release
   config.py                # Config loader + defaults
+  mcp_oracle.py            # FastMCP HTTP/SSE server for the Discovery tools (:3332/mcp)
+  ui/                      # 18 vanilla-JS modules, concatenated server-side (see Web UI below)
+    core.js  busy.js  theme_tabs.js  crossgraph.js  header.js  projects.js
+    insights.js  activity.js  suggestions.js  settings.js  agents.js  app.js
+    chat/                  # markdown.js  conversations.js  stream_renderer.js
+                           # toolbar.js  input.js  send.js
   services/
     __init__.py
     ollama_bridge.py       # Self-contained Ollama cloud client with Bearer auth + cache
-    project_scanner.py     # Discovers projects via hub API or ~/.c3/projects.json
+    project_scanner.py     # Discovers projects via hub API or ~/.c3/projects.json (TTL cache)
     memory_reader.py       # Read-only access to .c3/facts/ + MemoryScorer tier computation
     memory_writer.py       # Suggestion queue + approved write-backs to project facts
     cross_memory.py        # Cross-project insight store with dedup + project linking
     health_checker.py      # Validates .c3/ structure + fact/graph integrity (no LLM)
     insight_engine.py      # LLM-powered analysis: per-project + cross-project + consolidation
-    review_agent.py        # Background daemon thread with configurable review interval
+    review_agent.py        # Background daemon thread: reviews + scheduled activity digest
+    activity_reporter.py   # Cross-project daily activity digest from .c3 JSONL artifacts
+    api_auth.py            # Discovery Bearer token in the OS keyring (C3_ORACLE_API_KEY override)
+    c3_bridge.py           # Per-project C3 runtime cache + read-only c3_* tool proxies
+    chat_engine.py         # Streaming chat orchestrator with tool-calling loop + agents
+    chat_store.py          # Conversation persistence (~/.c3/oracle/conversations/)
+    federated_graph.py     # Cross-project memory graph (embedding/TF-IDF similarity edges)
+    local_session.py       # Per-boot dashboard session cookie (HttpOnly, SameSite=Strict)
+    tool_executor.py       # Thin adapter: Discovery API -> ChatEngine.run_tool (one dispatch path)
+    tool_registry.py       # TOOL_SPECS (JSON schemas + tiers) + validated dispatch + OpenAPI
 ```
 
 ## Data Storage
@@ -72,7 +88,11 @@ All Oracle state lives under `~/.c3/oracle/` — never inside any project direct
 | `review_state.json` | Per-project last-reviewed timestamps + facts.json mtimes |
 | `suggestions.json` | Pending write-back suggestions (merge, archive, add) |
 | `project_reports/<hash>.json` | Cached health reports per project (SHA256 hash of path) |
-| `cache/llm/<md5>.json` | LLM response cache (keyed by model+prompt+options) |
+| `cache/llm/<md5>.json` | LLM response cache (keyed by model+prompt+options; TTL `llm_cache_ttl_sec`) |
+| `conversations/` | Chat conversations + per-conversation state (JSON files + `index.json`) |
+| `federated_graph.json` | Cached federated graph build (TTL + facts-mtime keyed) |
+| `federated_embeddings.json` | Per-fact embedding cache for cross-project similarity |
+| `activity_digests/<date>.json` + `latest.json` | Scheduled activity digests written by the review loop |
 | `oracle.log` | Background agent + server log |
 
 ## Service Descriptions
@@ -84,7 +104,7 @@ Self-contained HTTP client for the Ollama API. Does **not** depend on C3's `Olla
 Discovers registered C3 projects. Primary: HTTP GET to hub `/api/projects` (2s timeout). Fallback: reads `~/.c3/projects.json` directly. Enriches each project with `.c3/` presence, fact count, and `facts.json` mtime.
 
 ### MemoryReader (`memory_reader.py`)
-Read-only access to a project's `.c3/facts/` directory. Reads `facts.json`, `memory_graph.json`, and `session_fingerprints.json`. Computes summary statistics (fact count by category/lifecycle) and tier distribution using C3's `MemoryScorer` (the one import from C3's `services/`).
+Read-only access to a project's `.c3/facts/` directory. Reads `facts.json`, `memory_graph.json`, and `session_fingerprints.json`. Computes summary statistics (fact count by category/lifecycle) and tier distribution using C3's `MemoryScorer`.
 
 ### HealthChecker (`health_checker.py`)
 Heuristic validation — no LLM calls. Checks: directory structure, JSON validity, required fact fields, duplicate IDs, orphaned graph edges, freshness. Returns a health report with status (`ok`/`warning`/`error`) and issue list.
@@ -104,7 +124,28 @@ LLM-powered analysis via OllamaBridge. Three operations:
 All LLM responses are parsed from JSON (with fallback for markdown-fenced JSON).
 
 ### ReviewAgent (`review_agent.py`)
-Background daemon thread (default: 30 min interval). Each cycle: discover projects → detect changes (facts.json mtime) → run health checks → cache reports → generate cross-project insights (if 2+ projects changed) → auto-suggest consolidation for projects with 30+ facts. State persisted in `review_state.json`.
+Background daemon thread (default: 30 min interval). Each cycle: discover projects → detect changes (facts.json mtime) → run health checks → cache reports → generate cross-project insights (if 2+ projects changed) → auto-suggest consolidation for projects with 30+ facts. State persisted in `review_state.json`. When `digest_enabled` is set, the loop also emits the scheduled activity digest every `digest_interval_seconds` (persisted to `~/.c3/oracle/activity_digests/`, pruned after `digest_retention_days`, optional JSONL notify sink via `digest_notify_file`).
+
+### Chat subsystem (`chat_engine.py`, `chat_store.py`)
+`ChatEngine` orchestrates the interactive chat: it builds a dynamic system prompt from conversation state (focused projects, model, depth), runs a bounded tool-calling loop, and streams every step as SSE events. Tool calling is **native Ollama tool calling** when the model supports it (capability probe via `/api/show`), with the legacy `<tool_call>` text protocol as fallback — including mid-turn fallback if the model rejects native tools at request time (HTTP 400). Tools are the same registry the Discovery API uses (single dispatch path via `ChatEngine.run_tool`). `delegate_task` runs a configured agent — Ollama-backed agents stream their own sub-loop; CLI-backed agents (codex/gemini/claude/auto) route through `c3_delegate` on a read-only runtime shim.
+
+`ChatStore` persists conversations as JSON files in `~/.c3/oracle/conversations/` (plus `index.json` and per-conversation state). Slash commands (`/project`, `/model`, `/depth`, `/health`, `/clear`, `/help`, `/tools`, `/team`) mutate that state.
+
+**SSE event types** streamed by `POST /api/chat`: `meta`, `status`, `thinking`, `text`, `tool_call`, `tool_result`, the agent sub-stream events `agent_start` / `agent_round` / `agent_thinking` / `agent_text` / `agent_tool_call` / `agent_tool_result` / `agent_done`, then `done` or `error`; the stream ends with a literal `data: [DONE]` terminator.
+
+### C3Bridge (`c3_bridge.py`)
+Bridge between Oracle and C3's tool handlers with a per-project runtime cache — the shared `ProjectRuntimeCache` (8 slots by default, env-tunable `C3_RUNTIME_CACHE_SIZE`), with embedding/vector backends warmed on a background thread so the first `c3_search` on a project doesn't pay the init cost inline. Every call goes through `validate_project_path()`, which resolves the path and confirms it is a *discovered* C3 project — a runtime can never be built for an arbitrary path on the machine. Read-only enforcement: write actions on `c3_edits`/`c3_memory`/`c3_project`/`c3_artifacts` are blocked at the bridge, and Oracle-initiated `c3_delegate` calls see a read-only runtime view (memory bridges off, notifications suppressed).
+
+### Federated graph (`federated_graph.py`)
+Builds one cross-project memory graph: per-project fact graphs are merged, then `cross_similar` edges are added between facts of *different* projects using Ollama embeddings (`embedding_model`, default `nomic-embed-text`) with a TF-IDF cosine fallback when embeddings are unavailable. Thresholds are tunable (`cross_sim_threshold`, `cross_max_facts_per_project`, `cross_top_k_neighbors`). Builds are cached to disk (`federated_graph.json`) keyed by facts-file mtimes with a TTL (`federated_graph_ttl_sec`); embeddings have their own persistent cache. Project hierarchy (parent/child sub-project links) is overlaid at serve time on both fresh builds and cache hits — responses carry `hierarchy`, `stats.parent_child`, and `projects[].parent_slug`.
+
+### Security model
+Layered, default-deny:
+
+1. **Loopback bind** — `bind_host` defaults to `127.0.0.1` for both the Flask app (:3331) and the MCP transport (:3332).
+2. **Host/CSRF guard** — Host-header allowlist + Origin/Referer check (shared `core/web_security.py` guard) blocks cross-origin browsers even on the same machine.
+3. **Discovery Bearer token** — all `/api/discovery/*` requests (and the MCP transport) require `Authorization: Bearer <token>`; the token lives in the OS keyring (`api_auth.py`), overridable via `C3_ORACLE_API_KEY`.
+4. **Local session cookie + write gate** (v2.47.0) — `GET /` issues a per-boot `HttpOnly` `SameSite=Strict` session cookie to loopback browsers (`local_session.py`; secret regenerated each start, never persisted). A default-deny `before_request` gate then requires that cookie OR the Bearer token on **every mutating `/api/*` call outside `/api/discovery/*`** — any future mutating endpoint is covered automatically. Remote viewers on a LAN bind can read GET dashboards but cannot mutate.
 
 ## Read-Only Contract
 
@@ -118,6 +159,9 @@ Oracle **never** writes to any project's `.c3/` directory unless the user explic
 
 Oracle imports from C3:
 - `services.memory_scorer.MemoryScorer` — Used by `MemoryReader` for tier computation
+- `services.project_runtime.ProjectRuntimeCache` + `services.runtime.C3Runtime` — Used by `C3Bridge` for the per-project runtime cache behind the `c3_*` tools
+- `services.subprojects` (config reader) — Used by `FederatedGraph` for the project-hierarchy overlay
+- `core.web_security` — Host-header/Origin guard shared with the hub
 
 Oracle does **not** import `services.ollama_client.OllamaClient`. The `OllamaBridge` is fully self-contained with its own HTTP client and cache.
 
@@ -132,9 +176,11 @@ Two small, non-breaking changes to existing C3 code:
 
 ## Web UI
 
-Single HTML file (`oracle.html`, 673 lines) with inline CSS + vanilla JS. No build step, no framework dependencies.
+The UI is a **concat bundle**: an HTML shell (`oracle/oracle_ui.html`) plus 18 JS modules in `oracle/ui/` (`core`, `busy`, `theme_tabs`, `crossgraph`, `header`, `projects`, `insights`, `activity`, `suggestions`, `settings`, `agents`, `chat/markdown`, `chat/conversations`, `chat/stream_renderer`, `chat/toolbar`, `chat/input`, `chat/send`, with `app.js` — the init IIFE — always last). `_build_oracle_html()` concatenates them server-side into one response, cached until restart; the modules share one script scope, so load order matters. `GET /` serves the bundle; `GET /legacy` serves the frozen pre-bundle `oracle.html` for one release as an escape hatch.
 
-**4 tabs**: Projects, Insights, Suggestions, Settings
+Still vanilla JS with inline CSS — deliberately **no framework and no build step** (unlike the React-based C3 hub).
+
+**8 tabs**: Chat (default), Projects, Insights, Activity, Cross-Graph, Suggestions, Team/Agents, Settings
 
 **Notification system**: Toast notifications (bottom-right corner, 4 types: success/error/info/warning) shown on all user actions.
 

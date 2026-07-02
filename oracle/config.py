@@ -24,6 +24,12 @@ DEFAULTS = {
     "scanner_ttl_seconds": 20,
     "review_interval_seconds": 1800,
     "review_enabled": True,
+    # ── Scheduled activity digest (runs inside the review loop) ──
+    "digest_enabled": False,          # off = current behavior (on-demand only)
+    "digest_interval_seconds": 86400, # daily cadence once enabled
+    "digest_narrate": False,          # LLM prose costs a cloud call; opt-in
+    "digest_notify_file": "",         # "" = disabled; else JSONL sink path
+    "digest_retention_days": 14,      # prune stored digests
     "auto_open_browser": True,
     "theme": "dark",
     "max_facts_per_analysis": 100,
@@ -41,6 +47,7 @@ DEFAULTS = {
             "description": "Expert in system architecture, design patterns, and cross-project structure. Best for high-level analysis.",
             "system_prompt": "You are the Architect. Focus on structural integrity, design patterns, and the big picture. Provide high-level recommendations before diving into code.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         },
         {
@@ -49,6 +56,7 @@ DEFAULTS = {
             "description": "Specializes in deep code analysis, bug hunting, and tracing execution paths.",
             "system_prompt": "You are the Code Explorer. Be incredibly precise, cite specific lines of code, and focus on the technical implementation details. Trace logic thoroughly.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         },
         {
@@ -57,6 +65,7 @@ DEFAULTS = {
             "description": "Focuses on analyzing project memory, facts, and insights.",
             "system_prompt": "You are the Memory Analyst. Rely heavily on memory tools and facts to spot trends. Connect current issues to past context.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         }
     ],

@@ -118,6 +118,86 @@ class TestFederatedGraph(unittest.TestCase):
         self.assertTrue(data["stats"]["similarity_method"].startswith("embedding:"))
 
 
+class TestHierarchyOverlay(unittest.TestCase):
+    """parent_child project links are a serve-time overlay: present on fresh
+    builds AND cache hits, never baked into the cache file (hierarchy lives in
+    .c3/config.json, which the facts-mtime cache key can't see)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.parent = _write_project(self.root, "parent", [
+            {"id": "p1", "fact": "parent architecture fact", "category": "architecture", "relevance_count": 3, "lifecycle": "active"},
+        ])
+        self.child = _write_project(Path(self.parent), "child", [
+            {"id": "c1", "fact": "child module fact", "category": "general", "relevance_count": 2, "lifecycle": "active"},
+        ])
+        (Path(self.parent) / ".c3" / "config.json").write_text(json.dumps({
+            "subprojects": [{"name": "child", "rel_path": "child"}],
+        }), encoding="utf-8")
+        self._child_cfg = Path(self.child) / ".c3" / "config.json"
+        self._child_cfg.write_text(json.dumps({
+            "parent": {"name": "parent", "path": self.parent, "rel_path": ".."},
+        }), encoding="utf-8")
+
+        cache_dir = self.root / "_oracle"
+        cache_dir.mkdir()
+        self._cache_file = cache_dir / "federated_graph.json"
+        self._patches = [
+            patch("oracle.services.federated_graph.ORACLE_DIR", cache_dir),
+            patch("oracle.services.federated_graph._CACHE_FILE", self._cache_file),
+            patch("oracle.services.federated_graph._EMBED_CACHE_FILE", cache_dir / "federated_embeddings.json"),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_fresh_build_carries_hierarchy(self):
+        fed = FederatedGraph(ollama_bridge=None)
+        data = fed.build([self.parent, self.child])
+        self.assertEqual(data["hierarchy"], [{
+            "parent": _slugify(self.parent), "child": _slugify(self.child),
+            "type": "parent_child",
+        }])
+        self.assertEqual(data["stats"]["parent_child"], 1)
+        by_slug = {p["slug"]: p for p in data["projects"]}
+        self.assertEqual(by_slug[_slugify(self.child)]["parent_slug"], _slugify(self.parent))
+        self.assertEqual(by_slug[_slugify(self.parent)]["parent_slug"], "")
+
+    def test_cache_hit_carries_hierarchy_but_cache_file_does_not(self):
+        fed = FederatedGraph(ollama_bridge=None)
+        first = fed.build([self.parent, self.child])
+        second = fed.build([self.parent, self.child])
+        self.assertEqual(first["generated_at"], second["generated_at"])  # cache hit
+        self.assertEqual(len(second["hierarchy"]), 1)
+        # Overlay is serve-time: the persisted cache must NOT contain it.
+        cached = json.loads(self._cache_file.read_text(encoding="utf-8"))
+        self.assertNotIn("hierarchy", cached)
+
+    def test_hierarchy_change_reflected_on_cached_serve(self):
+        fed = FederatedGraph(ollama_bridge=None)
+        fed.build([self.parent, self.child])
+        # Unlink the child WITHOUT touching facts files (cache stays valid).
+        self._child_cfg.write_text("{}", encoding="utf-8")
+        data = fed.build([self.parent, self.child])
+        self.assertEqual(data["hierarchy"], [])
+        self.assertEqual(data["stats"]["parent_child"], 0)
+
+    def test_parent_outside_set_yields_no_link(self):
+        fed = FederatedGraph(ollama_bridge=None)
+        data = fed.build([self.child])
+        self.assertEqual(data["hierarchy"], [])
+
+    def test_no_fact_level_hierarchy_edges(self):
+        fed = FederatedGraph(ollama_bridge=None)
+        data = fed.build([self.parent, self.child], force=True)
+        self.assertFalse(any(e.get("type") == "parent_child" for e in data["edges"]))
+
+
 class TestFederatedGraphAPI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

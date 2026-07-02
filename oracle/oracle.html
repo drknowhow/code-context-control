@@ -991,6 +991,7 @@
         <button class="btn btn-primary btn-sm" id="btnLoadActivity" onclick="loadActivity()">Refresh</button>
       </div>
     </div>
+    <div id="actScheduled" style="display:none;font-size:11px;color:var(--text2);margin-bottom:10px"></div>
     <div id="actSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
     <div id="actNarrative" class="card" style="display:none;margin-bottom:14px"></div>
     <div id="actProjects"></div>
@@ -1104,6 +1105,16 @@
         <label>Review Interval (minutes)</label>
         <input id="cfgInterval" type="number" min="1" value="30">
       </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfgDigestEnabled" style="width:auto"> Scheduled activity digest
+        </label>
+        <p style="font-size:11px;color:var(--text2);margin-top:4px">Emit a cross-project digest from the review loop (Activity tab shows the latest).</p>
+      </div>
+      <div class="field">
+        <label>Digest Interval (hours)</label>
+        <input id="cfgDigestInterval" type="number" min="1" value="24">
+      </div>
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn btn-primary" onclick="saveSettings()">Save</button>
         <button class="btn btn-ghost" onclick="testConnection()">Test Connection</button>
@@ -1171,6 +1182,17 @@
       <div class="field">
         <label>Model</label>
         <input id="agentModel" type="text" placeholder="e.g. gemma4:31b-cloud">
+      </div>
+      <div class="field">
+        <label>Backend</label>
+        <select id="agentBackend" style="width:100%;padding:8px;font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+          <option value="ollama">Ollama (chat tool loop)</option>
+          <option value="codex">Codex CLI (read-only, needs project)</option>
+          <option value="gemini">Gemini CLI (read-only, needs project)</option>
+          <option value="claude">Claude CLI (read-only, needs project)</option>
+          <option value="auto">Auto cascade (read-only, needs project)</option>
+        </select>
+        <p style="font-size:11px;color:var(--text2);margin-top:4px">CLI backends run c3_delegate inside a registered project; the model field applies to Ollama only.</p>
       </div>
       <div class="field" style="display:flex;align-items:center;gap:8px">
         <input id="agentActive" type="checkbox" style="width:auto">
@@ -1927,7 +1949,23 @@ async function dismissInsight(id) {
 // ═══════════════════════════════════════════════════════════
 // ── Activity Digest ──
 // ═══════════════════════════════════════════════════════════
+async function loadScheduledDigestBanner() {
+  const el = document.getElementById('actScheduled');
+  if (!el) return;
+  try {
+    const latest = await api('/api/activity/digest/latest');
+    if (latest && latest.generated_at) {
+      el.style.display = '';
+      el.textContent = 'Last scheduled digest: ' +
+        latest.generated_at.replace('T', ' ').slice(0, 19) + ' UTC';
+    } else {
+      el.style.display = 'none';
+    }
+  } catch { el.style.display = 'none'; }
+}
+
 async function loadActivity() {
+  loadScheduledDigestBanner();
   const dateEl = document.getElementById('actDate');
   if (dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
   const date = dateEl ? dateEl.value : '';
@@ -2076,6 +2114,8 @@ async function loadSettings() {
     keyCheck.parentElement.style.display = hasKey ? '' : 'none';
     document.getElementById('cfgHubUrl').value = cfg.hub_url || '';
     document.getElementById('cfgInterval').value = Math.round((cfg.review_interval_seconds || 1800) / 60);
+    document.getElementById('cfgDigestEnabled').checked = !!cfg.digest_enabled;
+    document.getElementById('cfgDigestInterval').value = Math.round((cfg.digest_interval_seconds || 86400) / 3600);
     applyTheme(cfg.theme || 'dark');
     // Hub link
     const hubUrl = cfg.hub_url || 'http://localhost:3330';
@@ -2122,6 +2162,8 @@ async function saveSettings() {
     ollama_base_url: document.getElementById('cfgOllamaUrl').value,
     hub_url: document.getElementById('cfgHubUrl').value,
     review_interval_seconds: parseInt(document.getElementById('cfgInterval').value) * 60,
+    digest_enabled: document.getElementById('cfgDigestEnabled').checked,
+    digest_interval_seconds: parseInt(document.getElementById('cfgDigestInterval').value) * 3600,
     agents: window.oracleAgents
   };
   if (apiKeyVal) cfg.ollama_api_key = apiKeyVal;
@@ -4040,7 +4082,7 @@ function renderAgents() {
       <div style="flex:1;min-width:0;margin-right:16px">
         <div style="font-weight:600;font-size:14px;margin-bottom:4px;display:flex;align-items:center;gap:8px">
           ${esc(a.name)}
-          <span style="font-size:10px;font-family:monospace;background:var(--bg3);padding:2px 6px;border-radius:4px;color:var(--text2)">${esc(a.model)}</span>
+          <span style="font-size:10px;font-family:monospace;background:var(--bg3);padding:2px 6px;border-radius:4px;color:var(--text2)">${esc(a.backend && a.backend !== 'ollama' ? a.backend : a.model)}</span>
         </div>
         <div style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(a.description)}">${esc(a.description)}</div>
       </div>
@@ -4071,6 +4113,7 @@ function openAgentModal(id = null) {
     descInput.value = a.description || '';
     promptInput.value = a.system_prompt || '';
     modelInput.value = a.model || '';
+    document.getElementById('agentBackend').value = a.backend || 'ollama';
     activeInput.checked = a.active !== false;
   } else {
     title.textContent = 'Add Custom Agent';
@@ -4079,6 +4122,7 @@ function openAgentModal(id = null) {
     descInput.value = '';
     promptInput.value = '';
     modelInput.value = window.oracleConfig.model || 'gemma4:31b-cloud';
+    document.getElementById('agentBackend').value = 'ollama';
     activeInput.checked = true;
   }
   
@@ -4100,6 +4144,7 @@ function saveAgent() {
     description: document.getElementById('agentDesc').value.trim(),
     system_prompt: document.getElementById('agentPrompt').value.trim(),
     model: document.getElementById('agentModel').value.trim(),
+    backend: document.getElementById('agentBackend').value,
     active: document.getElementById('agentActive').checked
   };
 
