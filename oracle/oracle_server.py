@@ -80,7 +80,10 @@ def _init_services():
             _model_verified = False
             logging.getLogger("oracle").warning("Ollama unreachable — model not verified")
     threading.Thread(target=_verify, daemon=True, name="oracle-model-verify").start()
-    _scanner = ProjectScanner(hub_url=_cfg.get("hub_url", "http://localhost:3330"))
+    _scanner = ProjectScanner(
+        hub_url=_cfg.get("hub_url", "http://localhost:3330"),
+        ttl=float(_cfg.get("scanner_ttl_seconds", 20)),
+    )
     _reader = MemoryReader()
     _checker = HealthChecker(_reader)
     _writer = MemoryWriter()
@@ -286,7 +289,8 @@ def api_projects():
 
 @app.route("/api/projects/scan", methods=["POST"])
 def api_projects_scan():
-    projects = _scanner.discover() if _scanner else []
+    # Explicit Scan action bypasses the scanner's TTL cache.
+    projects = _scanner.discover(force=True) if _scanner else []
     return jsonify({"scanned": len(projects), "projects": projects})
 
 

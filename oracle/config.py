@@ -20,6 +20,7 @@ DEFAULTS = {
     "ollama_api_key": "",
     "model": "gemma4:31b-cloud",
     "hub_url": "http://localhost:3330",
+    "scanner_ttl_seconds": 20,
     "review_interval_seconds": 1800,
     "review_enabled": True,
     "auto_open_browser": True,
