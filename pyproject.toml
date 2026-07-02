@@ -129,6 +129,10 @@ cli = [
     "hub_ui/*.js",
     "hub_ui/components/*.js",
 ]
+oracle = [
+    "ui/*.js",
+    "ui/chat/*.js",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
