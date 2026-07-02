@@ -68,6 +68,7 @@ def _init_services():
         base_url=_cfg.get("ollama_base_url", "https://ollama.com"),
         model=_cfg.get("model", "gemma4:31b-cloud"),
         api_key=_cfg.get("ollama_api_key", ""),
+        cache_ttl_sec=int(_cfg.get("llm_cache_ttl_sec", 86400)),
     )
     # Verify model works on startup (background thread to avoid blocking)
     def _verify():

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -16,13 +17,19 @@ from typing import Optional
 
 _ORACLE_CACHE_DIR = Path.home() / ".c3" / "oracle" / "cache" / "llm"
 _TIMEOUT = 30
+_CACHE_MAX_ENTRIES = 512
+# How long a model-capability probe result is trusted before re-probing.
+_CAPS_TTL_SEC = 3600
 
 
 class _Cache:
-    """Simple disk cache for LLM responses."""
+    """Simple disk cache for LLM responses (TTL + size-bounded)."""
 
-    def __init__(self, cache_dir: Path = _ORACLE_CACHE_DIR):
+    def __init__(self, cache_dir: Path = _ORACLE_CACHE_DIR, ttl_sec: int = 86400,
+                 max_entries: int = _CACHE_MAX_ENTRIES):
         self._dir = cache_dir
+        self._ttl = int(ttl_sec)
+        self._max = int(max_entries)
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _key(self, prompt: str, model: str, system: str = "", **opts) -> str:
@@ -33,6 +40,9 @@ class _Cache:
         path = self._dir / f"{self._key(prompt, model, system, **opts)}.json"
         if path.exists():
             try:
+                if self._ttl and (time.time() - path.stat().st_mtime) > self._ttl:
+                    path.unlink(missing_ok=True)
+                    return None
                 return json.loads(path.read_text(encoding="utf-8")).get("response")
             except Exception:
                 pass
@@ -45,8 +55,18 @@ class _Cache:
                 "model": model, "prompt": prompt[:200],
                 "response": response,
             }, indent=2), encoding="utf-8")
+            self._prune()
         except Exception:
             pass
+
+    def _prune(self):
+        """Evict oldest entries (by mtime) once the cache exceeds its bound."""
+        entries = sorted(self._dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        for stale in entries[: max(0, len(entries) - self._max)]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
 
 class OllamaBridge:
@@ -63,11 +83,14 @@ class OllamaBridge:
         base_url: str = "https://ollama.com",
         model: str = "gemma4:31b-cloud",
         api_key: str = "",
+        cache_ttl_sec: int = 86400,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
-        self._cache = _Cache()
+        self._cache = _Cache(ttl_sec=cache_ttl_sec)
+        # model → (probe_ts, supports_tools: bool | None). None = unknown.
+        self._caps: dict[str, tuple[float, bool | None]] = {}
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -102,13 +125,53 @@ class OllamaBridge:
             req = urllib.request.Request(url, headers=self._headers(), method="HEAD")
             urllib.request.urlopen(req, timeout=t)
             return True
-        except urllib.error.HTTPError:
-            # Any HTTP response (even 4xx/5xx) means the server is reachable
-            return True
+        except urllib.error.HTTPError as e:
+            # 4xx = the server answered (reachable); 5xx = it is failing —
+            # reporting "available" on a 500 hid real outages from /api/health.
+            return e.code < 500
         except Exception:
             return False
 
     # ── Models ────────────────────────────────────────────
+
+    def show(self, model: str | None = None) -> dict | None:
+        """Return /api/show metadata for a model, or None if unavailable."""
+        try:
+            return self._request("/api/show", data={"model": model or self.model},
+                                 timeout=10)
+        except Exception:
+            return None
+
+    def supports_tools(self, model: str | None = None) -> bool | None:
+        """Whether a model supports native tool calling.
+
+        Probes ``/api/show`` for a ``capabilities`` list containing ``tools``.
+        Returns ``None`` when the endpoint is unavailable or doesn't report
+        capabilities (some cloud deployments) — \"unknown\" is a distinct
+        state: callers may attempt native tools and fall back on rejection.
+        Results are cached per model (see ``set_tools_support`` for the
+        negative-cache poke used by that fallback).
+        """
+        use_model = model or self.model
+        cached = self._caps.get(use_model)
+        if cached is not None and (time.time() - cached[0]) < _CAPS_TTL_SEC:
+            return cached[1]
+        caps: bool | None = None
+        data = self.show(use_model)
+        if isinstance(data, dict):
+            listed = data.get("capabilities")
+            if isinstance(listed, list):
+                caps = "tools" in listed
+        self._caps[use_model] = (time.time(), caps)
+        return caps
+
+    def set_tools_support(self, model: str | None, supported: bool | None) -> None:
+        """Override the cached tools-capability for a model.
+
+        Used to negative-cache after a live \"does not support tools\" rejection
+        so later turns skip the doomed native attempt.
+        """
+        self._caps[model or self.model] = (time.time(), supported)
 
     def list_models(self) -> list[str] | None:
         """Return list of available model names."""
@@ -265,8 +328,14 @@ class OllamaBridge:
         num_ctx: int = 16384,
         timeout: int = 120,
         think: bool | None = True,
+        tools: list[dict] | None = None,
     ):
-        """Streaming chat completion — yields text chunks as they arrive."""
+        """Streaming chat completion — yields typed tuples as chunks arrive.
+
+        Yields ``("thinking", str)``, ``("text", str)``, ``("tool_call",
+        {"name", "arguments"})`` (native tool calling, when ``tools`` is
+        passed), and a final ``("stats", dict)``.
+        """
         use_model = model or self.model
         body = {
             "model": use_model,
@@ -280,6 +349,8 @@ class OllamaBridge:
         }
         if think is not None:
             body["think"] = think
+        if tools:
+            body["tools"] = tools
         url = f"{self.base_url}/api/chat"
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
@@ -298,6 +369,15 @@ class OllamaBridge:
                 content = msg.get("content", "")
                 if content:
                     yield ("text", content)
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):  # some models emit JSON strings
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, ValueError):
+                            args = {"_raw": args}
+                    yield ("tool_call", {"name": fn.get("name", ""), "arguments": args or {}})
                 if chunk.get("done"):
                     # Final chunk carries token stats from Ollama
                     stats = {}

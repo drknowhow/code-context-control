@@ -18,6 +18,7 @@ DEFAULTS = {
     "mcp_port": 3332,               # discovery MCP transport port (loopback)
     "ollama_base_url": "https://ollama.com",
     "ollama_api_key": "",
+    "llm_cache_ttl_sec": 86400,     # disk cache TTL for generate() responses
     "model": "gemma4:31b-cloud",
     "hub_url": "http://localhost:3330",
     "scanner_ttl_seconds": 20,
