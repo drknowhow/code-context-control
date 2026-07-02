@@ -16,8 +16,51 @@ permissions:
   contents: read
 
 jobs:
+  verify-ci:
+    name: Verify CI passed on tagged commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Wait for CI to succeed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT_SHA=$(git rev-parse 'HEAD^{commit}')
+          echo "Gating release on CI for $COMMIT_SHA"
+          for attempt in $(seq 1 60); do
+            RUN=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${COMMIT_SHA}&per_page=1" --jq '.workflow_runs[0] // empty')
+            if [ -z "$RUN" ]; then
+              # CI may not have been scheduled yet when the tag lands with the push.
+              if [ "$attempt" -ge 10 ]; then
+                echo "::error::No CI run found for ${COMMIT_SHA}. Push the commit to main (so CI runs) before tagging a release."
+                exit 1
+              fi
+              echo "No CI run for ${COMMIT_SHA} yet — waiting... (attempt ${attempt}/10)"
+            else
+              STATUS=$(echo "$RUN" | jq -r '.status')
+              CONCLUSION=$(echo "$RUN" | jq -r '.conclusion // empty')
+              URL=$(echo "$RUN" | jq -r '.html_url')
+              if [ "$STATUS" = "completed" ]; then
+                if [ "$CONCLUSION" = "success" ]; then
+                  echo "CI passed: $URL"
+                  exit 0
+                fi
+                echo "::error::CI concluded '${CONCLUSION}' for ${COMMIT_SHA} — fix CI before releasing: $URL"
+                exit 1
+              fi
+              echo "CI status '${STATUS}' — waiting for completion... (attempt ${attempt}/60)"
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out after 30 minutes waiting for CI on ${COMMIT_SHA}."
+          exit 1
+
   build:
     name: Build distribution
+    needs: verify-ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
