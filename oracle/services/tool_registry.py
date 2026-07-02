@@ -157,12 +157,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "c3_search_cross",
         "tier": TIER_READ,
-        "description": "Code-intelligence search across ALL projects. No project_path needed.",
+        # scope: '' = all projects, 'top' = top-level only, or a project
+        # name/path = that project plus its sub-projects.
+        "description": "Code-intelligence search across ALL projects (or a scoped subset). No project_path needed.",
         "parameters": _obj(
             {
                 "query": {"type": "string", "description": "What to search for."},
                 "action": {"type": "string", "default": "code", "description": "Search mode (code|exact|files|semantic)."},
                 "top_k": {"type": "integer", "default": 3, "description": "Max hits."},
+                "scope": {"type": "string", "default": "", "description": "'' = all projects, 'top' = top-level projects only, or a project name/path = that project plus its sub-projects."},
             },
             ["query"],
         ),
@@ -260,12 +263,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "c3_edits_cross",
         "tier": TIER_READ,
-        "description": "Query edit ledgers across ALL projects. No project_path needed.",
+        "description": "Query edit ledgers across ALL projects (or a scoped subset). No project_path needed.",
         "parameters": _obj(
             {
                 "action": {"type": "string", "default": "history", "description": "history|stats."},
                 "tag": {"type": "string", "default": "", "description": "Optional tag filter."},
                 "limit": {"type": "integer", "default": 20, "description": "Max records."},
+                "scope": {"type": "string", "default": "", "description": "'' = all projects, 'top' = top-level projects only, or a project name/path = that project plus its sub-projects."},
             }
         ),
     },

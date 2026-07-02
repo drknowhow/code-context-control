@@ -125,6 +125,41 @@ class C3Bridge:
         projects = self.scanner.discover()
         return [p for p in projects if p.get("has_c3")]
 
+    def _scoped_projects(self, scope: str = "") -> list[dict]:
+        """Resolve a cross-tool ``scope`` to a list of discovered projects.
+
+        ``""``/``"all"`` → every discovered project; ``"top"`` → top-level
+        projects only; anything else → that project (name or path, resolved
+        and validated) plus its direct sub-projects (depth-1 model). Parent
+        indexes already exclude child folders, so the full scope never
+        double-counts code hits.
+        """
+        projects = self._discover_c3_projects()
+        scope = (scope or "").strip()
+        if scope.lower() in ("", "all"):
+            return projects
+        if scope.lower() == "top":
+            return [p for p in projects if not p.get("is_subproject")]
+
+        import os
+        from services.project_runtime import resolve_project
+
+        def _key(p: str) -> str:
+            return os.path.normcase(str(Path(p).resolve()))
+
+        resolved = resolve_project(scope)
+        root_key = _key(validate_project_path(self.scanner, resolved["path"]))
+        selected = []
+        for p in projects:
+            path = p.get("path", "")
+            parent = p.get("parent_path") or ""
+            try:
+                if _key(path) == root_key or (parent and _key(parent) == root_key):
+                    selected.append(p)
+            except Exception:
+                continue
+        return selected
+
     # ── Per-project tool wrappers ─────────────────────────────────
 
     def c3_search(self, project_path: str, query: str, action: str = "code",
@@ -269,9 +304,9 @@ class C3Bridge:
     # ── Cross-project aggregation ─────────────────────────────────
 
     def c3_search_cross(self, query: str, action: str = "code",
-                        top_k: int = 3) -> dict:
-        """Search code across ALL registered projects."""
-        projects = self._discover_c3_projects()
+                        top_k: int = 3, scope: str = "") -> dict:
+        """Search code across registered projects (optionally scoped)."""
+        projects = self._scoped_projects(scope)
         results = []
         for proj in projects:
             path = proj.get("path", "")
@@ -282,14 +317,15 @@ class C3Bridge:
                 results.append({"project": path, "result": r.get("result", "")})
             except Exception as e:
                 results.append({"project": path, "error": str(e)})
-        return {"projects_queried": len(results), "results": results}
+        return {"projects_queried": len(results), "scope": scope or "all",
+                "results": results}
 
     def c3_edits_cross(self, action: str = "history", tag: str = "",
-                       limit: int = 20) -> dict:
-        """Query edit ledgers across ALL registered projects."""
+                       limit: int = 20, scope: str = "") -> dict:
+        """Query edit ledgers across registered projects (optionally scoped)."""
         if action in _BLOCKED_EDITS_ACTIONS:
             return {"error": f"Action '{action}' is write-only and blocked in Oracle."}
-        projects = self._discover_c3_projects()
+        projects = self._scoped_projects(scope)
         results = []
         for proj in projects:
             path = proj.get("path", "")
@@ -300,4 +336,5 @@ class C3Bridge:
                 results.append({"project": path, "result": r.get("result", "")})
             except Exception as e:
                 results.append({"project": path, "error": str(e)})
-        return {"projects_queried": len(results), "results": results}
+        return {"projects_queried": len(results), "scope": scope or "all",
+                "results": results}

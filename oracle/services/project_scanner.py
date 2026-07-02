@@ -59,6 +59,7 @@ class ProjectScanner:
                 "path": p.get("path", ""), "name": p.get("name", ""),
                 "tags": p.get("tags", []), "notes": p.get("notes", ""),
                 "active": p.get("active", False), "ide": p.get("ide", ""),
+                "parent_path": p.get("parent_path", ""),
             } for p in raw if p.get("path")]
         except Exception:
             return None
@@ -72,6 +73,7 @@ class ProjectScanner:
                 return [{
                     "path": p.get("path", ""), "name": p.get("name", ""),
                     "tags": p.get("tags", []), "notes": p.get("notes", ""),
+                    "parent_path": p.get("parent_path", ""),
                 } for p in data.get("projects", []) if p.get("path")]
         except Exception:
             pass
@@ -98,6 +100,29 @@ class ProjectScanner:
             except Exception:
                 pass
 
+        # Sub-project hierarchy (v2.44 parent/child model). Registry
+        # parent_path is authoritative; the child config back-link covers a
+        # stale registry. Best-effort: broken links degrade to top-level.
+        parent_path = str(project.get("parent_path") or "")
+        sub_rel_paths: list[str] = []
+        if has_c3:
+            try:
+                from services.subprojects import _read_config, get_subprojects
+                if not parent_path:
+                    back = _read_config(project["path"]).get("parent") or {}
+                    parent_path = str(back.get("path") or "")
+                sub_rel_paths = [
+                    s.get("rel_path", "") for s in get_subprojects(project["path"])
+                    if s.get("rel_path")
+                ]
+            except Exception:
+                pass
+        if parent_path:
+            try:
+                parent_path = str(Path(parent_path).resolve())
+            except Exception:
+                pass
+
         return {
             "path": project["path"],
             "name": project.get("name") or path.name,
@@ -109,4 +134,8 @@ class ProjectScanner:
             "has_facts": has_facts,
             "fact_count": fact_count,
             "facts_mtime": last_modified,
+            "parent_path": parent_path,
+            "is_subproject": bool(parent_path),
+            "subproject_rel_paths": sub_rel_paths,
+            "subproject_count": len(sub_rel_paths),
         }

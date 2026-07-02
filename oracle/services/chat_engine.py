@@ -80,8 +80,9 @@ Tools:
 11. c3_edits(project_path, action="history", file="", limit=50, since="", tag="")
     Query the edit ledger: history, versions, stats.
 
-12. c3_edits_cross(action="history", tag="", limit=20)
+12. c3_edits_cross(action="history", tag="", limit=20, scope="")
     Query edit ledgers across ALL projects. No project_path needed.
+    scope: ""=all, "top"=top-level only, or a project name/path = it + its sub-projects.
 
 13. c3_memory_query(project_path, action="query", query="", category="", top_k=10)
     Query project memory (read-only: recall, query, list, score, graph, trends).
@@ -95,8 +96,9 @@ Tools:
 16. c3_status(project_path, view="health", detailed=false)
     Project health/budget/sessions overview. view: budget|health|sessions
 
-17. c3_search_cross(query, action="code", top_k=3)
+17. c3_search_cross(query, action="code", top_k=3, scope="")
     Search code across ALL projects. No project_path needed.
+    scope: ""=all, "top"=top-level only, or a project name/path = it + its sub-projects.
 
 18. delegate_task(agent_id, task)
     Delegate a specific sub-task to a specialized agent.
@@ -1088,6 +1090,9 @@ class ChatEngine:
                     "path": p.get("path", ""),
                     "facts_count": p.get("facts_count", 0),
                     "has_c3": p.get("has_c3", False),
+                    "is_subproject": p.get("is_subproject", False),
+                    "parent_path": p.get("parent_path", ""),
+                    "subproject_count": p.get("subproject_count", 0),
                 }
                 for p in projects
             ],
