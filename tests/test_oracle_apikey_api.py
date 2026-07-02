@@ -1,7 +1,10 @@
 """Tests for the Oracle dashboard token-management endpoints (/api/apikey/*).
 
-These are local-dashboard endpoints (NOT under /api/discovery, so not Bearer-gated).
-``api_auth`` is replaced with an in-memory fake so no keyring/env is touched.
+These are local-dashboard endpoints (NOT under /api/discovery, so not
+Bearer-gated) — but mutations require the per-boot dashboard session cookie
+issued on ``GET /`` (see test_oracle_local_auth.py for the gate itself), so
+each test primes the test client's cookie jar first. ``api_auth`` is replaced
+with an in-memory fake so no keyring/env is touched.
 """
 from __future__ import annotations
 
@@ -49,6 +52,9 @@ class TestApikeyAPI(unittest.TestCase):
         }
         srv.app.config["TESTING"] = True
         self.client = srv.app.test_client()
+        # Mutating /api/apikey/* endpoints sit behind the local write gate;
+        # GET / issues the dashboard session cookie into the client's jar.
+        self.client.get("/")
 
     def tearDown(self):
         self._patch.stop()

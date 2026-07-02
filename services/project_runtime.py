@@ -6,15 +6,17 @@ project path (LRU) via ``services.runtime.build_runtime`` -- the exact builder
 the MCP server and web server already use.
 
 This is the shared home for the per-project runtime cache; the Oracle's
-``C3Bridge`` predates it and keeps its own cache for now.
+``C3Bridge`` wraps a private instance of it (with a vector-warm ``on_build``
+hook) rather than duplicating the LRU.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from services.runtime import C3Runtime, build_runtime, stop_runtime
 
@@ -42,7 +44,8 @@ class ProjectRuntimeCache:
     server and any other caller share one implementation.
     """
 
-    def __init__(self, ide_name: str = "claude-code", max_cached: int | None = None):
+    def __init__(self, ide_name: str = "claude-code", max_cached: int | None = None,
+                 on_build: Callable[[C3Runtime], None] | None = None):
         self._ide_name = ide_name
         if max_cached is None:
             try:
@@ -50,6 +53,7 @@ class ProjectRuntimeCache:
             except ValueError:
                 max_cached = 8
         self._max = max(1, int(max_cached))
+        self._on_build = on_build
         self._runtimes: dict[str, C3Runtime] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()
@@ -74,6 +78,7 @@ class ProjectRuntimeCache:
 
         runtime = build_runtime(project_path, ide_name=self._ide_name)
 
+        built = False
         with self._lock:
             # Another thread may have built it while we were unlocked.
             existing = self._runtimes.get(project_path)
@@ -83,11 +88,19 @@ class ProjectRuntimeCache:
                 return existing
             self._runtimes[project_path] = runtime
             self._order.append(project_path)
+            built = True
             while len(self._order) > self._max:
                 evict = self._order.pop(0)
                 old = self._runtimes.pop(evict, None)
                 if old is not None:
                     stop_runtime(old)
+        # Once per newly built runtime, outside the lock; the losing thread of
+        # a build race never fires it. Best-effort by contract (warmers etc.).
+        if built and self._on_build is not None:
+            try:
+                self._on_build(runtime)
+            except Exception as e:
+                logging.getLogger("c3.project_runtime").debug("on_build failed: %s", e)
         return runtime
 
     def _touch_locked(self, path: str) -> None:

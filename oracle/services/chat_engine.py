@@ -6,6 +6,7 @@ import queue
 import re
 import threading
 import time
+import urllib.error
 import uuid
 from pathlib import Path
 
@@ -138,6 +139,17 @@ Important rules:
 - Format your answers with markdown for readability.
 """
 
+# Native tool-calling mode: tools are declared via Ollama's tools= API, so the
+# prompt carries only behavioral guidance — no <tool_call> syntax, no catalog.
+_SYSTEM_RULES_NATIVE = """
+Important rules:
+- Use the provided tools when the user asks about specific data you don't have in context; call independent tools in parallel in one turn.
+- Do NOT call a tool if the question can be answered from conversation context or prior results.
+- After receiving tool results, synthesize them into a clear, helpful answer.
+- Use list_projects first to discover project paths before calling project-specific tools.
+- Format your answers with markdown for readability.
+"""
+
 # ── Slash command registry ────────────────────────────────
 
 COMMANDS = {
@@ -163,6 +175,11 @@ _VISIBLE_RETRY_PROMPT = (
     "output exactly one <tool_call>{...}</tool_call> block in assistant content; "
     "otherwise answer the user directly."
 )
+_VISIBLE_RETRY_PROMPT_NATIVE = (
+    "Your previous response contained only hidden reasoning and no user-visible "
+    "assistant content. Now provide the visible response. If you need a tool, "
+    "use a native tool call; otherwise answer the user directly."
+)
 
 _TC_OPEN = "<tool_call>"
 _TC_CLOSE = "</tool_call>"
@@ -170,6 +187,47 @@ _TC_CLOSE = "</tool_call>"
 # treat any trailing <tool_call> as speculative and do NOT regenerate. Prevents
 # the "correct answer then wrong answer on next round" failure mode.
 _TRUST_ANSWER_MIN_CHARS = 120
+
+
+_NATIVE_TOOLS_CACHE: list[dict] | None = None
+
+
+def _native_tool_defs() -> list[dict]:
+    """Ollama native ``tools`` array built from TOOL_SPECS (single source of
+    truth). Internal chat exposes ALL specs regardless of ``api_max_tier`` —
+    that cap applies to external Discovery callers only."""
+    global _NATIVE_TOOLS_CACHE
+    if _NATIVE_TOOLS_CACHE is None:
+        from oracle.services.tool_registry import TOOL_SPECS
+        _NATIVE_TOOLS_CACHE = [
+            {
+                "type": "function",
+                "function": {
+                    "name": s["name"],
+                    "description": s["description"],
+                    "parameters": s["parameters"],
+                },
+            }
+            for s in TOOL_SPECS
+        ]
+    return _NATIVE_TOOLS_CACHE
+
+
+def _classify_no_tools(exc: Exception) -> tuple[bool, bool]:
+    """Classify a streaming error raised while native tools were attached.
+
+    Returns ``(fallback_to_legacy, negative_cache_model)``. Any HTTP 400
+    triggers fallback (retrying without tools is one cheap request); the
+    model's capability is negative-cached only when the server names tools as
+    the problem, so an unrelated 400 doesn't permanently demote the model.
+    """
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code != 400:
+        return False, False
+    try:
+        body = exc.read().decode("utf-8", "replace")
+    except Exception:
+        body = ""
+    return True, "tool" in body.lower()
 
 
 class _ToolCallStripper:
@@ -220,8 +278,12 @@ class _ToolCallStripper:
         return tail
 
 
-def _build_system_prompt(state: dict) -> str:
-    """Build system prompt dynamically based on conversation state."""
+def _build_system_prompt(state: dict, native: bool = False) -> str:
+    """Build system prompt dynamically based on conversation state.
+
+    ``native=True`` omits the <tool_call> catalog/syntax (tools are declared
+    via Ollama's native API instead), keeping only behavioral guidance.
+    """
     parts = [_SYSTEM_BASE]
 
     # Active Sub-Agents (Supervisor Role)
@@ -246,8 +308,11 @@ def _build_system_prompt(state: dict) -> str:
             "or 'my project', they mean one of the focused projects.\n"
         )
 
-    parts.append(_TOOL_DEFS)
-    parts.append(_SYSTEM_RULES)
+    if native:
+        parts.append(_SYSTEM_RULES_NATIVE)
+    else:
+        parts.append(_TOOL_DEFS)
+        parts.append(_SYSTEM_RULES)
     return "".join(parts)
 
 
@@ -277,6 +342,60 @@ class ChatEngine:
         self.store = store
         self.c3_bridge = c3_bridge
         self.activity_reporter = activity_reporter
+
+    # ── Shared streaming drain ────────────────────────────
+
+    def _drain_stream(self, messages: list[dict], model: str,
+                      stripper: "_ToolCallStripper | None" = None,
+                      tools: list[dict] | None = None, think: bool | None = True):
+        """Stream one LLM round, yielding SSE event dicts as they arrive.
+
+        The single streamer behind the main chat loop, the visible-response
+        retry, and the delegate sub-agent loop. Returns (via StopIteration
+        value — use ``yield from``) a summary dict: ``text`` (raw, including
+        any <tool_call> markup in legacy mode), ``thinking``, ``tool_calls``
+        (native protocol), ``stats``, ``chunks``, ``visible_chars``.
+
+        In legacy mode pass a ``_ToolCallStripper`` so <tool_call> blocks are
+        withheld from the emitted text events; native mode emits text as-is
+        (the content channel is clean) and collects structured tool calls
+        without emitting SSE for them — the executor emits the canonical
+        ``tool_call`` event with its tool_id.
+        """
+        full_text = ""
+        thinking_text = ""
+        tool_calls: list[dict] = []
+        stats: dict = {}
+        chunks = 0
+        visible_chars = 0
+        for item in self.bridge.stream_chat(messages, model=model, think=think,
+                                            tools=tools):
+            if isinstance(item, tuple):
+                kind, chunk = item
+            else:
+                kind, chunk = "text", item
+            chunks += 1
+            if kind == "thinking":
+                thinking_text += chunk
+                yield {"type": "thinking", "content": chunk}
+            elif kind == "stats":
+                stats = chunk
+            elif kind == "tool_call":
+                tool_calls.append(chunk)
+            else:
+                full_text += chunk
+                visible = stripper.feed(chunk) if stripper is not None else chunk
+                if visible:
+                    visible_chars += len(visible)
+                    yield {"type": "text", "content": visible}
+        if stripper is not None:
+            tail = stripper.flush()
+            if tail:
+                visible_chars += len(tail)
+                yield {"type": "text", "content": tail}
+        return {"text": full_text, "thinking": thinking_text,
+                "tool_calls": tool_calls, "stats": stats, "chunks": chunks,
+                "visible_chars": visible_chars}
 
     # ── Main chat generator ───────────────────────────────
 
@@ -317,9 +436,15 @@ class ChatEngine:
         # Save user message
         self.store.append_message(conv_id, {"role": "user", "content": user_message})
 
+        # Native tool-calling mode: capability probe returns True/False, or
+        # None (unknown) → attempt native and fall back on live rejection.
+        probe = self.bridge.supports_tools(use_model) if self.bridge else False
+        use_native = probe is not False
+        tools = _native_tool_defs() if use_native else None
+
         # Build messages for LLM
         history = self.store.get_conversation(conv_id)
-        llm_messages = self._build_llm_messages(history, state)
+        llm_messages = self._build_llm_messages(history, state, native=use_native)
         context_msgs = len(llm_messages) - 1  # exclude system prompt
         yield {"type": "status", "message": "Context ready", "detail": f"{context_msgs} messages in context"}
 
@@ -332,70 +457,74 @@ class ChatEngine:
                 round_label = f"Round {_round + 1}" if _round > 0 else ""
                 yield {"type": "status", "message": f"Streaming from {use_model}", "detail": round_label or "Generating response"}
 
-                full_text = ""
-                thinking_text = ""
                 stream_start = time.time()
-                chunk_count = 0
-                stripper = _ToolCallStripper()
                 try:
-                    for item in self.bridge.stream_chat(llm_messages, model=use_model):
-                        # Bridge yields (type, content) tuples or plain strings
-                        if isinstance(item, tuple):
-                            kind, chunk = item
-                        else:
-                            kind, chunk = "text", item
-                        if kind == "thinking":
-                            thinking_text += chunk
-                            thinking_chars += len(chunk)
-                            yield {"type": "thinking", "content": chunk}
-                        elif kind == "stats":
-                            # Ollama token stats from final chunk
-                            ollama_stats = chunk
-                        else:
-                            full_text += chunk
-                            visible = stripper.feed(chunk)
-                            if visible:
-                                response_chars += len(visible)
-                                yield {"type": "text", "content": visible}
-                        chunk_count += 1
-                    tail = stripper.flush()
-                    if tail:
-                        response_chars += len(tail)
-                        yield {"type": "text", "content": tail}
+                    result = yield from self._drain_stream(
+                        llm_messages, use_model,
+                        stripper=None if use_native else _ToolCallStripper(),
+                        tools=tools,
+                    )
                 except Exception as e:
-                    yield {"type": "error", "message": f"LLM error: {e}"}
-                    break
+                    fallback_ok, cache_neg = (
+                        _classify_no_tools(e) if (use_native and tools) else (False, False)
+                    )
+                    if not fallback_ok:
+                        yield {"type": "error", "message": f"LLM error: {e}"}
+                        break
+                    # Mid-turn fallback: the model rejected native tools —
+                    # demote to the legacy text protocol and rerun this round.
+                    if cache_neg and self.bridge:
+                        self.bridge.set_tools_support(use_model, False)
+                    use_native = False
+                    tools = None
+                    llm_messages[0] = {
+                        "role": "system",
+                        "content": _build_system_prompt(state, native=False),
+                    }
+                    yield {"type": "status", "message": "Falling back to text tool protocol",
+                           "detail": f"{use_model} rejected native tool calling"}
+                    try:
+                        result = yield from self._drain_stream(
+                            llm_messages, use_model, stripper=_ToolCallStripper(),
+                        )
+                    except Exception as e2:
+                        yield {"type": "error", "message": f"LLM error: {e2}"}
+                        break
 
-                if not full_text.strip() and thinking_text.strip():
+                full_text = result["text"]
+                thinking_text = result["thinking"]
+                native_calls = result["tool_calls"]
+                thinking_chars += len(thinking_text)
+                response_chars += result["visible_chars"]
+                chunk_count = result["chunks"]
+                if result["stats"]:
+                    ollama_stats = result["stats"]
+
+                if not full_text.strip() and not native_calls and thinking_text.strip():
                     yield {
                         "type": "status",
                         "message": "Retrying visible response",
                         "detail": "Model returned thinking without assistant content",
                     }
-                    retry_messages = llm_messages + [{"role": "user", "content": _VISIBLE_RETRY_PROMPT}]
+                    retry_prompt = (
+                        _VISIBLE_RETRY_PROMPT_NATIVE if use_native else _VISIBLE_RETRY_PROMPT
+                    )
+                    retry_messages = llm_messages + [{"role": "user", "content": retry_prompt}]
                     try:
-                        for item in self.bridge.stream_chat(
-                            retry_messages, model=use_model, think=False
-                        ):
-                            if isinstance(item, tuple):
-                                kind, chunk = item
-                            else:
-                                kind, chunk = "text", item
-                            if kind == "thinking":
-                                thinking_text += chunk
-                                thinking_chars += len(chunk)
-                                yield {"type": "thinking", "content": chunk}
-                            elif kind == "stats":
-                                ollama_stats = chunk
-                            else:
-                                full_text += chunk
-                                response_chars += len(chunk)
-                                yield {"type": "text", "content": chunk}
-                            chunk_count += 1
+                        retry = yield from self._drain_stream(
+                            retry_messages, use_model, tools=tools, think=False,
+                        )
+                        full_text += retry["text"]
+                        thinking_chars += len(retry["thinking"])
+                        response_chars += retry["visible_chars"]
+                        native_calls.extend(retry["tool_calls"])
+                        chunk_count += retry["chunks"]
+                        if retry["stats"]:
+                            ollama_stats = retry["stats"]
                     except Exception as e:
                         yield {"type": "error", "message": f"Visible response retry failed: {e}"}
 
-                if not full_text.strip() and thinking_text.strip():
+                if not full_text.strip() and not native_calls and thinking_text.strip():
                     fallback = (
                         f"{use_model} returned hidden reasoning but no visible response. "
                         "I retried with thinking disabled and still did not receive assistant content. "
@@ -409,34 +538,37 @@ class ChatEngine:
                 total_tokens += chunk_count
                 yield {"type": "status", "message": "Response received", "detail": f"{chunk_count} chunks in {stream_ms}ms"}
 
-                # Check for tool call(s) in response
-                tool_matches = list(_TOOL_CALL_RE.finditer(full_text))
-                visible_text = _TOOL_CALL_RE.sub("", full_text).strip()
-                final_text = visible_text or full_text
+                # Determine tool calls for this round.
+                if use_native:
+                    # Structured calls from the native protocol; content is clean.
+                    valid_calls = [
+                        {"name": c.get("name", "unknown"), "args": c.get("arguments") or {}}
+                        for c in native_calls if c.get("name")
+                    ]
+                    visible_text = full_text.strip()
+                    final_text = visible_text
+                else:
+                    tool_matches = list(_TOOL_CALL_RE.finditer(full_text))
+                    visible_text = _TOOL_CALL_RE.sub("", full_text).strip()
+                    final_text = visible_text or full_text
+                    valid_calls = []
+                    for match in tool_matches:
+                        try:
+                            valid_calls.append(json.loads(match.group(1)))
+                        except json.JSONDecodeError:
+                            continue
 
-                if not tool_matches:
+                if not valid_calls:
                     # No tool call — final answer
                     round_messages.append({"role": "assistant", "content": final_text})
                     break
 
-                # Extract tool calls
-                valid_calls = []
-                for match in tool_matches:
-                    try:
-                        call = json.loads(match.group(1))
-                        valid_calls.append(call)
-                    except json.JSONDecodeError:
-                        continue
-
-                if not valid_calls:
-                    round_messages.append({"role": "assistant", "content": final_text})
-                    break
-
-                # If the model already produced a substantive answer alongside
-                # speculative tool calls, trust the answer and stop. Regenerating
-                # with tool results usually corrupts the correct answer because
-                # "continue" is read as "restart".
-                if len(visible_text) >= _TRUST_ANSWER_MIN_CHARS:
+                # Legacy-only heuristic: if the model already produced a
+                # substantive answer alongside speculative <tool_call> blocks,
+                # trust the answer and stop — regenerating with tool results
+                # usually corrupts it. Native mode needs no such guard: models
+                # emitting structured calls expect their results.
+                if not use_native and len(visible_text) >= _TRUST_ANSWER_MIN_CHARS:
                     round_messages.append({"role": "assistant", "content": visible_text})
                     yield {
                         "type": "status",
@@ -448,7 +580,19 @@ class ChatEngine:
                 # Record the assistant response before tool results (stripped so
                 # the next LLM round sees clean context without <tool_call> noise).
                 round_messages.append({"role": "assistant", "content": final_text})
-                llm_messages.append({"role": "assistant", "content": final_text})
+                if use_native:
+                    # Echo the structured calls back so the model can pair the
+                    # role:tool results that follow.
+                    llm_messages.append({
+                        "role": "assistant",
+                        "content": full_text,
+                        "tool_calls": [
+                            {"function": {"name": c["name"], "arguments": c.get("args") or {}}}
+                            for c in valid_calls
+                        ],
+                    })
+                else:
+                    llm_messages.append({"role": "assistant", "content": final_text})
 
                 # Execute all tools in parallel
                 tool_calls_count += len(valid_calls)
@@ -536,11 +680,18 @@ class ChatEngine:
                                 "tool_name": tool_name, "tool_id": tool_id,
                             })
 
-                            # Extend next LLM context
-                            llm_messages.append({
-                                "role": "user",
-                                "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>",
-                            })
+                            # Extend next LLM context: native protocol feeds a
+                            # role:tool message; legacy re-injects as user text.
+                            if use_native:
+                                llm_messages.append({
+                                    "role": "tool", "tool_name": tool_name,
+                                    "content": truncated,
+                                })
+                            else:
+                                llm_messages.append({
+                                    "role": "user",
+                                    "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>",
+                                })
 
                     # Final drain after all tools complete
                     while True:
@@ -550,16 +701,21 @@ class ChatEngine:
                             break
                         yield ev
 
-                llm_messages.append({
-                    "role": "user",
-                    "content": (
-                        "The tool results above contain the data you requested. "
-                        "Now write your final answer to the user based on those results. "
-                        "Do NOT output any <tool_call> blocks. Do NOT restart or repeat "
-                        "your previous message — the user has already seen it. "
-                        "Write only the remaining, finalized answer."
-                    ),
-                })
+                if not use_native:
+                    # Legacy models tend to restart their answer after inlined
+                    # tool results; the nudge counters that. Native mode must
+                    # NOT inject a user message between tool_calls and their
+                    # role:tool results — the protocol handles continuation.
+                    llm_messages.append({
+                        "role": "user",
+                        "content": (
+                            "The tool results above contain the data you requested. "
+                            "Now write your final answer to the user based on those results. "
+                            "Do NOT output any <tool_call> blocks. Do NOT restart or repeat "
+                            "your previous message — the user has already seen it. "
+                            "Write only the remaining, finalized answer."
+                        ),
+                    })
                 yield {"type": "status", "message": "Finalizing answer", "detail": f"After {len(valid_calls)} parallel results"}
             else:
                 # Exhausted rounds without a final answer — synthesize one
@@ -627,9 +783,15 @@ class ChatEngine:
 
     # ── LLM message building ─────────────────────────────
 
-    def _build_llm_messages(self, history: list[dict], state: dict | None = None) -> list[dict]:
-        """Convert stored history to Ollama chat messages with sliding window."""
-        system_prompt = _build_system_prompt(state or {})
+    def _build_llm_messages(self, history: list[dict], state: dict | None = None,
+                            native: bool = False) -> list[dict]:
+        """Convert stored history to Ollama chat messages with sliding window.
+
+        Historical tool results are re-injected as ``<tool_result>`` user
+        messages in BOTH modes: safe for all models, and avoids orphaned
+        ``role:tool`` messages (no paired tool_calls) on conversation reload.
+        """
+        system_prompt = _build_system_prompt(state or {}, native=native)
         messages = [{"role": "system", "content": system_prompt}]
 
         # Take last N messages, skip tool_call/tool_result (they were inlined)
@@ -1046,60 +1208,96 @@ class ChatEngine:
             _emit("agent_done", agent_id=agent_id, error="not_active")
             return {"error": f"Agent '{agent_id}' is not active or does not exist."}
 
-        system_prompt = f"{agent.get('system_prompt', '')}\n\n{_TOOL_DEFS}\n{_SYSTEM_RULES}"
+        model = agent.get("model") or self.bridge.model
+        # Sub-agents pick their tool protocol from their OWN model.
+        probe = self.bridge.supports_tools(model) if self.bridge else False
+        use_native = probe is not False
+        tools = _native_tool_defs() if use_native else None
+
+        def _sys_prompt(native: bool) -> str:
+            rules = _SYSTEM_RULES_NATIVE if native else f"{_TOOL_DEFS}\n{_SYSTEM_RULES}"
+            return f"{agent.get('system_prompt', '')}\n\n{rules}"
+
         llm_messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": _sys_prompt(use_native)},
             {"role": "user", "content": task}
         ]
 
         rounds = 0
         max_rounds = 6
-        model = agent.get("model") or self.bridge.model
         agent_start_ns = time.perf_counter_ns()
         total_result_chars = 0
+        full_text = ""
 
         _emit("agent_start", agent_id=agent_id, task=task, model=model)
 
         while rounds < max_rounds:
             rounds += 1
             _emit("agent_round", agent_id=agent_id, round=rounds)
-            full_text = ""
+            gen = self._drain_stream(llm_messages, model, tools=tools)
+            result = None
             try:
-                for item in self.bridge.stream_chat(llm_messages, model=model):
-                    if isinstance(item, tuple):
-                        kind, chunk = item
-                    else:
-                        kind, chunk = "text", item
-                    if kind == "text":
-                        full_text += chunk
-                        _emit("agent_text", content=chunk)
-                    elif kind == "thinking":
-                        _emit("agent_thinking", content=chunk)
+                while True:
+                    try:
+                        ev = next(gen)
+                    except StopIteration as stop:
+                        result = stop.value
+                        break
+                    if ev.get("type") == "text":
+                        _emit("agent_text", content=ev["content"])
+                    elif ev.get("type") == "thinking":
+                        _emit("agent_thinking", content=ev["content"])
                     # stats chunks are ignored for sub-agents
             except Exception as e:
+                if use_native and tools:
+                    fallback_ok, cache_neg = _classify_no_tools(e)
+                    if fallback_ok:
+                        # Model rejected native tools — demote to the legacy
+                        # text protocol and rerun this round.
+                        if cache_neg and self.bridge:
+                            self.bridge.set_tools_support(model, False)
+                        use_native = False
+                        tools = None
+                        llm_messages[0] = {"role": "system", "content": _sys_prompt(False)}
+                        rounds -= 1
+                        continue
                 _emit("agent_done", agent_id=agent_id, rounds=rounds, error=str(e))
                 return {"error": f"Agent '{agent_id}' encountered LLM error: {e}"}
 
-            if not full_text.strip():
+            full_text = result["text"]
+            native_calls = result["tool_calls"]
+
+            if not full_text.strip() and not native_calls:
                 _emit("agent_done", agent_id=agent_id, rounds=rounds, error="empty_response")
                 return {"error": f"Agent '{agent_id}' returned empty response."}
 
-            tool_match = _TOOL_CALL_RE.search(full_text)
-            if not tool_match:
-                total_result_chars = len(full_text)
-                dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
-                _emit("agent_done", agent_id=agent_id, rounds=rounds,
-                      result_chars=total_result_chars, duration_ms=dur_ms)
-                return {"agent": agent_id, "result": full_text}
+            if use_native:
+                if not native_calls:
+                    total_result_chars = len(full_text)
+                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
+                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
+                          result_chars=total_result_chars, duration_ms=dur_ms)
+                    return {"agent": agent_id, "result": full_text}
+                # Sub-agents run one tool per round; take the first call.
+                first = native_calls[0]
+                call = {"name": first.get("name", "unknown"), "args": first.get("arguments") or {}}
+            else:
+                tool_match = _TOOL_CALL_RE.search(full_text)
+                if not tool_match:
+                    total_result_chars = len(full_text)
+                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
+                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
+                          result_chars=total_result_chars, duration_ms=dur_ms)
+                    return {"agent": agent_id, "result": full_text}
 
-            try:
-                call = json.loads(tool_match.group(1))
-            except json.JSONDecodeError:
-                total_result_chars = len(full_text)
-                dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
-                _emit("agent_done", agent_id=agent_id, rounds=rounds,
-                      result_chars=total_result_chars, duration_ms=dur_ms)
-                return {"agent": agent_id, "result": full_text}
+                try:
+                    call = json.loads(tool_match.group(1))
+                except json.JSONDecodeError:
+                    total_result_chars = len(full_text)
+                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
+                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
+                          result_chars=total_result_chars, duration_ms=dur_ms)
+                    return {"agent": agent_id, "result": full_text}
 
             tool_name = call.get("name", "unknown")
             tool_args = call.get("args", {})
@@ -1122,11 +1320,18 @@ class ChatEngine:
             if len(result_str) > _MAX_TOOL_RESULT_CHARS:
                 truncated += "... (truncated)"
 
-            llm_messages.append({"role": "assistant", "content": full_text})
-            llm_messages.append({
-                "role": "user",
-                "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>\nContinue your response using this data."
-            })
+            if use_native:
+                llm_messages.append({
+                    "role": "assistant", "content": full_text,
+                    "tool_calls": [{"function": {"name": tool_name, "arguments": tool_args}}],
+                })
+                llm_messages.append({"role": "tool", "tool_name": tool_name, "content": truncated})
+            else:
+                llm_messages.append({"role": "assistant", "content": full_text})
+                llm_messages.append({
+                    "role": "user",
+                    "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>\nContinue your response using this data."
+                })
 
         dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
         _emit("agent_done", agent_id=agent_id, rounds=rounds,

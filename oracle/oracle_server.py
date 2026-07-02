@@ -20,7 +20,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory  # noqa
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
-from oracle.services import api_auth  # noqa: E402
+from oracle.services import api_auth, local_session  # noqa: E402
 from oracle.services.activity_reporter import ActivityReporter  # noqa: E402
 from oracle.services.api_auth import extract_bearer  # noqa: E402
 from oracle.services.api_auth import verify as verify_api_key  # noqa: E402
@@ -68,6 +68,7 @@ def _init_services():
         base_url=_cfg.get("ollama_base_url", "https://ollama.com"),
         model=_cfg.get("model", "gemma4:31b-cloud"),
         api_key=_cfg.get("ollama_api_key", ""),
+        cache_ttl_sec=int(_cfg.get("llm_cache_ttl_sec", 86400)),
     )
     # Verify model works on startup (background thread to avoid blocking)
     def _verify():
@@ -80,7 +81,10 @@ def _init_services():
             _model_verified = False
             logging.getLogger("oracle").warning("Ollama unreachable — model not verified")
     threading.Thread(target=_verify, daemon=True, name="oracle-model-verify").start()
-    _scanner = ProjectScanner(hub_url=_cfg.get("hub_url", "http://localhost:3330"))
+    _scanner = ProjectScanner(
+        hub_url=_cfg.get("hub_url", "http://localhost:3330"),
+        ttl=float(_cfg.get("scanner_ttl_seconds", 20)),
+    )
     _reader = MemoryReader()
     _checker = HealthChecker(_reader)
     _writer = MemoryWriter()
@@ -122,9 +126,10 @@ def _init_services():
 # ── CORS ──────────────────────────────────────────────────
 # Localhost security guard + scoped CORS (replaces the previous wildcard CORS).
 # Host-header allowlist + Origin/Referer CSRF guard. Bearer auth on
-# /api/discovery/* (see _discovery_auth_guard below) still applies on top; this
-# guard also protects the ungated endpoints (config, chat, /api/apikey) from
-# cross-origin reads — notably the raw Discovery token returned by api_apikey_get.
+# /api/discovery/* (see _discovery_auth_guard below) and the local write gate
+# (_local_write_guard: session cookie or Bearer on every other mutating
+# /api/* call) still apply on top; this guard blocks cross-origin browsers,
+# the write gate blocks unauthenticated local processes.
 from core.web_security import (
     allowed_hostnames as _allowed_hostnames,
 )
@@ -155,10 +160,39 @@ def _discovery_auth_guard():
     return None
 
 
+# ── Local write gate ──────────────────────────────────────
+@app.before_request
+def _local_write_guard():
+    """Auth gate for mutating local API calls (everything except Discovery).
+
+    Requires either the per-boot dashboard session cookie (issued on ``GET /``
+    to loopback browsers) or the Discovery Bearer token. Default-deny: any
+    future mutating ``/api/*`` endpoint is covered automatically. Closes the
+    rotate-then-read kill chain — previously any local process could POST
+    /api/apikey/rotate unauthenticated and read the fresh token, defeating
+    the Bearer gates on /api/config and /api/discovery/*.
+    """
+    path = request.path or ""
+    if not path.startswith("/api/") or path.startswith("/api/discovery"):
+        return None
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if verify_api_key(extract_bearer(request.headers.get("Authorization"))):
+        return None
+    if local_session.verify(request.cookies.get(local_session.COOKIE_NAME)):
+        return None
+    return jsonify({"error": "unauthorized"}), 401
+
+
 # ── Static ────────────────────────────────────────────────
 @app.route("/")
 def index():
-    return send_from_directory(os.path.dirname(__file__), "oracle.html")
+    resp = send_from_directory(os.path.dirname(__file__), "oracle.html")
+    # Issue the dashboard session cookie only to loopback browsers; remote
+    # viewers (LAN bind) can read GET dashboards but cannot mutate.
+    if local_session.is_loopback(request.remote_addr):
+        local_session.attach_cookie(resp)
+    return resp
 
 
 # ── Health ────────────────────────────────────────────────
@@ -206,11 +240,9 @@ _CONFIG_SETTABLE_KEYS = frozenset(_CONFIG_DEFAULTS.keys())
 @app.route("/api/config", methods=["POST"])
 def api_config_set():
     global _cfg
-    # Require the Bearer token: this endpoint can disable Discovery auth or
-    # repoint ollama_base_url, so it must never be reachable unauthenticated.
-    token = extract_bearer(request.headers.get("Authorization"))
-    if not verify_api_key(token):
-        return jsonify({"error": "unauthorized"}), 401
+    # Auth is enforced by _local_write_guard (session cookie or Bearer): this
+    # endpoint can disable Discovery auth or repoint ollama_base_url, so it
+    # must never be reachable unauthenticated.
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
         return jsonify({"error": "body must be a JSON object"}), 400
@@ -258,7 +290,8 @@ def api_projects():
 
 @app.route("/api/projects/scan", methods=["POST"])
 def api_projects_scan():
-    projects = _scanner.discover() if _scanner else []
+    # Explicit Scan action bypasses the scanner's TTL cache.
+    projects = _scanner.discover(force=True) if _scanner else []
     return jsonify({"scanned": len(projects), "projects": projects})
 
 
@@ -740,7 +773,7 @@ def api_discovery_mcp_info():
     })
 
 
-# ── Discovery API key management (local dashboard — unauthenticated, loopback) ──
+# ── Discovery API key management (mutations gated by _local_write_guard) ──
 def _apikey_status(reveal: bool = False) -> dict:
     """Status payload for the Discovery API token + connection info.
 
@@ -786,12 +819,14 @@ def _apikey_status(reveal: bool = False) -> dict:
 def api_apikey_get():
     """Return Discovery API token status + connection info.
 
-    The unmasked token is only included when the caller presents a valid Bearer
-    token; otherwise only the masked form is returned (never the raw key over
-    HTTP unauthenticated).
+    The unmasked token is only included when the caller presents a valid
+    Bearer token or the dashboard session cookie; otherwise only the masked
+    form is returned (never the raw key over HTTP unauthenticated).
     """
     try:
-        reveal = verify_api_key(extract_bearer(request.headers.get("Authorization")))
+        reveal = verify_api_key(
+            extract_bearer(request.headers.get("Authorization"))
+        ) or local_session.verify(request.cookies.get(local_session.COOKIE_NAME))
         return jsonify(_apikey_status(reveal=reveal))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
