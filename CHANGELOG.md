@@ -4,6 +4,18 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.1] - 2026-07-02
+
+### Fixed
+
+- **Hub: card dropdown menus painted behind later cards.** The `.fade-up`
+  entrance animation used `animation-fill-mode: forwards`, which retains the
+  final keyframe's transform as a computed identity matrix — keeping every
+  project card a stacking context forever and trapping the kebab menu's
+  z-index inside it. Fill mode dropped (base style is already the end state);
+  keyframes now end at `transform: none`. Menus, modals, and toasts stack
+  globally again.
+
 ## [2.44.0] - 2026-07-02
 
 ### Sub-projects: linked child `.c3` branches under one parent
