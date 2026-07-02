@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Oracle version badge** (hub-topbar parity): `/api/health` now carries the
+  C3 `version`, and the dashboard header shows `v<version>` next to the logo.
+- **Persistent Oracle UI preferences** (hub parity): the active tab is saved
+  to config on every switch (`ui_last_tab`) and restored on load; the header
+  theme toggle's persistence — silently broken by a 401 before the v2.47.0
+  session cookie — now actually sticks.
+
 ### Removed
 
 - **Oracle `/legacy` route and `oracle.html`.** The frozen pre-bundle

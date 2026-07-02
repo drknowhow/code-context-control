@@ -24,6 +24,12 @@ async function refreshHeader() {
       api('/api/review/status').catch(() => ({})),
     ]);
 
+    // Version badge (hub topbar parity)
+    if (health.version) {
+      const vEl = document.getElementById('oracleVersion');
+      if (vEl) { vEl.textContent = 'v' + health.version; vEl.style.display = ''; }
+    }
+
     // Ollama
     ollamaOk = !!health.ollama_available;
     model = health.model || '?';

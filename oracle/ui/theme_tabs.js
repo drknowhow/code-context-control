@@ -25,6 +25,18 @@ function toggleTheme() {
 // ═══════════════════════════════════════════════════════════
 // ── Tab switching ──
 // ═══════════════════════════════════════════════════════════
+let _restoringTab = false;
+
+function restoreLastTab(cfg) {
+  // Re-open the tab from the persisted UI preference (hub parity).
+  const last = (cfg && cfg.ui_last_tab) || 'chat';
+  if (last === 'chat') return; // chat is the default active tab
+  const tab = document.querySelector(`.tab[data-tab="${last}"]`);
+  if (!tab) return;
+  _restoringTab = true;
+  try { tab.click(); } finally { _restoringTab = false; }
+}
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -45,6 +57,10 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
     if (tab.dataset.tab === 'activity' && !window._actLoaded) {
       loadActivity(); window._actLoaded = true;
+    }
+    // Persist the UI preference (hub parity) — skip during restore.
+    if (!_restoringTab) {
+      api('/api/config', { method: 'POST', body: { ui_last_tab: tab.dataset.tab } }).catch(() => {});
     }
   });
 });

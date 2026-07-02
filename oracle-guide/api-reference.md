@@ -22,6 +22,7 @@ Returns Oracle status and Ollama cloud availability.
 {
   "status": "ok",
   "service": "c3-oracle",
+  "version": "2.49.0",
   "model": "gemma4:31b-cloud",
   "ollama_available": true,
   "model_verified": true,

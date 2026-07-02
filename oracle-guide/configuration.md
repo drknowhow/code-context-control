@@ -27,7 +27,8 @@ Oracle stores its configuration at `~/.c3/oracle/config.json`.
 | `digest_notify_file` | `""` | JSONL sink appended after each scheduled digest (`""` = disabled) |
 | `digest_retention_days` | `14` | Prune stored digests older than this |
 | `auto_open_browser` | `true` | Open browser on startup |
-| `theme` | `dark` | UI theme (`dark` or `light`) |
+| `theme` | `dark` | UI theme (`dark` or `light`) — persisted automatically when toggled in the header |
+| `ui_last_tab` | `chat` | Last active dashboard tab — persisted automatically on tab switch, restored on load |
 | `max_facts_per_analysis` | `100` | Max facts sent to LLM per analysis |
 | `insight_confidence_threshold` | `0.5` | Minimum confidence to store an insight |
 | `log_level` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |

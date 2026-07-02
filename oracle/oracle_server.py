@@ -262,6 +262,7 @@ def api_health():
     return jsonify({
         "status": "ok",
         "service": "c3-oracle",
+        "version": _c3_version(),
         "model": _cfg.get("model", "gemma4:31b-cloud"),
         "ollama_available": ollama_ok,
         "model_verified": _model_verified,

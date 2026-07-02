@@ -32,6 +32,7 @@ DEFAULTS = {
     "digest_retention_days": 14,      # prune stored digests
     "auto_open_browser": True,
     "theme": "dark",
+    "ui_last_tab": "chat",          # persisted UI preference (hub parity)
     "max_facts_per_analysis": 100,
     "insight_confidence_threshold": 0.5,
     "log_level": "INFO",

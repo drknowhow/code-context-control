@@ -74,8 +74,12 @@ class TestBundleRoutes(unittest.TestCase):
     def test_legacy_route_removed(self):
         self.assertEqual(self.client.get("/legacy").status_code, 404)
 
-    def test_health_unaffected(self):
-        self.assertEqual(self.client.get("/api/health").status_code, 200)
+    def test_health_carries_version(self):
+        r = self.client.get("/api/health")
+        self.assertEqual(r.status_code, 200)
+        # Header version badge (hub parity) reads this field.
+        version = r.get_json().get("version", "")
+        self.assertRegex(version, r"^\d+\.\d+")
 
 
 if __name__ == "__main__":
