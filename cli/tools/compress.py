@@ -8,9 +8,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from core import count_tokens
-
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+from core import count_tokens
 
 
 def _run_memory_mcp_cli(args: list, cwd: str, timeout: int = 30) -> tuple:

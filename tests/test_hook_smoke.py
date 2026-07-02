@@ -17,9 +17,9 @@ from cli import _hook_utils  # noqa: E402
 
 sys.modules.setdefault("_hook_utils", _hook_utils)
 
+import cli.hook_artifact as hook_artifact  # noqa: E402
 import cli.hook_auto_snapshot as hook_auto_snapshot  # noqa: E402
 import cli.hook_c3_signal as hook_c3_signal  # noqa: E402
-import cli.hook_artifact as hook_artifact  # noqa: E402
 import cli.hook_c3read as hook_c3read  # noqa: E402
 import cli.hook_edit_ledger as hook_edit_ledger  # noqa: E402
 import cli.hook_edit_unlock as hook_edit_unlock  # noqa: E402

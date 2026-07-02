@@ -32,9 +32,9 @@ from typing import Optional
 
 from services.artifact_defs import (
     ArtifactUnit,
+    _norm,
     classify_path,
     discover_units,
-    _norm,
 )
 
 SCHEMA_VERSION = 1

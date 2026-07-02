@@ -288,7 +288,7 @@ class TaskStore:
     def purge_archived(self, entity="task") -> dict:
         key = {"task": "tasks", "milestone": "milestones", "note": "notes"}.get(entity)
         if not key:
-            return {"error": f"entity must be task|milestone|note"}
+            return {"error": "entity must be task|milestone|note"}
         with self._lock:
             doc = self._load()
             before = len(doc[key])

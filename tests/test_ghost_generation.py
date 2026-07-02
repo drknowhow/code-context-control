@@ -29,8 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "cli"))
 
-from services.win_subprocess import harden_win_argv, is_batch_shim  # noqa: E402
 from hook_ghost_files import sweep_ghost_files  # noqa: E402
+
+from services.win_subprocess import harden_win_argv, is_batch_shim  # noqa: E402
 
 WINDOWS = sys.platform == "win32"
 

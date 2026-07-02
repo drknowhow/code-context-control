@@ -13,6 +13,7 @@ from core.config import load_delegate_config, load_hybrid_config
 from core.ide import get_profile, load_ide_config
 from services.activity_log import ActivityLog
 from services.agents import create_agents
+from services.artifact_store import ArtifactStore
 from services.claude_md import ClaudeMdManager
 from services.compressor import CodeCompressor
 from services.context_snapshot import ContextSnapshot
@@ -39,7 +40,6 @@ from services.session_preloader import SessionPreloader
 from services.task_store import TaskStore
 from services.validation_cache import ValidationCache
 from services.vector_store import VectorStore
-from services.artifact_store import ArtifactStore
 from services.watcher import CodeWatcher
 
 

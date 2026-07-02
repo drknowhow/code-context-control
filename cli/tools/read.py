@@ -6,9 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from core import count_tokens
-
 from cli.tools._helpers import finalize_with_tokens
+from core import count_tokens
 
 
 def _coerce_list(val: Any) -> list[str] | None:

@@ -10,9 +10,8 @@ import json
 import re
 from pathlib import Path
 
-from core import count_tokens
-
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+from core import count_tokens
 
 
 def handle_filter(file_path: str, text: str, pattern: str, max_lines: int,

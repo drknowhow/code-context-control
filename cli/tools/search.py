@@ -5,9 +5,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from core import count_tokens
-
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+from core import count_tokens
 
 # Hard cap: responses above this are truncated to avoid filling context.
 _RESPONSE_TOKEN_CAP = 2400

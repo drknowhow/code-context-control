@@ -7,8 +7,8 @@ from pathlib import Path
 from services.doc_index import DocIndex
 from services.indexer import CodeIndex
 from services.protocol import CompressionProtocol
-from services.watcher import _ChangeHandler
 from services.subprojects import make_excluder
+from services.watcher import _ChangeHandler
 
 
 class ExclusionBase(unittest.TestCase):

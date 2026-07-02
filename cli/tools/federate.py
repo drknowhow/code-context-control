@@ -7,7 +7,6 @@ unions child facts. Results stay in per-scope sections — TF-IDF scores are
 not comparable across corpora, so no interleaved ranking.
 """
 
-from pathlib import Path
 
 # Budget split for scope='all': the parent keeps the lion's share.
 _PARENT_BUDGET_SHARE = 0.6
