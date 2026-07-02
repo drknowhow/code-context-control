@@ -1,7 +1,8 @@
 """C3Bridge — gives Oracle full read-only access to C3 tool handlers.
 
-Manages an LRU cache of C3Runtime instances (one per project) and wraps
-each handler with project_path dispatch + read-only enforcement.
+Runtimes come from a private ``ProjectRuntimeCache`` (the shared LRU that was
+originally lifted from this module) with a vector-warm ``on_build`` hook; each
+handler is wrapped with project_path dispatch + read-only enforcement.
 """
 
 import asyncio
@@ -9,7 +10,8 @@ import logging
 import threading
 from pathlib import Path
 
-from services.runtime import C3Runtime, build_runtime, stop_runtime
+from services.project_runtime import ProjectRuntimeCache
+from services.runtime import C3Runtime
 
 log = logging.getLogger("oracle.c3_bridge")
 
@@ -55,68 +57,52 @@ def validate_project_path(scanner, project_path: str) -> str:
 class C3Bridge:
     """Bridge between Oracle and C3 tool handlers with per-project runtime cache."""
 
-    MAX_CACHED = 3
-
     def __init__(self, scanner):
         self.scanner = scanner
-        self._runtimes: dict[str, C3Runtime] = {}
-        self._access_order: list[str] = []
-        self._lock = threading.Lock()
+        # Private instance, NOT shared_cache(): Oracle owns its runtimes'
+        # lifecycle via the atexit-registered shutdown(), and the vector-warm
+        # on_build hook shouldn't leak to other consumers. Size defaults to 8
+        # (env-tunable C3_RUNTIME_CACHE_SIZE) — the old hand-rolled LRU held 3,
+        # which thrashed cross-project search over more than 3 projects.
+        self._cache = ProjectRuntimeCache(
+            ide_name="claude-code", on_build=self._warm_runtime
+        )
 
     # ── Runtime cache ──────────────────────────────────────────────
 
     def get_runtime(self, project_path: str) -> C3Runtime:
-        """Return cached runtime or build a new one.  LRU eviction at MAX_CACHED.
+        """Return a cached runtime or build one (LRU, shared implementation).
 
         ``project_path`` is validated against discovered projects first, so a
         runtime can never be built for an arbitrary path on the machine.
         """
         project_path = validate_project_path(self.scanner, project_path)
-        with self._lock:
-            if project_path in self._runtimes:
-                self._access_order.remove(project_path)
-                self._access_order.append(project_path)
-                return self._runtimes[project_path]
+        return self._cache.get(project_path)
 
-        # Validate before building (outside lock to avoid holding it long).
-        p = Path(project_path)
-        if not p.exists():
-            raise ValueError(f"Project path does not exist: {project_path}")
-        if not (p / ".c3").is_dir():
-            raise ValueError(f"No .c3 directory in {project_path}. Run 'c3 install' first.")
+    def _warm_runtime(self, runtime: C3Runtime) -> None:
+        """Warm heavy vector backends off the request thread.
 
-        runtime = build_runtime(project_path, ide_name="claude-code")
-        log.info("Built C3Runtime for %s", project_path)
+        Mirrors the MCP server's lifespan warm (embedding build + SLTM warm)
+        so the first c3_search/c3_memory_query on a project doesn't pay the
+        chromadb/embedding init inline.
+        """
+        def _warm():
+            if getattr(runtime, "embedding_index", None):
+                try:
+                    runtime.embedding_index.build(runtime.indexer)
+                except Exception as e:
+                    log.debug("embedding warm failed: %s", e)
+            if getattr(runtime, "vector_store", None):
+                try:
+                    runtime.vector_store.warm()
+                except Exception as e:
+                    log.debug("vector warm failed: %s", e)
 
-        with self._lock:
-            # Double-check after build (another thread may have built it).
-            if project_path in self._runtimes:
-                stop_runtime(runtime)
-                self._access_order.remove(project_path)
-                self._access_order.append(project_path)
-                return self._runtimes[project_path]
-
-            self._runtimes[project_path] = runtime
-            self._access_order.append(project_path)
-
-            # Evict oldest if over limit.
-            while len(self._access_order) > self.MAX_CACHED:
-                evict = self._access_order.pop(0)
-                evicted = self._runtimes.pop(evict, None)
-                if evicted:
-                    stop_runtime(evicted)
-                    log.info("Evicted C3Runtime for %s", evict)
-
-        return runtime
+        threading.Thread(target=_warm, daemon=True, name="oracle-vector-warm").start()
 
     def shutdown(self):
         """Stop all cached runtimes."""
-        with self._lock:
-            for path, rt in self._runtimes.items():
-                stop_runtime(rt)
-                log.info("Shutdown C3Runtime for %s", path)
-            self._runtimes.clear()
-            self._access_order.clear()
+        self._cache.shutdown()
 
     # ── Helpers ────────────────────────────────────────────────────
 
