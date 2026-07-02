@@ -4,6 +4,53 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.49.0] - Unreleased
+
+### Oracle Wave 3: UI v3 concat bundle + `c3 oracle serve` + docs refresh
+
+#### UI architecture
+
+- **The 4,181-line `oracle.html` monolith is gone.** The dashboard now
+  follows the hub v2 concat architecture: an `oracle_ui.html` shell (CSS +
+  markup + `__C3_ORACLE_SCRIPTS__` token) plus **18 `oracle/ui/` modules**
+  split at section boundaries (core, busy, theme_tabs, crossgraph, header,
+  projects, insights, activity, suggestions, settings, agents,
+  `chat/{markdown,conversations,stream_renderer,toolbar,input,send}`, and
+  `app.js` — the init IIFE — last), concatenated server-side by
+  `_build_oracle_html()` with per-file markers. `GET /` serves the cached
+  bundle; **`GET /legacy` serves the frozen monolith for one release**, then
+  it will be removed. Extraction was verbatim (proven by a line-multiset
+  diff: the only delta is the `ORACLE_BUILD_TIME` bump) — zero behavior
+  change by construction.
+- Deliberate deviation from the original Wave-3 design: **no React/babel
+  runtime**. The Oracle UI logic is entirely vanilla imperative JS; the
+  transferable part of the hub pattern is the module structure + build
+  pipeline, and wrapping unowned vanilla code in a framework would have
+  added a CDN/transpile failure surface for zero owned UI.
+
+#### CLI
+
+- **`c3 oracle serve`** (alias `start`, `--port`, `--no-browser`) launches
+  the Oracle dashboard — no more `python oracle/oracle_server.py` required
+  (it still works). Lazy import keeps bare `c3` startup fast.
+
+#### Packaging
+
+- `pyproject.toml` package-data globs for `oracle/ui/*.js` +
+  `oracle/ui/chat/*.js` (the `"*"` globs only match a package's top level);
+  wheel inspection confirms all 18 modules + shell + legacy ship.
+
+#### Docs
+
+- `oracle-guide/` caught up a full product generation: chat subsystem + SSE
+  event protocol, C3Bridge, federated graph, security model (session cookie
+  + write gate), the 8-tab bundle UI, all missing config keys (incl. Wave
+  1–2 additions), missing endpoint families (`/api/apikey/*`, `/api/chat/*`,
+  `/api/graph/federated/*`, `/api/activity/digest/latest`), Discovery tool
+  list (c3_project/c3_artifacts/scope), and changelog entries v1.3.0 (Waves
+  1–2) / v1.4.0 (Wave 3) with a catch-up block for the previously
+  undocumented v2.32–v2.38 era features.
+
 ## [2.48.0] - Unreleased
 
 ### Oracle Wave 2: capability catch-up

@@ -4,6 +4,12 @@ Base URL: `http://localhost:3331` (configurable via `port` in config)
 
 All endpoints return JSON. POST endpoints accept JSON bodies with `Content-Type: application/json`.
 
+> **Auth (v2.47.0)**: ALL mutating (POST/PUT/DELETE) endpoints outside `/api/discovery/*`
+> require either the dashboard session cookie (a per-boot `HttpOnly` cookie issued on
+> `GET /` to loopback browsers) or the Discovery Bearer token
+> (`Authorization: Bearer <token>`). Unauthenticated mutations get `401`. `GET` reads
+> are open to allowed local origins; `/api/discovery/*` is Bearer-only (see below).
+
 ---
 
 ## Health & Config
@@ -17,7 +23,9 @@ Returns Oracle status and Ollama cloud availability.
   "status": "ok",
   "service": "c3-oracle",
   "model": "gemma4:31b-cloud",
-  "ollama_available": true
+  "ollama_available": true,
+  "model_verified": true,
+  "hub_available": true
 }
 ```
 
@@ -227,6 +235,55 @@ Dismiss an insight (marks `dismissed: true`, excluded from future listings).
 { "dismissed": true, "id": "ins_a1b2c3d4e5f6" }
 ```
 
+### `POST /api/insights/cross`
+
+On-demand cross-project insight generation from the federated graph. Requires at least
+2 projects with facts (defaults to all discovered projects with facts; override with
+`projects`).
+
+```json
+// Request (optional body)
+{ "projects": ["/path/a", "/path/b"] }
+
+// Response
+{ "generated": 3, "insights": [ ... ], "graph_stats": { ... } }
+```
+
+---
+
+## Federated Graph
+
+Cross-project memory graph: per-project fact graphs merged, plus `cross_similar`
+edges between facts of different projects (embeddings with TF-IDF fallback). Builds
+are cached (`federated_graph_ttl_sec` + facts mtimes); the project hierarchy overlay
+is recomputed per serve.
+
+### `GET /api/graph/federated`
+
+**Query params:** `projects` (comma-separated paths; default = all discovered projects
+with facts), `min_sim` (similarity threshold override), `top_k` (neighbors per fact),
+`force=1` (bypass cache).
+
+Returns `nodes`, `edges`, `projects` (each with `parent_slug`), `stats` (including
+`parent_child`), and `hierarchy` (parent/child project links).
+
+### `GET /api/graph/federated/node/<id>`
+
+One node's fact plus its cross-project neighbors.
+
+```json
+{ "node": { ... }, "neighbors": [ { "id": "...", "type": "cross_similar",
+  "scope": "cross", "weight": 0.82, "label": "...", "project": "..." } ] }
+```
+
+### `POST /api/graph/federated/rebuild`
+
+Invalidate the cache and force a rebuild. Optional body `{ "projects": [ ... ] }`.
+
+### `GET /api/graph/federated/stats`
+
+Graph stats + project list only (no nodes/edges).
+
 ---
 
 ## Activity
@@ -260,6 +317,19 @@ summary — best-effort, omitted on failure).
 
 > Also available as the discovery tool **`activity_report`** (identical payload) for
 > external LLMs over MCP, OpenAPI, and `POST /api/discovery/call`.
+
+### `GET /api/activity/digest/latest`
+
+Most recent **scheduled** digest, written by the review loop when `digest_enabled` is
+set (serves `~/.c3/oracle/activity_digests/latest.json`). On-demand digests from
+`/api/activity/digest` are not persisted here.
+
+```json
+{ "generated_at": "2026-07-02T00:00:12+00:00", "digest": { ... } }
+
+// No scheduled digest yet
+{ "digest": null, "generated_at": null }
+```
 
 ---
 
@@ -368,6 +438,108 @@ Test generation with the current model. Sends a simple prompt and returns the re
 
 ---
 
+## Chat
+
+Interactive chat with Oracle (the dashboard's Chat tab). Conversations are persisted
+in `~/.c3/oracle/conversations/`.
+
+### `POST /api/chat`
+
+Streaming chat over SSE (`text/event-stream`). Each event is a JSON object on a
+`data:` line with a `type` field; the stream ends with a literal `data: [DONE]`.
+
+```json
+// Request
+{ "message": "what changed across my projects today?", "conversation_id": "c_..." }
+```
+
+**Event vocabulary** (documented once here; the same shapes appear in the agent
+sub-stream):
+
+| Type | Meaning |
+|------|---------|
+| `meta` | First event: `conv_id`, `model`, conversation `state` |
+| `status` | Progress updates (`message` + `detail`) |
+| `thinking` | Streamed model reasoning chunks |
+| `text` | Streamed visible answer chunks |
+| `tool_call` | Oracle invoking a tool (`name`, `args`, `tool_id`) |
+| `tool_result` | Tool output (`tool_id`, result) |
+| `agent_start` / `agent_round` / `agent_thinking` / `agent_text` / `agent_tool_call` / `agent_tool_result` / `agent_done` | Sub-stream while `delegate_task` runs a roster agent |
+| `done` | Turn complete (timing/stats) |
+| `error` | Terminal error for the turn |
+
+Tool calling is native Ollama tool calling when the model supports it (probed via
+`/api/show`), with automatic mid-turn fallback to the legacy `<tool_call>` text
+protocol if the model rejects native tools.
+
+### `GET /api/chat/conversations?limit=50`
+
+List conversations (most recent first).
+
+### `POST /api/chat/conversations`
+
+Create a conversation. Body `{ "title": "..." }` (optional). Returns `201` with `{ "id": "c_..." }`.
+
+### `GET /api/chat/conversations/<id>`
+
+Full message history: `{ "conversation_id": "...", "messages": [ ... ] }`.
+
+### `DELETE /api/chat/conversations/<id>`
+
+Delete a conversation. Returns `{ "ok": true }`.
+
+### `PUT /api/chat/conversations/<id>/title`
+
+Rename. Body `{ "title": "..." }`.
+
+### `GET /api/chat/conversations/<id>/state`
+
+Per-conversation state (focused projects, model, depth): `{ "state": { ... } }`.
+
+### `GET /api/chat/commands`
+
+Slash-command registry for frontend autocomplete: `{ "commands": [ ... ] }`.
+
+### `POST /api/chat/command`
+
+Execute a slash command (e.g. `/project`, `/model`, `/depth`, `/team`).
+
+```json
+// Request
+{ "conversation_id": "c_...", "command": "/depth deep" }
+```
+
+---
+
+## Discovery API key (`/api/apikey`)
+
+Dashboard-facing management of the Discovery Bearer token (stored in the OS keyring).
+The POST mutations are covered by the v2.47.0 write gate: they require the session
+cookie or the Bearer token.
+
+### `GET /api/apikey`
+
+Token status + connection info (`exists`, `masked`, `mcp_url`, `rest_base`,
+`openapi_url`, a ready-to-paste `.mcp.json` `snippet`, and the `api_enabled` /
+`api_require_auth` / `mcp_enabled` flags). The **unmasked** `key` is included only
+when the caller presents a valid Bearer token or the dashboard session cookie;
+otherwise `key` is empty and the snippet carries a `<token>` placeholder.
+
+### `POST /api/apikey/generate`
+
+Create a token if none exists. Reveals the key in the response (explicit local
+creation action, shown once for copy).
+
+### `POST /api/apikey/rotate`
+
+Replace the token with a fresh one (revealed once for copy).
+
+### `POST /api/apikey/clear`
+
+Delete the stored token.
+
+---
+
 ## Discovery API (external LLM tool surface)
 
 > Added in v2.32.0. Lets Claude or any function-calling LLM use C3's cross-project
@@ -431,11 +603,14 @@ Connection details for the MCP transport.
 ### Capability tiers
 
 - **read** — discovery only: `list_projects`, `search_facts`, `query_memory`,
-  `project_health`, `analyze_project`, `cross_insights`, `read_graph`, `c3_search`,
-  `c3_search_cross`, `c3_read`, `c3_compress`, `c3_validate`, `c3_status`,
-  `c3_memory_query`, `c3_edits`, `c3_edits_cross`.
+  `project_health`, `analyze_project`, `cross_insights`, `read_graph`,
+  `activity_report`, `c3_search`, `c3_search_cross`, `c3_read`, `c3_compress`,
+  `c3_validate`, `c3_status`, `c3_memory_query`, `c3_edits`, `c3_edits_cross`,
+  `c3_project`, `c3_artifacts` (the latter two are read-only by construction:
+  write verbs are blocked).
 - **action** — adds safe, non-code-edit writes: `suggest_action` (creates a
-  *pending* suggestion for human approval) and `delegate_task`.
+  *pending* suggestion for human approval) and `delegate_task` (optional
+  `project_path`, required for CLI-backed agents).
 - Code-editing tools are **never** exposed. Cap the tier via `api_max_tier`
   (`read` | `action`) in `~/.c3/oracle/config.json`.
 

@@ -23,6 +23,8 @@ Two transports share one tool core:
 ## 1. Start the Oracle
 
 ```bash
+c3 oracle serve --no-browser      # v2.49.0+ (alias: c3 oracle start)
+# or, from a source checkout:
 python oracle/oracle_server.py --no-browser
 ```
 
@@ -101,10 +103,23 @@ Set in `~/.c3/oracle/config.json`:
 **Discovery (read):** `list_projects`, `search_facts`, `query_memory`,
 `project_health`, `analyze_project`, `cross_insights`, `read_graph`, `c3_search`,
 `c3_search_cross`, `c3_read`, `c3_compress`, `c3_validate`, `c3_status`,
-`c3_memory_query`, `c3_edits`, `c3_edits_cross`, `activity_report`.
+`c3_memory_query`, `c3_edits`, `c3_edits_cross`, `activity_report`, `c3_project`,
+`c3_artifacts`.
+
+- `c3_project` (v2.48.0): cross-project ops by registered project name or path —
+  `list` | `info` | `subprojects` | `search` | `read` | `compress` | `status` |
+  `memory` | `impact` | `edits` | `validate`. Write verbs are blocked; the project
+  argument is validated against discovered projects.
+- `c3_artifacts` (v2.48.0): agent-config artifact tracking, read-only —
+  `list` | `history` | `show` | `diff` | `status` (`scan` and `restore` are blocked).
+- `c3_search_cross` / `c3_edits_cross` take a `scope` param (v2.48.0): `''` = all
+  projects, `'top'` = top-level projects only, or a project name/path = that project
+  plus its sub-projects.
 
 **Safe actions:** `suggest_action` (creates a *pending* memory suggestion a human
-approves), `delegate_task` (runs a configured Oracle agent).
+approves), `delegate_task` (runs a configured Oracle agent; optional `project_path`,
+required when the agent's backend is a CLI — codex/gemini/claude/auto — since CLI
+backends run read-only inside a registered project).
 
 See [api-reference.md](api-reference.md#discovery-api-external-llm-tool-surface) for
 full endpoint and schema details.
