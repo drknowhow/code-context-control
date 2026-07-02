@@ -991,6 +991,7 @@
         <button class="btn btn-primary btn-sm" id="btnLoadActivity" onclick="loadActivity()">Refresh</button>
       </div>
     </div>
+    <div id="actScheduled" style="display:none;font-size:11px;color:var(--text2);margin-bottom:10px"></div>
     <div id="actSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
     <div id="actNarrative" class="card" style="display:none;margin-bottom:14px"></div>
     <div id="actProjects"></div>
@@ -1103,6 +1104,16 @@
       <div class="field">
         <label>Review Interval (minutes)</label>
         <input id="cfgInterval" type="number" min="1" value="30">
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfgDigestEnabled" style="width:auto"> Scheduled activity digest
+        </label>
+        <p style="font-size:11px;color:var(--text2);margin-top:4px">Emit a cross-project digest from the review loop (Activity tab shows the latest).</p>
+      </div>
+      <div class="field">
+        <label>Digest Interval (hours)</label>
+        <input id="cfgDigestInterval" type="number" min="1" value="24">
       </div>
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn btn-primary" onclick="saveSettings()">Save</button>
@@ -1927,7 +1938,23 @@ async function dismissInsight(id) {
 // ═══════════════════════════════════════════════════════════
 // ── Activity Digest ──
 // ═══════════════════════════════════════════════════════════
+async function loadScheduledDigestBanner() {
+  const el = document.getElementById('actScheduled');
+  if (!el) return;
+  try {
+    const latest = await api('/api/activity/digest/latest');
+    if (latest && latest.generated_at) {
+      el.style.display = '';
+      el.textContent = 'Last scheduled digest: ' +
+        latest.generated_at.replace('T', ' ').slice(0, 19) + ' UTC';
+    } else {
+      el.style.display = 'none';
+    }
+  } catch { el.style.display = 'none'; }
+}
+
 async function loadActivity() {
+  loadScheduledDigestBanner();
   const dateEl = document.getElementById('actDate');
   if (dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
   const date = dateEl ? dateEl.value : '';
@@ -2076,6 +2103,8 @@ async function loadSettings() {
     keyCheck.parentElement.style.display = hasKey ? '' : 'none';
     document.getElementById('cfgHubUrl').value = cfg.hub_url || '';
     document.getElementById('cfgInterval').value = Math.round((cfg.review_interval_seconds || 1800) / 60);
+    document.getElementById('cfgDigestEnabled').checked = !!cfg.digest_enabled;
+    document.getElementById('cfgDigestInterval').value = Math.round((cfg.digest_interval_seconds || 86400) / 3600);
     applyTheme(cfg.theme || 'dark');
     // Hub link
     const hubUrl = cfg.hub_url || 'http://localhost:3330';
@@ -2122,6 +2151,8 @@ async function saveSettings() {
     ollama_base_url: document.getElementById('cfgOllamaUrl').value,
     hub_url: document.getElementById('cfgHubUrl').value,
     review_interval_seconds: parseInt(document.getElementById('cfgInterval').value) * 60,
+    digest_enabled: document.getElementById('cfgDigestEnabled').checked,
+    digest_interval_seconds: parseInt(document.getElementById('cfgDigestInterval').value) * 3600,
     agents: window.oracleAgents
   };
   if (apiKeyVal) cfg.ollama_api_key = apiKeyVal;

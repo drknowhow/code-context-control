@@ -24,6 +24,12 @@ DEFAULTS = {
     "scanner_ttl_seconds": 20,
     "review_interval_seconds": 1800,
     "review_enabled": True,
+    # ── Scheduled activity digest (runs inside the review loop) ──
+    "digest_enabled": False,          # off = current behavior (on-demand only)
+    "digest_interval_seconds": 86400, # daily cadence once enabled
+    "digest_narrate": False,          # LLM prose costs a cloud call; opt-in
+    "digest_notify_file": "",         # "" = disabled; else JSONL sink path
+    "digest_retention_days": 14,      # prune stored digests
     "auto_open_browser": True,
     "theme": "dark",
     "max_facts_per_analysis": 100,

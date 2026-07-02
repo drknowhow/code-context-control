@@ -93,6 +93,8 @@ def _init_services():
     _chat_store = ChatStore()
     _c3_bridge = C3Bridge(scanner=_scanner)
     _federated = FederatedGraph(reader=_reader, cross_memory=_cross_memory, ollama_bridge=_bridge)
+    # Reporter before ReviewAgent: the review loop emits the scheduled digest.
+    _activity_reporter = ActivityReporter(scanner=_scanner, ollama_bridge=_bridge)
     _agent = ReviewAgent(
         scanner=_scanner,
         reader=_reader,
@@ -102,8 +104,8 @@ def _init_services():
         writer=_writer,
         interval=int(_cfg.get("review_interval_seconds", 1800)),
         federated_graph=_federated,
+        activity_reporter=_activity_reporter,
     )
-    _activity_reporter = ActivityReporter(scanner=_scanner, ollama_bridge=_bridge)
     _chat_engine = ChatEngine(
         bridge=_bridge,
         reader=_reader,
@@ -668,6 +670,23 @@ def api_chat_conversation_state(conv_id):
 
 
 # ── Activity digest (Oracle UI) ───────────────────────────
+@app.route("/api/activity/digest/latest", methods=["GET"])
+def api_activity_digest_latest():
+    """Most recent SCHEDULED digest (written by the review loop), or null.
+
+    On-demand digests via /api/activity/digest are not persisted here; this
+    serves ~/.c3/oracle/activity_digests/latest.json.
+    """
+    latest = ORACLE_DIR / "activity_digests" / "latest.json"
+    try:
+        if latest.is_file():
+            return Response(latest.read_text(encoding="utf-8"),
+                            mimetype="application/json")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"digest": None, "generated_at": None})
+
+
 @app.route("/api/activity/digest", methods=["GET"])
 def api_activity_digest():
     """Cross-project activity digest for the Oracle UI.
