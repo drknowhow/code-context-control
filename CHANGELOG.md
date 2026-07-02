@@ -4,7 +4,7 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.49.0] - Unreleased
+## [2.49.0] - 2026-07-02
 
 ### Oracle Wave 3: UI v3 concat bundle + `c3 oracle serve` + docs refresh
 
@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1–2) / v1.4.0 (Wave 3) with a catch-up block for the previously
   undocumented v2.32–v2.38 era features.
 
-## [2.48.0] - Unreleased
+## [2.48.0] - 2026-07-02
+
+_Shipped as part of the v2.49.0 release (no standalone tag)._
 
 ### Oracle Wave 2: capability catch-up
 
@@ -120,7 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hierarchy overlay on fresh AND cached graph builds, digest scheduling
   (`test_review_digest.py`), and CLI-backend delegate routing + shim contract.
 
-## [2.47.0] - Unreleased
+## [2.47.0] - 2026-07-02
+
+_Shipped as part of the v2.49.0 release (no standalone tag)._
 
 ### Oracle Wave 1: security + core hardening/unification
 
