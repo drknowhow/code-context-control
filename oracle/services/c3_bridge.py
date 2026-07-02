@@ -173,6 +173,7 @@ class C3Bridge:
             return [p for p in projects if not p.get("is_subproject")]
 
         import os
+
         from services.project_runtime import resolve_project
 
         def _key(p: str) -> str:
