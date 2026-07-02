@@ -135,7 +135,7 @@ c3 ui                             # opens http://127.0.0.1:3333
   <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/ui_dashboard.png" alt="C3 per-project dashboard" width="900">
 </p>
 
-Illustrative example from one project's dashboard (numbers vary by project): **448K tokens saved** (89.9% rate) — C3's estimate versus a full-file-read baseline — plus 208 files indexed, 20 sessions, codebase breakdown by language, current-session live counters (in/out tokens, cache reads, services online), and a stream of recent tool calls and file changes.
+Illustrative example from one project's dashboard (numbers vary by project): **448K tokens saved** (89.9% rate) — C3's estimate versus a full-file-read baseline — plus 208 files indexed, 20 sessions, codebase breakdown by language, current-session live counters (in/out tokens, cache reads, services online), and a stream of recent tool calls and file changes. Run `c3 bench session` on your own project to generate your own scorecard.
 
 ### 3. Edit Ledger — every AI-driven edit tracked
 
@@ -333,13 +333,20 @@ Applying or switching a tier **preserves your own `allow`/`deny` rules** (and ke
 
 ## Benchmarks
 
+Don't take our word for it — every number C3 advertises is reproducible on your own machine, against your own project:
+
 ```bash
-c3 benchmark /path/to/project
-c3 bench aider                    # Aider Polyglot suite
-c3 bench swe                      # SWE-bench Lite
+c3 bench session                  # six realistic workflow scenarios, A/B with vs without C3
+c3 benchmark /path/to/project     # per-operation micro-benchmarks (compression, retrieval, filtering, validation)
+c3 bench aider                    # Aider Polyglot suite (external; burns real API tokens)
+c3 bench swe                      # SWE-bench Lite (external)
 ```
 
-Real-world A/B tests: same task, with and without C3 mounted. Reports include token deltas, cost deltas, win rates, tool-usage analysis, and per-task breakdowns. See the **Benchmark Dashboard** under Settings → Background Agents in the Hub.
+The session benchmark's baseline models a *competent* agent working without C3 — one targeted search, each file read once — not a strawman that re-reads everything, and it scores answer quality alongside tokens. For reference, a run against C3's own repository (v2.43.0, 2026-07-02) measured **51.8% token savings (2.07×)** across the six scenarios at quality parity. Your numbers will differ with your project's shape — that's why the harness ships with the tool.
+
+Beyond synthetic scenarios, C3 records real per-tool usage to `.c3/tool_telemetry.jsonl`, so estimated savings can always be checked against what actually happened in your sessions.
+
+Reports include token deltas, cost deltas, win rates, tool-usage analysis, and per-task breakdowns. See the **Benchmark Dashboard** under Settings → Background Agents in the Hub.
 
 ---
 
