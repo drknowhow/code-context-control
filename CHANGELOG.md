@@ -4,6 +4,30 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.1] - 2026-07-02
+
+### Fixed
+
+- **Sub-project exclusion silently disabled under aliased project roots.**
+  `make_excluder` resolved the project root but not the paths handed to it, so
+  for any project living under a symlinked path (e.g. macOS `/var/folders`,
+  or a symlinked home/workspace) or a Windows 8.3 short-name path, the
+  internal `relative_to` check always failed and **no sub-project was ever
+  excluded** from the parent's code index, doc index, dictionary, or watcher.
+  Affected v2.44.0–v2.46.0. Incoming paths are now resolved before comparison.
+- **Sub-project prefix matching is now case-insensitive on all platforms.**
+  `exclusion_prefixes`/`is_excluded` used `os.path.normcase`, a no-op outside
+  Windows; they now case-fold consistently everywhere.
+
+### CI
+
+- **Releases are now gated on CI.** A new `verify-ci` job in the Release
+  workflow waits for the CI run on the tagged commit and fails the release if
+  CI is red or missing — publishing from a red `main` (as happened for
+  v2.45.0/v2.46.0) is no longer possible.
+- Cleared 11 ruff lint errors (import sorting, one unused import, one
+  placeholder-less f-string) that were failing the Lint job.
+
 ## [2.46.0] - 2026-07-02
 
 ### Agent-artifact tracking: version history, diff & restore for the files that shape the agent
