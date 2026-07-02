@@ -80,7 +80,7 @@ def get_subprojects(parent_path) -> list:
 # ── Index-exclusion helpers (hot path for indexer/doc_index/watcher) ──────
 
 def exclusion_prefixes(project_path) -> list:
-    """Normcased path-part tuples for designated sub-project folders.
+    """Lowercased path-part tuples for designated sub-project folders.
 
     Fast path: ``[]`` when the project has no sub-projects, so scan loops
     pay nothing in the common case.
@@ -91,7 +91,7 @@ def exclusion_prefixes(project_path) -> list:
     prefixes = []
     for entry in subs:
         rel = entry.get("rel_path") or ""
-        parts = tuple(os.path.normcase(p) for p in PurePosixPath(rel).parts)
+        parts = tuple(p.lower() for p in PurePosixPath(rel).parts)
         if parts:
             prefixes.append(parts)
     return prefixes
@@ -101,7 +101,7 @@ def is_excluded(rel_parts, prefixes) -> bool:
     """True when a project-relative path (as parts) sits under any prefix."""
     if not prefixes:
         return False
-    normed = tuple(os.path.normcase(p) for p in rel_parts)
+    normed = tuple(p.lower() for p in rel_parts)
     return any(normed[: len(pre)] == pre for pre in prefixes)
 
 
@@ -116,8 +116,11 @@ def make_excluder(project_path):
     root = Path(project_path).resolve()
 
     def _excluded(fpath) -> bool:
+        # Resolve fpath too: callers may pass paths through a symlink
+        # (macOS /var/folders) or an 8.3 short name (Windows), which would
+        # never be relative to the resolved root.
         try:
-            return is_excluded(Path(fpath).relative_to(root).parts, prefixes)
+            return is_excluded(Path(fpath).resolve().relative_to(root).parts, prefixes)
         except (ValueError, OSError):
             return False
 
