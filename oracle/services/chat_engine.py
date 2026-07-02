@@ -17,7 +17,11 @@ from pathlib import Path
 _agent_tls = threading.local()
 
 from oracle.config import load_config
-from oracle.services.c3_bridge import validate_project_path
+from oracle.services.c3_bridge import (
+    _noop_finalize,
+    _OracleDelegateRuntime,
+    validate_project_path,
+)
 from oracle.services.chat_store import ChatStore
 from oracle.services.cross_memory import CrossMemory
 from oracle.services.health_checker import HealthChecker
@@ -100,10 +104,12 @@ Tools:
     Search code across ALL projects. No project_path needed.
     scope: ""=all, "top"=top-level only, or a project name/path = it + its sub-projects.
 
-18. delegate_task(agent_id, task)
+18. delegate_task(agent_id, task, project_path="")
     Delegate a specific sub-task to a specialized agent.
     - agent_id: The ID of the active agent to use.
     - task: A detailed prompt explaining what the agent needs to do.
+    - project_path: required when the agent's backend is codex/gemini/claude/auto
+      (CLI backends run inside a registered project's workspace, read-only).
 
 19. activity_report(date?, since?, until?, project_path?, narrate=false)
     Cross-project daily activity digest: sessions, tool calls, edits, git
@@ -617,12 +623,16 @@ class ChatEngine:
                 def _run_tool(tool_name, tool_args, tool_id):
                     _agent_tls.agent_sink = agent_event_sink
                     _agent_tls.parent_tool_id = tool_id
+                    # Conversation state for tools that need it (delegate_task
+                    # falls back to the focused project for CLI backends).
+                    _agent_tls.conv_state = state
                     t0 = time.perf_counter_ns()
                     try:
                         result = self._execute_tool(tool_name, tool_args)
                     finally:
                         _agent_tls.agent_sink = None
                         _agent_tls.parent_tool_id = None
+                        _agent_tls.conv_state = None
                     dur_ms = (time.perf_counter_ns() - t0) // 1_000_000
                     return result, dur_ms
 
@@ -1205,12 +1215,15 @@ class ChatEngine:
             project_path=project_path, narrate=narrate,
         )
 
-    def _tool_delegate_task(self, agent_id: str, task: str) -> dict:
+    def _tool_delegate_task(self, agent_id: str, task: str,
+                            project_path: str = "") -> dict:
         """Execute a sub-agent loop for the delegated task.
 
         Pushes lifecycle events onto the thread-local _agent_tls.agent_sink
         (set by the main chat() worker wrapper) so the UI can stream live
-        sub-agent thinking, nested tool calls, and response tokens.
+        sub-agent thinking, nested tool calls, and response tokens. Agents
+        with a CLI backend (codex/gemini/claude/auto) route through
+        cli.tools.delegate against a read-only view of the target project.
         """
         sink = getattr(_agent_tls, "agent_sink", None)
         parent_tool_id = getattr(_agent_tls, "parent_tool_id", None)
@@ -1224,6 +1237,14 @@ class ChatEngine:
         if not agent:
             _emit("agent_done", agent_id=agent_id, error="not_active")
             return {"error": f"Agent '{agent_id}' is not active or does not exist."}
+
+        backend = (agent.get("backend") or "ollama").strip().lower()
+        if backend not in ("ollama", "codex", "gemini", "claude", "auto"):
+            _emit("agent_done", agent_id=agent_id, error="bad_backend")
+            return {"error": f"Agent '{agent_id}' has unknown backend '{backend}'."}
+        if backend != "ollama":
+            return self._delegate_via_cli(agent, agent_id, task, backend,
+                                          project_path, _emit)
 
         model = agent.get("model") or self.bridge.model
         # Sub-agents pick their tool protocol from their OWN model.
@@ -1355,4 +1376,73 @@ class ChatEngine:
               result_chars=len(full_text), duration_ms=dur_ms,
               error="max_rounds_reached")
         return {"agent": agent_id, "error": "Agent reached max tool rounds.", "partial_result": full_text}
+
+    def _delegate_via_cli(self, agent: dict, agent_id: str, task: str,
+                          backend: str, project_path: str, _emit) -> dict:
+        """Route a delegated task through cli.tools.delegate (codex/gemini/
+        claude/auto) against a read-only view of the target project.
+
+        CLI backends spawn subprocesses with the project as cwd and read the
+        TARGET project's delegate config (including whether the backend is
+        enabled at all — Oracle never force-enables), so a concrete project is
+        required: explicit arg, else the conversation's focused project, else
+        an instructive error. Never silently pick a project.
+        """
+        if self.c3_bridge is None:
+            _emit("agent_done", agent_id=agent_id, error="no_c3_bridge")
+            return {"error": "C3 bridge not configured; CLI backends are unavailable."}
+
+        resolved = ""
+        if project_path:
+            try:
+                resolved = validate_project_path(self.scanner, project_path)
+            except ValueError as e:
+                _emit("agent_done", agent_id=agent_id, error="bad_project")
+                return {"error": str(e)}
+        else:
+            focused = (getattr(_agent_tls, "conv_state", None) or {}).get("focused_projects") or []
+            if focused:
+                try:
+                    resolved = validate_project_path(self.scanner, focused[0].get("path", ""))
+                except ValueError:
+                    resolved = ""
+        if not resolved:
+            _emit("agent_done", agent_id=agent_id, error="project_required")
+            return {"error": (
+                f"Backend '{backend}' runs inside a project workspace. Pass "
+                "project_path (a registered project) to delegate_task, or focus "
+                "a project with /project first."
+            )}
+
+        try:
+            runtime = self.c3_bridge.get_runtime(resolved)
+        except Exception as e:
+            _emit("agent_done", agent_id=agent_id, error="runtime")
+            return {"error": f"Could not load project '{resolved}': {e}"}
+
+        shim = _OracleDelegateRuntime(
+            runtime,
+            progress_cb=lambda msg: _emit("agent_text", content=f"{msg}\n"),
+        )
+        _emit("agent_start", agent_id=agent_id, task=task, model=backend)
+        t0 = time.perf_counter_ns()
+        from cli.tools.delegate import handle_delegate
+        try:
+            result = handle_delegate(
+                task=task,
+                task_type=agent.get("task_type", "ask"),
+                context=agent.get("system_prompt", ""),
+                file_path="",
+                svc=shim,
+                finalize=_noop_finalize,
+                backend=backend,
+            )
+        except Exception as e:
+            _emit("agent_done", agent_id=agent_id, error=str(e))
+            return {"error": f"Agent '{agent_id}' backend '{backend}' failed: {e}"}
+        dur_ms = (time.perf_counter_ns() - t0) // 1_000_000
+        _emit("agent_done", agent_id=agent_id, rounds=1,
+              result_chars=len(result or ""), duration_ms=dur_ms)
+        return {"agent": agent_id, "backend": backend, "project": resolved,
+                "result": result}
 

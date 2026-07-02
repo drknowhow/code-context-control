@@ -47,6 +47,7 @@ DEFAULTS = {
             "description": "Expert in system architecture, design patterns, and cross-project structure. Best for high-level analysis.",
             "system_prompt": "You are the Architect. Focus on structural integrity, design patterns, and the big picture. Provide high-level recommendations before diving into code.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         },
         {
@@ -55,6 +56,7 @@ DEFAULTS = {
             "description": "Specializes in deep code analysis, bug hunting, and tracing execution paths.",
             "system_prompt": "You are the Code Explorer. Be incredibly precise, cite specific lines of code, and focus on the technical implementation details. Trace logic thoroughly.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         },
         {
@@ -63,6 +65,7 @@ DEFAULTS = {
             "description": "Focuses on analyzing project memory, facts, and insights.",
             "system_prompt": "You are the Memory Analyst. Rely heavily on memory tools and facts to spot trends. Connect current issues to past context.",
             "model": "gemma4:31b-cloud",
+            "backend": "ollama",
             "active": True
         }
     ],

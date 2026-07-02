@@ -68,6 +68,37 @@ def validate_project_path(scanner, project_path: str) -> str:
     return resolved
 
 
+class _OracleDelegateRuntime:
+    """Read-only view of a C3Runtime for Oracle-initiated c3_delegate calls.
+
+    Overrides exactly the attributes through which ``handle_delegate`` could
+    mutate the TARGET project: the codex/gemini memory bridges (write facts
+    into its MemoryStore), the degraded-backend notification (writes its
+    NotificationStore), and the codex sandbox (forced read-only regardless of
+    the target's own default). Everything else passes through untouched.
+    """
+
+    def __init__(self, runtime, progress_cb=None):
+        self._runtime = runtime
+        # Read by cli.tools.delegate._log_progress via getattr.
+        self._agent_progress_cb = progress_cb
+
+    def __getattr__(self, name):
+        return getattr(self._runtime, name)
+
+    @property
+    def delegate_config(self):
+        base = dict(getattr(self._runtime, "delegate_config", None) or {})
+        base["codex_memory_bridge"] = False
+        base["gemini_memory_bridge"] = False
+        base["codex_default_sandbox"] = "read-only"
+        return base
+
+    @property
+    def notifications(self):
+        return None
+
+
 class C3Bridge:
     """Bridge between Oracle and C3 tool handlers with per-project runtime cache."""
 

@@ -369,11 +369,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "delegate_task",
         "tier": TIER_ACTION,
-        "description": "Delegate a sub-task to a configured Oracle agent and return its result.",
+        "description": (
+            "Delegate a sub-task to a configured Oracle agent and return its result. "
+            "Agents may run on Ollama (default) or a CLI backend (codex/gemini/claude/auto) "
+            "inside a registered project's workspace, read-only."
+        ),
         "parameters": _obj(
             {
                 "agent_id": {"type": "string", "description": "ID of an active Oracle agent."},
                 "task": {"type": "string", "description": "Detailed instructions for the agent."},
+                "project_path": {"type": "string", "default": "", "description": "Required when the agent's backend is codex/gemini/claude/auto (CLI backends run inside a registered project)."},
             },
             ["agent_id", "task"],
         ),
