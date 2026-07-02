@@ -158,6 +158,9 @@ class TestFederatedGraphAPI(unittest.TestCase):
 
         srv.app.config["TESTING"] = True
         self.client = srv.app.test_client()
+        # Mutating endpoints (rebuild) sit behind the local write gate;
+        # GET / issues the dashboard session cookie into the client's jar.
+        self.client.get("/")
 
     def tearDown(self):
         for p in self._srv_patches:
