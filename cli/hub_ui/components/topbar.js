@@ -64,6 +64,9 @@ function TopBar({ version, activeCount, darkMode, hubConfig, mainView, setMainVi
         <a href="/guide/" target="_blank" rel="noopener" title="Open the C3 guide" style={ctrl}>
           <I name="fileText" size={13} color={T.textMuted} />
         </a>
+        <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" title="Sponsor C3 development" style={ctrl}>
+          <I name="heart" size={13} color="#EA4AAA" />
+        </a>
         {hubConfig && hubConfig.oracle_url && (
           <a href={hubConfig.oracle_url} target="_blank" rel="noopener" title="Open Oracle" style={ctrl}>
             <I name="external" size={13} color={T.textMuted} />

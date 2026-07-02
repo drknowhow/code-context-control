@@ -9,8 +9,12 @@ def build_parser(version: str, parse_cli_ide_arg):
     parser = argparse.ArgumentParser(
         prog="c3",
         description="Claude Code Companion - Reduce token usage with local intelligence",
+        epilog="Support C3 development: https://github.com/sponsors/drknowhow",
     )
-    parser.add_argument("--version", "-v", action="version", version=f"c3 version {version}")
+    parser.add_argument(
+        "--version", "-v", action="version",
+        version=f"c3 version {version} | support C3: https://github.com/sponsors/drknowhow",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     p_init = subparsers.add_parser("init", help="Initialize C3 for a project")

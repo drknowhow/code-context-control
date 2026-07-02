@@ -4,6 +4,16 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.49.2] - 2026-07-02
+
+### Added
+
+- **Sponsorship surfaces.** GitHub Sponsors wiring (`.github/FUNDING.yml`,
+  README badge + "Support C3" section) plus a sponsor link on every surface:
+  hub topbar, per-project dashboard topbar, Oracle header, guide-page nav,
+  `c3 --version` / `c3 --help`, the TUI footer (`s` key), and a `Funding`
+  project URL on PyPI.
+
 ## [2.49.1] - 2026-07-02
 
 ### Added

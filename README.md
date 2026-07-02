@@ -12,6 +12,7 @@
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux-lightgrey">
   <img alt="Status: Beta" src="https://img.shields.io/badge/status-beta-yellow">
+  <a href="https://github.com/sponsors/drknowhow"><img alt="Sponsor" src="https://img.shields.io/badge/sponsor-%E2%9D%A4-EA4AAA?logo=githubsponsors&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -361,6 +362,12 @@ Reports include token deltas, cost deltas, win rates, tool-usage analysis, and p
 
 ---
 
+## Support C3
+
+C3 is free, open source, and built by one person. If it saves you tokens (it should — that's the whole point), consider [sponsoring on GitHub](https://github.com/sponsors/drknowhow). Sponsorship directly funds API costs for cross-model test runs and dedicated development time.
+
+---
+
 ## License
 
 - **Current OSS license** — Apache License 2.0 ([`LICENSE`](LICENSE)). Free for any use, including commercial. Modify, fork, redistribute — all permitted under Apache-2.0 terms.
@@ -378,3 +385,4 @@ The author may introduce a paid offering or relicense future major versions; no 
 - **Security policy:** [`SECURITY.md`](SECURITY.md)
 - **Licensing FAQ:** [`LICENSING.md`](LICENSING.md)
 - **Issues:** https://github.com/drknowhow/code-context-control/issues
+- **Sponsor:** https://github.com/sponsors/drknowhow

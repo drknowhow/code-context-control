@@ -21,6 +21,7 @@ class C3App(App):
         Binding("q", "quit", "Quit", show=True),
         Binding("tab", "toggle_focus", "Focus: NAV/CONTENT", show=True),
         Binding("ctrl+t", "toggle_theme", "Theme", show=True),
+        Binding("s", "sponsor", "Sponsor \u2665", show=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -70,6 +71,10 @@ class C3App(App):
             self.query_one("#content").focus()
         else:
             nav_list.focus()
+
+    def action_sponsor(self) -> None:
+        import webbrowser
+        webbrowser.open("https://github.com/sponsors/drknowhow")
 
     def action_toggle_theme(self) -> None:
         if self.theme_mode == "dark":

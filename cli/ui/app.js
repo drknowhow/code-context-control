@@ -1,5 +1,5 @@
 // ─── Main App ─────────────────────────────
-const BUILD_TIME = "2026-04-10 UI-v2";
+const BUILD_TIME = "2026-07-02 UI-v2";
 const { useState, useEffect, useCallback, useRef } = React;
 
 const tabs = [
@@ -190,6 +190,14 @@ function App() {
                 fontFamily: "'JetBrains Mono', monospace", fontWeight: 600
               }}>
               Ledger
+            </a>
+            <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" title="Sponsor C3 development"
+              style={{
+                width: 28, height: 28, borderRadius: 6, border: "1px solid #EA4AAA40",
+                background: "#EA4AAA12", textDecoration: "none", display: "flex",
+                alignItems: "center", justifyContent: "center"
+              }}>
+              <I name="heart" size={13} color="#EA4AAA" />
             </a>
             <button onClick={() => setDarkMode(!darkMode)} title="Toggle theme"
               style={{
