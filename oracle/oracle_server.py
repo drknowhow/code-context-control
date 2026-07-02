@@ -3,7 +3,6 @@
 import atexit
 import json
 import logging
-import os
 import socket
 import sys
 import threading
@@ -16,7 +15,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from flask import Flask, Response, jsonify, request, send_from_directory  # noqa: E402
+from flask import Flask, Response, jsonify, request  # noqa: E402
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
@@ -243,15 +242,6 @@ def index():
     resp = Response(_oracle_html_cache, mimetype="text/html")
     # Issue the dashboard session cookie only to loopback browsers; remote
     # viewers (LAN bind) can read GET dashboards but cannot mutate.
-    if local_session.is_loopback(request.remote_addr):
-        local_session.attach_cookie(resp)
-    return resp
-
-
-@app.route("/legacy")
-def index_legacy():
-    """Frozen pre-bundle Oracle UI — escape hatch for one release, then removed."""
-    resp = send_from_directory(os.path.dirname(__file__), "oracle.html")
     if local_session.is_loopback(request.remote_addr):
         local_session.attach_cookie(resp)
     return resp

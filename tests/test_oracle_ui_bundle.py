@@ -2,8 +2,7 @@
 
 Mirrors the hub bundle smoke tests: every listed module exists on disk, the
 build replaces the script token and stamps per-file markers, app.js (the init
-IIFE) stays last, / serves the bundle with the session cookie, and /legacy
-serves the frozen monolith.
+IIFE) stays last, and / serves the bundle with the session cookie.
 """
 from __future__ import annotations
 
@@ -28,9 +27,10 @@ class TestBundleFiles(unittest.TestCase):
     def test_app_js_is_last(self):
         self.assertEqual(_ORACLE_JS_FILES[-1], "ui/app.js")
 
-    def test_shell_and_legacy_exist(self):
+    def test_shell_exists_and_legacy_monolith_is_gone(self):
         self.assertTrue((ORACLE_DIR / "oracle_ui.html").is_file())
-        self.assertTrue((ORACLE_DIR / "oracle.html").is_file())
+        # The one-release /legacy escape hatch expired with v2.49.0.
+        self.assertFalse((ORACLE_DIR / "oracle.html").exists())
 
 
 class TestBundleBuild(unittest.TestCase):
@@ -71,15 +71,8 @@ class TestBundleRoutes(unittest.TestCase):
         cookies = r.headers.getlist("Set-Cookie")
         self.assertTrue(any(c.startswith("c3_oracle_session=") for c in cookies))
 
-    def test_legacy_serves_frozen_monolith(self):
-        r = self.client.get("/legacy")
-        self.assertEqual(r.status_code, 200)
-        body = r.get_data(as_text=True)
-        # The monolith carries its inline script, not concat markers.
-        self.assertNotIn("═══ ui/app.js ═══", body)
-        self.assertIn("async function init()", body)
-        cookies = r.headers.getlist("Set-Cookie")
-        self.assertTrue(any(c.startswith("c3_oracle_session=") for c in cookies))
+    def test_legacy_route_removed(self):
+        self.assertEqual(self.client.get("/legacy").status_code, 404)
 
     def test_health_unaffected(self):
         self.assertEqual(self.client.get("/api/health").status_code, 200)

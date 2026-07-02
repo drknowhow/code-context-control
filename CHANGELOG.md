@@ -4,6 +4,15 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Oracle `/legacy` route and `oracle.html`.** The frozen pre-bundle
+  monolith was served at `/legacy` for one release (v2.49.0) as an escape
+  hatch; the hatch has expired (hub.html precedent). The concat bundle at
+  `/` is now the only Oracle UI.
+
 ## [2.49.0] - 2026-07-02
 
 ### Oracle Wave 3: UI v3 concat bundle + `c3 oracle serve` + docs refresh

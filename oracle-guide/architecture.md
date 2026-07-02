@@ -48,7 +48,6 @@ oracle/
   __init__.py              # Package marker
   oracle_server.py         # Flask app + entry point (~1,070 lines)
   oracle_ui.html           # Web UI shell (concat bundle: served at / with oracle/ui/*.js inlined)
-  oracle.html              # Frozen legacy single-file UI, served at /legacy for one release
   config.py                # Config loader + defaults
   mcp_oracle.py            # FastMCP HTTP/SSE server for the Discovery tools (:3332/mcp)
   ui/                      # 18 vanilla-JS modules, concatenated server-side (see Web UI below)
@@ -176,7 +175,7 @@ Two small, non-breaking changes to existing C3 code:
 
 ## Web UI
 
-The UI is a **concat bundle**: an HTML shell (`oracle/oracle_ui.html`) plus 18 JS modules in `oracle/ui/` (`core`, `busy`, `theme_tabs`, `crossgraph`, `header`, `projects`, `insights`, `activity`, `suggestions`, `settings`, `agents`, `chat/markdown`, `chat/conversations`, `chat/stream_renderer`, `chat/toolbar`, `chat/input`, `chat/send`, with `app.js` — the init IIFE — always last). `_build_oracle_html()` concatenates them server-side into one response, cached until restart; the modules share one script scope, so load order matters. `GET /` serves the bundle; `GET /legacy` serves the frozen pre-bundle `oracle.html` for one release as an escape hatch.
+The UI is a **concat bundle**: an HTML shell (`oracle/oracle_ui.html`) plus 18 JS modules in `oracle/ui/` (`core`, `busy`, `theme_tabs`, `crossgraph`, `header`, `projects`, `insights`, `activity`, `suggestions`, `settings`, `agents`, `chat/markdown`, `chat/conversations`, `chat/stream_renderer`, `chat/toolbar`, `chat/input`, `chat/send`, with `app.js` — the init IIFE — always last). `_build_oracle_html()` concatenates them server-side into one response, cached until restart; the modules share one script scope, so load order matters. `GET /` serves the bundle. (The frozen pre-bundle `oracle.html` was served at `GET /legacy` for one release as an escape hatch and has since been removed.)
 
 Still vanilla JS with inline CSS — deliberately **no framework and no build step** (unlike the React-based C3 hub).
 

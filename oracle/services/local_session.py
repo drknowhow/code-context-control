@@ -1,6 +1,6 @@
 """Per-boot local dashboard session for the Oracle server.
 
-The Oracle dashboard (oracle.html) runs in a local browser and calls mutating
+The Oracle dashboard (oracle_ui.html bundle) runs in a local browser and calls mutating
 ``/api/*`` endpoints without a Bearer token. Rather than injecting the durable
 Discovery token into page JS (readable by any XSS) or trusting every loopback
 process (exactly the attacker the write gate exists to stop), the server
