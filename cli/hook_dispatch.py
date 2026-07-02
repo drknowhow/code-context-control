@@ -96,6 +96,7 @@ def _routes(event: str, raw_tool: str, norm_tool: str):
             yield "hook_c3_signal"
         if norm_tool in _LEDGER_TOOLS:
             yield "hook_edit_ledger"
+            yield "hook_artifact"
         if raw_tool in _GHOST_TOOLS:
             yield "hook_ghost_files"
     elif event == "stop":

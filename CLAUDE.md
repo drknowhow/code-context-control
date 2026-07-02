@@ -47,8 +47,8 @@ claude-companion - v2/
   README.md
   SECURITY.md
   THIRD_PARTY_LICENSES.md
-  b.title
-  ... +6 more
+  c3.bat
+  ... +4 more
   .claude/
     settings.local.json
   .codex/

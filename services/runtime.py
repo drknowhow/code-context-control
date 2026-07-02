@@ -39,7 +39,7 @@ from services.session_preloader import SessionPreloader
 from services.task_store import TaskStore
 from services.validation_cache import ValidationCache
 from services.vector_store import VectorStore
-from services.version_tracker import VersionTracker
+from services.artifact_store import ArtifactStore
 from services.watcher import CodeWatcher
 
 
@@ -65,7 +65,6 @@ class C3Runtime:
     metrics: Optional[MetricsCollector] = None
     watcher: Optional[CodeWatcher] = None
     file_memory: Optional[FileMemoryStore] = None
-    version_tracker: Optional[VersionTracker] = None
     ollama_client: Optional[OllamaClient] = None
     ollama_available: bool = False
     agents: list = field(default_factory=list)
@@ -84,6 +83,7 @@ class C3Runtime:
     memory_grounder: Optional[MemoryGrounder] = None
     retention: Optional[RetentionManager] = None
     task_store: Optional[TaskStore] = None
+    artifact_store: Optional[ArtifactStore] = None
 
 
 def _load_agent_config(project_path: Path) -> dict:
@@ -177,7 +177,6 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
     validate_cfg = hybrid_config.get("validation_pipeline", {})
     validation_cache = ValidationCache(str(project), validate_cfg) if validate_cfg.get("enabled", True) else None
     watcher.set_backends(file_memory, compressor, validation_cache)
-    version_tracker = VersionTracker(str(project), ide_name=resolved_ide)
     notifications = NotificationStore(str(project))
     claude_md = ClaudeMdManager(
         str(project),
@@ -237,6 +236,9 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
     # Project management store (tasks/milestones/notes) — construction is I/O-free
     task_store = TaskStore(str(project))
 
+    # Agent-artifact tracking (instructions/settings/MCP/skills) — I/O-free ctor
+    artifact_store = ArtifactStore(str(project), ide_name=resolved_ide)
+
     # Memory brain: scorer, graph, consolidator, grounder
     memory_scorer = MemoryScorer()
     memory_graph = MemoryGraph(str(project))
@@ -259,6 +261,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         edit_ledger=edit_ledger,
         notifications=notifications,
         file_memory=file_memory,
+        artifact_store=artifact_store,
     )
 
     # Ollama probe deferred to background — shaves ~2s off startup.
@@ -290,7 +293,6 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         metrics=metrics,
         watcher=watcher,
         file_memory=file_memory,
-        version_tracker=version_tracker,
         ollama_client=ollama_client,
         ollama_available=False,
         snapshots=snapshots,
@@ -307,6 +309,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         memory_grounder=memory_grounder,
         retention=retention,
         task_store=task_store,
+        artifact_store=artifact_store,
     )
     runtime.agents = create_agents(
         runtime,

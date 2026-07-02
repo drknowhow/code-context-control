@@ -2,7 +2,7 @@
 """
 C3 MCP Server - Claude Code Companion as a native MCP tool server.
 
-Exposes 10 C3 tools as MCP endpoints. Tool logic lives in cli/tools/.
+Exposes 18 C3 tools as MCP endpoints. Tool logic lives in cli/tools/.
 
 Usage:
     python cli/mcp_server.py --project <path>
@@ -89,6 +89,7 @@ def _build_instructions(ide_name: str) -> str:
         "  EXECUTE shell (tests/git/build) → c3_shell\n"
         "  RECALL cross-session knowledge → c3_memory(action='recall') (index+fetch for large stores)\n"
         "  TRACK durable tasks/milestones/decisions → c3_task\n"
+        "  AGENT CONFIG inventory/history/diff/restore → c3_artifacts\n"
         "  SNAPSHOT before /clear → c3_session(action='snapshot')\n"
         "  HEALTH/budget checks → c3_status\n"
         "  OFFLOAD to another model → c3_delegate\n"
@@ -385,7 +386,7 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     return response
 
 
-# ─── TOOL REGISTRATIONS (17 tools) ────────────────────────────────
+# ─── TOOL REGISTRATIONS (18 tools) ────────────────────────────────
 # Each tool's first docstring line should state WHEN to reach for it —
 # that's what Claude reads when selecting between tools.
 
@@ -827,6 +828,36 @@ async def c3_task(
         due_date=due_date, tags=tags, description=description, milestone=milestone,
         note=note, kind=kind, link_type=link_type, ref=ref, label=label,
         name=name, target_date=target_date, query=query, limit=limit)
+
+
+@mcp.tool()
+async def c3_artifacts(
+    action: str,
+    artifact: str = "",
+    cls: str = "",
+    provider: str = "",
+    version: int = 0,
+    against: int = 0,
+    limit: int = 50,
+    ctx: Context = None,
+) -> str:
+    """AGENT-CONFIG TRACKING — inventory + version history + diff + restore for the files that shape the agent itself: instruction docs (CLAUDE.md/AGENTS.md/GEMINI.md/.cursorrules/copilot-instructions), settings/hooks, MCP configs, and .claude skills/agents/commands/plugins, across every IDE (reads safe in plan mode).
+    scan (refresh inventory; captures out-of-band edits), list (filters: cls=instructions|settings|mcp|skill|agent|command|plugin, provider),
+    history (artifact optional — all events when omitted), show (artifact [+version; 0=live]),
+    diff (artifact + version [+against; 0=live]), restore (artifact + version — writes prior bytes back, forward-only),
+    status (counts + out-of-band changes since last scan).
+    artifact accepts an id ('skill:browcontrol'), unique prefix, or path ('CLAUDE.md').
+    Changes made through c3_edit are attributed automatically; a background agent catches manual edits."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.artifacts import handle_artifacts
+    return await asyncio.to_thread(
+        handle_artifacts, action, svc, finalize,
+        artifact=artifact, cls=cls, provider=provider,
+        version=version, against=against, limit=limit)
 
 
 def main() -> None:

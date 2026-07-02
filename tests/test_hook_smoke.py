@@ -19,6 +19,7 @@ sys.modules.setdefault("_hook_utils", _hook_utils)
 
 import cli.hook_auto_snapshot as hook_auto_snapshot  # noqa: E402
 import cli.hook_c3_signal as hook_c3_signal  # noqa: E402
+import cli.hook_artifact as hook_artifact  # noqa: E402
 import cli.hook_c3read as hook_c3read  # noqa: E402
 import cli.hook_edit_ledger as hook_edit_ledger  # noqa: E402
 import cli.hook_edit_unlock as hook_edit_unlock  # noqa: E402
@@ -182,6 +183,44 @@ class TestEditLedger(SmokeBase):
         out = hook_edit_ledger.run({"tool_name": "Bash", "tool_input": {}},
                                    project_path=self.tmp)
         self.assertIsNone(out)
+
+
+class TestArtifactHook(SmokeBase):
+    def _pending(self):
+        return self.tmp / ".c3" / "agent_artifacts" / "pending.jsonl"
+
+    def test_artifact_write_appends_one_pending_signal(self):
+        fp = self.tmp / ".claude" / "settings.local.json"
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text("{}", encoding="utf-8")
+        out = hook_artifact.run(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(fp)}},
+            project_path=self.tmp)
+        self.assertIsNone(out)  # silent hook — no user-visible output
+        lines = self._pending().read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        sig = json.loads(lines[0])
+        self.assertEqual(sig["path"], ".claude/settings.local.json")
+        self.assertEqual(sig["source"], "hook")
+        self.assertEqual(sig["tool"], "Edit")
+
+    def test_non_artifact_path_appends_nothing(self):
+        fp = self.tmp / "src" / "mod.py"
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text("x = 1\n", encoding="utf-8")
+        hook_artifact.run(
+            {"tool_name": "Write", "tool_input": {"file_path": str(fp)}},
+            project_path=self.tmp)
+        self.assertFalse(self._pending().exists())
+
+    def test_unrelated_tool_and_outside_path_ignored(self):
+        self.assertIsNone(hook_artifact.run(
+            {"tool_name": "Bash", "tool_input": {}}, project_path=self.tmp))
+        outside = Path(tempfile.gettempdir()) / "CLAUDE.md"
+        hook_artifact.run(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(outside)}},
+            project_path=self.tmp)
+        self.assertFalse(self._pending().exists())
 
 
 class TestTerseAdvisor(SmokeBase):

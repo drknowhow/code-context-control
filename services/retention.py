@@ -45,6 +45,11 @@ RETENTION_DEFAULTS = {
     # Edit ledger: only entries older than this AND fully enriched are
     # eligible for archival (keeps the enricher's pending-patch flow intact).
     "edit_ledger_keep_days": 14,
+    # Agent-artifact tracking (.c3/agent_artifacts/): history log cap,
+    # per-artifact version cap, and orphan-blob GC age guard.
+    "artifact_history_max_mb": 2.0,
+    "artifact_max_versions": 20,
+    "artifact_blob_orphan_days": 7,
     # Archive TTLs in days; 0 = keep forever.
     "archive_keep_days": 90,
     "edit_ledger_archive_keep_days": 0,   # audit trail — never purged by default
@@ -339,11 +344,12 @@ class RetentionManager:
     """
 
     def __init__(self, project_path, edit_ledger=None, notifications=None,
-                 file_memory=None, sessions_dir=None):
+                 file_memory=None, sessions_dir=None, artifact_store=None):
         self.project_path = Path(project_path)
         self.edit_ledger = edit_ledger
         self.notifications = notifications
         self.file_memory = file_memory
+        self.artifact_store = artifact_store
         self.sessions_dir = (Path(sessions_dir) if sessions_dir
                              else self.project_path / ".c3" / "sessions")
         self._next_run = 0.0
@@ -421,7 +427,28 @@ class RetentionManager:
             except Exception:
                 pass
 
-        # 5. Archive TTL. Edit-ledger archives are excluded from the general
+        # 5. Agent-artifact store — history log rotation (plain rotation is
+        #    restore-safe: the manifest carries the version index) + version
+        #    cap + age-guarded orphan-blob GC.
+        if self.artifact_store is not None:
+            try:
+                rotated = rotate_jsonl(
+                    self.project_path / ".c3" / "agent_artifacts" / "history.jsonl",
+                    mb_to_bytes(cfg.get("artifact_history_max_mb", 2)),
+                    archive,
+                )
+                if rotated:
+                    summary["artifact_history_rotated"] = rotated.name
+                pruned = self.artifact_store.prune(
+                    max_versions=int(cfg.get("artifact_max_versions", 20)),
+                    blob_orphan_days=int(cfg.get("artifact_blob_orphan_days", 7)),
+                )
+                if pruned.get("versions_trimmed") or pruned.get("blobs_deleted"):
+                    summary["artifact_prune"] = pruned
+            except Exception:
+                pass
+
+        # 6. Archive TTL. Edit-ledger archives are excluded from the general
         #    purge and governed by their own knob (0 = keep forever).
         try:
             removed = purge_archives(

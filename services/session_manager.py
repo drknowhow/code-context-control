@@ -606,7 +606,8 @@ class SessionManager:
         from services.claude_md import write_c3_instruction_doc
 
         output_path = self.project_path / instructions_file
-        final = write_c3_instruction_doc(output_path, content)
+        final = write_c3_instruction_doc(output_path, content,
+                                         project_path=self.project_path)
         tokens = count_tokens(final)
 
         return {

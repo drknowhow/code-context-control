@@ -102,8 +102,11 @@ class TestRouting(unittest.TestCase):
             self._routes("posttool", "mcp__c3__c3_compress"),
             ["hook_edit_unlock", "hook_c3_signal"])
 
-    def test_posttool_edit_routes_to_ledger_only(self):
-        self.assertEqual(self._routes("posttool", "Edit"), ["hook_edit_ledger"])
+    def test_posttool_edit_routes_to_ledger_and_artifact(self):
+        self.assertEqual(self._routes("posttool", "Edit"),
+                         ["hook_edit_ledger", "hook_artifact"])
+        self.assertEqual(self._routes("posttool", "Write"),
+                         ["hook_edit_ledger", "hook_artifact"])
 
     def test_posttool_c3_search_routes_to_signal_only(self):
         self.assertEqual(self._routes("posttool", "mcp__c3__c3_search"),

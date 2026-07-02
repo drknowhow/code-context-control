@@ -4,6 +4,56 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.0] - 2026-07-02
+
+### Agent-artifact tracking: version history, diff & restore for the files that shape the agent
+
+- **New artifact store.** C3 now services the *agent itself*: every file that
+  shapes agent behavior is inventoried and versioned — instruction docs
+  (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`,
+  `.github/copilot-instructions.md`), settings/hooks
+  (`.claude/settings*.json`, `.gemini/settings.json`), MCP configs
+  (`.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`),
+  and Claude Code extensions (`.claude/` skills, agents, commands, plugins) —
+  provider-agnostic via the `core/ide.py` profile registry.
+  `services/artifact_defs.py` (pattern table + hook-safe classification) +
+  `services/artifact_store.py` (content-addressed blobs
+  `.c3/agent_artifacts/blobs/<sha256>.gz`, manifest with embedded version
+  index, append-only `history.jsonl`). Restore depends only on
+  manifest+blobs, so the history log rotates freely — no tombstone machinery.
+- **`c3_artifacts` MCP tool** (18th tool): `scan`, `list`, `history`, `show`,
+  `diff` (any version vs any version or live), `restore` (exact bytes back,
+  forward-only — appends a new version + history event, cross-logs to the
+  edit ledger, warns on settings/managed-block files, resurrects deleted
+  artifacts), `status`. Everything except `restore` is plan-mode-safe.
+- **Attributed capture, three paths.** `c3_edit` writes capture synchronously
+  with session + summary (`source=c3_edit`); native Edit/Write route through
+  a new `hook_artifact` pending-signal hook (<5 ms, no hashing;
+  `source=hook`); everything else — you editing CLAUDE.md in an editor, a
+  plugin installer — is caught by the idempotent scanner (`source=scan`).
+  C3's own writers self-report: `write_c3_instruction_doc` and
+  `cmd_install_mcp` mark their writes `source=install_mcp`, so re-running
+  install-mcp never looks like foreign tampering.
+- **`ArtifactScanAgent`** (120 s cycle) consumes pending signals then runs a
+  full scan. Notification discipline: silent baseline cycle, alerts
+  (`replace_if_unacked`) **only** for out-of-band changes to settings/MCP
+  configs — everything else is pull-only via the tool/UI.
+- **Surfaces.** Hub drill-in panel gets an **Artifacts** tab (class-grouped
+  inventory, per-version timeline, unified-diff viewer, two-step restore with
+  warnings); per-project REST `/api/artifacts*`; hub REST
+  `/api/projects/artifacts*` with per-project `artifact_write` audit.
+- **Retention.** `artifact_history_max_mb` (2 MB rotation),
+  `artifact_max_versions` (20/artifact), `artifact_blob_orphan_days`
+  (age-guarded orphan-blob GC) — wired into the retention sweep.
+
+### Removed
+
+- **`KeyFileVersionAgent` + `services/version_tracker.py`** — the dead-work
+  pair flagged by the deep evaluation (unread output, notification spam) is
+  absorbed by the artifact store + `ArtifactScanAgent`. `.c3/version_tracker.json`
+  is orphaned and can be deleted. (`VersionCheckAgent` — the PyPI
+  release nudge — is unrelated and stays.)
+
 ## [2.45.0] - 2026-07-02
 
 ### Project management: tasks, milestones, and decision notes per project

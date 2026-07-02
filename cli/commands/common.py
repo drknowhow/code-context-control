@@ -202,7 +202,7 @@ def cmd_claudemd(args, deps: CommandDeps):
             output_path = Path(project_path) / instructions_file
             # Wrap in the C3 managed block; preserve user content outside it.
             from services.claude_md import write_c3_instruction_doc
-            write_c3_instruction_doc(output_path, content)
+            write_c3_instruction_doc(output_path, content, project_path=project_path)
             print(f"{instructions_file} saved to {output_path} ({tokens} tokens)")
 
     elif args.claudemd_cmd == "check":

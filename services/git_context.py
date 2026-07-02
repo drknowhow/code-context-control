@@ -2,7 +2,8 @@
 
 Centralizes git-root detection and branch / HEAD / dirty queries so the rest
 of C3 does not re-implement subprocess plumbing (previously duplicated in
-``EditLedger`` and ``VersionTracker``). State is cached for a short TTL because
+``EditLedger`` and the retired ``VersionTracker``). State is cached for a short
+TTL because
 several callers — the edit ledger, context snapshots, the branch watcher — ask
 for it in quick succession.
 

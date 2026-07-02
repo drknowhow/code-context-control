@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.45.0"
+__version__ = "2.46.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -239,7 +239,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
-    "mcp__c3__c3_project", "mcp__c3__c3_task",
+    "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -4980,6 +4980,11 @@ def cmd_install_mcp(args):
         ) from e
 
     print(f"Wrote {mcp_config_path}")
+    if not profile.config_path_global:
+        # Self-report to the artifact tracker: attribute this write to C3
+        # instead of letting it surface as anonymous out-of-band drift.
+        from services.artifact_defs import note_pending_write
+        note_pending_write(target, profile.config_path, "install_mcp")
     if profile.name in {"codex", "gemini"}:
         _ensure_project_session_configs(target, server_script, primary_profile=profile.name, c3_mcp_exe=c3_mcp_exe)
         _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe)
@@ -5181,6 +5186,8 @@ def cmd_install_mcp(args):
             json.dump(settings, f, indent=2)
 
         print(f"Wrote {settings_path}")
+        from services.artifact_defs import note_pending_write
+        note_pending_write(target, profile.settings_path, "install_mcp")
         print(f"  Hooks ({hook_event}): dispatcher (1 spawn/event) — filter/ghost/read-guard/ledger/unlock/signal via cli/hook_dispatch.py posttool")
         print(f"  Hooks ({pre_event}): dispatcher — {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
         print("  Hooks (Stop): dispatcher — session_stats + auto_snapshot + terse_advisor")

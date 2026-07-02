@@ -1391,58 +1391,59 @@ class DelegateCoachAgent(BackgroundAgent):
                     return
 
 
-class KeyFileVersionAgent(BackgroundAgent):
-    """Tracks key file versions and warns when agent-facing files drift."""
+class ArtifactScanAgent(BackgroundAgent):
+    """Watches agent-affecting artifacts (instructions, settings/hooks, MCP
+    configs, skills/agents/commands) for changes.
 
-    def __init__(self, version_tracker, notifications, ide_name: str = "claude-code",
-                 enabled=True, interval=180, max_changes_per_notice: int = 4, agent_target: str = "current", **kwargs):
-        super().__init__("KeyFileVersion", interval, notifications, enabled, **kwargs)
-        self.version_tracker = version_tracker
-        self.ide_name = ide_name
-        self.max_changes_per_notice = max_changes_per_notice
-        self.agent_target = agent_target
+    Every cycle: consume pending hook/self-report signals (attributed capture),
+    then a full idempotent scan. All changes land in the artifact history;
+    notifications are reserved for OUT-OF-BAND (source=scan) changes to
+    security-relevant classes (settings/mcp by default) — everything else is
+    pull-only via c3_artifacts / the hub UI."""
+
+    def __init__(self, artifact_store, notifications, enabled=True, interval=120,
+                 notify_classes=("settings", "mcp"), **kwargs):
+        super().__init__("ArtifactScan", interval, notifications, enabled, **kwargs)
+        self.artifact_store = artifact_store
+        self.notify_classes = tuple(notify_classes)
         self._primed = False
 
     def check(self):
-        if not self.version_tracker:
+        if not self.artifact_store:
             return
-        result = self.version_tracker.scan(agent=self.agent_target)
-        changed = result.get("changed", [])
+        pending = self.artifact_store.consume_pending()
+        result = self.artifact_store.scan()
         if not self._primed:
+            # Baseline cycle stays silent: on a fresh manifest everything is
+            # 'created'; on process start we re-sync before alerting.
             self._primed = True
             return
-        if not changed:
+        events = pending.get("events", []) + result.get("events", [])
+        alerts = [e for e in events
+                  if e.get("source") == "scan"
+                  and e.get("event") in ("modified", "deleted")
+                  and e.get("class") in self.notify_classes]
+        if not alerts:
             return
-
-        sample = changed[:self.max_changes_per_notice]
-        files = ", ".join(self._describe_change(item) for item in sample)
-        if len(changed) > len(sample):
-            files += f" (+{len(changed) - len(sample)} more)"
-        dirty = sum(1 for item in changed if (item.get("git", {}) or {}).get("dirty"))
-        severity = "warning" if dirty else "info"
-        target = self.ide_name if self.agent_target in ("", "current", None) else self.agent_target
+        sample = ", ".join(self._describe_event(e) for e in alerts[:4])
+        if len(alerts) > 4:
+            sample += f" (+{len(alerts) - 4} more)"
         # replace_if_unacked: update the pending notice in place instead of
-        # appending an identical warning every cycle — the store bumps
-        # count/last_seen so repeat drift stays visible without pile-up.
+        # appending an identical warning every cycle.
         self.notify(
-            severity,
-            "Key file versions changed",
-            f"{files}. Tailored target: {target}. Git dirty: {dirty}.",
+            "warning",
+            "Agent config changed outside C3",
+            f"{sample}. Review: c3_artifacts(action='diff', artifact='<id>') — "
+            "restore a prior version with action='restore'.",
             replace_if_unacked=True,
         )
 
     @staticmethod
-    def _describe_change(item: dict) -> str:
-        """Actionable per-file detail: 'cli/mcp_server.py (3f2a1bc->9d4e2aa)'."""
-        old = (item.get("previous_hash") or "")[:7]
-        new = (item.get("current_hash") or "")[:7]
-        if not item.get("exists", True):
-            detail = f"{old or '?'}->deleted"
-        elif old or new:
-            detail = f"{old or 'new'}->{new or '?'}"
-        else:
-            detail = "changed"
-        return f"{item.get('file', '?')} ({detail})"
+    def _describe_event(ev: dict) -> str:
+        """Actionable per-artifact detail: 'settings:.claude/settings.local.json (modified v4)'."""
+        if ev.get("event") == "deleted":
+            return f"{ev.get('artifact_id', '?')} (deleted)"
+        return f"{ev.get('artifact_id', '?')} ({ev.get('event')} v{ev.get('version')})"
 
 
 class EditLedgerEnricherAgent(BackgroundAgent):
@@ -1759,13 +1760,12 @@ def create_agents(services, notifications, config=None, ollama=None) -> list:
                 "enabled": False, "interval": 180, "use_ai": False,
             }),
         ),
-        KeyFileVersionAgent(
-            version_tracker=getattr(services, "version_tracker", None),
+        ArtifactScanAgent(
+            artifact_store=getattr(services, "artifact_store", None),
             notifications=notifications,
-            ide_name=getattr(services, "ide_name", "claude-code"),
-            **_cfg("KeyFileVersion", {
-                "enabled": False, "interval": 180, "use_ai": False,
-                "agent_target": "current", "max_changes_per_notice": 4,
+            **_cfg("ArtifactScan", {
+                "enabled": True, "interval": 120, "use_ai": False,
+                "notify_classes": ["settings", "mcp"],
             }),
         ),
     ]

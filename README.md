@@ -191,7 +191,7 @@ Per-project knobs for everything: budget thresholds, feature flag mode, edit led
 
 ## The MCP tool suite
 
-C3 exposes 16 tools as a native MCP server. Your IDE calls them directly:
+C3 exposes 18 tools as a native MCP server. Your IDE calls them directly:
 
 | Tool | What it does |
 |---|---|
@@ -211,8 +211,10 @@ C3 exposes 16 tools as a native MCP server. Your IDE calls them directly:
 | `c3_edits` | Edit-ledger queries + version diffs + restore points + per-branch filter |
 | `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
 | `c3_project` | Cross-project — discover & operate on other c3-installed projects; guarded writes (v2.31.0) |
+| `c3_task` | Durable per-project tasks, milestones, and decision notes (v2.45.0) |
+| `c3_artifacts` | Agent-config tracking — version history, diff & restore for CLAUDE.md, settings/hooks, MCP configs, skills (v2.46.0) |
 
-Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, and write actions on `c3_bitbucket` / `c3_project`).
+Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_project` / `c3_task`).
 
 ### Bitbucket Data Center / Server (v2.30.0)
 

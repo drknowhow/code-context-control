@@ -1148,7 +1148,7 @@ python cli/c3.py install-mcp . gemini</code></pre>
 
       <!-- â”€â”€â”€ MCP Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <h2 id="mcp-tools">MCP Tools Reference</h2>
-      <p>C3 exposes 16 MCP tools. All core tools work without Ollama; delegate requires it. The Bitbucket integration is optional and activated via <code>c3 bitbucket login</code>.</p>
+      <p>C3 exposes 18 MCP tools. All core tools work without Ollama; delegate requires it. The Bitbucket integration is optional and activated via <code>c3 bitbucket login</code>.</p>
 
       <h3>Discovery &amp; Compression</h3>
       <table>
@@ -2672,7 +2672,7 @@ c3 session load | claude --resume</code></pre>
   <strong>MCP Proxy</strong> â”€â”€â”€â”€ Dynamic tool filtering + context injection (optional, opt-in via MCP config)
        | Subprocess stdio (NDJSON)
        v
-  <strong>C3 MCP Server</strong> â”€â”€â”€ 26 tools: search, compress, session, memory, CLAUDE.md, context, hybrid, notifications...
+  <strong>C3 MCP Server</strong> â”€â”€â”€ 18 tools: search, compress, session, memory, edits, tasks, artifacts, delegate...
        |
        +â”€â”€ <em>Compression</em>      <em>Smart Index</em>
        |    AST Summary       TF-IDF + Code Structure
@@ -2861,7 +2861,7 @@ c3 session load | claude --resume</code></pre>
       <pre><code>claude-companion/
   cli/
     c3.py                # CLI entry point (all commands)
-    mcp_server.py        # MCP server (30 tools via FastMCP)
+    mcp_server.py        # MCP server (18 tools via FastMCP)
     mcp_proxy.py         # Optional advanced MCP proxy (tool filtering)
     server.py            # Flask web server + REST API
     ui.html              # Single-page React dashboard

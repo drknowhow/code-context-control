@@ -42,6 +42,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
 10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`, or `login --global` for a home config reusable across projects; account resolution precedence is project → home). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
 11. **CROSS-PROJECT** (v2.31.0+): `c3_project(action='list|scan|info|search|read|edit|shell|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. `list`/`scan` need no project; reads (search/read/compress/status/memory/impact/edits/validate/filter) run freely; writes (`edit`, `shell`, memory add/update/delete) require `allow_write=true` and are logged to the target project's ledger.
+12. **AGENT CONFIG** (v2.46.0+): `c3_artifacts(action='status|list|history|diff|restore')` — version history for the files that shape the agent itself: instruction docs (CLAUDE.md/AGENTS.md/GEMINI.md), settings/hooks, MCP configs, .claude skills/agents/commands. Out-of-band edits are captured automatically; `diff` any version against live, `restore` writes a prior version back (forward-only, ledger-logged).
 
 ## Plan mode
 In plan mode, all c3_* read tools (search, read, compress, filter, validate, status) work normally — skip edit/delegate steps.
@@ -144,11 +145,17 @@ def merge_c3_block(existing: str, new_block: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def write_c3_instruction_doc(path, content: str) -> str:
+def write_c3_instruction_doc(path, content: str, project_path=None) -> str:
     """Write a C3-generated instruction doc without clobbering user content.
 
     Wraps ``content`` in the C3 managed block and merges it into any existing
     file via :func:`merge_c3_block`. Returns the exact text written to disk.
+
+    Self-reports the write to the agent-artifact tracker (source=install_mcp)
+    so regeneration is attributed to C3 instead of surfacing as anonymous
+    out-of-band drift. ``project_path`` pins the project root; when omitted
+    it is inferred from the doc's location (root or one level down, e.g.
+    .github/copilot-instructions.md).
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +166,17 @@ def write_c3_instruction_doc(path, content: str) -> str:
     else:
         final = block.rstrip() + "\n"
     p.write_text(final, encoding="utf-8")
+    try:
+        from services.artifact_defs import note_pending_write
+        root = Path(project_path) if project_path else None
+        if root is None:
+            root = next((c for c in (p.parent, p.parent.parent)
+                         if (c / ".c3").is_dir()), None)
+        if root is not None and (root / ".c3").is_dir():
+            note_pending_write(root, str(p.resolve().relative_to(root.resolve())),
+                               "install_mcp")
+    except Exception:
+        pass
     return final
 
 

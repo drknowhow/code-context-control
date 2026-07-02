@@ -138,10 +138,9 @@ AGENT_DEFAULTS = {
         "enabled": False, "interval": 300, "use_ai": False,
         "ai_model": "gemma3n:latest", "lookback_lines": 100,
     },
-    "KeyFileVersion": {
-        "enabled": False, "interval": 180, "use_ai": False,
-        "ai_model": "gemma3n:latest", "agent_target": "current",
-        "max_changes_per_notice": 4,
+    "ArtifactScan": {
+        "enabled": True, "interval": 120, "use_ai": False,
+        "notify_classes": ["settings", "mcp"],
     },
     "EditLedgerEnricher": {
         "enabled": True, "interval": 10, "use_ai": False,

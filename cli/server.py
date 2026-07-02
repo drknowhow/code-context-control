@@ -49,7 +49,7 @@ metrics_collector = None
 hybrid_config = None
 watcher = None
 file_memory = None
-version_tracker = None
+artifact_store = None
 ollama_client = None
 agents = []
 runtime = None
@@ -125,7 +125,7 @@ def _unregister_session(port: int):
 
 def init_services(project_path: str):
     """Initialize all C3 services for a project."""
-    global PROJECT_PATH, compressor, indexer, session_mgr, protocol, memory_store, claude_md_mgr, activity_log, notification_store, vector_store, output_filter, router, metrics_collector, hybrid_config, watcher, file_memory, version_tracker, ollama_client, agents, runtime
+    global PROJECT_PATH, compressor, indexer, session_mgr, protocol, memory_store, claude_md_mgr, activity_log, notification_store, vector_store, output_filter, router, metrics_collector, hybrid_config, watcher, file_memory, artifact_store, ollama_client, agents, runtime
     runtime = build_runtime(project_path)
     PROJECT_PATH = Path(runtime.project_path)
     protocol = CompressionProtocol(str(PROJECT_PATH), str(PROJECT_PATH / ".c3" / "dictionary.json"))
@@ -143,7 +143,7 @@ def init_services(project_path: str):
     hybrid_config = runtime.hybrid_config
     watcher = runtime.watcher
     file_memory = runtime.file_memory
-    version_tracker = runtime.version_tracker
+    artifact_store = runtime.artifact_store
     ollama_client = runtime.ollama_client
     agents = runtime.agents
 
@@ -1126,7 +1126,7 @@ def api_claudemd_save():
 
     # Wrap in the C3 managed block; never clobber user content outside it.
     from services.claude_md import write_c3_instruction_doc
-    write_c3_instruction_doc(output_path, content)
+    write_c3_instruction_doc(output_path, content, project_path=PROJECT_PATH)
 
     return jsonify({
         "path": str(output_path),
@@ -1323,6 +1323,91 @@ def api_pm_link():
         return jsonify(res), 400
     _pm_audit("link", op, res["id"])
     return jsonify({"task": res})
+
+
+# ─── API: Agent artifacts (config tracking) ──────────────
+def _artifact_store():
+    store = artifact_store or getattr(runtime, "artifact_store", None)
+    if store is None:
+        from services.artifact_store import ArtifactStore
+        store = ArtifactStore(str(PROJECT_PATH))
+    return store
+
+
+def _artifact_audit(op, ref=""):
+    try:
+        activity_log.log("artifact_write", {"op": op, "ref": ref, "source": "ui"})
+    except Exception:
+        pass
+
+
+@app.route('/api/artifacts', methods=["GET"])
+def api_artifacts():
+    """Artifact inventory + tracker status. Query: cls?, provider?"""
+    store = _artifact_store()
+    return jsonify({
+        "artifacts": store.list_artifacts(
+            cls=request.args.get("cls", ""),
+            provider=request.args.get("provider", "")),
+        "status": store.status(),
+    })
+
+
+@app.route('/api/artifacts/history', methods=["GET"])
+def api_artifacts_history():
+    """History events, newest first. Query: artifact?, limit?"""
+    store = _artifact_store()
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    return jsonify({"events": store.get_history(
+        artifact=request.args.get("artifact", ""), limit=limit)})
+
+
+@app.route('/api/artifacts/scan', methods=["POST"])
+def api_artifacts_scan():
+    store = _artifact_store()
+    store.consume_pending()
+    res = store.scan()
+    res.pop("events", None)  # event dicts are for the history endpoint
+    _artifact_audit("scan")
+    return jsonify(res)
+
+
+@app.route('/api/artifacts/diff', methods=["POST"])
+def api_artifacts_diff():
+    data = request.get_json(force=True) or {}
+    if not data.get("artifact") or not data.get("version"):
+        return jsonify({"error": "artifact and version are required"}), 400
+    store = _artifact_store()
+    res = store.diff(data["artifact"], int(data["version"]),
+                     int(data["against"]) if data.get("against") else None)
+    if "error" in res:
+        return jsonify(res), 400
+    return jsonify(res)
+
+
+@app.route('/api/artifacts/restore', methods=["POST"])
+def api_artifacts_restore():
+    data = request.get_json(force=True) or {}
+    if not data.get("artifact") or not data.get("version"):
+        return jsonify({"error": "artifact and version are required"}), 400
+    store = _artifact_store()
+    res = store.restore(data["artifact"], int(data["version"]), session_id="ui")
+    if "error" in res:
+        return jsonify(res), 400
+    ledger = getattr(runtime, "edit_ledger", None)
+    if ledger is not None:
+        try:
+            for path in res["files_written"]:
+                ledger.log_edit(path, "restored",
+                                f"restored {res['id']} to v{data['version']} via UI",
+                                tags=["artifact_restore"], session_id="ui")
+        except Exception:
+            pass
+    _artifact_audit("restore", f"{res['id']}@v{data['version']}")
+    return jsonify(res)
 
 
 # ─── API: Memory ─────────────────────────────────────────

@@ -335,6 +335,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/drill_views.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
+    "hub_ui/components/drill_artifacts.js",
     "hub_ui/components/config_editor.js",
     "hub_ui/components/mcp_manager.js",
     "hub_ui/components/global_search.js",
@@ -1890,6 +1891,99 @@ def api_pm_link():
         return jsonify(res), 400
     _pm_audit(resolved, "link", op, res["id"])
     return jsonify({"task": res})
+
+
+# ── Agent artifacts: config tracking (v2.46.0) ────────────────────────────
+# Direct ArtifactStore per request (load-per-op store — no runtime build
+# needed); every mutation audited to the target project's activity log.
+
+def _artifact_store_for(path):
+    from services.artifact_store import ArtifactStore
+    return ArtifactStore(str(path))
+
+
+def _artifact_audit(path, op, ref=""):
+    try:
+        ActivityLog(str(path)).log("artifact_write", {
+            "op": op, "ref": ref, "source": "hub"})
+    except Exception:
+        pass
+
+
+@app.route("/api/projects/artifacts", methods=["GET"])
+def api_projects_artifacts():
+    """Artifact inventory + tracker status. Query: path, cls?, provider?"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    store = _artifact_store_for(resolved)
+    return jsonify({
+        "path": str(resolved),
+        "artifacts": store.list_artifacts(
+            cls=request.args.get("cls", ""),
+            provider=request.args.get("provider", "")),
+        "status": store.status(),
+    })
+
+
+@app.route("/api/projects/artifacts/history", methods=["GET"])
+def api_projects_artifacts_history():
+    """History events, newest first. Query: path, artifact?, limit?"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 500))
+    except (TypeError, ValueError):
+        limit = 50
+    return jsonify({"events": _artifact_store_for(resolved).get_history(
+        artifact=request.args.get("artifact", ""), limit=limit)})
+
+
+@app.route("/api/projects/artifacts/scan", methods=["POST"])
+def api_projects_artifacts_scan():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    store = _artifact_store_for(resolved)
+    store.consume_pending()
+    res = store.scan()
+    res.pop("events", None)  # event dicts live on the history endpoint
+    _artifact_audit(resolved, "scan")
+    return jsonify(res)
+
+
+@app.route("/api/projects/artifacts/diff", methods=["POST"])
+def api_projects_artifacts_diff():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    if not data.get("artifact") or not data.get("version"):
+        return jsonify({"error": "artifact and version are required"}), 400
+    res = _artifact_store_for(resolved).diff(
+        data["artifact"], int(data["version"]),
+        int(data["against"]) if data.get("against") else None)
+    if "error" in res:
+        return jsonify(res), 400
+    return jsonify(res)
+
+
+@app.route("/api/projects/artifacts/restore", methods=["POST"])
+def api_projects_artifacts_restore():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    if not data.get("artifact") or not data.get("version"):
+        return jsonify({"error": "artifact and version are required"}), 400
+    res = _artifact_store_for(resolved).restore(
+        data["artifact"], int(data["version"]), session_id="hub")
+    if "error" in res:
+        return jsonify(res), 400
+    _artifact_audit(resolved, "restore", f"{res['id']}@v{data['version']}")
+    return jsonify(res)
 
 
 @app.route("/api/pm/global", methods=["GET"])

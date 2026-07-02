@@ -118,6 +118,7 @@
     <div class="sidebar-section">
       <div class="sidebar-label">Ledger</div>
       <a href="#c3_edits"    class="sidebar-link"><span class="icon">📝</span> c3_edits</a>
+      <a href="#c3_artifacts" class="sidebar-link"><span class="icon">🛡️</span> c3_artifacts</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">SCM</div>
@@ -135,7 +136,7 @@
 
     <div class="page-hero">
       <h1>Tools Reference</h1>
-      <p>Complete reference for all 16 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+      <p>Complete reference for all 18 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
     </div>
 
     <!-- TOC -->
@@ -157,6 +158,7 @@
         <a href="#c3_agent"    class="toc-item">c3_agent    <span class="cat">AI</span></a>
         <a href="#c3_edits"    class="toc-item">c3_edits    <span class="cat">Ledger</span></a>
         <a href="#c3_task" class="toc-item">c3_task <span class="cat">PM</span></a>
+        <a href="#c3_artifacts" class="toc-item">c3_artifacts <span class="cat">Config</span></a>
         <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
         <a href="#c3_project"  class="toc-item">c3_project  <span class="cat">Multi-project</span></a>
       </div>
@@ -1135,6 +1137,50 @@ c3_task(action=<span class="str">'board'</span>)
 c3_task(action=<span class="str">'note_add'</span>, note=<span class="str">'Kanban rank uses float sort keys'</span>, kind=<span class="str">'decision'</span>)</code></pre>
 
           <p class="tool-desc"><strong>Surfaces:</strong> the Hub shows a Tasks tab per project (drill-in panel), <code>☑ N</code> open-task chips on cards, and a global kanban board behind the Projects | Tasks switcher. Hub mutations audit <code>pm_write</code> events to the project's activity log. Disable with <code>hybrid.pm.enabled=false</code>.</p>
+        </div>
+      </div>
+
+      <!-- c3_artifacts -->
+      <div class="tool-card" id="c3_artifacts">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_artifacts</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">agent config</span>
+            <span class="badge">v2.46.0</span>
+          </div>
+          <span class="tool-tagline">Version history, diff, and restore for the files that shape the agent itself</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">C3 tracks every <em>agent-affecting artifact</em> across all IDEs it knows — instruction docs (<code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>GEMINI.md</code>, <code>.cursorrules</code>, <code>.github/copilot-instructions.md</code>), settings/hooks (<code>.claude/settings*.json</code>), MCP configs (<code>.mcp.json</code>, <code>.codex/config.toml</code>, <code>.gemini/settings.json</code>, …), and Claude Code extensions (<code>.claude/</code> skills, agents, commands, plugins). Content-addressed snapshots land in <code>.c3/agent_artifacts/</code>; every change is a history event with attribution: <code>c3_edit</code> (this session), <code>hook</code> (native Edit/Write), <code>scan</code> (out-of-band — you edited it in an editor), <code>install_mcp</code> (C3 regenerating its own files), or <code>restore</code>. A background agent scans every ~2 min and warns only when <em>settings or MCP configs</em> change outside C3. Artifact refs accept an id (<code>skill:browcontrol</code>), unique prefix, or plain path (<code>CLAUDE.md</code>). Everything except <code>restore</code> is plan-mode-safe.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">scan</td><td>Read</td><td class="param-desc">Refresh the inventory; captures out-of-band changes immediately (idempotent — unchanged files emit nothing)</td></tr>
+              <tr><td class="param-name">list</td><td>Read</td><td class="param-desc">Inventory with versions; filters: <code>cls</code> (instructions | settings | mcp | skill | agent | command | plugin), <code>provider</code></td></tr>
+              <tr><td class="param-name">history</td><td>Read</td><td class="param-desc">Change events newest-first, with source attribution; <code>artifact</code> optional (all events when omitted)</td></tr>
+              <tr><td class="param-name">show</td><td>Read</td><td class="param-desc">Content at a version (<code>version=0</code> → live file)</td></tr>
+              <tr><td class="param-name">diff</td><td>Read</td><td class="param-desc">Unified diff <code>version</code> → <code>against</code> (omit <code>against</code> to diff vs live)</td></tr>
+              <tr><td class="param-name">restore</td><td>Write</td><td class="param-desc">Write a prior version's exact bytes back. Forward-only (new version + history event, never rewrites), cross-logged to the edit ledger, warns on settings/managed-block files. Resurrects deleted artifacts.</td></tr>
+              <tr><td class="param-name">status</td><td>Read</td><td class="param-desc">Tracked counts by class, out-of-band changes, last scan, pending signals</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># What changed behind my back?</span>
+c3_artifacts(action=<span class="str">'status'</span>)
+c3_artifacts(action=<span class="str">'history'</span>, limit=<span class="num">10</span>)
+
+<span class="com"># Someone (or something) touched the hooks — inspect and roll back</span>
+c3_artifacts(action=<span class="str">'diff'</span>, artifact=<span class="str">'.claude/settings.local.json'</span>, version=<span class="num">3</span>)
+c3_artifacts(action=<span class="str">'restore'</span>, artifact=<span class="str">'settings:.claude/settings.local.json'</span>, version=<span class="num">3</span>)
+
+<span class="com"># Track a skill's evolution</span>
+c3_artifacts(action=<span class="str">'history'</span>, artifact=<span class="str">'skill:browcontrol'</span>)
+c3_artifacts(action=<span class="str">'show'</span>, artifact=<span class="str">'skill:browcontrol'</span>, version=<span class="num">2</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Surfaces:</strong> the Hub drill-in panel gets an Artifacts tab (class-grouped inventory, per-version timeline, diff viewer, two-step restore); REST at <code>/api/artifacts*</code> per project and <code>/api/projects/artifacts*</code> on the hub. Changes made through <code>c3_edit</code> and <code>install-mcp</code> self-attribute — only genuinely foreign edits show as <code>scan</code>. Disable with <code>hybrid.agent_artifacts.enabled=false</code>.</p>
         </div>
       </div>
 

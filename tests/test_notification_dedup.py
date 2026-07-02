@@ -1,16 +1,17 @@
-"""Notification dedup + actionable KeyFileVersion warnings (Stream C/P4).
+"""Notification dedup + scoped ArtifactScan warnings (Stream C/P4).
 
-Regression: KeyFileVersionAgent re-notified every cycle without checking for
-an existing unread duplicate — a live store accumulated 13 identical
-'[warning] KeyFileVersion: Key file versions changed' lines with no detail
-about which file changed. This locks in:
+Regression: the (retired) KeyFileVersionAgent re-notified every cycle without
+checking for an existing unread duplicate — a live store accumulated 13
+identical warning lines with no detail about which file changed. This locks in:
 
   1. Store-level dedup: identical (agent, title, message) unacked adds
      collapse into one record with count/last_seen.
   2. Retro-cleanup: pre-existing unacked duplicate backlogs (same agent+title)
      self-heal lazily on first store access.
-  3. KeyFileVersionAgent emits per-file detail (hash old->new) and updates
-     its pending notice in place instead of appending duplicates.
+  3. ArtifactScanAgent (its successor) stays silent on the baseline cycle,
+     notifies ONLY for out-of-band (source=scan) changes to security-relevant
+     classes, emits per-artifact detail, and updates its pending notice in
+     place instead of appending duplicates.
   4. The c3_status notifications view renders collapsed records as one line
      with '(xN, last HH:MM)' and caps the list with a '+N more' tail.
 """
@@ -20,7 +21,7 @@ import unittest
 from pathlib import Path
 
 from cli.tools.status import _notifications_view
-from services.agents import KeyFileVersionAgent
+from services.agents import ArtifactScanAgent
 from services.notifications import NotificationStore
 
 
@@ -33,14 +34,24 @@ class _SvcStub:
         self.notifications = store
 
 
-class _TrackerStub:
-    """Minimal VersionTracker stand-in: scan() returns a canned result."""
+class _ArtifactStoreStub:
+    """Minimal ArtifactStore stand-in: canned pending/scan results."""
 
     def __init__(self):
-        self.result = {"changed": []}
+        self.pending = {"consumed": 0, "events": []}
+        self.result = {"added": [], "modified": [], "deleted": [],
+                       "unchanged": 0, "events": []}
 
-    def scan(self, agent="current"):
+    def consume_pending(self):
+        return self.pending
+
+    def scan(self, paths=None, attribution=None):
         return self.result
+
+
+def _ev(aid, cls, event="modified", source="scan", version=4):
+    return {"artifact_id": aid, "class": cls, "event": event,
+            "source": source, "version": version}
 
 
 class _StoreTestCase(unittest.TestCase):
@@ -161,67 +172,68 @@ class TestRetroCollapse(_StoreTestCase):
         self.assertEqual(len(store.get_unacknowledged(limit=50)), 3)
 
 
-# ── 3. KeyFileVersionAgent: detail-bearing, non-duplicating ──────────────
-class TestKeyFileVersionAgent(_StoreTestCase):
-    def _agent(self, tracker):
-        return KeyFileVersionAgent(tracker, self.store, enabled=False)
+# ── 3. ArtifactScanAgent: primed baseline, scoped, non-duplicating ───────
+class TestArtifactScanAgent(_StoreTestCase):
+    def _agent(self, store_stub, **kw):
+        return ArtifactScanAgent(store_stub, self.store, enabled=False, **kw)
 
-    def test_detail_bearing_message_and_no_duplicates(self):
-        tracker = _TrackerStub()
-        agent = self._agent(tracker)
-        agent.check()  # priming pass — records baseline, never notifies
+    def test_baseline_cycle_is_silent(self):
+        stub = _ArtifactStoreStub()
+        stub.result["events"] = [_ev("settings:.claude/settings.local.json",
+                                     "settings")]
+        agent = self._agent(stub)
+        agent.check()  # priming pass — re-syncs state, never notifies
         self.assertEqual(self.store.get_unacknowledged(severities=()), [])
 
-        tracker.result = {"changed": [
-            {"file": "cli/mcp_server.py", "exists": True,
-             "git": {"dirty": True},
-             "previous_hash": "3f2a1bc9d4e2aa00", "current_hash": "9d4e2aa13f2a1bc0"},
-            {"file": "cli/tools/agent.py", "exists": True, "git": {},
-             "previous_hash": "aaaaaaa000000000", "current_hash": "bbbbbbb111111111"},
-        ]}
+    def test_out_of_band_settings_change_notifies_in_place(self):
+        stub = _ArtifactStoreStub()
+        agent = self._agent(stub)
+        agent.check()  # prime
+        stub.result["events"] = [
+            _ev("settings:.claude/settings.local.json", "settings"),
+            _ev("mcp:.mcp.json", "mcp", event="deleted"),
+        ]
         agent.check()
         pending = self.store.get_unacknowledged(severities=())
         self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["severity"], "warning")  # dirty file present
+        self.assertEqual(pending[0]["severity"], "warning")
         msg = pending[0]["message"]
-        self.assertIn("cli/mcp_server.py (3f2a1bc->9d4e2aa)", msg)
-        self.assertIn("cli/tools/agent.py (aaaaaaa->bbbbbbb)", msg)
+        self.assertIn("settings:.claude/settings.local.json (modified v4)", msg)
+        self.assertIn("mcp:.mcp.json (deleted)", msg)
 
         agent.check()  # same drift next cycle — updated in place, no duplicate
         pending = self.store.get_unacknowledged(severities=())
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["count"], 2)
 
-    def test_deleted_and_new_file_detail(self):
-        self.assertEqual(
-            KeyFileVersionAgent._describe_change(
-                {"file": "gone.py", "exists": False,
-                 "previous_hash": "abc123400000000", "current_hash": ""}),
-            "gone.py (abc1234->deleted)")
-        self.assertEqual(
-            KeyFileVersionAgent._describe_change(
-                {"file": "born.py", "exists": True,
-                 "previous_hash": "", "current_hash": "def567800000000"}),
-            "born.py (new->def5678)")
-        self.assertEqual(
-            KeyFileVersionAgent._describe_change({"file": "odd.py"}),
-            "odd.py (changed)")
-
-    def test_overflow_tail_when_many_files_change(self):
-        tracker = _TrackerStub()
-        agent = KeyFileVersionAgent(tracker, self.store, enabled=False,
-                                    max_changes_per_notice=2)
+    def test_attributed_sources_and_other_classes_stay_quiet(self):
+        stub = _ArtifactStoreStub()
+        agent = self._agent(stub)
         agent.check()  # prime
-        tracker.result = {"changed": [
-            {"file": f"f{i}.py", "exists": True, "git": {},
-             "previous_hash": f"{i}aaaaaa0", "current_hash": f"{i}bbbbbb0"}
-            for i in range(5)
-        ]}
+        stub.pending["events"] = [
+            _ev("instructions:CLAUDE.md", "instructions", source="c3_edit"),
+            _ev("settings:.claude/settings.local.json", "settings",
+                source="install_mcp"),
+        ]
+        stub.result["events"] = [
+            _ev("skill:browcontrol", "skill"),                 # class not watched
+            _ev("mcp:.mcp.json", "mcp", event="created"),      # created ≠ drift
+        ]
+        agent.check()
+        self.assertEqual(self.store.get_unacknowledged(severities=()), [])
+
+    def test_overflow_tail_when_many_artifacts_change(self):
+        stub = _ArtifactStoreStub()
+        agent = self._agent(stub)
+        agent.check()  # prime
+        stub.result["events"] = [
+            _ev(f"settings:.claude/s{i}.json", "settings") for i in range(6)
+        ]
         agent.check()
         msg = self.store.get_unacknowledged(severities=())[0]["message"]
-        self.assertIn("(+3 more)", msg)
-        self.assertIn("f0.py", msg)
-        self.assertNotIn("f4.py", msg)
+        self.assertIn("(+2 more)", msg)
+        self.assertIn("s0.json", msg)
+        self.assertNotIn("s5.json (", msg)
 
 
 # ── 4. Status view rendering ──────────────────────────────────────────────

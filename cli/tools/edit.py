@@ -358,3 +358,14 @@ def _log_to_ledger(rel: str, summary: str, tag_list, svc, detail: dict = None) -
             svc.session_mgr.log_file_change(rel, "modified")
     except Exception:
         pass
+    # Agent-artifact capture: synchronous, fully attributed (session + summary).
+    try:
+        from services.artifact_defs import classify_path
+        store = getattr(svc, "artifact_store", None)
+        if store is not None and classify_path(rel) is not None:
+            session = getattr(getattr(svc, "session_mgr", None),
+                              "current_session", None) or {}
+            store.note_write(rel, "c3_edit", session_id=session.get("id", ""),
+                             summary=summary)
+    except Exception:
+        pass
