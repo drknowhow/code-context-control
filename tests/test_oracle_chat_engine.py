@@ -22,7 +22,6 @@ sys.path.insert(0, str(REPO_ROOT))
 from oracle.services import chat_engine as ce  # noqa: E402
 from oracle.services.chat_engine import ChatEngine, _ToolCallStripper  # noqa: E402
 
-
 # ── Fakes ─────────────────────────────────────────────────────────────
 
 

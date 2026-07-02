@@ -4,6 +4,66 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.47.0] - Unreleased
+
+### Oracle Wave 1: security + core hardening/unification
+
+#### Security
+
+- **Closed the unauthenticated local-write kill chain.** `POST
+  /api/apikey/generate|rotate|clear`, `/api/chat` (full tool access),
+  `/api/suggestions/approve` (real writes to project `facts.json`) and
+  `/api/config` were reachable by any local process — and `rotate` returned
+  the fresh Discovery token, defeating the Bearer gates on `/api/config` and
+  `/api/discovery/*`. A new per-boot session cookie
+  (`oracle/services/local_session.py`, HttpOnly + SameSite=Strict, issued on
+  `GET /` to loopback clients only, never persisted) plus a default-deny
+  `_local_write_guard` now require **session cookie or Bearer token** on every
+  mutating `/api/*` call outside `/api/discovery/*` (which stays Bearer-only).
+  Any future mutating endpoint is covered automatically.
+- **Un-broke the dashboard Settings save.** The UI never sent a Bearer token,
+  so `POST /api/config` always 401'd; the session cookie now authenticates the
+  dashboard, which can also reveal/copy the Discovery key again.
+
+#### Chat: native Ollama tool calling
+
+- **ChatEngine speaks Ollama's native tools API** when the model supports it
+  (capability probe via `/api/show`, cached). The native tools array is built
+  from `TOOL_SPECS` — one source of truth with the Discovery API. Tool-capable
+  models get structured tool calls (no regex `<tool_call>` parsing, no
+  stripper, no trust-answer heuristic, `role:tool` result feeding);
+  tool-incapable models keep the legacy text protocol verbatim;
+  unknown-capability models attempt native and **fall back mid-turn** on an
+  HTTP 400 rejection (negative-cached only when the server names tools as the
+  problem). Sub-agents (`delegate_task`) pick their protocol from their own
+  model. SSE event vocabulary and persisted conversation format are unchanged.
+- One shared `_drain_stream` generator replaces three duplicated
+  chunk-unpacking loops (main round, visible-retry, delegate sub-agent).
+
+#### Performance / unification
+
+- **C3Bridge adopted the shared `ProjectRuntimeCache`** (its own docstring
+  named the bridge's hand-rolled LRU as the predecessor it was lifted from).
+  Cache size 3 → 8 (`C3_RUNTIME_CACHE_SIZE`-tunable), ending cross-project
+  search thrash over >3 projects. New `on_build` hook on the cache warms
+  `embedding_index` + `vector_store` in a daemon thread (mirroring the MCP
+  server's lifespan warm) so the first `c3_search` on a project no longer pays
+  chromadb init on the request thread.
+- **`ProjectScanner.discover()` is TTL-cached** (`scanner_ttl_seconds`,
+  default 20s) with copy-on-return; it was re-run uncached on every tool call
+  and several times per graph request. The dashboard Scan action forces a
+  refresh; failed/empty discoveries are never cached.
+- **OllamaBridge hygiene:** `is_available()` no longer reports a 5xx-failing
+  server as reachable; the LLM disk cache gains a TTL (`llm_cache_ttl_sec`,
+  default 24h) and a 512-entry bound (was unbounded, never expired).
+
+#### Tests
+
+- 60 new Oracle tests across five files: `test_oracle_local_auth.py`
+  (kill-chain regressions), `test_oracle_chat_engine.py` (first-ever coverage
+  of the 1,100-line chat orchestrator), `test_oracle_c3_bridge.py`,
+  `test_oracle_scanner_cache.py`, `test_oracle_ollama_bridge.py`.
+
 ## [2.46.1] - 2026-07-02
 
 ### Fixed
