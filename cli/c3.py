@@ -5632,10 +5632,18 @@ def _bb_cmd_set_default(args, project_path: str) -> None:
 
 
 def cmd_oracle(args):
-    """Oracle Discovery API key + connection management."""
+    """Oracle dashboard server + Discovery API key management."""
     sub = getattr(args, "oracle_cmd", None)
+    if sub in ("serve", "start"):
+        # Lazy import: run_oracle builds all Oracle services (matches
+        # cmd_hub's deferred-import style so bare `c3` stays fast).
+        from oracle.oracle_server import run_oracle
+        run_oracle(port=getattr(args, "port", None),
+                   open_browser=not getattr(args, "no_browser", False))
+        return
     if sub != "api":
-        print("Usage: c3 oracle api {info,key,rotate,clear}")
+        print("Usage: c3 oracle {serve,api} — serve: launch the dashboard; "
+              "api {info,key,rotate,clear}: manage the Discovery key")
         return
 
     from oracle.config import load_config

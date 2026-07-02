@@ -357,9 +357,18 @@ def build_parser(version: str, parse_cli_ide_arg):
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
         "oracle",
-        help="Oracle Discovery API key + connection management",
+        help="Oracle dashboard server + Discovery API key management",
     )
     or_subs = p_oracle.add_subparsers(dest="oracle_cmd")
+    or_serve = or_subs.add_parser(
+        "serve",
+        aliases=["start"],
+        help="Launch the Oracle dashboard server (REST + MCP discovery endpoints)",
+    )
+    or_serve.add_argument("--port", type=int, default=None,
+                          help="Server port (default: config 'port', 3331)")
+    or_serve.add_argument("--no-browser", action="store_true",
+                          help="Don't open the browser")
     or_api = or_subs.add_parser(
         "api",
         help="Show connection info / manage the Discovery API key",
