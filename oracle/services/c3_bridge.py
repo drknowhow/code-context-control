@@ -20,6 +20,20 @@ _BLOCKED_EDITS_ACTIONS = {"log"}
 _BLOCKED_MEMORY_ACTIONS = {"add", "update", "delete", "consolidate", "consolidate_deep", "ground"}
 _BLOCKED_STATUS_VIEWS = {"ghost_files"}
 
+# c3_project is allowlisted (deny-by-default) rather than blocklisted: the
+# underlying handler has write verbs (edit/shell/register/sub_*) and 'scan'
+# walks the filesystem revealing UNREGISTERED .c3 projects — outside Oracle's
+# discovered-project trust boundary. 'filter' stays out for parity with the
+# deliberate c3_filter exclusion (tool_registry.py).
+_ALLOWED_PROJECT_ACTIONS = {
+    "list", "info", "subprojects", "search", "read", "compress", "status",
+    "memory", "impact", "edits", "validate",
+}
+# 'restore' writes files + ledger entries; 'scan' mutates the target's
+# artifact manifest (consume_pending + _save_manifest) despite being listed
+# in the handler's READ_ACTIONS.
+_BLOCKED_ARTIFACT_ACTIONS = {"scan", "restore"}
+
 
 def _noop_finalize(_name: str, _args: dict, resp: str, _summ: str = "", **_kw) -> str:
     """No-op finalize — Oracle doesn't track MCP budgets."""
@@ -184,6 +198,72 @@ class C3Bridge:
         svc = self.get_runtime(project_path)
         result = handle_filter(file_path, text, pattern, max_lines,
                                depth, False, svc, _noop_finalize)
+        return {"project": project_path, "result": result}
+
+    def c3_project(self, action: str, project: str = "", query: str = "",
+                   file_path: str = "", symbols=None, lines=None,
+                   mode: str = "map", view: str = "health", top_k: int = 5,
+                   max_tokens: int = 1200, search_action: str = "code",
+                   mem_action: str = "recall", category: str = "",
+                   fact_id: str = "", edits_action: str = "history",
+                   file: str = "", tag: str = "", limit: int = 50,
+                   target: str = "") -> dict:
+        """Cross-project operations by project NAME or path (read-only).
+
+        The signature deliberately has no ``allow_write`` and no write-op
+        params (old_string/new_string/cmd/...): combined with the registry
+        dropping undeclared keys, ``allow_write=True`` can never reach
+        ``handle_project`` from any transport — the call hard-codes False.
+        Resolution goes through ``resolve_project`` (name → path) and then
+        ``validate_project_path``: the resolver accepts ANY on-disk ``.c3``
+        path, registered or not, so Oracle re-checks membership against its
+        discovered projects.
+        """
+        action = (action or "").strip().lower()
+        if action not in _ALLOWED_PROJECT_ACTIONS:
+            return {"error": f"Action '{action}' is not available in Oracle (read-only). "
+                             f"Allowed: {', '.join(sorted(_ALLOWED_PROJECT_ACTIONS))}. "
+                             "Use suggest_action for write operations."}
+        if action == "memory" and (mem_action or "").lower() in _BLOCKED_MEMORY_ACTIONS:
+            return {"error": f"Memory action '{mem_action}' is blocked in Oracle (read-only). "
+                             "Use suggest_action to propose memory changes."}
+        if action == "edits" and (edits_action or "").lower() in _BLOCKED_EDITS_ACTIONS:
+            return {"error": f"Edits action '{edits_action}' is write-only and blocked in Oracle."}
+        if action == "status" and (view or "").lower() in _BLOCKED_STATUS_VIEWS:
+            return {"error": f"View '{view}' has side effects and is blocked in Oracle."}
+
+        from cli.tools.project import handle_project
+
+        resolved_path = ""
+        if action != "list":
+            from services.project_runtime import resolve_project
+            resolved = resolve_project(project)
+            resolved_path = validate_project_path(self.scanner, resolved["path"])
+        result = handle_project(
+            action, svc=None, finalize=_noop_finalize,
+            project=resolved_path or project, query=query, file_path=file_path,
+            symbols=symbols, lines=lines, mode=mode, view=view, top_k=top_k,
+            max_tokens=max_tokens, search_action=search_action,
+            mem_action=mem_action, category=category, fact_id=fact_id,
+            edits_action=edits_action, file=file, tag=tag, limit=limit,
+            target=target, allow_write=False,
+        )
+        return {"project": resolved_path or "all", "result": result}
+
+    def c3_artifacts(self, project_path: str, action: str = "list",
+                     artifact: str = "", cls: str = "", provider: str = "",
+                     version: int = 0, against: int = 0, limit: int = 50) -> dict:
+        """Agent-config artifact tracking for one project (read-only views)."""
+        action = (action or "").strip().lower()
+        if action in _BLOCKED_ARTIFACT_ACTIONS:
+            return {"error": f"Action '{action}' is write/mutating and blocked in Oracle. "
+                             "Artifact inventories are populated by the project's own "
+                             "C3 sessions; use suggest_action for write operations."}
+        from cli.tools.artifacts import handle_artifacts
+        svc = self.get_runtime(project_path)
+        result = handle_artifacts(action, svc, _noop_finalize, artifact=artifact,
+                                  cls=cls, provider=provider, version=version,
+                                  against=against, limit=limit)
         return {"project": project_path, "result": result}
 
     # ── Cross-project aggregation ─────────────────────────────────

@@ -107,6 +107,16 @@ Tools:
     Cross-project daily activity digest: sessions, tool calls, edits, git
     mutations, and token/cost across ALL projects (or one, via project_path).
     Defaults to today (UTC). narrate=true adds a prose summary.
+
+20. c3_project(action="list", project="", ...)
+    Cross-project ops by registered project NAME or path. Read-only actions:
+    list|info|subprojects|search|read|compress|status|memory|impact|edits|validate.
+    Extra args mirror the underlying tool (query, file_path, mode, view,
+    mem_action, edits_action, top_k, limit, target).
+
+21. c3_artifacts(project_path, action="list", artifact="", version=0, against=0)
+    Agent-config artifact tracking (read-only): list|history|show|diff|status.
+    Version history for CLAUDE.md/settings/MCP configs/skills in a project.
 """
 
 _SYSTEM_BASE = """You are Oracle, an AI assistant specializing in cross-project code intelligence and memory analysis.
@@ -1031,7 +1041,7 @@ class ChatEngine:
                 # ── C3 code intelligence tools ──
                 case "c3_search" | "c3_read" | "c3_edits" | "c3_edits_cross" | \
                      "c3_memory_query" | "c3_compress" | "c3_validate" | \
-                     "c3_status" | "c3_search_cross":
+                     "c3_status" | "c3_search_cross" | "c3_project" | "c3_artifacts":
                     return self._dispatch_c3(name, args)
                 case _:
                     return {"error": f"Unknown tool: {name}"}
@@ -1055,6 +1065,8 @@ class ChatEngine:
             "c3_validate": self.c3_bridge.c3_validate,
             "c3_status": self.c3_bridge.c3_status,
             "c3_search_cross": self.c3_bridge.c3_search_cross,
+            "c3_project": self.c3_bridge.c3_project,
+            "c3_artifacts": self.c3_bridge.c3_artifacts,
         }
         method = _C3_METHODS.get(name)
         if not method:
