@@ -308,6 +308,12 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
           <Badge color={T.warn}>🔔 {p.notification_count}</Badge>
         </span>
       )}
+      {(p.open_task_count || 0) > 0 && (
+        <span onClick={(e) => { e.stopPropagation(); onOpenDrill(p, 'tasks'); }}
+          style={{ cursor: 'pointer', display: 'inline-flex', flexShrink: 0 }}>
+          <Badge color={T.blue}>☑ {p.open_task_count}</Badge>
+        </span>
+      )}
       {rollup && (
         <span style={{ display: 'inline-flex', gap: 6, flexShrink: 0 }}>
           <Badge color={T.textMuted}>{rollup.count} sub-project{rollup.count === 1 ? '' : 's'}</Badge>
@@ -379,6 +385,7 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{c.name}</span>
                 {(c.notification_count || 0) > 0 && <Badge color={T.warn}>🔔 {c.notification_count}</Badge>}
+                {(c.open_task_count || 0) > 0 && <Badge color={T.blue}>☑ {c.open_task_count}</Badge>}
                 <span className="mono" style={{ fontSize: 10, color: T.textDim, flexShrink: 0 }}>
                   {c.last_session ? timeAgo(c.last_session) : ''}
                 </span>

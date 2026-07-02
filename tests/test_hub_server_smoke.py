@@ -110,6 +110,20 @@ class TestHubServerSmoke(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("C3 Project Hub", resp.get_data(as_text=True))
 
+    def test_pm_bundle_entries_present(self):
+        for rel in ("ui/pm_shared.js", "hub_ui/components/drill_tasks.js",
+                    "hub_ui/components/task_board.js"):
+            self.assertIn(rel, self.mod._HUB_JS_FILES)
+
+    def test_project_ui_bundle_files_exist(self):
+        from cli import server as project_server
+        cli_dir = Path(self.mod.__file__).parent
+        for rel in ("ui/pm_shared.js", "ui/components/tasks.js"):
+            self.assertIn(rel, project_server._UI_JS_FILES)
+        missing = [rel for rel in project_server._UI_JS_FILES
+                   if not (cli_dir / rel).exists()]
+        self.assertEqual(missing, [], f"_UI_JS_FILES entries missing on disk: {missing}")
+
     def test_parse_json_tail_skips_init_noise(self):
         payload = self.mod._parse_json_tail(
             "Building code index...\n  Indexed 3 files\n{\n  \"added\": true\n}")

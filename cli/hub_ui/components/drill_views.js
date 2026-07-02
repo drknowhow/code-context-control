@@ -51,6 +51,7 @@ function DrillOverview({ project, onChanged, setTab }) {
   const info = (data && data.project) || {};
   const loading = !data;
   const stats = [
+    ['tasks_open', 'Tasks', T.blue, 'tasks'],
     ['facts', 'Facts', T.accent, 'memory'],
     ['edits', 'Edits', T.blue, 'ledger'],
     ['sessions', 'Sessions', T.purple, 'sessions'],

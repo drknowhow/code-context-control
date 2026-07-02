@@ -67,6 +67,7 @@ _HUB_CONFIG_DEFAULTS = {
     "auto_open_browser": True,
     "theme": "dark",
     "projects_view": "list",
+    "main_view": "projects",
     "oracle_url": "",
 }
 
@@ -319,6 +320,7 @@ _HUB_JS_FILES = [
     "ui/icons.js",
     "ui/api.js",
     "ui/shared.js",
+    "ui/pm_shared.js",
     "hub_ui/state.js",
     "hub_ui/components/toasts.js",
     "hub_ui/components/topbar.js",
@@ -327,10 +329,12 @@ _HUB_JS_FILES = [
     "hub_ui/components/summary_bar.js",
     "hub_ui/components/project_card.js",
     "hub_ui/components/project_tree.js",
+    "hub_ui/components/task_board.js",
     "hub_ui/components/session_drawer.js",
     "hub_ui/components/drill_panel.js",
     "hub_ui/components/drill_views.js",
     "hub_ui/components/drill_health.js",
+    "hub_ui/components/drill_tasks.js",
     "hub_ui/components/config_editor.js",
     "hub_ui/components/mcp_manager.js",
     "hub_ui/components/global_search.js",
@@ -429,6 +433,11 @@ def api_hub_config_set():
         if projects_view not in {"list", "grid"}:
             return jsonify({"error": "projects_view must be 'list' or 'grid'"}), 400
         cfg["projects_view"] = projects_view
+    if "main_view" in data:
+        main_view = str(data["main_view"]).strip().lower()
+        if main_view not in {"projects", "board"}:
+            return jsonify({"error": "main_view must be 'projects' or 'board'"}), 400
+        cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
     if "sidebar_group" in data:
@@ -470,11 +479,13 @@ def _notification_count(project_path: str) -> int:
 @app.route("/api/projects", methods=["GET"])
 def api_projects_list():
     try:
+        from services.task_store import open_task_count
         projects = _pm().list_projects()
         parent_paths = {os.path.normcase(p["parent_path"]) for p in projects if p.get("parent_path")}
         for p in projects:
             p["notification_count"] = _notification_count(p.get("path", ""))
             p["is_parent"] = os.path.normcase(p.get("path", "")) in parent_paths
+            p["open_task_count"] = open_task_count(p.get("path", ""))
         return jsonify(projects)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1463,11 +1474,13 @@ def api_projects_inspect():
                     ledger_total = int(rt.edit_ledger.get_stats().get("total", 0))
                 except Exception:
                     ledger_total = 0
+            task_store = getattr(rt, "task_store", None)
             counts = {
                 "facts": len(rt.memory.facts),
                 "edits": ledger_total,
                 "sessions": len(rt.session_mgr.list_sessions(500)),
                 "notifications": _notification_count(resolved["path"]),
+                "tasks_open": task_store.stats()["open"] if task_store else 0,
             }
             return jsonify({"project": details, "counts": counts})
         if view == "memory":
@@ -1484,6 +1497,13 @@ def api_projects_inspect():
             })
         if view == "sessions":
             return jsonify({"sessions": rt.session_mgr.list_sessions(limit)})
+        if view == "tasks":
+            task_store = getattr(rt, "task_store", None)
+            if task_store is None:
+                return jsonify({"board": {"columns": {}, "milestones": [], "stats": {}},
+                                "notes": []})
+            return jsonify({"board": task_store.board(),
+                            "notes": task_store.list_notes(limit=20)})
         return jsonify({"error": f"unknown view '{view}'"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1657,6 +1677,268 @@ def api_projects_config_put():
     except Exception:
         pass
     return jsonify({"saved": True, "section": section, "config": merged})
+
+
+# ── Project management: tasks / milestones / notes (v2.45.0) ──────────────
+# Direct TaskStore per request (reload-per-op store — no runtime build needed
+# for mutations); every write audited to the target project's activity log.
+
+def _pm_resolve(path: str):
+    """Resolve a PM request path -> (Path, error_response|None)."""
+    if not path:
+        return None, (jsonify({"error": "path is required"}), 400)
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return None, (jsonify({"error": str(e)}), 404)
+    if not (resolved / ".c3").is_dir():
+        return None, (jsonify({"error": "not initialized", "needs_init": True}), 409)
+    return resolved, None
+
+
+def _pm_store(path):
+    from services.task_store import TaskStore
+    return TaskStore(str(path))
+
+
+def _pm_audit(path, entity, op, item_id=""):
+    try:
+        ActivityLog(str(path)).log("pm_write", {
+            "entity": entity, "op": op, "id": item_id, "source": "hub"})
+    except Exception:
+        pass
+
+
+@app.route("/api/projects/pm", methods=["GET"])
+def api_projects_pm_get():
+    """Full PM board for one project. Query: path, milestone?, tag?,
+    include_children? (parent rollup), include_archived?"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    store = _pm_store(resolved)
+    board = store.board(
+        milestone_id=(request.args.get("milestone") or None),
+        tag=(request.args.get("tag") or None),
+        include_archived=request.args.get("include_archived") == "1",
+    )
+    out = {"path": str(resolved), "board": board, "notes": store.list_notes(limit=100)}
+    if request.args.get("include_children") == "1":
+        children = []
+        try:
+            from services.subprojects import SubprojectManager
+            for c in SubprojectManager(str(resolved)).list():
+                if c["status"] in ("missing_folder", "missing_c3"):
+                    continue
+                rows = [t for t in _pm_store(c["path"]).list_tasks(limit=100)
+                        if t.get("status") != "done"]
+                children.append({"name": c["name"], "path": c["path"], "tasks": rows})
+        except Exception:
+            pass
+        out["children"] = children
+    return jsonify(out)
+
+
+@app.route("/api/projects/pm/task", methods=["POST", "PUT", "DELETE"])
+def api_pm_task():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    store = _pm_store(resolved)
+
+    if request.method == "POST":
+        res = store.create_task(
+            data.get("title", ""), description=data.get("description", ""),
+            status=data.get("status") or "backlog",
+            priority=data.get("priority") or "p2",
+            due_date=data.get("due_date") or None,
+            tags=data.get("tags") or [], milestone_id=data.get("milestone_id"),
+            links=data.get("links") or [], created_by="hub")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "task", "create", res["id"])
+        return jsonify({"created": True, "task": res}), 201
+
+    if request.method == "PUT":
+        task_id = (data.get("id") or "").strip()
+        if not task_id:
+            return jsonify({"error": "id is required"}), 400
+        res = None
+        fields = data.get("fields") or {}
+        if fields:
+            res = store.update_task(task_id, **fields)
+            if "error" in res:
+                return jsonify(res), 400
+        move = data.get("move") or {}
+        if move:
+            res = store.move_task(task_id, status=move.get("status"),
+                                  before_id=move.get("before_id"),
+                                  after_id=move.get("after_id"))
+            if "error" in res:
+                return jsonify(res), 400
+        if res is None:
+            return jsonify({"error": "fields or move required"}), 400
+        _pm_audit(resolved, "task", "update", res["id"])
+        return jsonify({"updated": True, "task": res})
+
+    # DELETE: archive by id, or purge all archived with {purge: true}
+    if data.get("purge"):
+        res = store.purge_archived("task")
+        _pm_audit(resolved, "task", "purge")
+        return jsonify(res)
+    task_id = (data.get("id") or "").strip()
+    if not task_id:
+        return jsonify({"error": "id is required"}), 400
+    res = store.archive_task(task_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "task", "archive", res["id"])
+    return jsonify({"archived": True, "task": res})
+
+
+@app.route("/api/projects/pm/milestone", methods=["POST", "PUT", "DELETE"])
+def api_pm_milestone():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    store = _pm_store(resolved)
+
+    if request.method == "POST":
+        res = store.create_milestone(data.get("name", ""),
+                                     description=data.get("description", ""),
+                                     target_date=data.get("target_date") or None)
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "milestone", "create", res["id"])
+        return jsonify({"created": True, "milestone": res}), 201
+
+    ms_id = (data.get("id") or "").strip()
+    if not ms_id:
+        return jsonify({"error": "id is required"}), 400
+
+    if request.method == "PUT":
+        res = store.update_milestone(ms_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "milestone", "update", res["id"])
+        return jsonify({"updated": True, "milestone": res})
+
+    res = store.archive_milestone(ms_id)  # DELETE = archive + detach tasks
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "milestone", "archive", res["id"])
+    return jsonify({"archived": True, "milestone": res})
+
+
+@app.route("/api/projects/pm/note", methods=["POST", "PUT", "DELETE"])
+def api_pm_note():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    store = _pm_store(resolved)
+
+    if request.method == "POST":
+        res = store.add_note(data.get("text", ""), kind=data.get("kind") or "note",
+                             tags=data.get("tags") or [],
+                             task_id=data.get("task_id"), author="hub")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "note", "create", res["id"])
+        return jsonify({"created": True, "note": res}), 201
+
+    note_id = (data.get("id") or "").strip()
+    if not note_id:
+        return jsonify({"error": "id is required"}), 400
+
+    if request.method == "PUT":
+        res = store.update_note(note_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "note", "update", res["id"])
+        return jsonify({"updated": True, "note": res})
+
+    res = store.archive_note(note_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "note", "archive", res["id"])
+    return jsonify({"archived": True, "note": res})
+
+
+@app.route("/api/projects/pm/link", methods=["POST"])
+def api_pm_link():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    task_id = (data.get("id") or "").strip()
+    link = data.get("link") or {}
+    op = (data.get("op") or "add").strip()
+    if not task_id or not link.get("type") or not link.get("ref"):
+        return jsonify({"error": "id and link {type, ref} are required"}), 400
+    if op not in ("add", "remove"):
+        return jsonify({"error": "op must be add|remove"}), 400
+    store = _pm_store(resolved)
+    if op == "add":
+        res = store.add_link(task_id, link["type"], link["ref"],
+                             label=link.get("label", ""))
+    else:
+        res = store.remove_link(task_id, link["type"], link["ref"])
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "link", op, res["id"])
+    return jsonify({"task": res})
+
+
+@app.route("/api/pm/global", methods=["GET"])
+def api_pm_global():
+    """Open tasks across every registered project (raw registry — no port probes)."""
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 500), 1000))
+    except ValueError:
+        limit = 500
+    status_filter = (request.args.get("status") or "").strip()
+    from services.task_store import TaskStore
+
+    tasks, skipped, by_project = [], [], {}
+    entries = _pm()._read_projects()
+    for p in entries:
+        ppath = p.get("path") or ""
+        if not Path(ppath).is_dir():
+            skipped.append({"path": ppath, "reason": "not accessible"})
+            continue
+        if not (Path(ppath) / ".c3").is_dir():
+            skipped.append({"path": ppath, "reason": "not initialized"})
+            continue
+        try:
+            if status_filter and status_filter != "all":
+                rows = TaskStore(ppath).list_tasks(status=status_filter, limit=1000)
+            else:
+                rows = TaskStore(ppath).list_tasks(limit=1000)
+                if status_filter != "all":
+                    rows = [t for t in rows if t.get("status") != "done"]
+        except Exception as e:
+            skipped.append({"path": ppath, "reason": str(e)})
+            continue
+        if not rows:
+            continue
+        proj_info = {"name": p.get("name"), "path": ppath}
+        if p.get("parent_path"):
+            proj_info["parent_path"] = p["parent_path"]
+        for t in rows:
+            t["project"] = proj_info
+        tasks.extend(rows)
+        by_project[ppath] = {"name": p.get("name"), "open": len(rows)}
+
+    # priority asc, due asc, updated desc (stable two-stage sort)
+    tasks.sort(key=lambda t: t.get("updated_at") or "", reverse=True)
+    tasks.sort(key=lambda t: (t.get("priority", "p2"), t.get("due_date") or "9999"))
+    capped = len(tasks) > limit
+    return jsonify({"projects_scanned": len(entries) - len(skipped),
+                    "skipped": skipped, "capped": capped,
+                    "tasks": tasks[:limit], "by_project": by_project})
 
 
 @app.route("/api/projects/run-mcp", methods=["POST"])

@@ -2,7 +2,7 @@
 // Sticky header: brand + version + active-session badge on the left,
 // global actions (search, guide, oracle, theme, refresh, settings) right.
 
-function TopBar({ version, activeCount, darkMode, hubConfig, onToggleTheme, onOpenSettings, onOpenSearch, onRefresh }) {
+function TopBar({ version, activeCount, darkMode, hubConfig, mainView, setMainView, onToggleTheme, onOpenSettings, onOpenSearch, onRefresh }) {
   // Single ghost look shared by every top-bar control (buttons and links).
   const ctrl = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -30,6 +30,27 @@ function TopBar({ version, activeCount, darkMode, hubConfig, onToggleTheme, onOp
           <GlowDot color={T.accent} size={7} />
           {activeCount} active
         </span>
+      )}
+
+      {/* Projects | Tasks view switcher */}
+      {setMainView && (
+        <div style={{
+          display: 'inline-flex', marginLeft: 10, border: `1px solid ${T.border}`,
+          borderRadius: 6, overflow: 'hidden',
+        }}>
+          {[['projects', 'Projects', 'layers'], ['board', 'Tasks', 'check']].map(([id, label, icon]) => (
+            <button key={id} onClick={() => setMainView(id)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, height: 28,
+              padding: '0 12px', border: 'none', cursor: 'pointer', fontSize: 12,
+              background: mainView === id ? T.accentDim : 'transparent',
+              color: mainView === id ? T.accent : T.textMuted,
+              fontWeight: mainView === id ? 700 : 400,
+            }}>
+              <I name={icon} size={12} color={mainView === id ? T.accent : T.textMuted} />
+              {label}
+            </button>
+          ))}
+        </div>
       )}
 
       <div style={{ flex: 1 }} />

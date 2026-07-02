@@ -121,6 +121,7 @@
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">SCM</div>
+      <a href="#c3_task" class="sidebar-link"><span class="icon">✅</span> c3_task</a>
       <a href="#c3_bitbucket" class="sidebar-link"><span class="icon">🪣</span> c3_bitbucket</a>
     </div>
     <div class="sidebar-section">
@@ -155,6 +156,7 @@
         <a href="#c3_delegate" class="toc-item">c3_delegate <span class="cat">AI</span></a>
         <a href="#c3_agent"    class="toc-item">c3_agent    <span class="cat">AI</span></a>
         <a href="#c3_edits"    class="toc-item">c3_edits    <span class="cat">Ledger</span></a>
+        <a href="#c3_task" class="toc-item">c3_task <span class="cat">PM</span></a>
         <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
         <a href="#c3_project"  class="toc-item">c3_project  <span class="cat">Multi-project</span></a>
       </div>
@@ -1087,6 +1089,52 @@ c3_edits(action=<span class="str">'stats'</span>)
 
 <span class="com"># Edits made on a specific branch</span>
 c3_edits(action=<span class="str">'history'</span>, branch=<span class="str">'feature/x'</span>)</code></pre>
+        </div>
+      </div>
+
+      <!-- c3_task -->
+      <div class="tool-card" id="c3_task">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_task</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">pm</span>
+            <span class="badge">v2.45.0</span>
+          </div>
+          <span class="tool-tagline">Durable per-project tasks, milestones, and decision notes — the project-management layer</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Every C3 project carries a PM store at <code>.c3/pm/pm.json</code>: tasks with status (backlog / in_progress / blocked / done), priority (p0–p3), due dates, tags, and code links (files, commits, edit-ledger entries); milestones with computed progress; and a decision-note log separate from AI memory. The same store powers the Hub's Tasks tab and kanban board, the per-project UI's Tasks tab, and this tool. Task ids accept any unique prefix (≥4 chars); milestones resolve by id or unique name. Read actions are plan-mode-safe. Ephemeral session plans stay in <code>c3_session(action='plan')</code>.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">add</td><td>Write</td><td class="param-desc">Create a task: <code>title</code> + optional description / priority / due_date (YYYY-MM-DD) / tags (CSV) / milestone</td></tr>
+              <tr><td class="param-name">update, done, archive</td><td>Write</td><td class="param-desc"><code>task_id</code> + changed fields; <code>done</code> stamps completion; archive keeps history</td></tr>
+              <tr><td class="param-name">list, get, board</td><td>Read</td><td class="param-desc">Filtered list (status/priority/tags/milestone/query), full detail, kanban columns + milestone progress</td></tr>
+              <tr><td class="param-name">link, unlink</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>link_type</code> (file | commit | edit) + <code>ref</code> — tie tasks to the code they touch</td></tr>
+              <tr><td class="param-name">milestone_add / _update / _list / _archive</td><td>Both</td><td class="param-desc">Milestones with target dates; list shows progress %; archive detaches its tasks</td></tr>
+              <tr><td class="param-name">note_add, note_list</td><td>Both</td><td class="param-desc">Dated notes; <code>kind='decision'</code> for the decision log</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Capture a task while coding</span>
+c3_task(action=<span class="str">'add'</span>, title=<span class="str">'Harden pm.json against concurrent writes'</span>,
+        priority=<span class="str">'p1'</span>, tags=<span class="str">'pm,backend'</span>)
+
+<span class="com"># Tie it to the code it touches, then finish it</span>
+c3_task(action=<span class="str">'link'</span>, task_id=<span class="str">'a1b2c3d4'</span>, link_type=<span class="str">'file'</span>, ref=<span class="str">'services/task_store.py'</span>)
+c3_task(action=<span class="str">'done'</span>, task_id=<span class="str">'a1b2'</span>)
+
+<span class="com"># Milestones + the board</span>
+c3_task(action=<span class="str">'milestone_add'</span>, name=<span class="str">'v2.46'</span>, target_date=<span class="str">'2026-08-01'</span>)
+c3_task(action=<span class="str">'board'</span>)
+
+<span class="com"># Record a decision</span>
+c3_task(action=<span class="str">'note_add'</span>, note=<span class="str">'Kanban rank uses float sort keys'</span>, kind=<span class="str">'decision'</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Surfaces:</strong> the Hub shows a Tasks tab per project (drill-in panel), <code>☑ N</code> open-task chips on cards, and a global kanban board behind the Projects | Tasks switcher. Hub mutations audit <code>pm_write</code> events to the project's activity log. Disable with <code>hybrid.pm.enabled=false</code>.</p>
         </div>
       </div>
 

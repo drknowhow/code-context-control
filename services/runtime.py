@@ -36,6 +36,7 @@ from services.retrieval_broker import MemoryRetrievalBroker
 from services.router import ModelRouter
 from services.session_manager import SessionManager
 from services.session_preloader import SessionPreloader
+from services.task_store import TaskStore
 from services.validation_cache import ValidationCache
 from services.vector_store import VectorStore
 from services.version_tracker import VersionTracker
@@ -82,6 +83,7 @@ class C3Runtime:
     memory_consolidator: Optional[MemoryConsolidator] = None
     memory_grounder: Optional[MemoryGrounder] = None
     retention: Optional[RetentionManager] = None
+    task_store: Optional[TaskStore] = None
 
 
 def _load_agent_config(project_path: Path) -> dict:
@@ -232,6 +234,9 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
     # Edit ledger for AI-tracked versioning
     edit_ledger = EditLedger(str(project))
 
+    # Project management store (tasks/milestones/notes) — construction is I/O-free
+    task_store = TaskStore(str(project))
+
     # Memory brain: scorer, graph, consolidator, grounder
     memory_scorer = MemoryScorer()
     memory_graph = MemoryGraph(str(project))
@@ -301,6 +306,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         memory_consolidator=memory_consolidator,
         memory_grounder=memory_grounder,
         retention=retention,
+        task_store=task_store,
     )
     runtime.agents = create_agents(
         runtime,

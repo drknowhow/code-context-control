@@ -32,5 +32,8 @@ const api = {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })),
-  del: async (path) => parseApiResponse(await fetch(`${API}${path}`, { method: 'DELETE' })),
+  del: async (path, body) => parseApiResponse(await fetch(`${API}${path}`, {
+    method: 'DELETE',
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  })),
 };

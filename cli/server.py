@@ -191,10 +191,12 @@ _UI_JS_FILES = [
     "ui/icons.js",
     "ui/api.js",
     "ui/shared.js",
+    "ui/pm_shared.js",
     "ui/components/sidebar.js",
     "ui/components/dashboard.js",
     "ui/components/sessions.js",
     "ui/components/memory.js",
+    "ui/components/tasks.js",
     "ui/components/edits.js",
     "ui/components/bitbucket.js",
     "ui/components/instructions.js",
@@ -1164,6 +1166,163 @@ def api_optimize():
     """Get optimization suggestions."""
     suggestions = session_mgr.get_optimization_suggestions()
     return jsonify({"suggestions": suggestions})
+
+
+# ─── API: Project management (tasks/milestones/notes) ────
+def _task_store():
+    store = getattr(runtime, "task_store", None)
+    if store is None:
+        from services.task_store import TaskStore
+        store = TaskStore(str(PROJECT_PATH))
+    return store
+
+
+def _pm_audit(entity, op, item_id=""):
+    try:
+        activity_log.log("pm_write", {"entity": entity, "op": op,
+                                      "id": item_id, "source": "ui"})
+    except Exception:
+        pass
+
+
+@app.route('/api/pm', methods=["GET"])
+def api_pm_get():
+    """PM board for this project. Query: milestone?, tag?, include_archived?"""
+    store = _task_store()
+    board = store.board(
+        milestone_id=(request.args.get("milestone") or None),
+        tag=(request.args.get("tag") or None),
+        include_archived=request.args.get("include_archived") == "1",
+    )
+    return jsonify({"board": board, "notes": store.list_notes(limit=100)})
+
+
+@app.route('/api/pm/task', methods=["POST", "PUT", "DELETE"])
+def api_pm_task():
+    data = request.get_json(force=True) or {}
+    store = _task_store()
+    if request.method == "POST":
+        res = store.create_task(
+            data.get("title", ""), description=data.get("description", ""),
+            status=data.get("status") or "backlog",
+            priority=data.get("priority") or "p2",
+            due_date=data.get("due_date") or None,
+            tags=data.get("tags") or [], milestone_id=data.get("milestone_id"),
+            links=data.get("links") or [], created_by="ui")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("task", "create", res["id"])
+        return jsonify({"created": True, "task": res}), 201
+    if request.method == "PUT":
+        task_id = (data.get("id") or "").strip()
+        if not task_id:
+            return jsonify({"error": "id is required"}), 400
+        res = None
+        if data.get("fields"):
+            res = store.update_task(task_id, **data["fields"])
+            if "error" in res:
+                return jsonify(res), 400
+        if data.get("move"):
+            move = data["move"]
+            res = store.move_task(task_id, status=move.get("status"),
+                                  before_id=move.get("before_id"),
+                                  after_id=move.get("after_id"))
+            if "error" in res:
+                return jsonify(res), 400
+        if res is None:
+            return jsonify({"error": "fields or move required"}), 400
+        _pm_audit("task", "update", res["id"])
+        return jsonify({"updated": True, "task": res})
+    if data.get("purge"):
+        res = store.purge_archived("task")
+        _pm_audit("task", "purge")
+        return jsonify(res)
+    task_id = (data.get("id") or "").strip()
+    if not task_id:
+        return jsonify({"error": "id is required"}), 400
+    res = store.archive_task(task_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("task", "archive", res["id"])
+    return jsonify({"archived": True, "task": res})
+
+
+@app.route('/api/pm/milestone', methods=["POST", "PUT", "DELETE"])
+def api_pm_milestone():
+    data = request.get_json(force=True) or {}
+    store = _task_store()
+    if request.method == "POST":
+        res = store.create_milestone(data.get("name", ""),
+                                     description=data.get("description", ""),
+                                     target_date=data.get("target_date") or None)
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("milestone", "create", res["id"])
+        return jsonify({"created": True, "milestone": res}), 201
+    ms_id = (data.get("id") or "").strip()
+    if not ms_id:
+        return jsonify({"error": "id is required"}), 400
+    if request.method == "PUT":
+        res = store.update_milestone(ms_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("milestone", "update", res["id"])
+        return jsonify({"updated": True, "milestone": res})
+    res = store.archive_milestone(ms_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("milestone", "archive", res["id"])
+    return jsonify({"archived": True, "milestone": res})
+
+
+@app.route('/api/pm/note', methods=["POST", "PUT", "DELETE"])
+def api_pm_note():
+    data = request.get_json(force=True) or {}
+    store = _task_store()
+    if request.method == "POST":
+        res = store.add_note(data.get("text", ""), kind=data.get("kind") or "note",
+                             tags=data.get("tags") or [],
+                             task_id=data.get("task_id"), author="ui")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("note", "create", res["id"])
+        return jsonify({"created": True, "note": res}), 201
+    note_id = (data.get("id") or "").strip()
+    if not note_id:
+        return jsonify({"error": "id is required"}), 400
+    if request.method == "PUT":
+        res = store.update_note(note_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("note", "update", res["id"])
+        return jsonify({"updated": True, "note": res})
+    res = store.archive_note(note_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("note", "archive", res["id"])
+    return jsonify({"archived": True, "note": res})
+
+
+@app.route('/api/pm/link', methods=["POST"])
+def api_pm_link():
+    data = request.get_json(force=True) or {}
+    task_id = (data.get("id") or "").strip()
+    link = data.get("link") or {}
+    op = (data.get("op") or "add").strip()
+    if not task_id or not link.get("type") or not link.get("ref"):
+        return jsonify({"error": "id and link {type, ref} are required"}), 400
+    if op not in ("add", "remove"):
+        return jsonify({"error": "op must be add|remove"}), 400
+    store = _task_store()
+    if op == "add":
+        res = store.add_link(task_id, link["type"], link["ref"],
+                             label=link.get("label", ""))
+    else:
+        res = store.remove_link(task_id, link["type"], link["ref"])
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("link", op, res["id"])
+    return jsonify({"task": res})
 
 
 # ─── API: Memory ─────────────────────────────────────────

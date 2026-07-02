@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.44.1"
+__version__ = "2.45.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -239,7 +239,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
-    "mcp__c3__c3_project",
+    "mcp__c3__c3_project", "mcp__c3__c3_task",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`

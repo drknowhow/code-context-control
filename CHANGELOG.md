@@ -4,6 +4,36 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.45.0] - 2026-07-02
+
+### Project management: tasks, milestones, and decision notes per project
+
+- **New PM store.** `services/task_store.py` keeps tasks (status
+  backlog/in_progress/blocked/done, priority p0–p3, due dates, tags, code
+  links to files/commits/edit-ledger entries), milestones (computed progress
+  %), and a decision-note log in one atomic document (`.c3/pm/pm.json`,
+  temp+fsync+replace writes, corrupt-file quarantine, archive-first
+  lifecycle). Reload-per-operation semantics keep the hub, MCP server, and
+  per-project UI processes consistent (last-writer-wins per op).
+- **`c3_task` MCP tool** (17th tool): agents create/update/complete tasks
+  when asked — `add`, `update`, `done`, `list`, `board`, `get`, `archive`,
+  `link/unlink`, `milestone_*`, `note_add/note_list`. Unique id prefixes
+  (≥4 chars) accepted; milestones resolve by id or unique name; reads are
+  plan-mode-safe. `c3_session(action='plan')` stays for ephemeral plans and
+  points here for durable TODOs.
+- **Hub surfaces.** Tasks tab in the project drill-in panel (inline add,
+  quick status moves, milestones with progress bars, notes, sub-project
+  rollup tagged `[sub:name]`); a **kanban board** behind a Projects | Tasks
+  topbar switcher — global mode aggregates open tasks across every
+  registered project (`GET /api/pm/global`, raw-registry scan, 500-task
+  cap) with project badges and drill-through, per-project mode adds column
+  and rank moves (button-based, no drag) plus inline add; `☑ N` open-task
+  chips on project cards; overview counts include open tasks.
+- **Per-project web UI** gets its own Tasks tab against new `/api/pm*`
+  endpoints. All hub mutations audit `pm_write` events to the target
+  project's activity log; `hybrid.pm.enabled=false` soft-disables the tool
+  surface.
+
 ## [2.44.1] - 2026-07-02
 
 ### Fixed

@@ -47,8 +47,8 @@ claude-companion - v2/
   README.md
   SECURITY.md
   THIRD_PARTY_LICENSES.md
-  c3.bat
-  ... +5 more
+  b.title
+  ... +6 more
   .claude/
     settings.local.json
   .codex/
@@ -95,8 +95,8 @@ claude-companion - v2/
     commands/ (3 files)
     guide/ (7 files)
     hub_ui/ (2 files)
-    tools/ (19 files)
-    ui/ (5 files)
+    tools/ (20 files)
+    ui/ (6 files)
   code_context_control.egg-info/
     SOURCES.txt
     dependency_links.txt
@@ -150,7 +150,7 @@ claude-companion - v2/
     conversation_store.py
     doc_index.py
     e2e_benchmark.py
-    ... +40 more
+    ... +41 more
     bench/ (1 files)
   tests/
     test_activity_reporter.py
@@ -168,7 +168,7 @@ claude-companion - v2/
     test_delegate_cascade.py
     test_e2e_benchmark.py
     test_edit_ledger_hook.py
-    ... +48 more
+    ... +51 more
   tui/
     __init__.py
     backend.py

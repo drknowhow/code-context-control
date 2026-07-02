@@ -7,6 +7,7 @@ const tabs = [
   { id: "chat", label: "Chat", icon: "messageSquare" },
   { id: "sessions", label: "Sessions", icon: "clock" },
   { id: "memory", label: "Memory", icon: "bookmark" },
+  { id: "tasks", label: "Tasks", icon: "check" },
   { id: "edits", label: "Edits", icon: "edit" },
   { id: "bitbucket", label: "Bitbucket", icon: "gitBranch" },
   { id: "instructions", label: "Instructions", icon: "fileText" },
@@ -112,6 +113,9 @@ function App() {
         </div>
         <div style={{ display: tab === "memory" ? "block" : "none", height: "100%" }}>
           <Memory />
+        </div>
+        <div style={{ display: tab === "tasks" ? "block" : "none", height: "100%" }}>
+          <TasksTab />
         </div>
         <div style={{ display: tab === "edits" ? "block" : "none", height: "100%" }}>
           <EditsPanel />

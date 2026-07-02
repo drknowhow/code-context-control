@@ -88,6 +88,7 @@ def _build_instructions(ide_name: str) -> str:
         "  DISTILL terminal/log output >10 lines → c3_filter\n"
         "  EXECUTE shell (tests/git/build) → c3_shell\n"
         "  RECALL cross-session knowledge → c3_memory(action='recall') (index+fetch for large stores)\n"
+        "  TRACK durable tasks/milestones/decisions → c3_task\n"
         "  SNAPSHOT before /clear → c3_session(action='snapshot')\n"
         "  HEALTH/budget checks → c3_status\n"
         "  OFFLOAD to another model → c3_delegate\n"
@@ -384,7 +385,7 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     return response
 
 
-# ─── TOOL REGISTRATIONS (13 tools) ────────────────────────────────
+# ─── TOOL REGISTRATIONS (17 tools) ────────────────────────────────
 # Each tool's first docstring line should state WHEN to reach for it —
 # that's what Claude reads when selecting between tools.
 
@@ -412,7 +413,8 @@ async def c3_session(action: str, data: str = "", reasoning: str = "",
                event_type: str = "auto", ctx: Context = None) -> str:
     """Session management: start, save, log, plan, snapshot, restore, compact, convo_log (log/snapshot are safe in plan mode).
     log: data + reasoning. snapshot: data=task, reasoning=next steps, summary=key files.
-    restore: data=snapshot_id. convo_log: data=text, event_type=role."""
+    restore: data=snapshot_id. convo_log: data=text, event_type=role.
+    plan logs an ephemeral session plan — durable tracked TODOs belong in c3_task."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -780,6 +782,51 @@ async def c3_project(
         replace_all=replace_all, tags=tags, cmd=cmd, timeout=timeout,
         scan_roots=scan_roots, allow_write=allow_write,
     )
+
+
+@mcp.tool()
+async def c3_task(
+    action: str,
+    title: str = "",
+    task_id: str = "",
+    status: str = "",
+    priority: str = "",
+    due_date: str = "",
+    tags: str = "",
+    description: str = "",
+    milestone: str = "",
+    note: str = "",
+    kind: str = "",
+    link_type: str = "",
+    ref: str = "",
+    label: str = "",
+    name: str = "",
+    target_date: str = "",
+    query: str = "",
+    limit: int = 50,
+    ctx: Context = None,
+) -> str:
+    """TRACK WORK — durable per-project tasks, milestones, and decision notes; use when asked to create/update/complete tasks (reads safe in plan mode).
+    Tasks: add (title [+description/priority p0-p3/due_date YYYY-MM-DD/tags CSV/milestone]),
+      update (task_id + changed fields incl. status backlog|in_progress|blocked|done), done (task_id),
+      list (filters: status/priority/tags/milestone/query), get, board (kanban columns + milestone progress), archive,
+      link/unlink (task_id + link_type file|commit|edit + ref — ties tasks to code).
+    Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %), milestone_archive.
+    Notes: note_add (note [+kind=decision] [+task_id]), note_list.
+    task_id accepts any unique id prefix (>=4 chars); milestone accepts id or unique name.
+    Ephemeral session plans stay in c3_session(action='plan')."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.tasks import handle_task
+    return await asyncio.to_thread(
+        handle_task, action, svc, finalize,
+        title=title, task_id=task_id, status=status, priority=priority,
+        due_date=due_date, tags=tags, description=description, milestone=milestone,
+        note=note, kind=kind, link_type=link_type, ref=ref, label=label,
+        name=name, target_date=target_date, query=query, limit=limit)
 
 
 def main() -> None:

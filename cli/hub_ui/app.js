@@ -17,6 +17,7 @@ function App() {
   const [version, setVersion] = useState('');
   const [projects, setProjects] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [mainView, setMainView] = useState('projects'); // projects | board
   const [filter, setFilter] = useState('all');          // all | active | idle | tag:<x>
   const [search, setSearch] = useState('');
   const [view, setView] = useState('list');             // list | grid
@@ -43,6 +44,7 @@ function App() {
       if (cfg.projects_view === 'grid') setView('grid');
       if (cfg.sidebar_collapsed != null) setSidebarCollapsed(!!cfg.sidebar_collapsed);
       if (cfg.sidebar_group) setFilter(cfg.sidebar_group);
+      if (cfg.main_view === 'board') setMainView('board');
     } catch { }
     try { const v = await api.get('/api/version'); setVersion(v.c3_version || ''); } catch { }
   }, []);
@@ -68,6 +70,10 @@ function App() {
     setSidebarCollapsed(c);
     api.post('/api/hub/config', { sidebar_collapsed: c }).catch(() => { });
   };
+  const changeMainView = (v) => {
+    setMainView(v);
+    api.post('/api/hub/config', { main_view: v }).catch(() => { });
+  };
 
   // Keyboard: Ctrl/Cmd-K opens cross-project search, Esc closes overlays
   useEffect(() => {
@@ -92,7 +98,7 @@ function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: T.bg, color: T.text }}>
       <TopBar version={version} activeCount={activeCount} darkMode={darkMode}
-        hubConfig={hubConfig}
+        hubConfig={hubConfig} mainView={mainView} setMainView={changeMainView}
         onToggleTheme={toggleTheme}
         onOpenSettings={() => openModal('settings')}
         onOpenSearch={() => setSearchOpen(true)}
@@ -104,13 +110,19 @@ function App() {
           flex: 1, minWidth: 0, overflowY: 'auto', padding: '18px 22px',
           display: 'flex', flexDirection: 'column', gap: 12,
         }}>
-          <SummaryBar projects={projects} search={search} setSearch={setSearch}
-            view={view} setView={changeView} filter={filter} setFilter={changeFilter}
-            onUpdateAll={() => openModal('batch')}
-            onAddProject={() => openModal('add')} />
-          <ProjectTree projects={visible} allProjects={projects} view={view} loaded={loaded}
-            onChanged={loadProjects} onOpenDrill={openDrill} onOpenModal={openModal}
-            onOpenDrawer={setDrawerProject} />
+          {mainView === 'board' ? (
+            <TaskBoard projects={projects} onOpenDrill={openDrill} />
+          ) : (
+            <React.Fragment>
+              <SummaryBar projects={projects} search={search} setSearch={setSearch}
+                view={view} setView={changeView} filter={filter} setFilter={changeFilter}
+                onUpdateAll={() => openModal('batch')}
+                onAddProject={() => openModal('add')} />
+              <ProjectTree projects={visible} allProjects={projects} view={view} loaded={loaded}
+                onChanged={loadProjects} onOpenDrill={openDrill} onOpenModal={openModal}
+                onOpenDrawer={setDrawerProject} />
+            </React.Fragment>
+          )}
         </main>
       </div>
       {drawerProject &&

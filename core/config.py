@@ -61,6 +61,10 @@ DEFAULTS = {
         "parent_memory_visible": False,   # Reserved (v2): children seeing parent facts
         "max_children_per_query": 8,      # Cap on children queried per federated call
     },
+    # Project management (tasks/milestones/notes) — soft switch for c3_task + PM endpoints
+    "pm": {
+        "enabled": True,
+    },
 }
 
 

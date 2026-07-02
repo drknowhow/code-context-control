@@ -5,6 +5,7 @@
 
 const DRILL_PANEL_TABS = [
   ['overview', 'Overview'],
+  ['tasks', 'Tasks'],
   ['memory', 'Memory'],
   ['ledger', 'Ledger'],
   ['sessions', 'Sessions'],
@@ -107,6 +108,7 @@ function DrillNeedsInit({ project, onReady }) {
 function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal }) {
   const renderTab = () => {
     switch (tab) {
+      case 'tasks': return <DrillTasks project={project} onChanged={onChanged} />;
       case 'memory': return <DrillMemory project={project} />;
       case 'ledger': return <DrillLedger project={project} />;
       case 'sessions': return <DrillSessions project={project} />;
