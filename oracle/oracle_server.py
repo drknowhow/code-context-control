@@ -32,11 +32,11 @@ from oracle.services.health_checker import HealthChecker  # noqa: E402
 from oracle.services.insight_engine import InsightEngine  # noqa: E402
 from oracle.services.memory_reader import MemoryReader  # noqa: E402
 from oracle.services.memory_writer import MemoryWriter  # noqa: E402
-from services.ollama_bridge import OllamaBridge  # noqa: E402
 from oracle.services.project_scanner import ProjectScanner  # noqa: E402
 from oracle.services.review_agent import ReviewAgent  # noqa: E402
 from oracle.services.tool_executor import ToolExecutor  # noqa: E402
 from oracle.services.tool_registry import ToolRegistry, _c3_version  # noqa: E402
+from services.ollama_bridge import OllamaBridge  # noqa: E402
 
 # ── App ───────────────────────────────────────────────────
 app = Flask(__name__)

@@ -79,6 +79,7 @@ class TestMemoryLlmConfigLoader(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
+
         from core.config import MEMORY_LLM_DEFAULTS, load_memory_llm_config
         with tempfile.TemporaryDirectory() as tmp:
             # no config file → pure defaults

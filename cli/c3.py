@@ -60,7 +60,14 @@ from cli.commands.common import cmd_stats as common_cmd_stats
 from cli.commands.common import cmd_ui as common_cmd_ui
 from cli.commands.parser import build_parser
 from core import count_tokens, format_token_count
-from core.config import AGENT_DEFAULTS, BITBUCKET_DEFAULTS, DELEGATE_DEFAULTS, MEMORY_LLM_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
+from core.config import (
+    AGENT_DEFAULTS,
+    BITBUCKET_DEFAULTS,
+    DELEGATE_DEFAULTS,
+    MEMORY_LLM_DEFAULTS,
+    PROXY_DEFAULTS,
+    load_delegate_config,
+)
 from core.config import DEFAULTS as HYBRID_DEFAULTS
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services.compressor import CodeCompressor
