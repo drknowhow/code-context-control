@@ -283,6 +283,18 @@ async def lifespan(server):
                 services.auto_memory.on_session_end()
             except Exception:
                 pass
+        # Memory distillation: durably enqueue a digest job while the session
+        # is still current. Processing happens at the END of this finally
+        # block (after save_session + convo sync) so the inline pass sees the
+        # richest material; if the process dies first, the job file survives
+        # and the next session's MemoryDistillerAgent drains it.
+        _distill_job = None
+        if getattr(services, "memory_distiller", None):
+            try:
+                _distill_job = services.memory_distiller.enqueue_session(
+                    services.session_mgr.current_session)
+            except Exception:
+                _distill_job = None
         # Memory consolidation: triage + prune at session end (lightweight).
         if services.memory_consolidator:
             try:
@@ -299,6 +311,17 @@ async def lifespan(server):
                 convo_store.sync(source="claude", force=True)
                 if services.retrieval:
                     services.retrieval.mark_sessions_dirty()
+            except Exception:
+                pass
+        # Best-effort inline distillation. A daemon thread dies with the
+        # interpreter without blocking shutdown — the queued job is the
+        # durable fallback either way.
+        if _distill_job and getattr(services, "memory_distiller", None):
+            try:
+                threading.Thread(
+                    target=services.memory_distiller.process_job_safe,
+                    args=(_distill_job,), daemon=True,
+                    name="c3-memory-distill").start()
             except Exception:
                 pass
 

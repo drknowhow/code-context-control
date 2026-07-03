@@ -1679,6 +1679,62 @@ class VersionCheckAgent(BackgroundAgent):
         return None
 
 
+class MemoryDistillerAgent(BackgroundAgent):
+    """Drains the durable memory-distillation queue in the background.
+
+    Session end enqueues a digest job and best-effort processes it inline;
+    this agent is the recovery path — anything still pending (server killed
+    mid-distill, LLM outage) is retried here, capped by the job's attempt
+    counter. The distiller owns its own LLM chain (cloud → local →
+    mechanical), so this agent runs with use_ai=False: it must fire even
+    when the local Ollama probe fails, because the cloud tier is independent.
+    """
+
+    def __init__(self, distiller, notifications, supports_transcripts=False,
+                 enabled=True, interval=90, **kwargs):
+        super().__init__("MemoryDistiller", interval, notifications, enabled, **kwargs)
+        self.distiller = distiller
+        self.supports_transcripts = supports_transcripts
+
+    def check(self):
+        if not self.distiller:
+            return False
+        try:
+            jobs = self.distiller.queue.claim_pending()
+        except Exception:
+            return False
+        stored = 0
+        for job in jobs:
+            result = self.distiller.process_job_safe(job)
+            if result:
+                stored += int(result.get("stored", 0))
+        # Transcript mining rides idle cycles only — digest jobs get priority.
+        mined = {"mined": 0, "stored": 0}
+        if not jobs and self.supports_transcripts:
+            try:
+                mined = self.distiller.mine_transcripts(limit_sessions=2)
+            except Exception:
+                pass
+        total = stored + int(mined.get("stored", 0))
+        if total:
+            details = []
+            if jobs:
+                details.append(f"{len(jobs)} queued session(s)")
+            if mined.get("mined"):
+                details.append(f"{mined['mined']} mined transcript(s)")
+            self.notify(
+                "info",
+                "Memory distilled",
+                f"{total} fact(s) stored from {' + '.join(details)}",
+                replace_if_unacked=True,
+            )
+        try:
+            self.distiller.queue.prune()
+        except Exception:
+            pass
+        return bool(jobs or mined.get("mined"))
+
+
 def create_agents(services, notifications, config=None, ollama=None) -> list:
     """Factory to instantiate all background agents with service references.
 
@@ -1821,6 +1877,20 @@ def create_agents(services, notifications, config=None, ollama=None) -> list:
                 notifications=notifications,
                 **_cfg("EditLedgerEnricher", {
                     "enabled": True, "interval": 10, "use_ai": False,
+                }),
+            )
+        )
+
+    # MemoryDistillerAgent — recovery path for the distillation queue.
+    if getattr(services, 'memory_distiller', None):
+        agents.append(
+            MemoryDistillerAgent(
+                distiller=services.memory_distiller,
+                supports_transcripts=bool(getattr(
+                    getattr(services, 'ide_profile', None), 'supports_transcripts', False)),
+                notifications=notifications,
+                **_cfg("MemoryDistiller", {
+                    "enabled": True, "interval": 90, "use_ai": False,
                 }),
             )
         )

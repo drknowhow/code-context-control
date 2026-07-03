@@ -1574,9 +1574,13 @@ def api_search_global():
                     "results": results, "skipped": skipped})
 
 
-_CONFIG_READ_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "bitbucket", "meta")
-_CONFIG_WRITE_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "meta")
-_CONFIG_REFUSED_KEYS = ("version", "project_path", "permission_tier", "subprojects", "parent")
+_CONFIG_READ_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "bitbucket", "meta",
+                         "memory_llm")
+_CONFIG_WRITE_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "meta", "memory_llm")
+# api_key: secrets never transit the hub or land in config.json — the Ollama
+# cloud key lives in the OS keyring (project Settings UI / OLLAMA_API_KEY env).
+_CONFIG_REFUSED_KEYS = ("version", "project_path", "permission_tier", "subprojects", "parent",
+                        "api_key")
 
 
 def _config_defaults(section: str) -> dict:
@@ -1589,6 +1593,7 @@ def _config_defaults(section: str) -> dict:
         "bitbucket": core_config.BITBUCKET_DEFAULTS,
         "mcp": {"mode": "direct"},
         "meta": {},
+        "memory_llm": core_config.MEMORY_LLM_DEFAULTS,
     }.get(section, {})
 
 

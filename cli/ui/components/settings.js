@@ -22,6 +22,10 @@ const SettingsPanel = ({ stats }) => {
   // ── Delegate ──
   const [delegateCfg, setDelegateCfg] = useState(null);
 
+  // ── Memory LLM (distillation + recall injection) ──
+  const [memoryLlmCfg, setMemoryLlmCfg] = useState(null);
+  const [memKeyInput, setMemKeyInput] = useState("");
+
   // ── Proxy ──
   const [proxyCfg, setProxyCfg] = useState(null);
 
@@ -42,7 +46,7 @@ const SettingsPanel = ({ stats }) => {
 
   // ── Shared ──
   const [ollamaModels, setOllamaModels] = useState([]);
-  const [busy, setBusyState] = useState({ agents: false, delegate: false, proxy: false });
+  const [busy, setBusyState] = useState({ agents: false, delegate: false, proxy: false, memoryLlm: false });
 
   // ── Project Data ──
   const [dataSummary, setDataSummary] = useState(null);
@@ -59,6 +63,7 @@ const SettingsPanel = ({ stats }) => {
     editLedger: false,
     agents: false,
     delegate: false,
+    memoryLlm: false,
     codex: false,
     gemini: false,
     workflows: false,
@@ -132,7 +137,7 @@ const SettingsPanel = ({ stats }) => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [hybrid, budget, agents, delegate, proxy, models, perms] = await Promise.all([
+        const [hybrid, budget, agents, delegate, proxy, models, perms, memoryLlm] = await Promise.all([
           api.get('/api/hybrid/config').catch(() => null),
           api.get('/api/budget/config').catch(() => null),
           api.get('/api/agents/config').catch(() => null),
@@ -140,12 +145,14 @@ const SettingsPanel = ({ stats }) => {
           api.get('/api/proxy/config').catch(() => null),
           api.get('/api/ollama/models').catch(() => ({ models: [] })),
           api.get('/api/permissions').catch(() => null),
+          api.get('/api/memory-llm/config').catch(() => null),
         ]);
         if (hybrid) setHybridCfg(hybrid);
         if (budget) setBudgetCfg(budget);
         if (agents) setAgentsCfg(agents);
         if (delegate) setDelegateCfg(delegate);
         if (proxy) setProxyCfg(proxy);
+        if (memoryLlm) setMemoryLlmCfg(memoryLlm);
         setOllamaModels(models?.models || []);
         if (perms) setPermsCfg(perms);
       } catch (e) { }
@@ -231,6 +238,34 @@ const SettingsPanel = ({ stats }) => {
       flashMsg("✓ Saved delegate settings");
     } catch (e) { flashMsg(`✗ Save delegate: ${e.message}`); }
     setBusy("delegate", false);
+  };
+
+  // ── Memory LLM field update ──
+  const updateMemoryLlmField = (key, value) => {
+    setMemoryLlmCfg(prev => ({ ...(prev || {}), [key]: value }));
+  };
+
+  const saveMemoryLlm = async () => {
+    if (!memoryLlmCfg) return;
+    setBusy("memoryLlm", true);
+    try {
+      const updated = await api.put('/api/memory-llm/config', memoryLlmCfg);
+      const keySet = memoryLlmCfg.api_key_set;
+      setMemoryLlmCfg(updated ? { ...updated, api_key_set: keySet } : memoryLlmCfg);
+      flashMsg("✓ Saved memory LLM settings");
+    } catch (e) { flashMsg(`✗ Save memory LLM: ${e.message}`); }
+    setBusy("memoryLlm", false);
+  };
+
+  const setMemoryLlmKey = async (key) => {
+    setBusy("memoryLlm", true);
+    try {
+      const res = await api.post('/api/memory-llm/key', { key: key || "" });
+      setMemoryLlmCfg(prev => ({ ...(prev || {}), api_key_set: !!res.api_key_set }));
+      setMemKeyInput("");
+      flashMsg(key ? "✓ API key stored in OS keyring" : "✓ API key cleared");
+    } catch (e) { flashMsg(`✗ API key: ${e.message}`); }
+    setBusy("memoryLlm", false);
   };
 
   // ── Proxy field update ──
@@ -785,6 +820,89 @@ const SettingsPanel = ({ stats }) => {
           </div>
         ) : (
           <div style={{ color: T.textDim, fontSize: 12 }}>Loading delegate settings...</div>
+        )}
+      </Section>
+
+      {/* ══════════════════════════════════════════
+          5a. MEMORY LLM (distillation + recall)
+      ══════════════════════════════════════════ */}
+      <Section
+        label="Memory LLM"
+        icon="brain"
+        color={T.accent}
+        open={sections.memoryLlm}
+        onToggle={() => toggleSection("memoryLlm")}
+        badge={memoryLlmCfg && <Badge color={!memoryLlmCfg.enabled ? T.textMuted : (memoryLlmCfg.cloud_enabled ? T.purple : T.accent)}>{!memoryLlmCfg.enabled ? "Disabled" : (memoryLlmCfg.cloud_enabled ? "Cloud" : "Local only")}</Badge>}
+      >
+        {memoryLlmCfg ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+              {/* Capture toggles */}
+              <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+                {renderBoolToggle("Session Digests", !!memoryLlmCfg.enabled, () => updateMemoryLlmField("enabled", !memoryLlmCfg.enabled), "Distill each session into durable facts with an LLM at session end.")}
+                {renderBoolToggle("Transcript Mining", !!memoryLlmCfg.transcript_mining_enabled, () => updateMemoryLlmField("transcript_mining_enabled", !memoryLlmCfg.transcript_mining_enabled), "Extract your corrections and preferences from conversation transcripts.")}
+                {renderBoolToggle("Cloud Model", !!memoryLlmCfg.cloud_enabled, () => updateMemoryLlmField("cloud_enabled", !memoryLlmCfg.cloud_enabled), "Use Ollama Cloud (Sonnet-class). Session content leaves this machine — off = local model only, fully private.")}
+              </div>
+              {/* Recall toggles */}
+              <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+                {renderBoolToggle("Prompt Recall Injection", !!memoryLlmCfg.prompt_inject_enabled, () => updateMemoryLlmField("prompt_inject_enabled", !memoryLlmCfg.prompt_inject_enabled), "Inject relevant project facts into each prompt (UserPromptSubmit hook).")}
+                {renderBoolToggle("Related Facts on Read", !!memoryLlmCfg.read_related_facts_enabled, () => updateMemoryLlmField("read_related_facts_enabled", !memoryLlmCfg.read_related_facts_enabled), "Append facts touching a file to c3_read output.")}
+              </div>
+            </div>
+
+            {/* Model + budget inputs */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              <div>
+                <div style={labelStyle}>Local Model (private)</div>
+                <select value={memoryLlmCfg.local_model || ""} onChange={e => updateMemoryLlmField("local_model", e.target.value)} style={inputStyle}>
+                  {renderModelOptions()}
+                </select>
+              </div>
+              <div>
+                <div style={labelStyle}>Cloud Model</div>
+                <input type="text" list="c3-cloud-models" value={memoryLlmCfg.cloud_model || ""} onChange={e => updateMemoryLlmField("cloud_model", e.target.value)} style={inputStyle} placeholder="glm-4.6:cloud" />
+                <datalist id="c3-cloud-models">
+                  <option value="glm-4.6:cloud" />
+                  <option value="deepseek-v3.1:671b-cloud" />
+                  <option value="qwen3-coder:480b-cloud" />
+                  <option value="kimi-k2:1t-cloud" />
+                  <option value="gpt-oss:120b-cloud" />
+                </datalist>
+              </div>
+              <div>
+                <div style={labelStyle}>Max Facts / Session</div>
+                <input type="number" min="1" max="20" value={memoryLlmCfg.max_facts_per_session ?? ""} onChange={e => updateMemoryLlmField("max_facts_per_session", parseInt(e.target.value || "0", 10) || 0)} style={inputStyle} />
+              </div>
+              <div>
+                <div style={labelStyle}>Inject Top K</div>
+                <input type="number" min="1" max="10" value={memoryLlmCfg.inject_top_k ?? ""} onChange={e => updateMemoryLlmField("inject_top_k", parseInt(e.target.value || "0", 10) || 0)} style={inputStyle} />
+              </div>
+            </div>
+
+            {/* Cloud API key (OS keyring — never written to config.json) */}
+            <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ ...labelStyle, marginBottom: 0 }}>Ollama Cloud API Key</div>
+                <Badge color={memoryLlmCfg.api_key_set ? T.accent : T.textMuted}>{memoryLlmCfg.api_key_set ? "Key set" : "No key"}</Badge>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="password" value={memKeyInput} onChange={e => setMemKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="Paste key — stored in OS keyring, never in config.json" />
+                <Btn color={T.accent} onClick={() => memKeyInput.trim() && setMemoryLlmKey(memKeyInput)} disabled={busy.memoryLlm || !memKeyInput.trim()}>Set</Btn>
+                <Btn color={T.textMuted} onClick={() => setMemoryLlmKey("")} disabled={busy.memoryLlm || !memoryLlmCfg.api_key_set}>Clear</Btn>
+              </div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+                Also honored: the OLLAMA_API_KEY environment variable, or a signed-in local Ollama daemon (localhost base URL) which needs no key.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Btn color={T.accent} onClick={saveMemoryLlm} disabled={busy.memoryLlm}>
+                <I name="save" size={13} /> {busy.memoryLlm ? "Saving..." : "Save Memory LLM Settings"}
+              </Btn>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: T.textDim, fontSize: 12 }}>Loading memory LLM settings...</div>
         )}
       </Section>
 

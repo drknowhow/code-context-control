@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-event hook dispatcher: ONE process per Claude Code / Gemini hook event.
 
-Usage: python hook_dispatch.py <pretool|posttool|stop>
+Usage: python hook_dispatch.py <pretool|posttool|stop|prompt>
 
 Before v2.42 every hook was registered as its own "cmd /c python <hook>.py"
 subprocess, so a single native Read fired up to three interpreter spawns
@@ -46,7 +46,7 @@ sys.modules.setdefault("_hook_utils", _hook_utils)
 
 from cli._hook_utils import log_hook_error, normalize_tool_name  # noqa: E402
 
-VALID_EVENTS = ("pretool", "posttool", "stop")
+VALID_EVENTS = ("pretool", "posttool", "stop", "prompt")
 
 # ── Routing tables (parity with the pre-v2.42 per-matcher registration) ─────
 
@@ -103,6 +103,8 @@ def _routes(event: str, raw_tool: str, norm_tool: str):
         yield "hook_session_stats"
         yield "hook_auto_snapshot"
         yield "hook_terse_advisor"
+    elif event == "prompt":
+        yield "hook_prompt_recall"
 
 
 _RUN_CACHE: dict = {}
@@ -128,7 +130,8 @@ def _load_run(module_name: str):
     return result
 
 
-def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False) -> dict | None:
+def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
+                  event: str = "") -> dict | None:
     """Compose sub-hook outputs per Claude Code hook semantics.
 
     - deny beats allow: the first hookSpecificOutput carrying a
@@ -186,6 +189,14 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False) -> dic
     if texts:
         result["_text"] = "\n".join(texts)
 
+    # UserPromptSubmit expects context under hookSpecificOutput (the
+    # top-level additionalContext key is a PostToolUse shape).
+    if event == "prompt" and result.get("additionalContext"):
+        result["hookSpecificOutput"] = {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": result.pop("additionalContext"),
+        }
+
     return result or None
 
 
@@ -220,7 +231,7 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
         # become visible instead of silently disabling enforcement.
         warnings.extend(_hook_utils.drain_state_warnings())
 
-    return merge_outputs(outputs, warnings, is_gemini=is_gemini)
+    return merge_outputs(outputs, warnings, is_gemini=is_gemini, event=event)
 
 
 def main() -> None:

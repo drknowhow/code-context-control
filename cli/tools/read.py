@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from cli.tools._helpers import finalize_with_tokens
+from cli.tools._helpers import finalize_with_tokens, maybe_related_facts
 from core import count_tokens
 
 
@@ -262,7 +262,8 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     if not ranges:
         file_map = svc.file_memory.get_or_build_map(rel_path)
         resp = (file_map
-                + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]")
+                + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]"
+                + maybe_related_facts(svc, rel_path, top_k=3, context="read"))
         map_tok = count_tokens(resp)
         return finalize_with_tokens(
             finalize, svc, "c3_read", {"file": file_path},
@@ -305,9 +306,9 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         prev_end = end
 
     final_content = "\n".join(parts)
-    tokens = count_tokens(final_content)
+    resp = final_content + maybe_related_facts(svc, rel_path, top_k=3, context="read")
+    tokens = count_tokens(resp)
     summary = f"{full_file_tokens()}->{tokens}tok" if tokens < full_file_tokens() else f"{tokens}tok"
-    resp = f"{final_content}"
     return finalize_with_tokens(
         finalize, svc, "c3_read", {"file": file_path, "symbols": symbols}, resp, summary,
         raw_tokens=full_file_tokens(), optimized_tokens=tokens,

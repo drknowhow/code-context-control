@@ -1,6 +1,22 @@
 """c3_session — Session lifecycle, snapshots, and logging."""
 
 import re
+import threading
+
+
+def _kick_distiller(svc):
+    """Durably enqueue a digest job for the current session and process it
+    on a daemon thread. Never raises, never blocks the tool response."""
+    distiller = getattr(svc, "memory_distiller", None)
+    if not distiller:
+        return
+    try:
+        job = distiller.enqueue_session(svc.session_mgr.current_session)
+        if job:
+            threading.Thread(target=distiller.process_job_safe, args=(job,),
+                             daemon=True, name="c3-memory-distill").start()
+    except Exception:
+        pass
 
 
 def handle_session(action: str, data: str, reasoning: str, description: str,
@@ -19,6 +35,7 @@ def handle_session(action: str, data: str, reasoning: str, description: str,
                 svc.auto_memory.on_session_end()
             except Exception:
                 pass
+        _kick_distiller(svc)
         svc.session_mgr._persist_budget()
         result = svc.session_mgr.save_session(summary)
         if "error" in result:
@@ -59,6 +76,7 @@ def handle_session(action: str, data: str, reasoning: str, description: str,
                 svc.auto_memory.on_session_end()
             except Exception:
                 pass
+        _kick_distiller(svc)
         # summary = optional comma-separated working files to embed structural maps for
         files = [f.strip() for f in summary.split(",") if f.strip()] if summary else []
         compressor = getattr(svc, "compressor", None)

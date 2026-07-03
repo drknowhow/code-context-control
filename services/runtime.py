@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from core.config import load_delegate_config, load_hybrid_config
+from core.config import load_delegate_config, load_hybrid_config, load_memory_llm_config
 from core.ide import get_profile, load_ide_config
 from services.activity_log import ActivityLog
 from services.agents import create_agents
@@ -25,6 +25,7 @@ from services.file_memory import FileMemoryStore
 from services.indexer import CodeIndex
 from services.memory import MemoryStore
 from services.memory_consolidator import MemoryConsolidator
+from services.memory_distiller import MemoryDistiller
 from services.memory_graph import MemoryGraph
 from services.memory_grounder import MemoryGrounder
 from services.memory_scorer import MemoryScorer
@@ -84,6 +85,7 @@ class C3Runtime:
     retention: Optional[RetentionManager] = None
     task_store: Optional[TaskStore] = None
     artifact_store: Optional[ArtifactStore] = None
+    memory_distiller: Optional[MemoryDistiller] = None
 
 
 def _load_agent_config(project_path: Path) -> dict:
@@ -264,6 +266,16 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         artifact_store=artifact_store,
     )
 
+    # Memory distillation: LLM-powered session digests (cloud → local → regex).
+    memory_distiller = MemoryDistiller(
+        str(project),
+        memory,
+        load_memory_llm_config(str(project)),
+        ollama_client=ollama_client,
+        convo_store=convo_store,
+        activity_log=activity_log,
+    )
+
     # Ollama probe deferred to background — shaves ~2s off startup.
     # Runtime starts with ollama_available=False; background thread updates it.
     import threading as _t
@@ -310,6 +322,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         retention=retention,
         task_store=task_store,
         artifact_store=artifact_store,
+        memory_distiller=memory_distiller,
     )
     runtime.agents = create_agents(
         runtime,

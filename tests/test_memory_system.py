@@ -42,6 +42,31 @@ class TestMemorySystem(unittest.TestCase):
         self.assertTrue(deleted["deleted"])
         self.assertFalse(any(result["id"] == fact_id for result in vector.search("consistency term", top_k=5)))
 
+    def test_remember_provenance_kwargs(self):
+        memory = MemoryStore(str(self.project))
+        entry = memory._facts_by_id[
+            memory.remember("plain fact with default provenance values", "general")["id"]]
+        self.assertEqual(entry["source_quality"], "user")
+        self.assertEqual(entry["confidence"], 1.0)
+        entry = memory._facts_by_id[
+            memory.remember("distilled fact with explicit provenance", "gotcha",
+                            confidence=0.8, source_quality="distilled")["id"]]
+        self.assertEqual(entry["source_quality"], "distilled")
+        self.assertAlmostEqual(entry["confidence"], 0.8)
+        entry = memory._facts_by_id[
+            memory.remember("confidence outside range gets clamped here", "general",
+                            confidence=7.5)["id"]]
+        self.assertEqual(entry["confidence"], 1.0)
+
+    def test_save_facts_is_atomic(self):
+        memory = MemoryStore(str(self.project))
+        memory.remember("fact that must survive a torn write scenario", "general")
+        self.assertEqual(list(memory.data_dir.glob("*.tmp")), [])
+        # the on-disk file is always complete, parseable JSON
+        import json
+        facts = json.loads(memory.facts_file.read_text(encoding="utf-8"))
+        self.assertTrue(any("torn write" in f["fact"] for f in facts))
+
     def test_retrieval_broker_combines_sources(self):
         vector = VectorStore(str(self.project), config={"disable_vector_backend": True})
         memory = MemoryStore(str(self.project), vector_store=vector)

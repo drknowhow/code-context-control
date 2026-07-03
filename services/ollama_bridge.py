@@ -1,4 +1,4 @@
-"""OllamaBridge — Ollama cloud API client with Bearer auth for Oracle.
+"""OllamaBridge — Ollama cloud API client with Bearer auth.
 
 Uses the Ollama cloud service (https://ollama.com) by default.
 Falls back to local Ollama (http://localhost:11434) if no API key is set.
@@ -84,11 +84,12 @@ class OllamaBridge:
         model: str = "gemma4:31b-cloud",
         api_key: str = "",
         cache_ttl_sec: int = 86400,
+        cache_dir: Path | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
-        self._cache = _Cache(ttl_sec=cache_ttl_sec)
+        self._cache = _Cache(cache_dir=cache_dir or _ORACLE_CACHE_DIR, ttl_sec=cache_ttl_sec)
         # model → (probe_ts, supports_tools: bool | None). None = unknown.
         self._caps: dict[str, tuple[float, bool | None]] = {}
 
@@ -110,6 +111,23 @@ class OllamaBridge:
             return json.loads(resp.read())
 
     # ── Availability ──────────────────────────────────────
+
+    def check_auth(self, timeout: int | None = None) -> str:
+        """Probe endpoint auth state: 'ok', 'auth' (401/402/403/429), or 'down'.
+
+        generate()/chat() swallow all errors into None, so callers that need
+        to distinguish a dead key/quota (do not retry) from a transient
+        outage (retry later) must probe explicitly.
+        """
+        try:
+            self._request("/api/tags", timeout=timeout or 5)
+            return "ok"
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 402, 403, 429):
+                return "auth"
+            return "ok" if e.code < 500 else "down"
+        except Exception:
+            return "down"
 
     def is_available(self, timeout: int | None = None) -> bool:
         """Check if Ollama API is reachable."""

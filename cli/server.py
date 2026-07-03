@@ -2457,6 +2457,71 @@ def api_ollama_models():
     return jsonify({"models": models})
 
 
+@app.route('/api/memory-llm/config', methods=['GET'])
+def api_memory_llm_config_get():
+    """Get memory_llm config (merged with defaults). Never returns the API key."""
+    from core.config import load_memory_llm_config
+    cfg = load_memory_llm_config(str(PROJECT_PATH))
+    key_set = False
+    try:
+        from services.ollama_credentials import api_key_available
+        key_set = api_key_available(cfg.get("cloud_base_url", ""),
+                                    cfg.get("api_key_env", ""),
+                                    cfg.get("api_key", ""))
+    except Exception:
+        pass
+    cfg["api_key"] = "*****" if cfg.get("api_key") else ""
+    cfg["api_key_set"] = bool(key_set)
+    return jsonify(cfg)
+
+
+@app.route('/api/memory-llm/config', methods=['PUT'])
+def api_memory_llm_config_put():
+    """Update memory_llm config. Persists to .c3/config.json (never the key)."""
+    from core.config import MEMORY_LLM_DEFAULTS, load_memory_llm_config
+    data = request.get_json() or {}
+    # api_key is keyring-only (set via /api/memory-llm/key) — config.json is
+    # not gitignored by default, so a plaintext key there could get committed.
+    allowed_keys = set(MEMORY_LLM_DEFAULTS.keys()) - {"api_key"}
+    updates = {k: v for k, v in data.items() if k in allowed_keys}
+
+    if not updates:
+        return jsonify({"error": "No valid memory_llm config keys to update"}), 400
+
+    config_path = PROJECT_PATH / ".c3" / "config.json"
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            pass
+    config.setdefault("memory_llm", {}).update(updates)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    return jsonify(load_memory_llm_config(str(PROJECT_PATH)))
+
+
+@app.route('/api/memory-llm/key', methods=['POST'])
+def api_memory_llm_key_set():
+    """Store (or clear, with an empty key) the Ollama Cloud API key in the OS keyring."""
+    from core.config import load_memory_llm_config
+    from services.ollama_credentials import delete_api_key, save_api_key
+    data = request.get_json() or {}
+    key = str(data.get("key") or "").strip()
+    base = load_memory_llm_config(str(PROJECT_PATH)).get("cloud_base_url", "")
+    if not key:
+        removed = delete_api_key(base)
+        return jsonify({"cleared": bool(removed), "api_key_set": False})
+    try:
+        save_api_key(key, base)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"api_key_set": True})
+
+
 @app.route('/api/delegate', methods=['POST'])
 def api_delegate():
     """Delegate a task to local LLM with optional streaming."""

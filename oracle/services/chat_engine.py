@@ -28,7 +28,7 @@ from oracle.services.health_checker import HealthChecker
 from oracle.services.insight_engine import InsightEngine
 from oracle.services.memory_reader import MemoryReader
 from oracle.services.memory_writer import MemoryWriter
-from oracle.services.ollama_bridge import OllamaBridge
+from services.ollama_bridge import OllamaBridge
 from oracle.services.project_scanner import ProjectScanner
 
 # ── Tool definitions (embedded in system prompt) ──────────

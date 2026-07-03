@@ -151,6 +151,33 @@ AGENT_DEFAULTS = {
     "VersionCheck": {
         "enabled": True, "interval": 3600, "check_every_hours": 24,
     },
+    "MemoryDistiller": {
+        # use_ai=False: the distiller owns its LLM chain (cloud bridge → local
+        # → mechanical) and must run even when the local Ollama probe fails.
+        "enabled": True, "interval": 90, "use_ai": False,
+    },
+}
+
+
+# ─── Memory LLM Defaults (distillation / recall injection) ─────────
+
+MEMORY_LLM_DEFAULTS = {
+    "enabled": True,                  # master switch for LLM distillation
+    "cloud_enabled": False,           # privacy opt-in: session content leaves the machine
+    "cloud_base_url": "https://ollama.com",
+    "cloud_model": "glm-4.6:cloud",
+    "api_key_env": "OLLAMA_API_KEY",  # env var checked for the Bearer key
+    "api_key": "",                    # explicit key wins over the env var
+    "local_model": "gemma3n:latest",
+    "max_facts_per_session": 7,
+    "max_fact_chars": 300,            # stays under the 600-char verbose-orphan archiver
+    "transcript_mining_enabled": True,
+    "prompt_inject_enabled": True,
+    "inject_max_tokens": 400,
+    "inject_top_k": 4,
+    "read_related_facts_enabled": True,
+    "queue_max_attempts": 3,
+    "breaker_cooldown_sec": 300,
 }
 
 
@@ -265,6 +292,20 @@ def load_delegate_config(project_path: str) -> dict:
         except Exception:
             pass
     return {**DELEGATE_DEFAULTS, **delegate}
+
+
+def load_memory_llm_config(project_path: str) -> dict:
+    """Load memory_llm config from .c3/config.json, merged with defaults."""
+    config_file = Path(project_path) / ".c3" / "config.json"
+    overrides = {}
+    if config_file.exists():
+        try:
+            with open(config_file, encoding="utf-8") as f:
+                data = json.load(f)
+            overrides = data.get("memory_llm", {})
+        except Exception:
+            pass
+    return {**MEMORY_LLM_DEFAULTS, **overrides}
 
 
 def load_agent_config(project_path: str) -> dict:

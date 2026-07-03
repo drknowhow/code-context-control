@@ -18,8 +18,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from oracle.services import ollama_bridge as ob  # noqa: E402
-from oracle.services.ollama_bridge import OllamaBridge, _Cache  # noqa: E402
+from services import ollama_bridge as ob  # noqa: E402
+from services.ollama_bridge import OllamaBridge, _Cache  # noqa: E402
 
 _URLOPEN = "urllib.request.urlopen"
 

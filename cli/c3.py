@@ -60,7 +60,7 @@ from cli.commands.common import cmd_stats as common_cmd_stats
 from cli.commands.common import cmd_ui as common_cmd_ui
 from cli.commands.parser import build_parser
 from core import count_tokens, format_token_count
-from core.config import AGENT_DEFAULTS, BITBUCKET_DEFAULTS, DELEGATE_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
+from core.config import AGENT_DEFAULTS, BITBUCKET_DEFAULTS, DELEGATE_DEFAULTS, MEMORY_LLM_DEFAULTS, PROXY_DEFAULTS, load_delegate_config
 from core.config import DEFAULTS as HYBRID_DEFAULTS
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services.compressor import CodeCompressor
@@ -85,7 +85,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.49.1"
+__version__ = "2.51.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -165,6 +165,7 @@ def _build_init_config(project_path: str) -> dict:
         "delegate": deepcopy(DELEGATE_DEFAULTS),
         "agents": deepcopy(AGENT_DEFAULTS),
         "bitbucket": deepcopy(BITBUCKET_DEFAULTS),
+        "memory_llm": deepcopy(MEMORY_LLM_DEFAULTS),
     }
     merged = _deep_merge_dict(defaults, existing if isinstance(existing, dict) else {})
     # Always persist current path/version on init/update.
@@ -721,6 +722,80 @@ def _select_init_ide(default_ide: str) -> str:
     return chosen
 
 
+def _prompt_memory_llm(project_path: str) -> None:
+    """Interactive memory_llm setup: privacy-first local model + optional cloud opt-in.
+
+    Skipped entirely under --force (that path never enters _prompt_init_steps),
+    which keeps the privacy defaults: distillation on, cloud OFF.
+    """
+    print()
+    choice = _prompt_choice(
+        "Memory — distill each session into durable project facts with an LLM?",
+        [
+            "Local only — a local Ollama model, nothing leaves this machine (recommended)",
+            "Cloud      — a Sonnet-class Ollama Cloud model (API key or signed-in daemon)",
+            "Off        — keep the basic pattern-based capture only",
+        ],
+    )
+    if not choice:
+        return  # EOF/Ctrl+C — keep defaults (local-only, cloud off)
+
+    existing = load_config(project_path).get("memory_llm")
+    section = dict(existing) if isinstance(existing, dict) else {}
+
+    if choice.startswith("Off"):
+        section["enabled"] = False
+        section["cloud_enabled"] = False
+        save_config({"memory_llm": section}, project_path)
+        print("Memory distillation: off (regex capture only).")
+        return
+
+    section["enabled"] = True
+    section["cloud_enabled"] = choice.startswith("Cloud")
+
+    # Local model pick — it is the only tier in local mode and the privacy
+    # fallback tier in cloud mode.
+    default_local = section.get("local_model") or MEMORY_LLM_DEFAULTS["local_model"]
+    models = None
+    try:
+        client = OllamaClient()
+        if client.is_available(timeout=2):
+            models = client.list_models()
+    except Exception:
+        models = None
+    if models:
+        options = [f"Keep default — {default_local}"] + [m for m in models if m != default_local][:8]
+        pick = _prompt_choice("Pick the local model for distillation:", options)
+        if pick and not pick.startswith("Keep default"):
+            section["local_model"] = pick
+    else:
+        print(f"  (Local Ollama not reachable — keeping '{default_local}'; "
+              "change it later in the Settings UI.)")
+
+    if section["cloud_enabled"]:
+        if os.environ.get("OLLAMA_API_KEY"):
+            print("  Cloud key: using OLLAMA_API_KEY from the environment.")
+        else:
+            try:
+                key = input("  Paste Ollama Cloud API key (Enter to skip — a signed-in "
+                            "local daemon also works): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                key = ""
+            if key:
+                try:
+                    from services.ollama_credentials import save_api_key
+                    save_api_key(key, section.get("cloud_base_url")
+                                 or MEMORY_LLM_DEFAULTS["cloud_base_url"])
+                    print("  Key stored in the OS keyring (never in config.json).")
+                except Exception as exc:
+                    print(f"  Could not store key in keyring ({exc}); "
+                          "set the OLLAMA_API_KEY environment variable instead.")
+
+    save_config({"memory_llm": section}, project_path)
+    print("Memory distillation: "
+          + ("cloud + local fallback." if section["cloud_enabled"] else "local only (private)."))
+
+
 def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "direct") -> tuple[str, bool]:
     """Run guided post-init setup steps for Git and MCP."""
     chosen_ide = _select_init_ide(ide_name or "auto")
@@ -738,6 +813,8 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
         _init_local_git_repo(project_path)
     else:
         print("Git: skipped.")
+
+    _prompt_memory_llm(project_path)
 
     print()
     install_choice = _prompt_choice(
@@ -5030,6 +5107,7 @@ def cmd_install_mcp(args):
         hook_pretool_cmd  = f"{_dispatch_base} pretool"
         hook_posttool_cmd = f"{_dispatch_base} posttool"
         hook_stop_cmd     = f"{_dispatch_base} stop"
+        hook_prompt_cmd   = f"{_dispatch_base} prompt"
 
         # Tool matcher names differ by IDE: Gemini uses snake_case built-in names.
         if profile.name == "gemini":
@@ -5152,6 +5230,28 @@ def cmd_install_mcp(args):
         ]
         existing_stop.extend(desired_stop_hooks)
         settings.setdefault("hooks", {})[stop_event] = existing_stop
+
+        # ── UserPromptSubmit hook (per-prompt project-memory injection) ──
+        # Claude Code only: Gemini CLI has no equivalent hook event. Same
+        # merge discipline as Stop: replace only C3's own entries (identified
+        # by the dispatcher script in the command), keep user-added ones.
+        if profile.name != "gemini":
+            prompt_event = "UserPromptSubmit"
+
+            def _is_c3_prompt_hook(entry: dict) -> bool:
+                return any(
+                    "hook_dispatch.py" in (hk.get("command") or "")
+                    for hk in entry.get("hooks", [])
+                )
+
+            existing_prompt = [
+                h for h in settings.get("hooks", {}).get(prompt_event, [])
+                if not _is_c3_prompt_hook(h)
+            ]
+            existing_prompt.append(
+                {"matcher": "", "hooks": [{"type": "command", "command": hook_prompt_cmd}]}
+            )
+            settings.setdefault("hooks", {})[prompt_event] = existing_prompt
 
         # Claude Code only: enable MCP server prompt settings
         if profile.name == "claude-code":

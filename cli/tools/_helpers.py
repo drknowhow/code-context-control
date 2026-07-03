@@ -3,9 +3,57 @@
 from pathlib import Path
 
 
-def maybe_related_facts(svc, topic: str, top_k: int = 3, width: int = 100) -> str:
-    """Append related facts if enabled. Currently disabled — adds noise."""
-    return ""
+def maybe_related_facts(svc, topic: str, top_k: int = 3, width: int = 100,
+                        context: str = "") -> str:
+    """Format facts related to `topic` as compact advisory lines.
+
+    Enabled ONLY for the read path (context="read", gated by
+    memory_llm.read_related_facts_enabled): a gotcha about the file being
+    read is worth the tokens at that moment. Search/compress callers stay
+    disabled — facts surfaced next to ranked search output were noise.
+    """
+    if context != "read":
+        return ""
+    try:
+        cfg = getattr(svc, "_memory_llm_cfg", None)
+        if cfg is None:
+            from core.config import load_memory_llm_config
+            cfg = load_memory_llm_config(str(getattr(svc, "project_path", ".")))
+            try:
+                svc._memory_llm_cfg = cfg
+            except Exception:
+                pass
+        if not cfg.get("read_related_facts_enabled", True):
+            return ""
+        memory = getattr(svc, "memory", None)
+        if memory is None:
+            return ""
+        path = Path(topic)
+        query = " ".join(filter(None, [
+            path.name, path.stem.replace("_", " "), path.parent.name]))
+        hits = memory.recall(query, top_k=max(top_k, 3))
+        if not hits:
+            return ""
+        # Relative score floor: recall scores are scale-free (TF-IDF-only when
+        # the vector backend is off), so an absolute threshold misfires.
+        top_score = max(float(h.get("score", 0) or 0) for h in hits)
+        floor = max(0.05, 0.3 * top_score)
+        lines = []
+        for hit in hits:
+            if float(hit.get("score", 0) or 0) < floor:
+                continue
+            category = str(hit.get("category", "") or "general")
+            if category.startswith("auto:"):
+                continue
+            body = " ".join(str(hit.get("fact", "")).split())
+            if not body:
+                continue
+            lines.append(f"[c3:related] ({category}) {body[:width]}")
+            if len(lines) >= top_k:
+                break
+        return ("\n" + "\n".join(lines)) if lines else ""
+    except Exception:
+        return ""
 
 
 # ── Response boilerplate diet (P6) ───────────────────────────────────────────

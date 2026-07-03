@@ -3,9 +3,9 @@
 // PUT {path, section, values} (writable sections only). The
 // bitbucket section is shown read-only; server-refused keys hidden.
 
-const CFG_ED_SECTIONS = ['hybrid', 'agents', 'delegate', 'proxy', 'mcp', 'meta', 'bitbucket'];
+const CFG_ED_SECTIONS = ['hybrid', 'agents', 'delegate', 'proxy', 'mcp', 'meta', 'memory_llm', 'bitbucket'];
 const CFG_ED_READONLY = ['bitbucket'];
-const CFG_ED_REFUSED = ['version', 'project_path', 'permission_tier', 'subprojects', 'parent'];
+const CFG_ED_REFUSED = ['version', 'project_path', 'permission_tier', 'subprojects', 'parent', 'api_key'];
 
 function ConfigEditor({ project }) {
   const [section, setSection] = useState('hybrid');
@@ -203,6 +203,12 @@ function ConfigEditor({ project }) {
           {readOnly && (
             <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 10 }}>
               This section is read-only in the hub (credentials live in the OS keyring — use <span className="mono">c3 bitbucket login</span>).
+            </div>
+          )}
+          {section === 'memory_llm' && (
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 10 }}>
+              <span className="mono">cloud_enabled</span> sends session content to Ollama Cloud — leave off for local-only privacy (<span className="mono">local_model</span> is used instead).
+              The cloud API key is not editable here: it lives in the OS keyring — set it in the project's Settings tab or via <span className="mono">OLLAMA_API_KEY</span>.
             </div>
           )}
           {keys.length === 0 && <DrillMsg text="No editable keys in this section." />}

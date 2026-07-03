@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-context-control"
-version = "2.50.0"
+version = "2.51.0"
 description = "Local code-intelligence layer for AI coding tools (Claude Code, Codex, Gemini, Copilot). Retrieve less, read less, edit safer — and version the configs that shape your agent (CLAUDE.md, skills, hooks, MCP)."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -4,6 +4,65 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.0] - 2026-07-03
+
+### Added
+
+- **LLM-distilled session memory (`memory_llm`).** At session end, C3 distills
+  the session's conversation excerpts, activity tail, and logged decisions into
+  3-7 durable facts via an LLM chain: **Ollama Cloud** (Sonnet-class, default
+  `glm-4.6:cloud`, strictly opt-in — `cloud_enabled: false` by default) →
+  **local Ollama model** (default `gemma3n:latest`, fully private) → the
+  existing regex extractors. New `services/memory_distiller.py` (degradation
+  chain, per-tier circuit breaker, JSON salvage parsing, `<private>` stripping
+  before any LLM call) and `services/memory_queue.py` (durable idempotent job
+  queue in `.c3/memory_queue/` — session end never blocks on the LLM, and jobs
+  survive crashes; the new `MemoryDistillerAgent` drains anything pending next
+  session). Distilled facts carry provenance: `MemoryStore.remember()` gained
+  `confidence`/`source_quality` kwargs (`distilled` / `distilled_local`).
+- **Transcript mining.** On idle agent cycles, unmined conversation turns are
+  scanned for user corrections, standing preferences, and confirmed decisions
+  (user turns + neighboring assistant context; per-conversation high-water mark
+  advances only after facts persist, so crashes re-mine safely).
+- **Per-prompt memory injection.** New `UserPromptSubmit` hook
+  (`cli/hook_prompt_recall.py`, dispatcher event `prompt`): injects the top-k
+  most relevant project facts into each prompt (~400-token cap, <100 ms,
+  strictly read-only over `facts.json` — never instantiates `MemoryStore`).
+  Registered by `c3 install-mcp` / `c3 init` (Claude Code profile only).
+- **File-anchored facts on `c3_read`.** Reads append up to three
+  `[c3:related]` one-liners when stored facts touch the file being read
+  (revived `maybe_related_facts`, read-path only, flag-gated; search/compress
+  stay quiet).
+- **`memory_llm` settings on every surface:**
+  - Project UI → Settings → new **Memory LLM** section: capture/recall
+    toggles, local-model picker (live from the Ollama daemon), cloud-model
+    field, API-key set/clear.
+  - Hub → the per-project config editor gained a `memory_llm` section pill
+    (generic typed editor; `api_key` refused — secrets never transit the hub).
+  - `c3 init` → new interactive step: **Local only (recommended) / Cloud /
+    Off** with a local-model picker; `--force` keeps privacy defaults
+    (distillation on, cloud OFF).
+  - New endpoints: `GET/PUT /api/memory-llm/config`,
+    `POST /api/memory-llm/key`.
+- **Keyring-backed cloud key.** The Ollama Cloud API key lives in the OS
+  keyring (`services/ollama_credentials.py`, service `c3-ollama`) — never in
+  `.c3/config.json`, which is not gitignored by default. Resolution order:
+  explicit config value → `OLLAMA_API_KEY` env var → keyring. `OllamaBridge`
+  moved from `oracle/services/` to `services/` (now shared by the Oracle and
+  the distiller) and gained a `check_auth()` probe so auth/quota failures
+  (don't retry) are distinguished from outages (retry with breaker).
+
+### Fixed
+
+- **Torn-write protection for `facts.json`.** `MemoryStore._save_facts()` is
+  now atomic (tmp + `os.replace`) and lock-serialized. A crash mid-write
+  previously wiped all project memory silently (`_load_facts` returns `[]` on
+  parse errors), and concurrent recall flushes from parallel multi-file
+  `c3_read` workers shared a single tmp path.
+- `cli/c3.py` `__version__` was stale at `2.49.1` — the v2.50.0 release bumped
+  only `pyproject.toml`, so `c3 --version`, the hub/UI version badges, and the
+  version-check agent under-reported. Both are now `2.51.0` and in sync.
+
 ## [2.50.0] - 2026-07-03
 
 ### Fixed

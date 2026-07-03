@@ -6,7 +6,7 @@ from pathlib import Path
 
 from oracle.services.cross_memory import CrossMemory
 from oracle.services.memory_reader import MemoryReader
-from oracle.services.ollama_bridge import OllamaBridge
+from services.ollama_bridge import OllamaBridge
 
 _SYSTEM_PROMPT = """You are Oracle, an AI memory analyst for software projects.
 You analyze project memory facts and identify patterns, risks, and opportunities.

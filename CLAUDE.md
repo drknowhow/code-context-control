@@ -19,6 +19,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
 10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`, or `login --global` for a home config reusable across projects; account resolution precedence is project → home). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
 11. **CROSS-PROJECT** (v2.31.0+): `c3_project(action='list|scan|info|search|read|edit|shell|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. `list`/`scan` need no project; reads (search/read/compress/status/memory/impact/edits/validate/filter) run freely; writes (`edit`, `shell`, memory add/update/delete) require `allow_write=true` and are logged to the target project's ledger.
+12. **AGENT CONFIG** (v2.46.0+): `c3_artifacts(action='status|list|history|diff|restore')` — version history for the files that shape the agent itself: instruction docs (CLAUDE.md/AGENTS.md/GEMINI.md), settings/hooks, MCP configs, .claude skills/agents/commands. Out-of-band edits are captured automatically; `diff` any version against live, `restore` writes a prior version back (forward-only, ledger-logged).
 
 ## Plan mode
 In plan mode, all c3_* read tools (search, read, compress, filter, validate, status) work normally — skip edit/delegate steps.
@@ -50,134 +51,23 @@ claude-companion - v2/
   c3.bat
   ... +4 more
   .claude/
-    settings.local.json
   .codex/
-    config.toml
   .gemini/
-    settings.json
   .github/
-    copilot-instructions.md
-    workflows/ (2 files)
   .neoB/
-    neo_identity.md
-    settings.json
-    brain/ (3 files)
-    outputs/
   .pytest_cache/
-    .gitignore
-    CACHEDIR.TAG
-    README.md
-    v/
   .ruff_cache/
-    .gitignore
-    CACHEDIR.TAG
-    0.15.12/
   .vscode/
-    mcp.json
-    settings.json
   cli/
-    __init__.py
-    _hook_utils.py
-    c3.py
-    docs.html
-    edits.html
-    hook_auto_snapshot.py
-    hook_c3_signal.py
-    hook_c3read.py
-    hook_dispatch.py
-    hook_edit_ledger.py
-    hook_edit_unlock.py
-    hook_filter.py
-    hook_ghost_files.py
-    hook_pretool_enforce.py
-    hook_read.py
-    ... +11 more
-    commands/ (3 files)
-    guide/ (7 files)
-    hub_ui/ (2 files)
-    tools/ (20 files)
-    ui/ (6 files)
   code_context_control.egg-info/
-    SOURCES.txt
-    dependency_links.txt
-    entry_points.txt
-    requires.txt
-    top_level.txt
   commercial/
-    info_01_efficiency.json
-    info_02_hierarchy.json
-    info_03_memory_flow.json
-    info_04_integration.json
-    scene_01.json
-    scene_02.json
-    scene_03.json
-    scene_04.json
   core/
-    __init__.py
-    config.py
-    ide.py
-    mcp_toml.py
-    web_security.py
   docs/
-    screenshots/ (11 files)
   oracle/
-    __init__.py
-    config.py
-    mcp_oracle.py
-    oracle.html
-    oracle_server.py
-    services/ (17 files)
   oracle-guide/
-    README.md
-    api-reference.md
-    architecture.md
-    changelog.md
-    configuration.md
-    discovery-api.md
   services/
-    __init__.py
-    activity_log.py
-    agent_base.py
-    agents.py
-    auto_memory.py
-    benchmark_dashboard.py
-    bitbucket_client.py
-    bitbucket_credentials.py
-    circuit_breaker.py
-    claude_md.py
-    compressor.py
-    context_snapshot.py
-    conversation_store.py
-    doc_index.py
-    e2e_benchmark.py
-    ... +41 more
-    bench/ (1 files)
   tests/
-    test_activity_reporter.py
-    test_aider_polyglot.py
-    test_bitbucket_cli_smoke.py
-    test_bitbucket_client.py
-    test_bitbucket_config_fallback.py
-    test_bitbucket_credentials.py
-    test_bitbucket_tool.py
-    test_c3_shell.py
-    test_circuit_breaker.py
-    test_claude_md_merge.py
-    test_cli_smoke.py
-    test_compressor_large_file.py
-    test_delegate_cascade.py
-    test_e2e_benchmark.py
-    test_edit_ledger_hook.py
-    ... +51 more
   tui/
-    __init__.py
-    backend.py
-    build.bat
-    build.sh
-    main.py
-    theme.tcss
-    screens/ (14 files)
-    widgets/
 ```
 
 ## Tech Stack
@@ -196,3 +86,5 @@ Python (Modern)
 
 - Session summary (20260701): Decision: Deep 4-agent evaluation of C3 completed (tool surface, hooks, services, claims-vs-
 - Session summary (20260701): Files (modified): README.md, services/subprojects.py, services/project_manager.py, services/
+- [validate] U:\1. Projects\Claude Code Companion (C3)\claude-companion - v2\cli\hub_ui\components\toasts.js has syntax er
+- Hub v2 (v2.44.0): cli/hub_ui.html + cli/hub_ui/ 22-file concat bundle served at / (hub.html frozen at /legacy until v2.4

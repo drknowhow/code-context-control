@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,12 +34,16 @@ class MemoryStore:
         # Recall-telemetry write-behind state.
         self._facts_dirty = False
         self._unflushed_recalls = 0
+        # Concurrent recalls (multi-file c3_read workers) can flush at the
+        # same time; they share one tmp path, so serialize the save.
+        self._save_lock = threading.Lock()
         atexit.register(self._atexit_flush)
 
     def set_retrieval_broker(self, broker):
         self.retrieval_broker = broker
 
-    def remember(self, fact: str, category: str = "general", source_session: str = "") -> dict:
+    def remember(self, fact: str, category: str = "general", source_session: str = "",
+                 *, confidence: float = 1.0, source_quality: str = "user") -> dict:
         fact_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
         entry = {
@@ -48,8 +54,8 @@ class MemoryStore:
             "timestamp": now,
             "last_accessed_at": None,
             "relevance_count": 0,
-            "confidence": 1.0,
-            "source_quality": "user",
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "source_quality": source_quality,
             "lifecycle": "active",
             "vector_id": fact_id,
             "recall_sessions": [],
@@ -312,7 +318,13 @@ class MemoryStore:
         return normalized
 
     def _save_facts(self):
-        with open(self.facts_file, "w", encoding="utf-8") as handle:
-            json.dump(self.facts, handle, indent=2)
-        self._facts_dirty = False
-        self._unflushed_recalls = 0
+        # Atomic write: a crash mid-dump must never leave a torn facts.json
+        # (_load_facts silently returns [] on parse errors), and read-only
+        # consumers (prompt-recall hook) must never see a partial file.
+        with self._save_lock:
+            tmp = self.facts_file.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(self.facts, handle, indent=2)
+            os.replace(tmp, self.facts_file)
+            self._facts_dirty = False
+            self._unflushed_recalls = 0
