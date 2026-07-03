@@ -4,6 +4,45 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.50.0] - 2026-07-03
+
+### Fixed
+
+- **read→edit parity: `c3_read` output is now byte-faithful to what `c3_edit`
+  matches.** Root-cause fix for the "c3_read → c3_edit fails → agent falls
+  back to native Read" drift loop:
+  - `c3_read` EOL-normalizes exactly like `c3_edit`'s matcher (`\r\n`/`\r` →
+    `\n`) and splits on `\n` only — `splitlines()` previously rendered inline
+    `\x0c`/`\u2028`/`\x85` as phantom line breaks, making copied old_strings
+    unmatchable.
+  - `c3_edit` reads/writes with `errors="surrogateescape"`: files containing
+    non-UTF-8 bytes are now editable (strict decode used to raise), and
+    untouched invalid bytes round-trip byte-for-byte. Undecodable bytes fold
+    to U+FFFD for matching, so an old_string copied from `c3_read` output
+    (which renders them as `�`) still matches.
+  - Batch-edit outcome classification is structural (per-patch status list) —
+    a patch *summary* containing words like "NOT FOUND" was previously
+    miscounted as a failure in the `N/M patches applied` line.
+
+### Added
+
+- **`c3_edit` closest-match repair payload.** "old_string not found" errors
+  now locate the most similar file region (difflib anchor + window scan) and
+  include its exact current text with `⟦L..-L..⟧` markers plus a retry hint —
+  the edit can be repaired without re-reading the file, which was the moment
+  agents historically drifted back to native tools. Batch mode gets a per-patch
+  `closest: L..-L..` locator and the full region for the first miss.
+- **Copy-safe `c3_read` multi-range markers.** Between discontiguous blocks,
+  the old `--- L22-L40 ---` separator is replaced by tool-chrome markers with
+  an explicit omitted-gap note (`⟦L60-L80 — 19 lines (L41-L59) omitted…⟧`) so
+  a copied old_string never silently spans a gap.
+- **`c3_read` map-response hint.** When a read returns the file map (no
+  `lines`/`symbols`), the response now says how to fetch exact source —
+  closing the edit-recovery gap where a no-arg re-read returned a map instead
+  of content.
+- Regression suite `tests/test_read_edit_parity.py` (14 tests) pinning all of
+  the above.
+
 ## [2.49.2] - 2026-07-02
 
 ### Added

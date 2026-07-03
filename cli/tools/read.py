@@ -172,7 +172,14 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         pass
 
     raw_text = full.read_text(encoding="utf-8", errors="replace")
-    content_lines = raw_text.splitlines()
+    # EOL-normalize exactly the way c3_edit's matcher does (\r\n and \r → \n),
+    # then split on \n ONLY. splitlines() also breaks on \x0c/\u2028/\x85 etc.,
+    # which rendered those in-line chars as line breaks — an old_string copied
+    # from that output (with \n) could never match the actual file bytes.
+    raw_text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    content_lines = raw_text.split("\n")
+    if content_lines and content_lines[-1] == "":
+        content_lines.pop()  # trailing \n would otherwise add a phantom empty line
     # Lazy: only count full file tokens when needed for the summary string
     _full_tok_cache = [None]
 
@@ -254,8 +261,9 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
 
     if not ranges:
         file_map = svc.file_memory.get_or_build_map(rel_path)
-        map_tok = count_tokens(file_map)
-        resp = file_map
+        resp = (file_map
+                + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]")
+        map_tok = count_tokens(resp)
         return finalize_with_tokens(
             finalize, svc, "c3_read", {"file": file_path},
             resp, f"{full_file_tokens()}->{map_tok}tok",
@@ -278,13 +286,23 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         header = f"[read:{file_path}]"
 
     parts = []
+    prev_end = None
     for start, end in ranges:
         s_idx = max(0, start - 1)
         e_idx = min(len(content_lines), end)
         chunk = content_lines[s_idx:e_idx]
         if len(ranges) > 1:
-            parts.append(f"--- L{start}-L{end} ---")
+            # ⟦…⟧ markers are tool chrome, not file content. The gap note makes
+            # the discontinuity explicit so a copied old_string never spans it.
+            if prev_end is None:
+                parts.append(f"⟦L{start}-L{end}⟧")
+            else:
+                parts.append(
+                    f"⟦L{start}-L{end} — {start - prev_end - 1} lines "
+                    f"(L{prev_end + 1}-L{start - 1}) omitted; blocks are NOT "
+                    f"contiguous, never span this marker in a c3_edit old_string⟧")
         parts.extend(chunk)
+        prev_end = end
 
     final_content = "\n".join(parts)
     tokens = count_tokens(final_content)

@@ -8,6 +8,7 @@ Parallel safety:
 - Same file: serialized via per-file threading.Lock (_file_locks).
 - Same file, multiple hunks: use the `edits` batch parameter — one read/write cycle.
 """
+import difflib
 import json
 import threading
 from pathlib import Path
@@ -33,12 +34,16 @@ def _read_preserving_newlines(path: Path) -> tuple[str, str]:
     `newline` is the EOL to write back: ``\r\n`` if CRLF dominates the
     file, otherwise ``\n``. This avoids Python's text-mode write rewriting
     every line to ``os.linesep`` on Windows.
+
+    Decodes with errors="surrogateescape" so files containing non-UTF-8
+    bytes are still editable: invalid bytes round-trip losslessly through
+    _write_preserving_newlines instead of raising UnicodeDecodeError.
     """
     raw = path.read_bytes()
     crlf = raw.count(b"\r\n")
     lf_only = raw.count(b"\n") - crlf
     newline = "\r\n" if crlf > lf_only else "\n"
-    content = raw.decode("utf-8")
+    content = raw.decode("utf-8", errors="surrogateescape")
     # Normalize to \n internally so replacement matching is EOL-agnostic.
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     return content, newline
@@ -52,7 +57,8 @@ def _write_preserving_newlines(path: Path, content: str, newline: str) -> None:
     """
     if newline != "\n":
         content = content.replace("\n", newline)
-    with open(path, "w", encoding="utf-8", newline="") as fh:
+    with open(path, "w", encoding="utf-8", errors="surrogateescape",
+              newline="") as fh:
         fh.write(content)
 
 
@@ -66,8 +72,22 @@ _LOOKALIKE_TRANS = str.maketrans({
     "′": "'", "″": '"',                                 # prime / double prime
     "‐": "-", "‑": "-", "‒": "-", "–": "-",  # hyphen / dashes
     "—": "-", "―": "-", "−": "-",
-    " ": " ", " ": " ", " ": " ",                  # non-breaking / figure / narrow-nbsp
+    "\u00a0": " ", "\u2007": " ", "\u202f": " ",  # non-breaking / figure / narrow-nbsp
 })
+
+# Bytes that aren't valid UTF-8 decode to lone surrogates U+DC80-U+DCFF under
+# errors="surrogateescape" (how _read_preserving_newlines reads files), while
+# c3_read renders those same bytes as U+FFFD (errors="replace"). Fold both to
+# U+FFFD — 1:1 like the lookalikes — so an old_string copied from c3_read
+# output still matches file content around undecodable bytes.
+_SURROGATE_TRANS = {c: "\ufffd" for c in range(0xDC80, 0xDD00)}
+_LOOKALIKE_TRANS.update(_SURROGATE_TRANS)
+
+
+def _display_safe(s: str) -> str:
+    """Fold surrogateescape'd bytes to U+FFFD for error-message display —
+    lone surrogates cannot be encoded for MCP transport."""
+    return s.translate(_SURROGATE_TRANS) if s else s
 
 
 def _norm(s: str) -> str:
@@ -123,6 +143,81 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     if count > 1 and not replace_all:
         return (None, count, True)
     return (_positional_replace(content, nc, no, new, replace_all), count, True)
+
+
+def _closest_region(content: str, old: str,
+                    max_scan_lines: int = 40000, context: int = 2):
+    """Locate the file region most similar to a failed old_string.
+
+    Returns (start_line, end_line, region_text, ratio) — 1-based inclusive
+    line numbers, region padded with `context` lines each side — or None when
+    no region clears the similarity floor. Powers the 'closest match' payload
+    in not-found errors so a mismatched edit can be repaired without
+    re-reading the file (the moment agents historically drifted back to
+    native Read).
+    """
+    file_lines = content.split("\n")
+    old_lines = old.split("\n")
+    n, total = len(old_lines), len(file_lines)
+    if not old.strip() or total > max_scan_lines:
+        return None
+
+    # Anchor on old_string's most distinctive line, shortlist file lines that
+    # resemble it (cheap quick_ratio pass), then score full windows aligned
+    # to each shortlisted line (expensive ratio, capped at 8 candidates).
+    anchor_off, anchor_line = max(enumerate(old_lines),
+                                  key=lambda p: len(p[1].strip()))
+    anchor = anchor_line.strip()
+    sm = difflib.SequenceMatcher(autojunk=False)
+    sm.set_seq2(anchor)
+    scored = []
+    for i, line in enumerate(file_lines):
+        sm.set_seq1(line.strip())
+        if sm.real_quick_ratio() < 0.6:
+            continue
+        q = sm.quick_ratio()
+        if q >= 0.6:
+            scored.append((q, i))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: -t[0])
+
+    win = difflib.SequenceMatcher(autojunk=False)
+    win.set_seq2(old)
+    best_ratio, best_start = 0.0, None
+    for _, i in scored[:8]:
+        start = max(0, min(i - anchor_off, total - n))
+        win.set_seq1("\n".join(file_lines[start:start + n]))
+        r = win.ratio()
+        if r > best_ratio:
+            best_ratio, best_start = r, start
+    if best_start is None or best_ratio < 0.5:
+        return None
+    lo = max(0, best_start - context)
+    hi = min(total, best_start + n + context)
+    return lo + 1, hi, "\n".join(file_lines[lo:hi]), best_ratio
+
+
+_REGION_CAP = 4000
+
+
+def _not_found_payload(near, file_label: str) -> str:
+    """Render a _closest_region result as an error-message appendix. The
+    region text is emitted verbatim (no indentation) so it can be copied
+    straight into a retry old_string."""
+    if not near:
+        return ""
+    lo, hi, region, ratio = near
+    region = _display_safe(region)
+    if len(region) > _REGION_CAP:
+        region = (region[:_REGION_CAP]
+                  + f"\n⟦trimmed — run c3_read(file_path='{file_label}', "
+                  f"lines=[{lo},{hi}]) for the rest⟧")
+    return (f"\n  closest match: L{lo}-L{hi} ({ratio:.0%} similar). "
+            f"Actual file text between the markers:\n"
+            f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n"
+            f"  Retry with old_string copied exactly from the text above "
+            f"(markers excluded) — no need to re-read the file.")
 
 
 def handle_edit(file_path: str, old_string: str, new_string: str,
@@ -209,8 +304,10 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                                 f"Read error: {e}", "read error")
 
             results = []
+            statuses = []   # parallel to results: 'ok' | 'miss' | 'ambiguous' | 'skipped'
             any_normalized = False
             any_applied = False
+            first_miss = ""
             for i, patch in enumerate(edit_list):
                 old = patch.get("old_string", "")
                 new = patch.get("new_string", "")
@@ -219,15 +316,23 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
 
                 if not old:
                     results.append(f"  patch[{i}]: skipped — empty old_string")
+                    statuses.append("skipped")
                     continue
 
                 new_content, count, used_fallback = _apply_replacement(content, old, new, r_all)
                 if new_content is None and count == 0:
-                    results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}")
+                    near = _closest_region(content, old)
+                    loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
+                           if near else "")
+                    results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}{loc}")
+                    statuses.append("miss")
+                    if near and not first_miss:
+                        first_miss = _not_found_payload(near, file_path)
                     continue
                 if new_content is None:
                     tag = " (unicode-normalized)" if used_fallback else ""
                     results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches){tag} — {old[:60]!r}")
+                    statuses.append("ambiguous")
                     continue
 
                 content = new_content
@@ -243,6 +348,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                                 + (f" ({n}x)" if n > 1 else "")
                                 + (" [norm]" if used_fallback else "")
                                 + f" | {desc}")
+                statuses.append("ok")
 
             # Only touch the file when at least one patch actually changed it —
             # avoids rewriting (and re-EOL-normalizing) an unchanged file and
@@ -266,12 +372,17 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             ]}
             _log_to_ledger(rel, summary or f"Batch edit: {len(edit_list)} patches", tag_list, svc, detail=batch_detail)
 
-        applied = sum(1 for r in results if "NOT FOUND" not in r and "AMBIGUOUS" not in r and "skipped" not in r)
+        # Classify from the structured status list, not by substring-scanning
+        # the human-readable result lines — a patch *summary* containing words
+        # like 'NOT FOUND' used to be miscounted as a failure.
+        applied = statuses.count("ok")
         norm_tag = " [unicode-normalized]" if any_normalized else ""
         short = f"✓ {rel} — {applied}/{len(edit_list)} patches applied{norm_tag}"
         if applied < len(edit_list):
-            failed = [r for r in results if "NOT FOUND" in r or "AMBIGUOUS" in r or "skipped" in r]
+            failed = [r for r, s in zip(results, statuses) if s != "ok"]
             short += "\n" + "\n".join(failed)
+            if first_miss:
+                short += first_miss
         return finalize("c3_edit", {"file": file_path}, short,
                         f"{rel} patched ({len(edit_list)} patches)")
 
@@ -293,6 +404,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             hint = ""
             if _norm(old_string) != old_string or _norm(content) != content:
                 hint = "\n  hint: unicode-lookalike normalization also failed to match."
+            hint += _not_found_payload(_closest_region(content, old_string), file_path)
             return finalize("c3_edit", {"file": file_path},
                             f"old_string not found in {file_path}\n"
                             f"  searched for: {old_string[:120]!r}{hint}",
