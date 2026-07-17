@@ -4,6 +4,61 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.52.0] - 2026-07-17
+
+### Removed — BREAKING
+
+- **Gemini CLI IDE profile.** `gemini` is no longer a valid IDE for
+  `c3 init` / `c3 install-mcp`; use **Antigravity** instead (it reads
+  `AGENTS.md`, which takes precedence over `GEMINI.md`). Removed with it:
+  `GEMINI.md` generation, the Gemini terse-skill TOML
+  (`~/.gemini/commands/terse.toml`), Gemini hook installation
+  (`BeforeTool`/`AfterTool` + snake_case matchers), and the
+  `.gemini/settings.json` project/global config sync. Rolled out as
+  deprecate-then-remove within this release cycle: generation was first
+  IDE-gated and configs made refresh-only, then the profile was dropped.
+  Not affected: the **Gemini delegate backend**
+  (`c3_delegate(backend='gemini')`) is model offload, not IDE
+  integration, and is unchanged. Legacy support kept on purpose:
+  `.gemini` project markers auto-detect as Antigravity, `c3 uninstall`
+  still deletes stale `GEMINI.md` files and strips the `c3` entry from
+  legacy `.gemini/settings.json` (project + home), runtime hook shims
+  for Gemini payload shapes remain so existing installs keep working,
+  and `c3_artifacts` keeps tracking legacy `GEMINI.md` /
+  `.gemini/settings.json` files.
+
+### Added
+
+- **Antigravity as the first-class Google-stack profile.** The
+  `antigravity` profile now uses `AGENTS.md` as its instruction doc
+  (shared with Codex), Antigravity installs trigger session-config
+  sync, and codex installs on machines with Antigravity keep
+  `~/.gemini/antigravity/mcp_config.json` fresh as a global fallback.
+  The getting-started guide gained the previously missing Antigravity
+  install section.
+- **`c3_memory` recall timeout.** `recall`/`index`/`query` are wrapped
+  in a configurable timeout (`memory_retrieval_timeout_seconds`,
+  default 15s, clamped to 60s) and the semantic backends' lazy-init
+  lock is waited on for at most 0.25s on search paths — a cold or
+  wedged embedding backend degrades to keyword recall instead of
+  hanging the tool call.
+
+### Fixed
+
+- **`c3_shell` ledger capture for chained git commands.** Git mutations
+  are now detected inside `&&`/`;`/`|` chains (previously only at line
+  start), and the edit ledger diffs actual before/after git state
+  instead of probing `HEAD~1..HEAD`, so multi-command lines attribute
+  the right files.
+- **Windows hook crashes on non-ASCII output.** Hook entrypoints force
+  UTF-8 stdio (`ensure_utf8_stdio()`), fixing `UnicodeEncodeError`
+  ("Stop hook error") when hook output contained box-drawing characters
+  or emoji on cp1252 pipes.
+- **`c3_shell` robustness.** Structured exit-code 126/127 results when
+  the shell itself fails to launch, taskkill timeout with `proc.kill()`
+  fallback, POSIX process groups for clean tree kills, and a hint when
+  `jq` is missing from Git Bash (use `python -m json.tool`).
+
 ## [2.51.0] - 2026-07-03
 
 ### Added

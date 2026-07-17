@@ -87,5 +87,5 @@ Python (Modern)
 - Session summary (20260701): Decision: Deep 4-agent evaluation of C3 completed (tool surface, hooks, services, claims-vs-
 - Session summary (20260701): Files (modified): README.md, services/subprojects.py, services/project_manager.py, services/
 - [validate] U:\1. Projects\Claude Code Companion (C3)\claude-companion - v2\cli\hub_ui\components\toasts.js has syntax er
+- Sub-projects (v2.44.0): three-way link — parent config subprojects[] (POSIX rel_path = source of truth), child config pa
 - Hub v2 (v2.44.0): cli/hub_ui.html + cli/hub_ui/ 22-file concat bundle served at / (hub.html frozen at /legacy until v2.4
-- Session summary (20260703): Files (modified): cli/tools/edit.py, cli/tools/read.py, tests/test_read_edit_parity.py, C:\U
