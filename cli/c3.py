@@ -5415,6 +5415,8 @@ def cmd_install_mcp(args):
 
     # â”€â”€ Gemini settings.json enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if profile.name == "gemini":
+        print("Note: the Gemini CLI profile is deprecated — prefer Antigravity")
+        print("  (reads AGENTS.md; run `c3 install-mcp antigravity`).")
         # Warn about a common conflict: global Gemini config pointing elsewhere.
         global_gemini_cfg = Path.home() / ".gemini" / "settings.json"
         if global_gemini_cfg.exists():
