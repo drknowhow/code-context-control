@@ -215,6 +215,10 @@ C3 exposes 18 tools as a native MCP server. Your IDE calls them directly:
 | `c3_task` | Durable per-project tasks, milestones, and decision notes (v2.45.0) |
 | `c3_artifacts` | Agent-config tracking — version history, diff & restore for CLAUDE.md, settings/hooks, MCP configs, skills (v2.46.0) |
 
+On Windows, `c3_shell` uses Git Bash when available. Git Bash does not bundle
+optional utilities such as `jq`; use `python -m json.tool` for portable JSON
+formatting, or install `jq` separately when filter expressions are required.
+
 Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_project` / `c3_task`).
 
 ### Bitbucket Data Center / Server (v2.30.0)

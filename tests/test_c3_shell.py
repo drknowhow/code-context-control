@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -179,12 +182,79 @@ class TestShellLogging(unittest.TestCase):
     def test_git_mutating_triggers_ledger_probe(self):
         svc, _, ledger = _fake_svc(Path.cwd())
         commit_result = {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 5, "timed_out": False}
-        probe_result = {"exit_code": 0, "stdout": "a.py\nb.py\n", "stderr": "", "duration_ms": 2, "timed_out": False}
-        with patch.object(shell_mod, "_run_sync", side_effect=[commit_result, probe_result]):
+        before = {
+            "is_repo": True, "head": "a" * 40,
+            "entries": {"a.py": "M "}, "files": {"a.py"},
+        }
+        after = {
+            "is_repo": True, "head": "b" * 40,
+            "entries": {}, "files": set(),
+        }
+        with patch.object(shell_mod, "_run_sync", return_value=commit_result), \
+             patch.object(shell_mod, "_capture_git_state", side_effect=[before, after]), \
+             patch.object(shell_mod, "_git_head_diff", return_value={"a.py", "b.py"}):
             _run(shell_mod.handle_shell("git commit -m msg", "", 10, False, True, svc, _finalize_passthrough))
         self.assertEqual(len(ledger), 2)
         self.assertEqual({e["file"] for e in ledger}, {"a.py", "b.py"})
         self.assertTrue(all(e["change_type"] == "shell_git" for e in ledger))
+
+    def test_git_add_logs_worktree_snapshot_without_head_change(self):
+        svc, _, ledger = _fake_svc(Path.cwd())
+        result = {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+        before = {
+            "is_repo": True, "head": "a" * 40,
+            "entries": {"new.txt": "??", "other.py": " M"},
+            "files": {"new.txt", "other.py"},
+        }
+        after = {
+            "is_repo": True, "head": "a" * 40,
+            "entries": {"new.txt": "A ", "other.py": " M"},
+            "files": {"new.txt", "other.py"},
+        }
+        with patch.object(shell_mod, "_capture_git_state", return_value=after), \
+             patch.object(shell_mod, "_git_head_diff", return_value=set()):
+            files = shell_mod._maybe_refresh_ledger(
+                "git add new.txt", result, svc, before=before)
+        self.assertEqual(files, ["new.txt"])
+        self.assertEqual([entry["file"] for entry in ledger], ["new.txt"])
+
+    def test_chained_git_mutation_is_detected(self):
+        self.assertIsNotNone(shell_mod._GIT_MUTATING.search("cd src && git add app.py"))
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_real_git_add_logs_only_changed_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=root, check=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8",
+                )
+
+            git("init", "-q")
+            git("config", "user.email", "c3@example.invalid")
+            git("config", "user.name", "C3 Test")
+            (root / "base.txt").write_text("base\n", encoding="utf-8")
+            (root / "other.py").write_text("before\n", encoding="utf-8")
+            git("add", "base.txt", "other.py")
+            git("commit", "-qm", "base")
+            (root / "other.py").write_text("dirty\n", encoding="utf-8")
+            (root / "new.txt").write_text("new\n", encoding="utf-8")
+
+            before = shell_mod._capture_git_state(str(root))
+            git("add", "new.txt")
+            svc, _, ledger = _fake_svc(root)
+            result = {
+                "exit_code": 0, "stdout": "", "stderr": "",
+                "duration_ms": 1, "timed_out": False,
+            }
+            files = shell_mod._maybe_refresh_ledger(
+                "git add new.txt", result, svc, before=before, cwd=str(root))
+
+        self.assertEqual(files, ["new.txt"])
+        self.assertEqual([entry["file"] for entry in ledger], ["new.txt"])
 
     def test_non_git_command_skips_ledger(self):
         svc, _, ledger = _fake_svc(Path.cwd())
@@ -196,7 +266,12 @@ class TestShellLogging(unittest.TestCase):
     def test_failed_git_command_skips_ledger(self):
         svc, _, ledger = _fake_svc(Path.cwd())
         fake = {"exit_code": 1, "stdout": "", "stderr": "nope\n", "duration_ms": 1, "timed_out": False}
-        with patch.object(shell_mod, "_run_sync", return_value=fake):
+        state = {
+            "is_repo": True, "head": "a" * 40,
+            "entries": {}, "files": set(),
+        }
+        with patch.object(shell_mod, "_run_sync", return_value=fake), \
+             patch.object(shell_mod, "_capture_git_state", return_value=state):
             _run(shell_mod.handle_shell("git commit -m x", "", 10, False, True, svc, _finalize_passthrough))
         self.assertEqual(ledger, [])
 
@@ -284,6 +359,30 @@ class TestShellSelection(unittest.TestCase):
             shell_mod._run_sync("echo hi", ".", 5)
         self.assertEqual(_FakePopen.last_args[0], "echo hi")
         self.assertIs(_FakePopen.last_kwargs["shell"], True)
+
+    def test_posix_subprocess_starts_new_session(self):
+        with patch.object(shell_mod.sys, "platform", "linux"), \
+                patch.object(shell_mod.subprocess, "Popen", _FakePopen):
+            shell_mod._run_sync("echo hi", ".", 5)
+        self.assertIs(_FakePopen.last_kwargs["start_new_session"], True)
+
+    def test_spawn_failure_returns_structured_result(self):
+        with patch.object(shell_mod, "_select_bash", return_value=None), \
+                patch.object(shell_mod.subprocess, "Popen",
+                             side_effect=NotADirectoryError("bad cwd")):
+            result = shell_mod._run_sync("echo hi", "missing", 5)
+        self.assertEqual(result["exit_code"], 126)
+        self.assertIn("NotADirectoryError", result["stderr"])
+        self.assertFalse(result["timed_out"])
+
+    def test_missing_jq_gets_portable_hint(self):
+        result = {
+            "exit_code": 127,
+            "stderr": "bash: jq: command not found",
+            "shell": "git-bash",
+        }
+        hint = shell_mod._dependency_hint("curl http://localhost | jq .", result)
+        self.assertIn("python -m json.tool", hint)
 
 
 if __name__ == "__main__":

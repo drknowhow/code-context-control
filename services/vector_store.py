@@ -19,6 +19,7 @@ SLTM_CATEGORIES = [
     "code_notes",
     "general",
 ]
+_SEARCH_INIT_WAIT_SECONDS = 0.25
 
 
 class VectorStore:
@@ -51,20 +52,29 @@ class VectorStore:
         self._initialized = False
         self._init_lock = threading.Lock()
 
-    def _ensure_ready(self):
+    def _ensure_ready(self, wait_timeout: float | None = None) -> bool:
         """Lazily init chromadb/ollama backends + fallback data on first use.
 
         Deferred from __init__ so build_runtime (and the MCP handshake) stays
         fast. Idempotent and thread-safe via double-checked locking.
         """
         if self._initialized:
-            return
-        with self._init_lock:
+            return True
+        if wait_timeout is None:
+            acquired = self._init_lock.acquire()
+        else:
+            acquired = self._init_lock.acquire(timeout=max(0.0, wait_timeout))
+        if not acquired:
+            return False
+        try:
             if self._initialized:
-                return
+                return True
             self._init_backends()
             self._load_fallback()
             self._initialized = True
+            return True
+        finally:
+            self._init_lock.release()
 
     def warm(self):
         """Pre-initialize backends (used for background warm-up)."""
@@ -157,7 +167,13 @@ class VectorStore:
         }
 
     def search(self, query: str, category: str = "", top_k: int = 5) -> list[dict]:
-        self._ensure_ready()
+        try:
+            wait_timeout = float(self.config.get(
+                "backend_init_wait_seconds", _SEARCH_INIT_WAIT_SECONDS))
+        except (TypeError, ValueError):
+            wait_timeout = _SEARCH_INIT_WAIT_SECONDS
+        if not self._ensure_ready(wait_timeout=wait_timeout):
+            return []
         categories = [category] if category and category in SLTM_CATEGORIES else list(SLTM_CATEGORIES)
         allowed = set(categories)
 

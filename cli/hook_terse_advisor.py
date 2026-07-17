@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cli._hook_utils import log_hook_error  # noqa: E402
+from cli._hook_utils import ensure_utf8_stdio, log_hook_error  # noqa: E402
 
 _STATE_FILE = Path.home() / ".c3" / "terse_advisor.json"
 _VERBOSE_THRESHOLD = 600   # chars of assistant text that counts as "verbose"
@@ -182,6 +182,8 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
 
 
 def main() -> None:
+    # The nudge's "─" divider can't encode on Windows' default cp1252 pipe.
+    ensure_utf8_stdio()
     try:
         data = json.load(sys.stdin)
     except Exception as exc:

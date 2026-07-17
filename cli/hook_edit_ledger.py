@@ -19,7 +19,12 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from cli._hook_utils import get_tool_input_path, log_hook_error, normalize_tool_name  # noqa: E402
+from cli._hook_utils import (  # noqa: E402
+    ensure_utf8_stdio,
+    get_tool_input_path,
+    log_hook_error,
+    normalize_tool_name,
+)
 from core.config import load_hybrid_config  # noqa: E402
 
 EDITABLE_EXTS = {
@@ -217,6 +222,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
 
 
 def main():
+    ensure_utf8_stdio()
     try:
         raw = sys.stdin.read()
         if not raw.strip():

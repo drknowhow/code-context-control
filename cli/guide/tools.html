@@ -611,7 +611,7 @@ c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
                 <td class="param-name">cmd</td>
                 <td class="param-type">string</td>
                 <td class="param-default">required</td>
-                <td class="param-desc">Shell command to execute (runs via <code>subprocess.Popen(shell=True)</code>)</td>
+                <td class="param-desc">Shell command to execute (Git Bash on Windows when available; otherwise the platform default shell)</td>
               </tr>
               <tr>
                 <td class="param-name">cwd</td>
@@ -648,7 +648,10 @@ c3_shell(cmd=<span class="str">'pytest tests/test_c3_shell.py -v'</span>)
 c3_shell(cmd=<span class="str">'git commit -m "wire c3_shell"'</span>)
 
 <span class="com"># Build with a longer timeout</span>
-c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str">300</span>)</code></pre>
+c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str">300</span>)
+
+<span class="com"># Portable JSON formatting — Git Bash may not include jq</span>
+c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m json.tool'</span>)</code></pre>
 
           <h4>Safety classification</h4>
           <div class="tag-row">
@@ -661,7 +664,7 @@ c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str"
           <div class="callout callout-tip">
             <span class="callout-icon">💡</span>
             <div class="callout-body">
-              Prefer <code>c3_shell</code> over native <code>Bash</code> for anything noisy, git-mutating, or long-running. You get structured returns, consistent Windows timeout behaviour, free output filtering, and ledger coupling. Fall back to native <code>Bash</code> only for interactive / TTY commands.
+              Prefer <code>c3_shell</code> over native <code>Bash</code> for anything noisy, git-mutating, or long-running. You get structured returns, consistent timeout behaviour, free output filtering, and ledger coupling. Git Bash does not guarantee optional utilities such as <code>jq</code>; use Python's stdlib JSON tools for portable commands. Fall back to native <code>Bash</code> only for interactive / TTY commands.
             </div>
           </div>
         </div>

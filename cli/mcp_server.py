@@ -464,8 +464,25 @@ async def c3_memory(action: str, query: str = "", fact: str = "",
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    return await asyncio.to_thread(handle_memory, action, query, fact, category, top_k, svc, finalize,
-                                   fact_id=fact_id, include_scores=include_scores, scope=scope)
+    call = asyncio.to_thread(
+        handle_memory, action, query, fact, category, top_k, svc, finalize,
+        fact_id=fact_id, include_scores=include_scores, scope=scope,
+    )
+    if action not in {"recall", "index", "query"}:
+        return await call
+    try:
+        configured = float((svc.hybrid_config or {}).get(
+            "memory_retrieval_timeout_seconds", 15))
+    except (TypeError, ValueError):
+        configured = 15.0
+    timeout = max(0.1, min(configured, 60.0))
+    try:
+        return await asyncio.wait_for(call, timeout=timeout)
+    except asyncio.TimeoutError:
+        return (
+            f"[memory:timeout] {action} exceeded {timeout:g}s; "
+            "semantic backends may still be warming, so other tools remain available"
+        )
 
 
 @mcp.tool()
@@ -688,7 +705,8 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
     Best-effort block of catastrophic commands (rm -rf of /, a top-level system dir, or
     $HOME/~; fork bombs; whole-drive wipes) — a guard, NOT a sandbox. Soft-warns on
     --force, --no-verify, reset --hard.
-    Native Bash remains the fallback for interactive/TTY commands."""
+    Git Bash may not include optional tools such as jq; use `python -m json.tool`
+    for portable JSON formatting. Native Bash remains the fallback for interactive/TTY commands."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):

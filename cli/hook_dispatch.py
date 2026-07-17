@@ -235,6 +235,9 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
 
 
 def main() -> None:
+    # Windows hook subprocesses get cp1252 pipes; sub-hook _text may carry
+    # box-drawing chars / emoji, so print(text) below would UnicodeEncodeError.
+    _hook_utils.ensure_utf8_stdio()
     event = sys.argv[1].strip().lower() if len(sys.argv) > 1 else ""
     if event not in VALID_EVENTS:
         log_hook_error(

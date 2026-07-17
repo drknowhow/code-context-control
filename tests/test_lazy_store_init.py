@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -71,6 +73,32 @@ class TestLazyStoreInit(unittest.TestCase):
         self.assertFalse(vs._initialized)
         vs.warm()
         self.assertTrue(vs._initialized)
+
+    def test_vector_search_does_not_block_behind_warmup(self):
+        vs = VectorStore(str(self.project), config={
+            "disable_vector_backend": True,
+            "backend_init_wait_seconds": 0.01,
+        })
+        vs._init_lock.acquire()
+        try:
+            started = time.monotonic()
+            self.assertEqual(vs.search("anything"), [])
+            self.assertLess(time.monotonic() - started, 0.2)
+            self.assertFalse(vs._initialized)
+        finally:
+            vs._init_lock.release()
+
+    def test_embedding_search_does_not_block_behind_build(self):
+        ei = EmbeddingIndex(str(self.project), _StubOllama())
+        ei._init_lock.acquire()
+        try:
+            started = time.monotonic()
+            with patch("services.embedding_index._SEARCH_INIT_WAIT_SECONDS", 0.01):
+                self.assertEqual(ei.search("anything"), [])
+            self.assertLess(time.monotonic() - started, 0.2)
+            self.assertFalse(ei._initialized)
+        finally:
+            ei._init_lock.release()
 
 
 if __name__ == "__main__":

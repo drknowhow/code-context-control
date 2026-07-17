@@ -33,6 +33,28 @@ LEGACY_UNLOCK_FILE = ".c3/unlocked_files.json"
 STATE_WARNINGS: list = []
 
 
+def ensure_utf8_stdio() -> None:
+    """Force UTF-8 on the hook process's stdio pipes.
+
+    On Windows a hook subprocess gets cp1252 stdout/stdin (piped, non-TTY),
+    so printing user-visible text containing box-drawing chars ("─") or emoji
+    raises UnicodeEncodeError and surfaces as a "Stop hook error" in the IDE.
+    Claude Code reads hook stdout as UTF-8. Call this at the top of every
+    entrypoint that prints raw (non-json.dumps) text. Never raises.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+    except Exception:
+        pass
+
+
 def log_hook_error(hook_name: str, exc: BaseException) -> None:
     """Append a timestamped error entry to .c3/hook_errors.log.
 

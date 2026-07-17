@@ -11,7 +11,8 @@ tool (forward-slash paths, single quotes, `$VAR`, ls/grep/cat, heredocs). This
 avoids the cmd.exe/POSIX mismatch that forced callers to fall back to native
 Bash for bash-flavored commands. Set C3_SHELL_BASH=0 to force cmd.exe, or point
 C3_SHELL_BASH at a specific bash.exe to override discovery. POSIX platforms are
-unchanged (shell=True → /bin/sh).
+unchanged (shell=True → /bin/sh). Git Bash does not bundle optional tools
+such as jq; use Python's stdlib JSON support when portability matters.
 """
 from __future__ import annotations
 
@@ -29,7 +30,9 @@ from core import count_tokens
 
 # Commands that mutate repo state — trigger edit-ledger refresh after success.
 _GIT_MUTATING = re.compile(
-    r"^\s*git\s+(commit|add|mv|rm|merge|rebase|cherry-pick|revert|reset|restore|checkout)\b"
+    r"(?:^|&&|\|\||[;|])\s*git\s+"
+    r"(commit|add|mv|rm|merge|rebase|cherry-pick|revert|reset|restore|checkout)\b",
+    re.IGNORECASE,
 )
 # Hard deny — the handful of genuinely catastrophic, irreversible commands.
 # This is a BEST-EFFORT guard, NOT a sandbox: c3_shell runs arbitrary commands
@@ -66,6 +69,7 @@ _SOFT_WARN = re.compile(
 _DEFAULT_TIMEOUT = 60
 _MAX_TIMEOUT = 600
 _FILTER_THRESHOLD_LINES = 30
+_JQ_INVOCATION = re.compile(r"(?:^|&&|\|\||[;|(])\s*jq(?:\s|$)", re.IGNORECASE)
 
 
 # Cache for discovered Git Bash path: [] = uncomputed, [None]/[path] = computed.
@@ -130,21 +134,36 @@ def _popen_kwargs() -> dict:
     kw: dict = {"stdin": subprocess.DEVNULL, "env": env}
     if sys.platform == "win32":
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    else:
+        kw["start_new_session"] = True
     return kw
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        try:
+            killed = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=5,
+            )
+            if killed.returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
     else:
         try:
             os.killpg(os.getpgid(proc.pid), 9)
         except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
 
 def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
@@ -159,12 +178,23 @@ def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
         # Platform default: cmd.exe on Windows, /bin/sh on POSIX.
         popen_target = cmd
         use_shell = True
-    proc = subprocess.Popen(
-        popen_target, shell=use_shell, cwd=cwd,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace",
-        **_popen_kwargs(),
-    )
+    shell_name = "git-bash" if bash else ("cmd" if sys.platform == "win32" else "sh")
+    try:
+        proc = subprocess.Popen(
+            popen_target, shell=use_shell, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            **_popen_kwargs(),
+        )
+    except (OSError, ValueError) as exc:
+        return {
+            "exit_code": 127 if isinstance(exc, FileNotFoundError) else 126,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+            "duration_ms": round((time.time() - start) * 1000),
+            "timed_out": False,
+            "shell": shell_name,
+        }
     timed_out = False
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -182,19 +212,88 @@ def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
         "stderr": stderr or "",
         "duration_ms": round((time.time() - start) * 1000),
         "timed_out": timed_out,
+        "shell": shell_name,
     }
 
 
-def _maybe_refresh_ledger(cmd: str, result: dict, svc) -> list[str]:
+def _parse_porcelain_entries(output: str) -> dict[str, str]:
+    records = output.split("\0")
+    entries: dict[str, str] = {}
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        status = record[:2]
+        path = record[3:]
+        if path:
+            entries[path.replace("\\", "/")] = status
+        if ("R" in status or "C" in status) and index < len(records):
+            original = records[index]
+            index += 1
+            if original:
+                entries[original.replace("\\", "/")] = f"{status}:source"
+    return entries
+
+
+def _capture_git_state(cwd: str) -> dict:
+    status = _run_sync("git status --porcelain=v1 -z --untracked-files=all", cwd, timeout=5)
+    if status["exit_code"] != 0:
+        return {"is_repo": False, "head": "", "entries": {}, "files": set()}
+    head = _run_sync("git rev-parse --verify HEAD", cwd, timeout=5)
+    entries = _parse_porcelain_entries(status["stdout"])
+    return {
+        "is_repo": True,
+        "head": head["stdout"].strip() if head["exit_code"] == 0 else "",
+        "entries": entries,
+        "files": set(entries),
+    }
+
+
+def _git_head_diff(before: dict, after: dict, cwd: str) -> set[str]:
+    old_head = before.get("head", "")
+    new_head = after.get("head", "")
+    if old_head == new_head or not new_head:
+        return set()
+    if old_head:
+        cmd = f"git diff --name-only -z {old_head} {new_head}"
+    else:
+        cmd = f"git diff-tree --root --no-commit-id --name-only -r -z {new_head}"
+    diff = _run_sync(cmd, cwd, timeout=5)
+    if diff["exit_code"] != 0:
+        return set()
+    return {path.replace("\\", "/") for path in diff["stdout"].split("\0") if path}
+
+
+def _maybe_refresh_ledger(cmd: str, result: dict, svc, before: dict | None = None,
+                          cwd: str = "") -> list[str]:
     """If git mutated state, capture affected files for the edit ledger."""
-    if result["exit_code"] != 0 or not _GIT_MUTATING.match(cmd):
+    if result["exit_code"] != 0 or not _GIT_MUTATING.search(cmd):
         return []
     if not getattr(svc, "edit_ledger", None):
         return []
     try:
-        probe = _run_sync("git diff --name-only HEAD~1..HEAD", svc.project_path, timeout=5)
-        files = [f.strip() for f in probe["stdout"].splitlines() if f.strip()]
-        for f in files[:20]:
+        before = before or {
+            "is_repo": False, "head": "", "entries": {}, "files": set()}
+        git_cwd = cwd or svc.project_path
+        after = _capture_git_state(git_cwd)
+        if not before.get("is_repo") and not after.get("is_repo"):
+            return []
+        before_entries = before.get("entries")
+        after_entries = after.get("entries")
+        if before_entries is not None and after_entries is not None:
+            changed = {
+                path
+                for path in set(before_entries) | set(after_entries)
+                if before_entries.get(path) != after_entries.get(path)
+            }
+        else:
+            changed = set(before.get("files") or ()) | set(after.get("files") or ())
+        if before.get("is_repo") and after.get("is_repo"):
+            changed.update(_git_head_diff(before, after, git_cwd))
+        files = sorted(changed)[:20]
+        for f in files:
             try:
                 svc.edit_ledger.log_edit(
                     file=f,
@@ -207,6 +306,19 @@ def _maybe_refresh_ledger(cmd: str, result: dict, svc) -> list[str]:
         return files
     except Exception:
         return []
+
+
+def _dependency_hint(cmd: str, result: dict) -> str:
+    if result.get("exit_code") != 127 or not _JQ_INVOCATION.search(cmd):
+        return ""
+    stderr = (result.get("stderr") or "").lower()
+    if "jq" not in stderr and result.get("shell") != "git-bash":
+        return ""
+    return (
+        "jq is not bundled with Git Bash. For portable JSON formatting use "
+        "`python -m json.tool`; for field extraction use Python's `json` module, "
+        "or install jq separately."
+    )
 
 
 # git diagnostics whose output the caller almost always needs verbatim — never
@@ -264,6 +376,11 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
 
     ghost_root = Path(work_cwd)
     _ghosts_before = _list_root_files(ghost_root)
+    git_before = (
+        _capture_git_state(work_cwd)
+        if log and _GIT_MUTATING.search(cmd)
+        else None
+    )
 
     result = await asyncio.to_thread(_run_sync, cmd, work_cwd, timeout)
 
@@ -287,7 +404,8 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
 
     touched_files: list[str] = []
     if log:
-        touched_files = _maybe_refresh_ledger(cmd, result, svc)
+        touched_files = _maybe_refresh_ledger(
+            cmd, result, svc, before=git_before, cwd=work_cwd)
         if getattr(svc, "activity_log", None):
             try:
                 svc.activity_log.log("shell_exec", {
@@ -320,6 +438,9 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
     )
     if result["stderr"].strip():
         body += f"--- stderr ---\n{result['stderr'].rstrip()}\n"
+    dependency_hint = _dependency_hint(cmd, result)
+    if dependency_hint:
+        body += f"--- hint ---\n{dependency_hint}\n"
     if touched_files:
         body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
     if swept_ghosts:

@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 log = logging.getLogger("c3.embedding_index")
+_SEARCH_INIT_WAIT_SECONDS = 0.25
 
 
 class EmbeddingIndex:
@@ -50,20 +51,29 @@ class EmbeddingIndex:
 
     # ── Backend init ──────────────────────────────────────
 
-    def _ensure_ready(self):
+    def _ensure_ready(self, wait_timeout: float | None = None) -> bool:
         """Lazily init chromadb/ollama backends + file hashes on first use.
 
         Deferred from __init__ so build_runtime (and the MCP handshake) stays
         fast. Idempotent and thread-safe via double-checked locking.
         """
         if self._initialized:
-            return
-        with self._init_lock:
+            return True
+        if wait_timeout is None:
+            acquired = self._init_lock.acquire()
+        else:
+            acquired = self._init_lock.acquire(timeout=max(0.0, wait_timeout))
+        if not acquired:
+            return False
+        try:
             if self._initialized:
-                return
+                return True
             self._init_backends()
             self._load_hashes()
             self._initialized = True
+            return True
+        finally:
+            self._init_lock.release()
 
     def warm(self):
         """Pre-initialize backends (used for background warm-up)."""
@@ -284,7 +294,8 @@ class EmbeddingIndex:
 
         Returns list of dicts with: file, lines, name, type, content, score, tokens.
         """
-        self._ensure_ready()
+        if not self._ensure_ready(wait_timeout=_SEARCH_INIT_WAIT_SECONDS):
+            return []
         if not self.ready or not self._collection or self._collection.count() == 0:
             return []
 
