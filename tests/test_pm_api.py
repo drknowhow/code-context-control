@@ -145,6 +145,21 @@ class TestTaskMutations(PmApiBase):
         self.assertEqual(events[0]["patch"]["priority"], ["p2", "p0"])
         self.assertEqual(events[-1]["op"], "create")
 
+    def test_deps_and_report_endpoints(self):
+        store = TaskStore(str(self.proj))
+        a = store.create_task("a")
+        b = store.create_task("b")
+        resp = self.client.post("/api/projects/pm/deps", json={
+            "path": str(self.proj), "id": a["id"], "blocker": b["id"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["task"]["blocked_by"], [b["id"]])
+        resp = self.client.post("/api/projects/pm/deps", json={
+            "path": str(self.proj), "id": b["id"], "blocker": a["id"]})
+        self.assertEqual(resp.status_code, 400)  # would cycle
+        resp = self.client.get(f"/api/projects/pm/report?path={self.proj}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("throughput", resp.get_json()["report"])
+
 
 class TestMilestoneNoteLink(PmApiBase):
     def test_milestone_lifecycle(self):

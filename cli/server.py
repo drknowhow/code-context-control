@@ -1335,6 +1335,32 @@ def api_pm_events():
         limit=limit)})
 
 
+@app.route('/api/pm/deps', methods=["POST"])
+def api_pm_deps():
+    """Add/remove a blocked-by dependency: {id, blocker, op: add|remove}."""
+    data = request.get_json(force=True) or {}
+    task_id = (data.get("id") or "").strip()
+    blocker = (data.get("blocker") or "").strip()
+    op = (data.get("op") or "add").strip()
+    if not task_id or not blocker:
+        return jsonify({"error": "id and blocker are required"}), 400
+    if op not in ("add", "remove"):
+        return jsonify({"error": "op must be add|remove"}), 400
+    store = _task_store()
+    res = (store.add_dependency(task_id, blocker, actor="ui") if op == "add"
+           else store.remove_dependency(task_id, blocker, actor="ui"))
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("deps", op, res["id"])
+    return jsonify({"task": res})
+
+
+@app.route('/api/pm/report', methods=["GET"])
+def api_pm_report():
+    """PM health report: overdue, blocked chains, ready, milestones, throughput."""
+    return jsonify(_task_store().report())
+
+
 # ─── API: Agent artifacts (config tracking) ──────────────
 def _artifact_store():
     store = artifact_store or getattr(runtime, "artifact_store", None)

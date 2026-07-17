@@ -1,8 +1,10 @@
 """c3_task — durable per-project tasks, milestones, and decision notes."""
 
-READ_ACTIONS = {"list", "get", "board", "history", "milestone_list", "note_list"}
+READ_ACTIONS = {"list", "get", "board", "history", "report",
+                "milestone_list", "note_list"}
 
-_TASK_ACTIONS = ("add, update, done, list, get, board, history, archive, link, unlink, "
+_TASK_ACTIONS = ("add, update, done, list, get, board, history, report, archive, "
+                 "block, unblock, link, unlink, "
                  "milestone_add, milestone_update, milestone_list, milestone_archive, "
                  "note_add, note_list")
 
@@ -17,7 +19,7 @@ def _fmt_task(t) -> str:
 def handle_task(action, svc, finalize, *, title="", task_id="", status="",
                 priority="", due_date="", tags="", description="", milestone="",
                 note="", kind="", link_type="", ref="", label="", name="",
-                target_date="", query="", limit=50) -> str:
+                target_date="", query="", limit=50, parent="") -> str:
     action = (action or "").strip().lower()
 
     def done_resp(resp, summ="ok"):
@@ -56,7 +58,7 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
         res = store.create_task(
             title, description=description, status=status or "backlog",
             priority=priority or "p2", due_date=due_date or None,
-            tags=tag_list, milestone_id=ms_id,
+            tags=tag_list, milestone_id=ms_id, parent_id=(parent or None),
             created_by="mcp", origin_session=session.get("id", ""))
         if "error" in res:
             return done_resp(f"[task:error] {res['error']}", "error")
@@ -88,6 +90,9 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
                 if err:
                     return done_resp(err, "error")
                 fields["milestone_id"] = ms_id
+            if parent:
+                fields["parent_id"] = (None if parent.lower() in ("none", "-")
+                                       else parent)
             if not fields:
                 return done_resp("[task:error] update requires at least one field "
                                  "(status/priority/due_date/description/title/tags/milestone).",
@@ -96,8 +101,11 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
         if "error" in res:
             return done_resp(f"[task:error] {res['error']}", "error")
         mark = "done" if res["status"] == "done" else "updated"
+        extra = (f" — released {len(res['released'])} dependent(s): "
+                 + ", ".join(r[:8] for r in res["released"])
+                 if res.get("released") else "")
         return done_resp(f"[task:{mark}] {res['id'][:8]} \"{res['title']}\" "
-                         f"({res['priority']}, {res['status']})", mark)
+                         f"({res['priority']}, {res['status']}){extra}", mark)
 
     if action == "archive":
         if not task_id:
@@ -120,6 +128,11 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
             lines.append(f"  tags: {', '.join(t['tags'])}")
         if t.get("milestone_id"):
             lines.append(f"  milestone: {t['milestone_id']}")
+        if t.get("parent_id"):
+            lines.append(f"  parent: {t['parent_id'][:8]}")
+        if t.get("blocked_by"):
+            lines.append("  blocked_by: "
+                         + ", ".join(d[:8] for d in t["blocked_by"]))
         if t.get("description"):
             lines.append(f"  {t['description'][:400]}")
         for link in t.get("links", []):
@@ -181,6 +194,48 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
             lines.append(f"  {when} r{ev.get('rev', '?')} {ev.get('entity')}."
                          f"{ev.get('op')} {(ev.get('id') or '')[:8]}{who} {detail}")
         return done_resp("\n".join(lines), f"{len(rows)}e")
+
+    if action in ("block", "unblock"):
+        if not task_id or not ref:
+            return done_resp(f"[task:error] {action} requires task_id and ref "
+                             "(the blocking task id).", "error")
+        res = (store.add_dependency(task_id, ref, actor="mcp")
+               if action == "block"
+               else store.remove_dependency(task_id, ref, actor="mcp"))
+        if "error" in res:
+            return done_resp(f"[task:error] {res['error']}", "error")
+        deps = ", ".join(d[:8] for d in res.get("blocked_by") or []) or "none"
+        return done_resp(f"[task:{action}ed] {res['id'][:8]} blocked_by: {deps}",
+                         action)
+
+    if action == "report":
+        rep = store.report()
+        s = rep["stats"]
+        lines = [f"[task:report] {rep['generated']} open:{s['open']} "
+                 f"overdue:{len(rep['overdue'])} blocked:{len(rep['blocked'])} "
+                 f"ready:{len(rep['ready'])}"]
+        for r in rep["overdue"][:10]:
+            lines.append(f"  OVERDUE {r['days_overdue']}d ({r['priority']}) "
+                         f"{r['id'][:8]} {r['title']} due:{r['due_date']}")
+        for r in rep["blocked"][:10]:
+            chain = ", ".join(b["title"] for b in r["blockers"][:3])
+            lines.append(f"  BLOCKED {r['days_blocked']}d {r['id'][:8]} "
+                         f"{r['title']} <- {chain}")
+        for r in rep["ready"][:10]:
+            lines.append(f"  READY {r['id'][:8]} {r['title']} "
+                         "(no open blockers)")
+        for m in rep["milestones"]:
+            p = m["progress"]
+            risk = " AT-RISK" if m["at_risk"] else ""
+            target = f" target:{m['target_date']}" if m["target_date"] else ""
+            lines.append(f"  MS {m['name']} {p['done']}/{p['total']} "
+                         f"({p['pct']}%){target} overdue:{m['overdue']}{risk}")
+        tp = rep["throughput"]
+        cyc = (f" avg-cycle:{tp['avg_cycle_days']}d"
+               if tp["avg_cycle_days"] is not None else "")
+        lines.append(f"  throughput: {tp['done_last_7d']}/7d "
+                     f"{tp['done_last_30d']}/30d{cyc}")
+        return done_resp("\n".join(lines), f"{len(rep['overdue'])}od")
 
     if action in ("link", "unlink"):
         if not task_id or not link_type or not ref:

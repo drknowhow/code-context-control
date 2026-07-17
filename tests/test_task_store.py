@@ -404,5 +404,106 @@ class TestHistory(TaskStoreBase):
             ts_mod._MIGRATIONS.pop(0, None)
 
 
+class TestDependencies(TaskStoreBase):
+    def test_block_unblock_roundtrip_and_dedupe(self):
+        a = self.store.create_task("a")
+        b = self.store.create_task("b")
+        res = self.store.add_dependency(a["id"], b["id"])
+        self.assertEqual(res["blocked_by"], [b["id"]])
+        res = self.store.add_dependency(a["id"], b["id"])  # idempotent
+        self.assertEqual(res["blocked_by"], [b["id"]])
+        res = self.store.remove_dependency(a["id"], b["id"])
+        self.assertEqual(res["blocked_by"], [])
+
+    def test_self_and_cycle_rejected(self):
+        a = self.store.create_task("a")
+        b = self.store.create_task("b")
+        c = self.store.create_task("c")
+        self.assertIn("error", self.store.add_dependency(a["id"], a["id"]))
+        self.store.add_dependency(b["id"], a["id"])
+        self.store.add_dependency(c["id"], b["id"])
+        cyc = self.store.add_dependency(a["id"], c["id"])
+        self.assertIn("cycle", cyc["error"])
+
+    def test_done_blocker_auto_releases_dependent(self):
+        a = self.store.create_task("a")
+        b = self.store.create_task("blocker")
+        self.store.add_dependency(a["id"], b["id"])
+        self.store.update_task(a["id"], status="blocked")
+        res = self.store.update_task(b["id"], status="done")
+        self.assertEqual(res.get("released"), [a["id"]])
+        self.assertEqual(self.store.get_task(a["id"])["status"], "backlog")
+        ev = self.store.history(op="unblocked", limit=1)[0]
+        self.assertEqual(ev["id"], a["id"])
+        self.assertEqual(ev["data"]["released_by"], b["id"])
+
+    def test_no_release_while_other_blockers_open(self):
+        a = self.store.create_task("a")
+        b1 = self.store.create_task("b1")
+        b2 = self.store.create_task("b2")
+        self.store.add_dependency(a["id"], b1["id"])
+        self.store.add_dependency(a["id"], b2["id"])
+        self.store.update_task(a["id"], status="blocked")
+        res = self.store.update_task(b1["id"], status="done")
+        self.assertNotIn("released", res)
+        self.assertEqual(self.store.get_task(a["id"])["status"], "blocked")
+
+
+class TestSubtasks(TaskStoreBase):
+    def test_parent_roundtrip_and_one_level(self):
+        p = self.store.create_task("parent")
+        c = self.store.create_task("child", parent_id=p["id"])
+        self.assertEqual(c["parent_id"], p["id"])
+        self.assertIn("error",
+                      self.store.create_task("grandchild", parent_id=c["id"]))
+        self.assertIn("error",
+                      self.store.update_task(p["id"], parent_id=c["id"]))
+
+    def test_parent_must_exist_and_not_self(self):
+        t = self.store.create_task("t")
+        self.assertIn("error", self.store.create_task("x", parent_id="nope9999"))
+        self.assertIn("error",
+                      self.store.update_task(t["id"], parent_id=t["id"]))
+
+    def test_clear_parent(self):
+        p = self.store.create_task("parent")
+        c = self.store.create_task("child", parent_id=p["id"])
+        res = self.store.update_task(c["id"], parent_id=None)
+        self.assertIsNone(res["parent_id"])
+
+
+class TestReport(TaskStoreBase):
+    def test_report_sections(self):
+        overdue = self.store.create_task("late", due_date="2020-01-01")
+        b = self.store.create_task("blocker")
+        blocked = self.store.create_task("stuck")
+        self.store.add_dependency(blocked["id"], b["id"])
+        self.store.update_task(blocked["id"], status="blocked")
+        manual = self.store.create_task("manual-block")
+        self.store.update_task(manual["id"], status="blocked")
+        ms = self.store.create_milestone("M1", target_date="2020-06-01")
+        self.store.update_task(overdue["id"], milestone_id=ms["id"])
+        d = self.store.create_task("shipped")
+        self.store.update_task(d["id"], status="done")
+        rep = self.store.report()
+        self.assertEqual([r["id"] for r in rep["overdue"]], [overdue["id"]])
+        self.assertGreater(rep["overdue"][0]["days_overdue"], 1000)
+        self.assertEqual([r["id"] for r in rep["blocked"]], [blocked["id"]])
+        self.assertEqual(rep["blocked"][0]["blockers"][0]["id"], b["id"])
+        self.assertEqual([r["id"] for r in rep["ready"]], [manual["id"]])
+        m = rep["milestones"][0]
+        self.assertTrue(m["at_risk"])  # target long past with an open task
+        self.assertEqual(m["overdue"], 1)
+        self.assertEqual(rep["throughput"]["done_last_7d"], 1)
+        self.assertIsNotNone(rep["throughput"]["avg_cycle_days"])
+
+    def test_report_empty_store(self):
+        rep = self.store.report()
+        self.assertEqual(rep["overdue"], [])
+        self.assertEqual(rep["blocked"], [])
+        self.assertEqual(rep["milestones"], [])
+        self.assertIsNone(rep["throughput"]["avg_cycle_days"])
+
+
 if __name__ == "__main__":
     unittest.main()

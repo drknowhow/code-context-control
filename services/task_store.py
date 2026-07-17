@@ -386,7 +386,7 @@ class TaskStore:
 
     def create_task(self, title, description="", status="backlog", priority="p2",
                     due_date=None, tags=None, milestone_id=None, links=None,
-                    created_by="", origin_session="") -> dict:
+                    created_by="", origin_session="", parent_id=None) -> dict:
         title = (title or "").strip()
         if not title:
             return {"error": "title is required"}
@@ -407,6 +407,10 @@ class TaskStore:
                 if ms is None:
                     return {"error": f"no milestone matches: {milestone_id}"}
                 milestone_id = ms["id"]
+            if parent_id:
+                err, parent_id = self._resolve_parent(doc, parent_id, None)
+                if err:
+                    return {"error": err}
             task = {
                 "id": _new_id(),
                 "title": title,
@@ -416,6 +420,8 @@ class TaskStore:
                 "due_date": due_date or None,
                 "tags": [t for t in (tags or []) if t],
                 "milestone_id": milestone_id or None,
+                "parent_id": parent_id or None,
+                "blocked_by": [],
                 "links": clean_links,
                 "sort_key": self._next_rank(doc["tasks"], status),
                 "lifecycle": "active",
@@ -432,7 +438,7 @@ class TaskStore:
             return dict(task)
 
     _TASK_FIELDS = {"title", "description", "status", "priority", "due_date",
-                    "tags", "milestone_id"}
+                    "tags", "milestone_id", "parent_id"}
 
     @classmethod
     def _validate_task_fields(cls, fields):
@@ -457,8 +463,27 @@ class TaskStore:
         elif old_status == "done":
             task["completed_at"] = None
 
+    def _resolve_parent(self, doc, parent_ref, child):
+        """Validate a one-level parent candidate. Returns (error, parent_id)."""
+        parent = self._resolve(doc["tasks"], parent_ref)
+        if parent is None:
+            return f"no task matches parent: {parent_ref}", None
+        if child is not None and parent is child:
+            return "a task cannot be its own parent", None
+        if parent.get("parent_id"):
+            return "one level only: the parent is already a subtask", None
+        if child is not None and any(t.get("parent_id") == child.get("id")
+                                     for t in doc["tasks"]):
+            return "one level only: the task already has subtasks", None
+        return None, parent["id"]
+
     def _apply_fields(self, doc, task, fields):
         """Mutate task in place. Returns an error string, or None."""
+        if "parent_id" in fields and fields["parent_id"]:
+            err, pid = self._resolve_parent(doc, fields["parent_id"], task)
+            if err:
+                return err
+            fields["parent_id"] = pid
         if "milestone_id" in fields and fields["milestone_id"]:
             ms = self._resolve(doc["milestones"], fields["milestone_id"])
             if ms is None:
@@ -537,13 +562,19 @@ class TaskStore:
                                        after_id=move.get("after_id"))
                 if err:
                     return {"error": err}
+            released = []
+            if task["status"] == "done" and before.get("status") != "done":
+                released = self._release_dependents(doc, task)
             task["updated_at"] = _now()
             patch = {k: [before.get(k), task.get(k)] for k in task
                      if k != "updated_at" and before.get(k) != task.get(k)}
             self._event("task", "move" if (move and not fields) else "update",
                         task["id"], patch=patch, actor=actor)
             self._save(doc)
-            return dict(task)
+            out = dict(task)
+            if released:
+                out["released"] = released
+            return out
 
     def update_task(self, task_id, expected_rev=None, actor="", **fields) -> dict:
         return self.mutate_task(task_id, fields=fields, expected_rev=expected_rev,
@@ -670,6 +701,97 @@ class TaskStore:
                             data={"type": link_type, "ref": ref})
                 self._save(doc)
             return dict(task)
+
+    # ── Dependencies ───────────────────────────────────────────────
+
+    def add_dependency(self, task_id, blocker_ref, actor="") -> dict:
+        """task_id becomes blocked by blocker_ref. Cycle-safe, idempotent."""
+        with self._guard():
+            doc = self._load()
+            task = self._resolve(doc["tasks"], task_id)
+            if task is None:
+                return {"error": f"no task matches: {task_id}"}
+            blocker = self._resolve(doc["tasks"], blocker_ref)
+            if blocker is None:
+                return {"error": f"no task matches blocker: {blocker_ref}"}
+            if blocker is task:
+                return {"error": "a task cannot block itself"}
+            deps = task.setdefault("blocked_by", [])
+            if blocker["id"] in deps:
+                return dict(task)
+            if self._would_cycle(doc, task["id"], blocker["id"]):
+                return {"error": "dependency would create a cycle"}
+            deps.append(blocker["id"])
+            task["updated_at"] = _now()
+            self._event("task", "block", task["id"],
+                        data={"blocker": blocker["id"],
+                              "blocker_title": blocker.get("title", "")},
+                        actor=actor)
+            self._save(doc)
+            return dict(task)
+
+    def remove_dependency(self, task_id, blocker_ref, actor="") -> dict:
+        with self._guard():
+            doc = self._load()
+            task = self._resolve(doc["tasks"], task_id)
+            if task is None:
+                return {"error": f"no task matches: {task_id}"}
+            blocker = self._resolve(doc["tasks"], blocker_ref)
+            target = blocker["id"] if blocker else (blocker_ref or "").strip()
+            deps = task.get("blocked_by") or []
+            if target not in deps:
+                return dict(task)
+            task["blocked_by"] = [d for d in deps if d != target]
+            task["updated_at"] = _now()
+            self._event("task", "unblock", task["id"],
+                        data={"blocker": target}, actor=actor)
+            self._save(doc)
+            return dict(task)
+
+    @staticmethod
+    def _would_cycle(doc, task_id, blocker_id) -> bool:
+        """True if blocker (transitively) depends on task."""
+        by_id = {t.get("id"): t for t in doc["tasks"]}
+        stack, seen = [blocker_id], set()
+        while stack:
+            cur = stack.pop()
+            if cur == task_id:
+                return True
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend((by_id.get(cur) or {}).get("blocked_by") or [])
+        return False
+
+    @staticmethod
+    def _open_blockers(doc, task) -> list:
+        by_id = {t.get("id"): t for t in doc["tasks"]}
+        out = []
+        for dep in task.get("blocked_by") or []:
+            b = by_id.get(dep)
+            if (b is not None and b.get("lifecycle") == "active"
+                    and b.get("status") != "done"):
+                out.append(b)
+        return out
+
+    def _release_dependents(self, doc, done_task) -> list:
+        """Flip dependents to backlog when their last open blocker completes."""
+        released = []
+        for t in doc["tasks"]:
+            if (t.get("lifecycle") != "active" or t.get("status") != "blocked"
+                    or done_task["id"] not in (t.get("blocked_by") or [])):
+                continue
+            if self._open_blockers(doc, t):
+                continue
+            t["status"] = "backlog"
+            t["sort_key"] = self._next_rank(
+                [x for x in doc["tasks"] if x is not t], "backlog")
+            t["updated_at"] = _now()
+            self._event("task", "unblocked", t["id"],
+                        patch={"status": ["blocked", "backlog"]},
+                        data={"released_by": done_task["id"]})
+            released.append(t["id"])
+        return released
 
     # ── Milestones ─────────────────────────────────────────────────
 
@@ -906,3 +1028,81 @@ class TaskStore:
         if self.last_recovery:
             out["recovery"] = dict(self.last_recovery)
         return out
+
+    def report(self) -> dict:
+        """Health report: overdue, blocked chains, ready, milestone risk, throughput."""
+        doc = self._load()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        active = [t for t in doc["tasks"] if t.get("lifecycle") == "active"]
+
+        def brief(t):
+            return {"id": t["id"], "title": t.get("title", ""),
+                    "priority": t.get("priority"), "status": t.get("status"),
+                    "due_date": t.get("due_date"),
+                    "milestone_id": t.get("milestone_id")}
+
+        overdue = sorted(
+            (dict(brief(t), days_overdue=self._days_between(t["due_date"], today))
+             for t in active
+             if t.get("status") != "done" and t.get("due_date")
+             and t["due_date"] < today),
+            key=lambda r: (-r["days_overdue"], r["priority"]))
+
+        blocked, ready = [], []
+        for t in active:
+            if t.get("status") != "blocked":
+                continue
+            open_b = self._open_blockers(doc, t)
+            row = dict(brief(t),
+                       blockers=[{"id": b["id"], "title": b.get("title", "")}
+                                 for b in open_b],
+                       days_blocked=self._days_between(
+                           (t.get("updated_at") or today)[:10], today))
+            (blocked if open_b else ready).append(row)
+
+        milestones = []
+        for ms in doc["milestones"]:
+            if ms.get("lifecycle") != "active":
+                continue
+            ms_open = [t for t in active
+                       if t.get("milestone_id") == ms["id"]
+                       and t.get("status") != "done"]
+            target = ms.get("target_date")
+            at_risk = bool(target) and (
+                (target < today and bool(ms_open))
+                or any((t.get("due_date") or "9999") > target for t in ms_open))
+            milestones.append({
+                "id": ms["id"], "name": ms.get("name", ""),
+                "target_date": target,
+                "progress": self._progress(doc, ms["id"]),
+                "open": len(ms_open),
+                "overdue": sum(1 for t in ms_open
+                               if t.get("due_date") and t["due_date"] < today),
+                "at_risk": at_risk,
+            })
+
+        done_30 = [t for t in doc["tasks"]
+                   if t.get("completed_at")
+                   and self._days_between(t["completed_at"][:10], today) <= 30]
+        cycle_days = [self._days_between((t.get("created_at") or "")[:10],
+                                         t["completed_at"][:10])
+                      for t in done_30 if t.get("created_at")]
+        throughput = {
+            "done_last_7d": sum(1 for t in done_30 if self._days_between(
+                t["completed_at"][:10], today) <= 7),
+            "done_last_30d": len(done_30),
+            "avg_cycle_days": (round(sum(cycle_days) / len(cycle_days), 1)
+                               if cycle_days else None),
+        }
+        return {"generated": today, "overdue": overdue, "blocked": blocked,
+                "ready": ready, "milestones": milestones,
+                "throughput": throughput, "stats": self._stats(doc)}
+
+    @staticmethod
+    def _days_between(day, today) -> int:
+        try:
+            a = datetime.strptime(str(day)[:10], "%Y-%m-%d")
+            b = datetime.strptime(str(today)[:10], "%Y-%m-%d")
+            return (b - a).days
+        except ValueError:
+            return 0

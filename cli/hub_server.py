@@ -1911,6 +1911,39 @@ def api_pm_events():
         limit=limit)})
 
 
+@app.route("/api/projects/pm/deps", methods=["POST"])
+def api_pm_deps():
+    """Add/remove a blocked-by dependency: {path, id, blocker, op: add|remove}."""
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    task_id = (data.get("id") or "").strip()
+    blocker = (data.get("blocker") or "").strip()
+    op = (data.get("op") or "add").strip()
+    if not task_id or not blocker:
+        return jsonify({"error": "id and blocker are required"}), 400
+    if op not in ("add", "remove"):
+        return jsonify({"error": "op must be add|remove"}), 400
+    store = _pm_store(resolved)
+    res = (store.add_dependency(task_id, blocker, actor="hub") if op == "add"
+           else store.remove_dependency(task_id, blocker, actor="hub"))
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "deps", op, res["id"])
+    return jsonify({"task": res})
+
+
+@app.route("/api/projects/pm/report", methods=["GET"])
+def api_pm_report():
+    """PM health report for one project. Query: path"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    return jsonify({"path": str(resolved),
+                    "report": _pm_store(resolved).report()})
+
+
 # ── Agent artifacts: config tracking (v2.46.0) ────────────────────────────
 # Direct ArtifactStore per request (load-per-op store — no runtime build
 # needed); every mutation audited to the target project's activity log.

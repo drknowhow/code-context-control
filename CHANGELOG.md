@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PM dependencies, subtasks, and reporting (phase 3)
+
+- **Task dependencies.** Tasks carry `blocked_by: [task_ids]`, managed
+  via `TaskStore.add_dependency` / `remove_dependency` (cycle-safe —
+  transitive cycles rejected at write time — idempotent, self-blocking
+  rejected). Completing a task auto-releases dependents whose last open
+  blocker it was: they flip `blocked -> backlog`, emit an `unblocked`
+  event, and the completing mutation's result lists the released ids
+  (surfaced by `c3_task done`). Surfaces: `c3_task` `block`/`unblock`
+  actions (task_id + ref), `POST /api/pm/deps` and
+  `POST /api/projects/pm/deps` (`{id, blocker, op: add|remove}`).
+- **One-level subtasks.** Tasks accept `parent_id` (create + update;
+  `c3_task` `parent` param, `'none'`/`'-'` clears). Validation enforces
+  a single level: a subtask cannot be a parent, a task with subtasks
+  cannot become one, self-parenting rejected.
+- **Health report.** `TaskStore.report()` computes from one snapshot:
+  overdue (with days), blocked chains (open blockers + days blocked),
+  ready-to-unblock (blocked status, no open blockers), milestone health
+  (progress, open/overdue counts, at-risk when the target has passed
+  with open tasks or open due dates exceed it), and throughput
+  (done last 7/30 days, average cycle days). Surfaces: plan-mode-safe
+  `c3_task(action='report')`, `GET /api/pm/report`,
+  `GET /api/projects/pm/report`.
+
 ### Added — PM event history + migration scaffold (phase 2)
 
 - **Append-only event log.** Every successful PM mutation now writes an

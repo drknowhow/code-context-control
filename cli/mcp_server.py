@@ -846,13 +846,17 @@ async def c3_task(
     target_date: str = "",
     query: str = "",
     limit: int = 50,
+    parent: str = "",
     ctx: Context = None,
 ) -> str:
     """TRACK WORK — durable per-project tasks, milestones, and decision notes; use when asked to create/update/complete tasks (reads safe in plan mode).
-    Tasks: add (title [+description/priority p0-p3/due_date YYYY-MM-DD/tags CSV/milestone]),
+    Tasks: add (title [+description/priority p0-p3/due_date YYYY-MM-DD/tags CSV/milestone/parent]),
       update (task_id + changed fields incl. status backlog|in_progress|blocked|done), done (task_id),
       list (filters: status/priority/tags/milestone/query), get, board (kanban columns + milestone progress), archive,
-      link/unlink (task_id + link_type file|commit|edit + ref — ties tasks to code).
+      link/unlink (task_id + link_type file|commit|edit + ref — ties tasks to code),
+      block/unblock (task_id + ref=blocking task id; cycle-safe; completing the last open blocker auto-releases dependents to backlog),
+      report (overdue, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput).
+    Subtasks: one level via parent (add/update; update parent='none' clears).
     Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %), milestone_archive.
     Notes: note_add (note [+kind=decision] [+task_id]), note_list.
     History: history ([+task_id] [+limit]) — append-only event log (who/what/when, before->after), newest first.
@@ -869,7 +873,8 @@ async def c3_task(
         title=title, task_id=task_id, status=status, priority=priority,
         due_date=due_date, tags=tags, description=description, milestone=milestone,
         note=note, kind=kind, link_type=link_type, ref=ref, label=label,
-        name=name, target_date=target_date, query=query, limit=limit)
+        name=name, target_date=target_date, query=query, limit=limit,
+        parent=parent)
 
 
 @mcp.tool()
