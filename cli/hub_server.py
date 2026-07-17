@@ -1774,7 +1774,8 @@ def api_pm_task():
             return jsonify({"error": "fields or move required"}), 400
         res = store.mutate_task(task_id, fields=data.get("fields"),
                                 move=data.get("move"),
-                                expected_rev=data.get("expected_rev"))
+                                expected_rev=data.get("expected_rev"),
+                                actor="hub")
         if "error" in res:
             return jsonify(res), 409 if res.get("code") == "rev_conflict" else 400
         _pm_audit(resolved, "task", "update", res["id"])
@@ -1788,7 +1789,7 @@ def api_pm_task():
     task_id = (data.get("id") or "").strip()
     if not task_id:
         return jsonify({"error": "id is required"}), 400
-    res = store.archive_task(task_id)
+    res = store.archive_task(task_id, actor="hub")
     if "error" in res:
         return jsonify(res), 400
     _pm_audit(resolved, "task", "archive", res["id"])
@@ -1890,6 +1891,24 @@ def api_pm_link():
         return jsonify(res), 400
     _pm_audit(resolved, "link", op, res["id"])
     return jsonify({"task": res})
+
+
+@app.route("/api/projects/pm/events", methods=["GET"])
+def api_pm_events():
+    """PM event history for one project, newest first.
+    Query: path, entity?, id?, op?, limit?"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 500))
+    except ValueError:
+        limit = 50
+    return jsonify({"path": str(resolved), "events": _pm_store(resolved).history(
+        entity=(request.args.get("entity") or None),
+        item_id=(request.args.get("id") or None),
+        op=(request.args.get("op") or None),
+        limit=limit)})
 
 
 # ── Agent artifacts: config tracking (v2.46.0) ────────────────────────────

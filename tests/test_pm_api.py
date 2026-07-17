@@ -131,6 +131,20 @@ class TestTaskMutations(PmApiBase):
             "fields": {"priority": "p1"}, "expected_rev": 1})
         self.assertEqual(resp.status_code, 200)
 
+    def test_events_endpoint_records_history(self):
+        t = TaskStore(str(self.proj)).create_task("evt", created_by="test")
+        self.client.put("/api/projects/pm/task", json={
+            "path": str(self.proj), "id": t["id"],
+            "fields": {"priority": "p0"}})
+        resp = self.client.get(
+            f"/api/projects/pm/events?path={self.proj}&limit=10")
+        self.assertEqual(resp.status_code, 200)
+        events = resp.get_json()["events"]
+        self.assertEqual(events[0]["op"], "update")
+        self.assertEqual(events[0]["actor"], "hub")
+        self.assertEqual(events[0]["patch"]["priority"], ["p2", "p0"])
+        self.assertEqual(events[-1]["op"], "create")
+
 
 class TestMilestoneNoteLink(PmApiBase):
     def test_milestone_lifecycle(self):

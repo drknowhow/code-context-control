@@ -855,6 +855,7 @@ async def c3_task(
       link/unlink (task_id + link_type file|commit|edit + ref — ties tasks to code).
     Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %), milestone_archive.
     Notes: note_add (note [+kind=decision] [+task_id]), note_list.
+    History: history ([+task_id] [+limit]) — append-only event log (who/what/when, before->after), newest first.
     task_id accepts any unique id prefix (>=4 chars); milestone accepts id or unique name.
     Ephemeral session plans stay in c3_session(action='plan')."""
     svc = _svc(ctx)

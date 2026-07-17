@@ -1,8 +1,8 @@
 """c3_task — durable per-project tasks, milestones, and decision notes."""
 
-READ_ACTIONS = {"list", "get", "board", "milestone_list", "note_list"}
+READ_ACTIONS = {"list", "get", "board", "history", "milestone_list", "note_list"}
 
-_TASK_ACTIONS = ("add, update, done, list, get, board, archive, link, unlink, "
+_TASK_ACTIONS = ("add, update, done, list, get, board, history, archive, link, unlink, "
                  "milestone_add, milestone_update, milestone_list, milestone_archive, "
                  "note_add, note_list")
 
@@ -92,7 +92,7 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
                 return done_resp("[task:error] update requires at least one field "
                                  "(status/priority/due_date/description/title/tags/milestone).",
                                  "error")
-        res = store.update_task(task_id, **fields)
+        res = store.update_task(task_id, actor="mcp", **fields)
         if "error" in res:
             return done_resp(f"[task:error] {res['error']}", "error")
         mark = "done" if res["status"] == "done" else "updated"
@@ -102,7 +102,7 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
     if action == "archive":
         if not task_id:
             return done_resp("[task:error] archive requires task_id.", "error")
-        res = store.archive_task(task_id)
+        res = store.archive_task(task_id, actor="mcp")
         if "error" in res:
             return done_resp(f"[task:error] {res['error']}", "error")
         return done_resp(f"[task:archived] {res['id'][:8]} \"{res['title']}\"", "archived")
@@ -160,6 +160,27 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
             lines.append(f"  milestone {ms['id'][:8]} \"{ms['name']}\" "
                          f"{p['done']}/{p['total']} ({p['pct']}%)")
         return done_resp("\n".join(lines), f"{s['open']} open")
+
+    if action == "history":
+        rows = store.history(item_id=task_id or None, limit=max(1, int(limit)))
+        if not rows:
+            return done_resp("[task:history] 0 events", "0")
+        lines = [f"[task:history] {len(rows)} event(s), newest first"]
+        for ev in rows:
+            when = (ev.get("ts") or "")[:16].replace("T", " ")
+            who = f" by {ev['actor']}" if ev.get("actor") else ""
+            changes = ev.get("patch") or {}
+            if ev.get("op") == "create":
+                changes = {"title": (ev.get("data") or {}).get("title", "")}
+            elif not changes:
+                changes = ev.get("data") or {}
+            detail = ", ".join(
+                f"{k}: {v[0]}->{v[1]}" if isinstance(v, list) and len(v) == 2
+                else f"{k}={v}"
+                for k, v in list(changes.items())[:4])
+            lines.append(f"  {when} r{ev.get('rev', '?')} {ev.get('entity')}."
+                         f"{ev.get('op')} {(ev.get('id') or '')[:8]}{who} {detail}")
+        return done_resp("\n".join(lines), f"{len(rows)}e")
 
     if action in ("link", "unlink"):
         if not task_id or not link_type or not ref:

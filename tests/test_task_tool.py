@@ -131,7 +131,8 @@ class TestMilestonesAndNotes(TaskToolBase):
 class TestReadActions(unittest.TestCase):
     def test_read_action_set(self):
         self.assertEqual(READ_ACTIONS,
-                         {"list", "get", "board", "milestone_list", "note_list"})
+                         {"list", "get", "board", "history",
+                          "milestone_list", "note_list"})
 
 
 if __name__ == "__main__":

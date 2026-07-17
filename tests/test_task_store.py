@@ -328,5 +328,81 @@ class TestBackupRecovery(TaskStoreBase):
         self.assertGreaterEqual(self.store.board()["rev"], 1)
 
 
+class TestHistory(TaskStoreBase):
+    def _events(self, **kw):
+        return self.store.history(**kw)
+
+    def test_create_update_move_archive_recorded(self):
+        t = self.store.create_task("x", created_by="mcp")
+        self.store.update_task(t["id"], actor="ui", priority="p1")
+        self.store.move_task(t["id"], status="in_progress", actor="hub")
+        self.store.archive_task(t["id"], actor="mcp")
+        ops = [(e["entity"], e["op"]) for e in self._events(limit=10)]
+        self.assertEqual(ops, [("task", "archive"), ("task", "move"),
+                               ("task", "update"), ("task", "create")])
+
+    def test_update_patch_before_after(self):
+        t = self.store.create_task("x")
+        self.store.update_task(t["id"], priority="p0")
+        ev = self._events(op="update", limit=1)[0]
+        self.assertEqual(ev["patch"]["priority"], ["p2", "p0"])
+        self.assertEqual(ev["id"], t["id"])
+        self.assertGreaterEqual(ev["rev"], 2)
+
+    def test_actor_and_item_filter(self):
+        a = self.store.create_task("a", created_by="mcp")
+        self.store.create_task("b")
+        self.store.update_task(a["id"], actor="ui", status="done")
+        rows = self._events(item_id=a["id"], limit=10)
+        self.assertEqual({e["id"] for e in rows}, {a["id"]})
+        create = [e for e in rows if e["op"] == "create"][0]
+        self.assertEqual(create["actor"], "mcp")
+        update = [e for e in rows if e["op"] == "update"][0]
+        self.assertEqual(update["actor"], "ui")
+
+    def test_failed_mutation_writes_no_event(self):
+        t = self.store.create_task("x")
+        n = len(self._events(limit=100))
+        self.store.update_task(t["id"], status="bogus")  # validation error
+        self.store.update_task("zzzzzz", priority="p1")  # unknown id
+        self.assertEqual(len(self._events(limit=100)), n)
+
+    def test_link_and_milestone_events(self):
+        t = self.store.create_task("x")
+        self.store.add_link(t["id"], "file", "cli/server.py")
+        ms = self.store.create_milestone("M1")
+        self.store.archive_milestone(ms["id"])
+        ops = [e["op"] for e in self._events(limit=3)]
+        self.assertEqual(ops, ["archive", "create", "link"])
+        arch = self._events(op="archive", limit=1)[0]
+        self.assertEqual(arch["data"]["detached_tasks"], 0)
+
+    def test_rotation(self):
+        from services import task_store as ts_mod
+        old = ts_mod._EVENTS_ROTATE_BYTES
+        ts_mod._EVENTS_ROTATE_BYTES = 200
+        try:
+            for i in range(20):
+                self.store.create_task(f"t{i}")
+            self.assertTrue(
+                self.store.events_file.with_name("events.jsonl.1").exists())
+        finally:
+            ts_mod._EVENTS_ROTATE_BYTES = old
+
+    def test_migration_scaffold_applies_registered_upgrades(self):
+        from services import task_store as ts_mod
+        self.store.create_task("x")
+        doc = json.loads(self.store.pm_file.read_text(encoding="utf-8"))
+        doc["schema_version"] = 0
+        self.store.pm_file.write_text(json.dumps(doc), encoding="utf-8")
+        ts_mod._MIGRATIONS[0] = lambda d: {**d, "migrated_marker": True}
+        try:
+            loaded = self.store._load()
+            self.assertTrue(loaded.get("migrated_marker"))
+            self.assertEqual(loaded["schema_version"], 1)
+        finally:
+            ts_mod._MIGRATIONS.pop(0, None)
+
+
 if __name__ == "__main__":
     unittest.main()

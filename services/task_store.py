@@ -33,6 +33,18 @@ LINK_TYPES = ("file", "commit", "edit")
 NOTE_KINDS = ("note", "decision")
 _RANK_STEP = 1024.0
 _MIN_GAP = 1e-6
+_EVENTS_ROTATE_BYTES = 5_000_000
+
+# Schema migrations: _MIGRATIONS[n] upgrades a doc from schema_version n to
+# n+1. Register with @_migration(n) as SCHEMA_VERSION grows past 1.
+_MIGRATIONS = {}
+
+
+def _migration(from_version):
+    def register(fn):
+        _MIGRATIONS[from_version] = fn
+        return fn
+    return register
 
 
 def _now() -> str:
@@ -142,8 +154,10 @@ class TaskStore:
         self.data_dir = self.project_path / data_dir
         self.pm_file = self.data_dir / "pm.json"
         self.bak_file = self.data_dir / "pm.json.bak"
+        self.events_file = self.data_dir / "events.jsonl"
         self.lock_file = self.data_dir / "pm.lock"
         self._lock = threading.Lock()
+        self._pending_events = []
         self.last_recovery = None  # set when _load quarantines/restores a corrupt doc
 
     # ── Persistence ────────────────────────────────────────────────
@@ -159,12 +173,7 @@ class TaskStore:
             # next mutation persists it back to pm.json.
             if self.bak_file.exists():
                 try:
-                    doc = self._parse(self.bak_file)
-                    doc.setdefault("schema_version", SCHEMA_VERSION)
-                    doc.setdefault("rev", 0)
-                    doc.setdefault("milestones", [])
-                    doc.setdefault("notes", [])
-                    return doc
+                    return self._normalize(self._parse(self.bak_file))
                 except Exception:
                     pass
             return self._empty_doc()
@@ -185,6 +194,15 @@ class TaskStore:
             }
             if doc is None:
                 return self._empty_doc()
+        return self._normalize(doc)
+
+    def _normalize(self, doc: dict) -> dict:
+        """Run registered schema migrations, then backfill structural defaults."""
+        v = int(doc.get("schema_version", 1))
+        while v < SCHEMA_VERSION and v in _MIGRATIONS:
+            doc = _MIGRATIONS[v](doc)
+            v += 1
+            doc["schema_version"] = v
         doc.setdefault("schema_version", SCHEMA_VERSION)
         doc.setdefault("rev", 0)
         doc.setdefault("milestones", [])
@@ -227,6 +245,7 @@ class TaskStore:
         os.replace(tmp, self.pm_file)
         self._fsync_dir()
         self._sweep_stale_tmp()
+        self._flush_events(doc["rev"])
 
     def _fsync_dir(self) -> None:
         if os.name == "nt":
@@ -250,10 +269,67 @@ class TaskStore:
         except OSError:
             pass
 
+    def _event(self, entity, op, item_id="", patch=None, data=None, actor=""):
+        """Queue a history event; _save stamps rev/ts and appends it."""
+        self._pending_events.append({
+            "entity": entity, "op": op, "id": item_id,
+            "actor": actor or "", "patch": patch or None, "data": data or None,
+        })
+
+    def _flush_events(self, rev) -> None:
+        if not self._pending_events:
+            return
+        events, self._pending_events = self._pending_events, []
+        try:
+            self._rotate_events()
+            with open(self.events_file, "a", encoding="utf-8") as f:
+                now = _now()
+                for ev in events:
+                    ev["ts"] = now
+                    ev["rev"] = rev
+                    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError:
+            pass  # history is best-effort; the snapshot save already succeeded
+
+    def _rotate_events(self) -> None:
+        try:
+            if (self.events_file.exists()
+                    and self.events_file.stat().st_size > _EVENTS_ROTATE_BYTES):
+                os.replace(self.events_file,
+                           self.events_file.with_name("events.jsonl.1"))
+        except OSError:
+            pass
+
+    def history(self, entity=None, item_id=None, op=None, limit=50) -> list:
+        """Read the event log, newest first (current file only, not rotated)."""
+        try:
+            lines = self.events_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        out = []
+        for line in reversed(lines):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if entity and ev.get("entity") != entity:
+                continue
+            if item_id and ev.get("id") != item_id:
+                continue
+            if op and ev.get("op") != op:
+                continue
+            out.append(ev)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
     @contextmanager
     def _guard(self):
         """One mutation transaction: thread lock + cross-process file lock."""
         with self._lock, _FileLock(self.lock_file):
+            self._pending_events = []
             yield
 
     @staticmethod
@@ -350,6 +426,8 @@ class TaskStore:
                 "origin_session": origin_session or "",
             }
             doc["tasks"].append(task)
+            self._event("task", "create", task["id"], data=dict(task),
+                        actor=created_by)
             self._save(doc)
             return dict(task)
 
@@ -421,7 +499,8 @@ class TaskStore:
                 self._rebalance(doc["tasks"], task["status"])
         return None
 
-    def mutate_task(self, task_id, fields=None, move=None, expected_rev=None) -> dict:
+    def mutate_task(self, task_id, fields=None, move=None, expected_rev=None,
+                    actor="") -> dict:
         """Apply field updates and/or a board move in ONE transaction.
 
         Replaces the update-then-move double write so a concurrent writer
@@ -446,6 +525,8 @@ class TaskStore:
             task = self._resolve(doc["tasks"], task_id)
             if task is None:
                 return {"error": f"no task matches: {task_id}"}
+            before = {k: (list(v) if isinstance(v, list) else v)
+                      for k, v in task.items()}
             if fields:
                 err = self._apply_fields(doc, task, fields)
                 if err:
@@ -457,34 +538,44 @@ class TaskStore:
                 if err:
                     return {"error": err}
             task["updated_at"] = _now()
+            patch = {k: [before.get(k), task.get(k)] for k in task
+                     if k != "updated_at" and before.get(k) != task.get(k)}
+            self._event("task", "move" if (move and not fields) else "update",
+                        task["id"], patch=patch, actor=actor)
             self._save(doc)
             return dict(task)
 
-    def update_task(self, task_id, expected_rev=None, **fields) -> dict:
-        return self.mutate_task(task_id, fields=fields, expected_rev=expected_rev)
+    def update_task(self, task_id, expected_rev=None, actor="", **fields) -> dict:
+        return self.mutate_task(task_id, fields=fields, expected_rev=expected_rev,
+                                actor=actor)
 
     def move_task(self, task_id, status=None, before_id=None, after_id=None,
-                  expected_rev=None) -> dict:
+                  expected_rev=None, actor="") -> dict:
         """Column move and/or rank move (midpoint between neighbors)."""
         return self.mutate_task(
             task_id,
             move={"status": status, "before_id": before_id, "after_id": after_id},
-            expected_rev=expected_rev)
+            expected_rev=expected_rev, actor=actor)
 
-    def archive_task(self, task_id) -> dict:
-        return self._set_lifecycle("tasks", task_id, "archived")
+    def archive_task(self, task_id, actor="") -> dict:
+        return self._set_lifecycle("tasks", task_id, "archived", actor=actor)
 
-    def restore_task(self, task_id) -> dict:
-        return self._set_lifecycle("tasks", task_id, "active")
+    def restore_task(self, task_id, actor="") -> dict:
+        return self._set_lifecycle("tasks", task_id, "active", actor=actor)
 
-    def _set_lifecycle(self, collection, ref, lifecycle) -> dict:
+    def _set_lifecycle(self, collection, ref, lifecycle, actor="") -> dict:
         with self._guard():
             doc = self._load()
             item = self._resolve(doc[collection], ref)
             if item is None:
                 return {"error": f"no {collection[:-1]} matches: {ref}"}
+            old = item.get("lifecycle", "active")
             item["lifecycle"] = lifecycle
             item["updated_at"] = _now()
+            self._event(collection[:-1],
+                        "archive" if lifecycle == "archived" else "restore",
+                        item["id"], patch={"lifecycle": [old, lifecycle]},
+                        actor=actor)
             self._save(doc)
             return dict(item)
 
@@ -498,6 +589,7 @@ class TaskStore:
             doc[key] = [i for i in doc[key] if i.get("lifecycle") != "archived"]
             purged = before - len(doc[key])
             if purged:
+                self._event(entity, "purge", data={"purged": purged})
                 self._save(doc)
             return {"purged": purged}
 
@@ -559,6 +651,7 @@ class TaskStore:
                        for l in task.get("links", [])):
                 task.setdefault("links", []).append(clean[0])
                 task["updated_at"] = _now()
+                self._event("task", "link", task["id"], data=dict(clean[0]))
                 self._save(doc)
             return dict(task)
 
@@ -573,6 +666,8 @@ class TaskStore:
                              if not (l["type"] == link_type and l["ref"] == ref)]
             if len(task["links"]) != before:
                 task["updated_at"] = _now()
+                self._event("task", "unlink", task["id"],
+                            data={"type": link_type, "ref": ref})
                 self._save(doc)
             return dict(task)
 
@@ -595,6 +690,7 @@ class TaskStore:
                 "lifecycle": "active", "created_at": now, "updated_at": now,
             }
             doc["milestones"].append(ms)
+            self._event("milestone", "create", ms["id"], data=dict(ms))
             self._save(doc)
             return dict(ms)
 
@@ -616,8 +712,12 @@ class TaskStore:
             ms = self._resolve(doc["milestones"], milestone_id)
             if ms is None:
                 return {"error": f"no milestone matches: {milestone_id}"}
+            before = {k: ms.get(k) for k in fields}
             ms.update(fields)
             ms["updated_at"] = _now()
+            self._event("milestone", "update", ms["id"],
+                        patch={k: [before[k], ms.get(k)] for k in fields
+                               if before[k] != ms.get(k)})
             self._save(doc)
             return dict(ms)
 
@@ -636,6 +736,9 @@ class TaskStore:
                     t["milestone_id"] = None
                     t["updated_at"] = _now()
                     detached += 1
+            self._event("milestone", "archive", ms["id"],
+                        patch={"lifecycle": ["active", "archived"]},
+                        data={"detached_tasks": detached})
             self._save(doc)
             return {**ms, "detached_tasks": detached}
 
@@ -699,6 +802,8 @@ class TaskStore:
                 "author": author or "",
             }
             doc["notes"].append(note)
+            self._event("note", "create", note["id"], data=dict(note),
+                        actor=author)
             self._save(doc)
             return dict(note)
 
@@ -718,13 +823,17 @@ class TaskStore:
             note = self._resolve(doc["notes"], note_id)
             if note is None:
                 return {"error": f"no note matches: {note_id}"}
+            before = {k: note.get(k) for k in fields}
             note.update(fields)
             note["updated_at"] = _now()
+            self._event("note", "update", note["id"],
+                        patch={k: [before[k], note.get(k)] for k in fields
+                               if before[k] != note.get(k)})
             self._save(doc)
             return dict(note)
 
-    def archive_note(self, note_id) -> dict:
-        return self._set_lifecycle("notes", note_id, "archived")
+    def archive_note(self, note_id, actor="") -> dict:
+        return self._set_lifecycle("notes", note_id, "archived", actor=actor)
 
     def list_notes(self, kind=None, include_archived=False, limit=100) -> list:
         doc = self._load()

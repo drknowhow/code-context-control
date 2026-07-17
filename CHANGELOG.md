@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PM event history + migration scaffold (phase 2)
+
+- **Append-only event log.** Every successful PM mutation now writes an
+  event to `.c3/pm/events.jsonl` inside the same save transaction:
+  `{ts, rev, entity, op, id, actor, patch, data}` with field-level
+  before/after patches for updates/moves, snapshots for creates, and
+  actor attribution (`mcp` / `ui` / `hub`). Failed mutations write
+  nothing; the log is best-effort (a log write error never fails the
+  snapshot save) and rotates to `events.jsonl.1` past 5 MB. This is the
+  data source for future burndown / cycle-time / blocked-aging reports.
+- **History surfaces.** `TaskStore.history(entity?, item_id?, op?,
+  limit?)` reads newest-first; `c3_task(action='history')` formats it
+  (plan-mode safe read); `GET /api/pm/events` (per-project server) and
+  `GET /api/projects/pm/events` (hub) expose it over REST.
+- **Schema migration scaffold.** `_load` now funnels every document
+  (primary and backup) through `_normalize()`, which runs migrations
+  registered via `@_migration(n)` stepwise up to `SCHEMA_VERSION` before
+  backfilling defaults — the rail for dependencies/subtasks fields in
+  phase 3.
+
 ### Changed — PM store robustness (phase 1)
 
 - **Cross-process write safety.** `TaskStore` mutations now serialize
