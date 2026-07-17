@@ -6,6 +6,28 @@
 // This bundle has no notify/usePoll — errors render inline, polling is
 // a local setInterval.
 
+// Quick-add syntax: "p1 fix auth due:2026-08-01 #infra @Phase 4"
+function parseQuickAdd(raw, milestones) {
+  const out = { title: '', priority: '', due_date: '', tags: [], milestone_id: '' };
+  let text = raw;
+  const ms = (milestones || []).slice()
+    .sort((a, b) => (b.name || '').length - (a.name || '').length)
+    .find(m => m.name && text.toLowerCase().indexOf('@' + m.name.toLowerCase()) !== -1);
+  if (ms) {
+    const i = text.toLowerCase().indexOf('@' + ms.name.toLowerCase());
+    text = text.slice(0, i) + text.slice(i + ms.name.length + 1);
+    out.milestone_id = ms.id;
+  }
+  text = text.replace(/(^|\s)(p[0-3])(?=\s|$)/i,
+    (m, pre, p) => { out.priority = p.toLowerCase(); return pre; });
+  text = text.replace(/(^|\s)due:(\d{4}-\d{2}-\d{2})(?=\s|$)/,
+    (m, pre, d) => { out.due_date = d; return pre; });
+  text = text.replace(/(^|\s)#([\w-]+)/g,
+    (m, pre, tag) => { out.tags.push(tag); return pre; });
+  out.title = text.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
 // Compact one-line description of a PM history event for the Activity list.
 function fmtEventDetail(ev, byId) {
   const name = (id) => (((byId || {})[id]) || {}).title || (id || '').slice(0, 8);
@@ -38,6 +60,9 @@ function TasksTab() {
   const [depsFor, setDepsFor] = useState('');   // task id with dep editor open
   const [depPick, setDepPick] = useState('');
   const [showActivity, setShowActivity] = useState(false);
+  const [histFor, setHistFor] = useState('');   // task id filtering Activity
+  const [archived, setArchived] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -48,11 +73,12 @@ function TasksTab() {
     try {
       const r = await api.get('/api/pm/report');
       setReport(r);
-      const ev = await api.get('/api/pm/events?limit=20');
+      const q = histFor ? `&id=${encodeURIComponent(histFor)}` : '';
+      const ev = await api.get(`/api/pm/events?limit=${histFor ? 50 : 20}${q}`);
       setEvents((ev && ev.events) || []);
     } catch (e) { /* report/history are best-effort extras */ }
     setLoading(false);
-  }, []);
+  }, [histFor]);
 
   useEffect(() => {
     load();
@@ -60,22 +86,36 @@ function TasksTab() {
     return () => clearInterval(iv);
   }, [load]);
 
-  // Run a mutation, surface failures inline, then refresh.
+  // Run a mutation, surface failures inline, then refresh. A 409 means a
+  // concurrent writer bumped the doc rev — refresh instead of clobbering.
   const run = async (fn) => {
     try { await fn(); await load(); }
-    catch (e) { setErr(e.message || 'Request failed'); }
+    catch (e) {
+      if (e && e.status === 409) {
+        setErr('Board changed elsewhere — refreshed. Retry your change.');
+        await load();
+      } else {
+        setErr(e.message || 'Request failed');
+      }
+    }
   };
 
   const addTask = () => {
-    const title = newTitle.trim();
-    if (!title) return;
+    if (!newTitle.trim()) return;
+    const q = parseQuickAdd(newTitle, milestones);
+    if (!q.title) return;
     run(async () => {
-      await api.post('/api/pm/task', { title, priority: newPriority });
+      const body = { title: q.title, priority: q.priority || newPriority };
+      if (q.due_date) body.due_date = q.due_date;
+      if (q.tags.length) body.tags = q.tags;
+      if (q.milestone_id) body.milestone_id = q.milestone_id;
+      await api.post('/api/pm/task', body);
       setNewTitle('');
     });
   };
   const setStatus = (t, status) =>
-    run(() => api.put('/api/pm/task', { id: t.id, move: { status } }));
+    run(() => api.put('/api/pm/task',
+      { id: t.id, move: { status }, expected_rev: board.rev }));
   const delTask = (t) => run(() => api.del('/api/pm/task', { id: t.id }));
   const addMilestone = () => {
     const name = msName.trim();
@@ -104,6 +144,18 @@ function TasksTab() {
   };
   const removeDep = (t, blocker) =>
     run(() => api.post('/api/pm/deps', { id: t.id, blocker, op: 'remove' }));
+  const loadArchived = async () => {
+    try {
+      const d = await api.get('/api/pm?include_archived=1');
+      const cols = ((d || {}).board || {}).columns || {};
+      setArchived(Object.values(cols).flat()
+        .filter(t => t.lifecycle === 'archived'));
+    } catch (e) { setErr(e.message || 'Failed to load archived'); }
+  };
+  const restoreTask = (t) => run(async () => {
+    await api.put('/api/pm/task', { id: t.id, restore: true });
+    await loadArchived();
+  });
 
   // ── Derived ───────────────────────────────────────────────────
   const board = (data || {}).board || {};
@@ -118,6 +170,44 @@ function TasksTab() {
   const allTasks = Object.values(columns).flat();
   const taskById = {};
   allTasks.forEach(t => { taskById[t.id] = t; });
+  const childrenByParent = {};
+  allTasks.forEach(t => {
+    if (t.parent_id) {
+      (childrenByParent[t.parent_id] = childrenByParent[t.parent_id] || []).push(t);
+    }
+  });
+  // Order a section's rows so subtasks sit indented under their parent when
+  // both share the column; children whose parent lives elsewhere stay flat.
+  const orderWithSubtasks = (rows) => {
+    const inRows = {};
+    rows.forEach(t => { inRows[t.id] = true; });
+    const out = [];
+    rows.forEach(t => {
+      if (t.parent_id && inRows[t.parent_id]) return;
+      out.push([t, 0]);
+      (childrenByParent[t.id] || []).forEach(c => {
+        if (inRows[c.id]) out.push([c, 1]);
+      });
+    });
+    return out;
+  };
+  const doneTasks = (columns.done || []).filter(t => t.completed_at);
+  const sparkDays = [];
+  for (let i = 13; i >= 0; i--) {
+    sparkDays.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  }
+  const donePerDay = sparkDays.map(d =>
+    doneTasks.filter(t => (t.completed_at || '').slice(0, 10) === d).length);
+  const cycleSpark = doneTasks.slice()
+    .sort((a, b) => (a.completed_at || '').localeCompare(b.completed_at || ''))
+    .slice(-10)
+    .map(t => Math.max(0, Math.round(
+      (new Date(t.completed_at) - new Date(t.created_at || t.completed_at)) / 86400000)));
+  const msTimeline = milestones.filter(m => m.target_date);
+  const atRiskIds = {};
+  (((report || {}).milestones) || []).forEach(m => {
+    if (m.at_risk) atRiskIds[m.id] = true;
+  });
   const sectionOrder = ['in_progress', 'blocked', 'backlog', 'done'];
   const labelOf = (k) => (PM_COLUMNS.find(c => c[0] === k) || [k, k])[1];
 
@@ -207,26 +297,60 @@ function TasksTab() {
     );
   };
 
-  const taskRow = (t) => (
-    <div key={t.id} style={{ display: 'flex', flexDirection: 'column' }}>
+  const histBtn = (t) => (
+    <button onClick={() => {
+      setHistFor(histFor === t.id ? '' : t.id);
+      setShowActivity(true);
+    }} title="Task history" className="mono" style={{
+      background: histFor === t.id ? T.accentDim : 'transparent',
+      border: `1px solid ${histFor === t.id ? `${T.accent}50` : T.border}`,
+      borderRadius: 4, cursor: 'pointer', padding: '1px 5px',
+      fontSize: 10, color: T.textDim, flexShrink: 0,
+    }}>🕘</button>
+  );
+
+  const taskRow = (t, depth = 0) => (
+    <div key={t.id} style={{
+      display: 'flex', flexDirection: 'column',
+      marginLeft: depth ? 18 : 0,
+    }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
         background: T.surface, border: `1px solid ${T.border}`,
         borderRadius: depsFor === t.id ? '6px 6px 0 0' : 6,
       }}>
+        {depth > 0 && (
+          <span className="mono" style={{ fontSize: 11, color: T.textDim, flexShrink: 0 }}>↳</span>
+        )}
         <PriorityDot priority={t.priority} />
         <span style={{
           fontSize: 13, flex: 1, minWidth: 0, overflowWrap: 'anywhere', lineHeight: 1.35,
           color: t.status === 'done' ? T.textMuted : T.text,
           textDecoration: t.status === 'done' ? 'line-through' : 'none',
         }}>{t.title}</span>
+        {depth === 0 && t.parent_id && taskById[t.parent_id] && (
+          <span className="mono" title={taskById[t.parent_id].title} style={{
+            fontSize: 10, color: T.textDim, flexShrink: 0,
+          }}>↳ {(taskById[t.parent_id].title || '').slice(0, 20)}</span>
+        )}
+        {(childrenByParent[t.id] || []).length > 0 && (
+          <Badge color={T.textMuted}>
+            {(childrenByParent[t.id] || []).filter(c => c.status === 'done').length}
+            /{(childrenByParent[t.id] || []).length} sub
+          </Badge>
+        )}
         {t.milestone_id && msById[t.milestone_id] &&
           <MilestoneChip milestone={msById[t.milestone_id]} />}
         <DepsBadge task={t} byId={taskById} />
+        {isTaskReady(t, taskById) && (
+          <Btn variant="ghost" onClick={() => setStatus(t, 'backlog')}
+            style={{ padding: '2px 8px', fontSize: 10 }}>→ backlog</Btn>
+        )}
         <DueBadge task={t} />
         {(t.tags || []).map(tag => <Badge key={tag} color={T.blue}>{tag}</Badge>)}
         <TaskLinkIcons task={t} />
         {depChainBtn(t)}
+        {histBtn(t)}
         <select value={t.status} onChange={e => setStatus(t, e.target.value)}
           className="mono" style={{
             background: T.surfaceAlt, color: T.textMuted, border: `1px solid ${T.border}`,
@@ -290,7 +414,7 @@ function TasksTab() {
         <input value={newTitle}
           onChange={e => setNewTitle(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') addTask(); }}
-          placeholder="New task title…"
+          placeholder="New task…  (p1 · due:2026-08-01 · #tag · @milestone)"
           style={{ ...inputStyle, flex: 1, minWidth: 0 }} />
         <select value={newPriority} onChange={e => setNewPriority(e.target.value)}
           className="mono" style={{ ...inputStyle, fontSize: 11, cursor: 'pointer' }}>
@@ -311,7 +435,7 @@ function TasksTab() {
             {rows.length === 0 && (
               <div style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic', paddingLeft: 14 }}>none</div>
             )}
-            {rows.map(taskRow)}
+            {orderWithSubtasks(rows).map(pair => taskRow(pair[0], pair[1]))}
             {key === 'done' && all.length > 20 && (
               <button onClick={() => setShowAllDone(!showAllDone)} className="mono" style={{
                 alignSelf: 'flex-start', background: 'transparent', border: 'none',
@@ -323,6 +447,85 @@ function TasksTab() {
           </div>
         );
       })}
+
+      {/* Insights */}
+      {(doneTasks.length > 0 || msTimeline.length > 0) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {sectionHeader(T.accent, 'Insights', '')}
+          <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'flex-start', paddingLeft: 14 }}>
+            {doneTasks.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span className="mono" style={{ fontSize: 10, color: T.textDim, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  completions · 14d
+                </span>
+                <svg width={140} height={26}>
+                  {donePerDay.map((n, i) => {
+                    const max = Math.max.apply(null, donePerDay) || 1;
+                    const h = n ? Math.max(3, Math.round((n / max) * 24)) : 1;
+                    return <rect key={i} x={i * 10} y={26 - h} width={7} height={h}
+                      fill={n ? T.accent : T.border} rx={1} />;
+                  })}
+                </svg>
+              </div>
+            )}
+            {cycleSpark.length > 1 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span className="mono" style={{ fontSize: 10, color: T.textDim, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  cycle days · last {cycleSpark.length}
+                </span>
+                <svg width={cycleSpark.length * 12} height={26}>
+                  {cycleSpark.map((n, i) => {
+                    const max = Math.max.apply(null, cycleSpark) || 1;
+                    const h = Math.max(2, Math.round((n / max) * 24));
+                    return <rect key={i} x={i * 12} y={26 - h} width={8} height={h}
+                      fill={T.blue} rx={1} />;
+                  })}
+                </svg>
+              </div>
+            )}
+            {msTimeline.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 240, maxWidth: 460 }}>
+                <span className="mono" style={{ fontSize: 10, color: T.textDim, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  milestone timeline
+                </span>
+                <div style={{ position: 'relative', height: 34, borderBottom: `1px solid ${T.border}`, margin: '0 20px' }}>
+                  {(() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    const stamps = msTimeline.map(m => m.target_date).concat([today]).sort();
+                    const lo = new Date(stamps[0]).getTime() - 7 * 86400000;
+                    const hi = new Date(stamps[stamps.length - 1]).getTime() + 7 * 86400000;
+                    const pct = (d) => ((new Date(d).getTime() - lo) / ((hi - lo) || 1)) * 100;
+                    return (
+                      <React.Fragment>
+                        <div title={`today · ${today}`} style={{
+                          position: 'absolute', left: `${pct(today)}%`, top: 0, bottom: 0,
+                          width: 1, background: T.textDim,
+                        }} />
+                        {msTimeline.map(m => (
+                          <div key={m.id} title={`${m.name} · ${m.target_date}`} style={{
+                            position: 'absolute', left: `${pct(m.target_date)}%`, top: 3,
+                            transform: 'translateX(-50%)', display: 'flex',
+                            flexDirection: 'column', alignItems: 'center', gap: 2,
+                          }}>
+                            <span style={{
+                              width: 8, height: 8, borderRadius: '50%',
+                              background: atRiskIds[m.id] ? T.error : T.purple,
+                            }} />
+                            <span className="mono" style={{
+                              fontSize: 9, whiteSpace: 'nowrap',
+                              color: atRiskIds[m.id] ? T.error : T.textDim,
+                            }}>{(m.name || '').slice(0, 14)}</span>
+                          </div>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Milestones */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -417,11 +620,50 @@ function TasksTab() {
         </div>
       </div>
 
+      {/* Archived (browse + restore) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div onClick={() => {
+          const next = !showArchived;
+          setShowArchived(next);
+          if (next && archived === null) loadArchived();
+        }} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          {sectionHeader(T.textDim, 'Archived', archived === null ? '·' : archived.length)}
+          <span className="mono" style={{ fontSize: 10, color: T.textDim }}>
+            {showArchived ? 'hide' : 'show'}
+          </span>
+        </div>
+        {showArchived && archived !== null && archived.length === 0 && (
+          <div style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic', paddingLeft: 14 }}>none</div>
+        )}
+        {showArchived && (archived || []).map(t => (
+          <div key={t.id} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+            background: T.surface, border: `1px dashed ${T.border}`, borderRadius: 6,
+          }}>
+            <PriorityDot priority={t.priority} />
+            <span style={{ fontSize: 12, color: T.textMuted, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+              {t.title}
+            </span>
+            <span className="mono" style={{ fontSize: 10, color: T.textDim }}>{t.status}</span>
+            <Btn variant="ghost" onClick={() => restoreTask(t)}
+              style={{ padding: '2px 10px', fontSize: 11 }}>Restore</Btn>
+          </div>
+        ))}
+      </div>
+
       {/* Activity (recent PM events, collapsed by default) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div onClick={() => setShowActivity(!showActivity)}
           style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
           {sectionHeader(T.textDim, 'Activity', events.length)}
+          {histFor && (
+            <span className="mono"
+              onClick={(e) => { e.stopPropagation(); setHistFor(''); }}
+              title="Clear task filter"
+              style={{ fontSize: 10, color: T.accent, cursor: 'pointer' }}>
+              {((taskById[histFor] || {}).title || histFor.slice(0, 8))} ×
+            </span>
+          )}
           <span className="mono" style={{ fontSize: 10, color: T.textDim }}>
             {showActivity ? 'hide' : 'show'}
           </span>

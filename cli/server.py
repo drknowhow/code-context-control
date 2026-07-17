@@ -1217,6 +1217,12 @@ def api_pm_task():
         task_id = (data.get("id") or "").strip()
         if not task_id:
             return jsonify({"error": "id is required"}), 400
+        if data.get("restore"):
+            res = store.restore_task(task_id, actor="ui")
+            if "error" in res:
+                return jsonify(res), 400
+            _pm_audit("task", "restore", res["id"])
+            return jsonify({"updated": True, "task": res})
         if not (data.get("fields") or data.get("move")):
             return jsonify({"error": "fields or move required"}), 400
         res = store.mutate_task(task_id, fields=data.get("fields"),

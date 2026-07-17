@@ -6,7 +6,9 @@
 // Shared PM primitives (PM_COLUMNS, PriorityDot, DueBadge, statusColor,
 // ...) come from ui/pm_shared.js, loaded earlier in the bundle.
 
-function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, onOpenProject, byId }) {
+let _pmDragTask = null;  // active drag payload (module-level; no useRef in this bundle)
+
+function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, onOpenProject, onMoveTo, onDropOnCard, byId }) {
   const keys = PM_COLUMNS.map(c => c[0]);
   const ci = keys.indexOf(task.status);
   const navBtn = (label, title, onClick) => (
@@ -18,10 +20,15 @@ function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, 
     }}>{label}</button>
   );
   return (
-    <div className="fade-up" style={{
-      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8,
-      padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6,
-    }}>
+    <div className="fade-up" draggable
+      onDragStart={() => { _pmDragTask = task; }}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => { e.preventDefault(); e.stopPropagation(); onDropOnCard(task); }}
+      style={{
+        background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8,
+        padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6,
+        cursor: 'grab',
+      }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
         <span style={{ marginTop: 3, display: 'inline-flex', flexShrink: 0 }}>
           <PriorityDot priority={task.priority} />
@@ -42,6 +49,8 @@ function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, 
         {(task.tags || []).map(tag => <Badge key={tag} color={T.blue}>{tag}</Badge>)}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        {isTaskReady(task, byId) &&
+          navBtn('✓', 'Unblocked — move to Backlog', () => onMoveTo(task, 'backlog'))}
         {ci > 0 && navBtn('◀', `Move to ${PM_COLUMNS[ci - 1][1]}`, () => onMoveStatus(task, -1))}
         {ci >= 0 && ci < keys.length - 1 &&
           navBtn('▶', `Move to ${PM_COLUMNS[ci + 1][1]}`, () => onMoveStatus(task, +1))}
@@ -99,10 +108,19 @@ function TaskBoard({ projects, onOpenDrill }) {
     const path = mode === 'global' ? (task.project && task.project.path) : scope;
     if (!path) return;
     try {
-      await api.put('/api/projects/pm/task', { path, id: task.id, move: { status: next } });
+      const body = { path, id: task.id, move: { status: next } };
+      if (mode === 'project' && boardData && boardData.board && boardData.board.rev != null) {
+        body.expected_rev = boardData.board.rev;
+      }
+      await api.put('/api/projects/pm/task', body);
       notify(`Moved to ${PM_COLUMNS[ci + dir][1]}`);
       load();
-    } catch (e) { notify(e.message || 'Move failed', 'err'); }
+    } catch (e) {
+      if (e && e.status === 409) {
+        notify('Board changed elsewhere — refreshed', 'err');
+        load();
+      } else { notify(e.message || 'Move failed', 'err'); }
+    }
   };
 
   const moveRank = async (task, colTasks, index, dir) => {
@@ -110,10 +128,47 @@ function TaskBoard({ projects, onOpenDrill }) {
       ? { before_id: colTasks[index - 1].id }
       : { after_id: colTasks[index + 1].id };
     try {
-      await api.put('/api/projects/pm/task', { path: scope, id: task.id, move });
+      const body = { path: scope, id: task.id, move };
+      if (boardData && boardData.board && boardData.board.rev != null) {
+        body.expected_rev = boardData.board.rev;
+      }
+      await api.put('/api/projects/pm/task', body);
       notify(dir < 0 ? 'Moved up' : 'Moved down');
       load();
-    } catch (e) { notify(e.message || 'Reorder failed', 'err'); }
+    } catch (e) {
+      if (e && e.status === 409) {
+        notify('Board changed elsewhere — refreshed', 'err');
+        load();
+      } else { notify(e.message || 'Reorder failed', 'err'); }
+    }
+  };
+
+  const moveTo = async (task, status) => {
+    const path = mode === 'global' ? (task.project && task.project.path) : scope;
+    if (!path || task.status === status) return;
+    try {
+      await api.put('/api/projects/pm/task', { path, id: task.id, move: { status } });
+      notify(`Moved to ${(PM_COLUMNS.find(c => c[0] === status) || [status, status])[1]}`);
+      load();
+    } catch (e) { notify(e.message || 'Move failed', 'err'); }
+  };
+
+  const dropOnColumn = (key) => {
+    const t = _pmDragTask; _pmDragTask = null;
+    if (!t) return;
+    moveTo(t, key);
+  };
+
+  const dropOnCard = (target) => {
+    const t = _pmDragTask; _pmDragTask = null;
+    if (!t || t.id === target.id) return;
+    if (mode !== 'project') { moveTo(t, target.status); return; }
+    const move = t.status === target.status
+      ? { before_id: target.id }
+      : { status: target.status, before_id: target.id };
+    api.put('/api/projects/pm/task', { path: scope, id: t.id, move })
+      .then(() => { notify('Moved'); load(); })
+      .catch(e => notify(e.message || 'Move failed', 'err'));
   };
 
   const addTask = async () => {
@@ -220,10 +275,13 @@ function TaskBoard({ projects, onOpenDrill }) {
                     {hiddenDone ? '—' : colTasks.length}
                   </span>
                 </div>
-                <div style={{
-                  display: 'flex', flexDirection: 'column', gap: 8,
-                  overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', paddingRight: 2,
-                }}>
+                <div
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => { e.preventDefault(); dropOnColumn(key); }}
+                  style={{
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                    overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', paddingRight: 2,
+                  }}>
                   {mode === 'project' && key === 'backlog' && (
                     <div style={{ display: 'flex', gap: 6 }}>
                       <input value={newTitle}
@@ -254,7 +312,8 @@ function TaskBoard({ projects, onOpenDrill }) {
                         <TaskBoardCard key={t.id} task={t} mode={mode}
                           colTasks={colTasks} index={i} byId={boardById}
                           onMoveStatus={moveStatus} onMoveRank={moveRank}
-                          onOpenProject={openProject} />
+                          onOpenProject={openProject}
+                          onMoveTo={moveTo} onDropOnCard={dropOnCard} />
                       ))}
                       {colTasks.length === 0 && !(mode === 'project' && key === 'backlog') && (
                         <div style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic', padding: '4px 2px' }}>

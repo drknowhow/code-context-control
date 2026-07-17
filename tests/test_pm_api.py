@@ -160,6 +160,15 @@ class TestTaskMutations(PmApiBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("throughput", resp.get_json()["report"])
 
+    def test_restore_via_put(self):
+        t = TaskStore(str(self.proj)).create_task("arch-me")
+        self.client.delete("/api/projects/pm/task",
+                           json={"path": str(self.proj), "id": t["id"]})
+        resp = self.client.put("/api/projects/pm/task", json={
+            "path": str(self.proj), "id": t["id"], "restore": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["task"]["lifecycle"], "active")
+
 
 class TestMilestoneNoteLink(PmApiBase):
     def test_milestone_lifecycle(self):
@@ -259,6 +268,21 @@ class TestGlobal(PmApiBase):
         bp = resp.get_json()["by_project"][str(self.proj.resolve())]
         self.assertEqual(bp["open"], 1)   # a-done is not open
         self.assertEqual(bp["shown"], 2)  # but both rows ship to the client
+
+    def test_global_blocker_enrichment(self):
+        store = TaskStore(str(self.proj))
+        blocker = store.create_task("dep-blocker")
+        blocked = store.create_task("dep-blocked")
+        store.add_dependency(blocked["id"], blocker["id"])
+        store.update_task(blocked["id"], status="blocked")
+        resp = self.client.get("/api/pm/global")
+        row = next(t for t in resp.get_json()["tasks"] if t["id"] == blocked["id"])
+        self.assertEqual(row["blockers_open"], 1)
+        self.assertEqual(row["blocker_titles"], ["dep-blocker"])
+        store.update_task(blocker["id"], status="done")
+        resp = self.client.get("/api/pm/global")
+        row = next(t for t in resp.get_json()["tasks"] if t["id"] == blocked["id"])
+        self.assertEqual(row["blockers_open"], 0)  # done blocker resolved server-side
 
 
 class TestInspectWiring(PmApiBase):

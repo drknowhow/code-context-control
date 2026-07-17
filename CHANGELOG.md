@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PM UI enhancements (full plan)
+
+- **Conflict-aware writes.** Both UIs now send `expected_rev` on status
+  moves and reorders; a 409 (concurrent writer) refreshes the board with
+  a "changed elsewhere" message instead of silently overwriting.
+- **Ready actions.** Tasks whose blockers are all done get a one-click
+  "→ backlog" (list rows) / ✓ button (hub cards).
+- **Subtask rendering.** Subtasks indent under their parent within a
+  status section (↳), parents carry an "n/m sub" rollup chip, and a
+  child whose parent lives in another column shows a parent reference.
+- **Hub blocker fidelity.** `/api/pm/global` rows now carry server-side
+  `blockers_open` + `blocker_titles` (resolved against the full store,
+  matching store semantics: done/archived/purged blockers don't count),
+  so global-view badges are exact.
+- **Per-task history.** A 🕘 button per row filters the Activity panel
+  to that task (`/api/pm/events?id=`); the panel header shows and
+  clears the filter.
+- **Insights.** New section with a 14-day completion sparkline, a
+  cycle-time bar strip for the last 10 completed tasks, and a milestone
+  timeline (targets on an axis, today marker, at-risk in red).
+- **Board ergonomics.** Hub cards are drag-and-droppable (drop on a
+  column = status move, drop on a card = reorder/insert before it in
+  project scope); quick-add parses `p0-p3`, `due:YYYY-MM-DD`, `#tag`,
+  and `@milestone` tokens; an Archived section lists archived tasks
+  with one-click Restore (`PUT {restore: true}` added to both task
+  endpoints, audited + history-logged via `restore_task`).
+
 ### Added — PM UI pass (dependencies, health, history in both UIs)
 
 - **Shared primitives** (`cli/ui/pm_shared.js`, loaded by both bundles):

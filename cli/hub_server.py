@@ -1770,6 +1770,12 @@ def api_pm_task():
         task_id = (data.get("id") or "").strip()
         if not task_id:
             return jsonify({"error": "id is required"}), 400
+        if data.get("restore"):
+            res = store.restore_task(task_id, actor="hub")
+            if "error" in res:
+                return jsonify(res), 400
+            _pm_audit(resolved, "task", "restore", res["id"])
+            return jsonify({"updated": True, "task": res})
         if not (data.get("fields") or data.get("move")):
             return jsonify({"error": "fields or move required"}), 400
         res = store.mutate_task(task_id, fields=data.get("fields"),
@@ -2058,17 +2064,36 @@ def api_pm_global():
             skipped.append({"path": ppath, "reason": "not initialized"})
             continue
         try:
-            if status_filter and status_filter != "all":
-                rows = TaskStore(ppath).list_tasks(status=status_filter, limit=1000)
-            else:
-                rows = TaskStore(ppath).list_tasks(limit=1000)
-                if status_filter != "all":
-                    rows = [t for t in rows if t.get("status") != "done"]
+            everything = TaskStore(ppath).list_tasks(include_archived=True,
+                                                     limit=1000)
         except Exception as e:
             skipped.append({"path": ppath, "reason": str(e)})
             continue
+        active = [t for t in everything
+                  if t.get("lifecycle", "active") == "active"]
+        if status_filter and status_filter != "all":
+            rows = [t for t in active if t.get("status") == status_filter]
+        elif status_filter == "all":
+            rows = active
+        else:
+            rows = [t for t in active if t.get("status") != "done"]
         if not rows:
             continue
+        # Resolve blockers server-side: the aggregate ships only open tasks,
+        # so clients cannot tell a done/archived blocker from an open one.
+        by_id = {t["id"]: t for t in everything}
+        for t in rows:
+            deps = t.get("blocked_by") or []
+            if not deps:
+                continue
+            found = [(d, by_id.get(d)) for d in deps]
+            t["blockers_open"] = sum(
+                1 for _, b in found
+                if b is not None and b.get("lifecycle", "active") == "active"
+                and b.get("status") != "done")
+            t["blocker_titles"] = [
+                (b.get("title") or d[:8]) if b is not None else d[:8]
+                for d, b in found]
         proj_info = {"name": p.get("name"), "path": ppath}
         if p.get("parent_path"):
             proj_info["parent_path"] = p["parent_path"]

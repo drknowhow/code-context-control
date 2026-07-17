@@ -73,27 +73,48 @@ const TaskLinkIcons = ({ task }) => {
   );
 };
 
-// Blocked/ready dependency badge. `byId` (optional) maps task id -> task so
-// blocker titles resolve and done blockers stop counting as open; unresolved
-// ids count as open (conservative).
+// Open-blocker count for a task. Prefers server-enriched fields
+// (blockers_open from /api/pm/global); otherwise resolves through `byId`,
+// counting unresolved ids as open (conservative).
+function taskOpenBlockers(task, byId) {
+  const deps = (task && task.blocked_by) || [];
+  if (!deps.length) return 0;
+  if (task.blockers_open != null) return task.blockers_open;
+  return deps.filter(id => {
+    const b = (byId || {})[id];
+    return !b || (b.status !== 'done' && (b.lifecycle || 'active') === 'active');
+  }).length;
+}
+
+// True when a task still sits in "blocked" but nothing blocks it anymore.
+function isTaskReady(task, byId) {
+  const deps = (task && task.blocked_by) || [];
+  return !!task && task.status === 'blocked' && deps.length > 0 &&
+    taskOpenBlockers(task, byId) === 0;
+}
+
+// Blocked/ready dependency badge.
 const DepsBadge = ({ task, byId }) => {
   const deps = (task && task.blocked_by) || [];
   if (!deps.length) return null;
-  const lookup = (id) => (byId || {})[id] || null;
-  const open = deps.filter(id => {
-    const b = lookup(id);
-    return !b || (b.status !== 'done' && (b.lifecycle || 'active') === 'active');
-  });
-  const title = deps.map(id => {
-    const b = lookup(id);
-    const label = (b && b.title) || id;
-    return b && b.status === 'done' ? `${label} (done)` : label;
-  }).join('\n');
-  const ready = task.status === 'blocked' && open.length === 0;
+  const open = taskOpenBlockers(task, byId);
+  const title = (task.blocker_titles && task.blocker_titles.join('\n')) ||
+    deps.map(id => {
+      const b = (byId || {})[id];
+      const label = (b && b.title) || id;
+      return b && b.status === 'done' ? `${label} (done)` : label;
+    }).join('\n');
+  if (isTaskReady(task, byId)) {
+    return (
+      <span title={title} style={{ display: 'inline-flex', flexShrink: 0 }}>
+        <Badge color={T.accent}>✓ ready</Badge>
+      </span>
+    );
+  }
   return (
     <span title={title} style={{ display: 'inline-flex', flexShrink: 0 }}>
-      <Badge color={ready ? T.accent : T.warn}>
-        {ready ? '✓ ready' : `⛔ ${open.length || deps.length}`}
+      <Badge color={open ? T.warn : T.textMuted}>
+        {open ? `⛔ ${open}` : '✓ deps'}
       </Badge>
     </span>
   );
