@@ -4,7 +4,12 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.53.0] - 2026-07-17
+
+Project management grew from a task list into a lean PM system in one
+release cycle: cross-process write safety, an append-only event history,
+dependencies/subtasks/health reports, full UI support, and activity-based
+time tracking.
 
 ### Added — Project time tracking (auto + manual, full CRUD)
 

@@ -88,7 +88,7 @@ def _build_instructions(ide_name: str) -> str:
         "  DISTILL terminal/log output >10 lines → c3_filter\n"
         "  EXECUTE shell (tests/git/build) → c3_shell\n"
         "  RECALL cross-session knowledge → c3_memory(action='recall') (index+fetch for large stores)\n"
-        "  TRACK durable tasks/milestones/decisions → c3_task\n"
+        "  TRACK durable tasks/milestones/decisions + time → c3_task\n"
         "  AGENT CONFIG inventory/history/diff/restore → c3_artifacts\n"
         "  SNAPSHOT before /clear → c3_session(action='snapshot')\n"
         "  HEALTH/budget checks → c3_status\n"

@@ -212,7 +212,7 @@ C3 exposes 18 tools as a native MCP server. Your IDE calls them directly:
 | `c3_edits` | Edit-ledger queries + version diffs + restore points + per-branch filter |
 | `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
 | `c3_project` | Cross-project — discover & operate on other c3-installed projects; guarded writes (v2.31.0) |
-| `c3_task` | Durable per-project tasks, milestones, and decision notes (v2.45.0) |
+| `c3_task` | Durable per-project PM — tasks with dependencies & subtasks, milestones, decision notes, event history, health reports, and auto+manual time tracking (v2.53.0) |
 | `c3_artifacts` | Agent-config tracking — version history, diff & restore for CLAUDE.md, settings/hooks, MCP configs, skills (v2.46.0) |
 
 On Windows, `c3_shell` uses Git Bash when available. Git Bash does not bundle
