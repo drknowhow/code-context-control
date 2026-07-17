@@ -6,7 +6,7 @@
 // Shared PM primitives (PM_COLUMNS, PriorityDot, DueBadge, statusColor,
 // ...) come from ui/pm_shared.js, loaded earlier in the bundle.
 
-function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, onOpenProject }) {
+function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, onOpenProject, byId }) {
   const keys = PM_COLUMNS.map(c => c[0]);
   const ci = keys.indexOf(task.status);
   const navBtn = (label, title, onClick) => (
@@ -37,6 +37,7 @@ function TaskBoardCard({ task, mode, colTasks, index, onMoveStatus, onMoveRank, 
             <Badge color={T.purple}>{task.project.name || 'project'}</Badge>
           </span>
         )}
+        <DepsBadge task={task} byId={byId} />
         <DueBadge task={task} />
         {(task.tags || []).map(tag => <Badge key={tag} color={T.blue}>{tag}</Badge>)}
       </div>
@@ -145,7 +146,11 @@ function TaskBoard({ projects, onOpenDrill }) {
     const cols = (((boardData || {}).board) || {}).columns || {};
     PM_COLUMNS.forEach(([k]) => { columns[k] = cols[k] || []; });
   }
+  const boardById = {};
+  Object.values(columns).forEach(list =>
+    list.forEach(t => { boardById[t.id] = t; }));
   const milestones = (((boardData || {}).board) || {}).milestones || [];
+  const recovery = (((boardData || {}).board) || {}).recovery || null;
   const byProject = (globalData || {}).by_project || {};
   const projChips = Object.entries(byProject)
     .sort((a, b) => (b[1].open || 0) - (a[1].open || 0) ||
@@ -192,6 +197,7 @@ function TaskBoard({ projects, onOpenDrill }) {
       )}
 
       {err && <div style={{ fontSize: 12, color: T.error }}>{err}</div>}
+      {mode === 'project' && <RecoveryBanner recovery={recovery} />}
 
       {/* Board */}
       {loadingBoard ? (
@@ -246,7 +252,7 @@ function TaskBoard({ projects, onOpenDrill }) {
                     <React.Fragment>
                       {colTasks.map((t, i) => (
                         <TaskBoardCard key={t.id} task={t} mode={mode}
-                          colTasks={colTasks} index={i}
+                          colTasks={colTasks} index={i} byId={boardById}
                           onMoveStatus={moveStatus} onMoveRank={moveRank}
                           onOpenProject={openProject} />
                       ))}

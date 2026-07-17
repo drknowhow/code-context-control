@@ -72,3 +72,46 @@ const TaskLinkIcons = ({ task }) => {
     }}>🔗 {links.length}</span>
   );
 };
+
+// Blocked/ready dependency badge. `byId` (optional) maps task id -> task so
+// blocker titles resolve and done blockers stop counting as open; unresolved
+// ids count as open (conservative).
+const DepsBadge = ({ task, byId }) => {
+  const deps = (task && task.blocked_by) || [];
+  if (!deps.length) return null;
+  const lookup = (id) => (byId || {})[id] || null;
+  const open = deps.filter(id => {
+    const b = lookup(id);
+    return !b || (b.status !== 'done' && (b.lifecycle || 'active') === 'active');
+  });
+  const title = deps.map(id => {
+    const b = lookup(id);
+    const label = (b && b.title) || id;
+    return b && b.status === 'done' ? `${label} (done)` : label;
+  }).join('\n');
+  const ready = task.status === 'blocked' && open.length === 0;
+  return (
+    <span title={title} style={{ display: 'inline-flex', flexShrink: 0 }}>
+      <Badge color={ready ? T.accent : T.warn}>
+        {ready ? '✓ ready' : `⛔ ${open.length || deps.length}`}
+      </Badge>
+    </span>
+  );
+};
+
+// Warning strip shown when the store quarantined a corrupt pm.json.
+const RecoveryBanner = ({ recovery }) => {
+  if (!recovery) return null;
+  return (
+    <div style={{
+      fontSize: 12, color: T.warn, border: `1px solid ${T.warn}50`,
+      background: `${T.warn}14`, borderRadius: 6, padding: '6px 10px',
+      lineHeight: 1.45,
+    }}>
+      pm.json was corrupt and {recovery.restored_from_backup
+        ? 'has been restored from backup (pm.json.bak)'
+        : 'no backup existed — the task store restarted empty'}
+      {recovery.quarantined ? ` — the original is kept as ${recovery.quarantined}` : ''}.
+    </div>
+  );
+};

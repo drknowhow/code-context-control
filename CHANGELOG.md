@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PM UI pass (dependencies, health, history in both UIs)
+
+- **Shared primitives** (`cli/ui/pm_shared.js`, loaded by both bundles):
+  `DepsBadge` — amber "⛔ n" for open blockers, green "✓ ready" when a
+  task is still marked blocked but nothing blocks it (hover lists
+  blocker titles) — and `RecoveryBanner`, a warning strip rendered when
+  the board reports a quarantined/restored `pm.json`.
+- **Per-project Tasks tab** (`cli/ui/components/tasks.js`): a health
+  strip under the header (overdue / blocked / ready counts, at-risk
+  milestones, weekly throughput — only rendered when something needs
+  attention, fed by `GET /api/pm/report`); a per-row dependency editor
+  (⛓ toggle → blocker chips with remove, candidate picker → `POST
+  /api/pm/deps`); a collapsed **Activity** panel rendering the last 20
+  events from `GET /api/pm/events` with before→after summaries and
+  actor attribution; the recovery banner.
+- **Hub task board** (`cli/hub_ui/components/task_board.js`): cards show
+  the blocked/ready badge (blockers resolved against the loaded board),
+  and project scope shows the recovery banner.
+
 ### Added — PM dependencies, subtasks, and reporting (phase 3)
 
 - **Task dependencies.** Tasks carry `blocked_by: [task_ids]`, managed

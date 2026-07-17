@@ -6,6 +6,22 @@
 // This bundle has no notify/usePoll — errors render inline, polling is
 // a local setInterval.
 
+// Compact one-line description of a PM history event for the Activity list.
+function fmtEventDetail(ev, byId) {
+  const name = (id) => (((byId || {})[id]) || {}).title || (id || '').slice(0, 8);
+  if (ev.op === 'create') return (ev.data || {}).title || name(ev.id);
+  const d = ev.data || {};
+  if (ev.op === 'block' || ev.op === 'unblock') {
+    return `${name(ev.id)} ${ev.op === 'block' ? 'blocked by' : 'no longer blocked by'} ${d.blocker_title || name(d.blocker)}`;
+  }
+  if (ev.op === 'unblocked') return `${name(ev.id)} released by ${name(d.released_by)}`;
+  const parts = Object.entries(ev.patch || {}).slice(0, 3).map(([k, v]) =>
+    (Array.isArray(v) && v.length === 2)
+      ? `${k}: ${v[0] == null ? '—' : v[0]} → ${v[1] == null ? '—' : v[1]}`
+      : k);
+  return parts.length ? `${name(ev.id)} — ${parts.join(', ')}` : name(ev.id);
+}
+
 function TasksTab() {
   const [data, setData] = useState(null);          // {board, notes}
   const [loading, setLoading] = useState(true);
@@ -17,6 +33,11 @@ function TasksTab() {
   const [msDate, setMsDate] = useState('');
   const [noteText, setNoteText] = useState('');
   const [noteKind, setNoteKind] = useState('note');
+  const [report, setReport] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [depsFor, setDepsFor] = useState('');   // task id with dep editor open
+  const [depPick, setDepPick] = useState('');
+  const [showActivity, setShowActivity] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -24,6 +45,12 @@ function TasksTab() {
       setData(d);
       setErr('');
     } catch (e) { setErr(e.message || 'Failed to load tasks'); }
+    try {
+      const r = await api.get('/api/pm/report');
+      setReport(r);
+      const ev = await api.get('/api/pm/events?limit=20');
+      setEvents((ev && ev.events) || []);
+    } catch (e) { /* report/history are best-effort extras */ }
     setLoading(false);
   }, []);
 
@@ -68,6 +95,15 @@ function TasksTab() {
     });
   };
   const delNote = (n) => run(() => api.del('/api/pm/note', { id: n.id }));
+  const addDep = (t, blocker) => {
+    if (!blocker) return;
+    run(async () => {
+      await api.post('/api/pm/deps', { id: t.id, blocker, op: 'add' });
+      setDepPick('');
+    });
+  };
+  const removeDep = (t, blocker) =>
+    run(() => api.post('/api/pm/deps', { id: t.id, blocker, op: 'remove' }));
 
   // ── Derived ───────────────────────────────────────────────────
   const board = (data || {}).board || {};
@@ -79,6 +115,9 @@ function TasksTab() {
     .slice(0, 15);
   const msById = {};
   milestones.forEach(m => { msById[m.id] = m; });
+  const allTasks = Object.values(columns).flat();
+  const taskById = {};
+  allTasks.forEach(t => { taskById[t.id] = t; });
   const sectionOrder = ['in_progress', 'blocked', 'backlog', 'done'];
   const labelOf = (k) => (PM_COLUMNS.find(c => c[0] === k) || [k, k])[1];
 
@@ -104,30 +143,100 @@ function TasksTab() {
     </div>
   );
 
+  const depChainBtn = (t) => (
+    <button onClick={() => { setDepsFor(depsFor === t.id ? '' : t.id); setDepPick(''); }}
+      title="Dependencies" className="mono" style={{
+        background: depsFor === t.id ? T.accentDim : 'transparent',
+        border: `1px solid ${depsFor === t.id ? `${T.accent}50` : T.border}`,
+        borderRadius: 4, cursor: 'pointer', padding: '1px 5px', fontSize: 10,
+        color: (t.blocked_by || []).length ? T.warn : T.textDim, flexShrink: 0,
+      }}>⛓{(t.blocked_by || []).length || ''}</button>
+  );
+
+  const depsEditor = (t) => {
+    const deps = t.blocked_by || [];
+    const candidates = allTasks.filter(x =>
+      x.id !== t.id && x.status !== 'done' && deps.indexOf(x.id) === -1);
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+        padding: '6px 10px 7px 26px', background: T.surfaceAlt,
+        border: `1px solid ${T.border}`, borderTop: 'none',
+        borderRadius: '0 0 6px 6px',
+      }}>
+        <span className="mono" style={{ fontSize: 10, color: T.textDim, textTransform: 'uppercase', letterSpacing: 1 }}>
+          blocked by
+        </span>
+        {deps.length === 0 && (
+          <span style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic' }}>nothing</span>
+        )}
+        {deps.map(id => {
+          const b = taskById[id];
+          const done = b && b.status === 'done';
+          return (
+            <span key={id} className="mono" style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              fontSize: 11, padding: '2px 6px', borderRadius: 999,
+              border: `1px solid ${done ? T.border : `${T.warn}50`}`,
+              color: done ? T.textDim : T.warn,
+              textDecoration: done ? 'line-through' : 'none',
+            }}>
+              {(b && b.title) || id.slice(0, 8)}
+              <button onClick={() => removeDep(t, id)} title="Remove dependency" style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: 'inherit', fontSize: 11, padding: 0, lineHeight: 1,
+              }}>×</button>
+            </span>
+          );
+        })}
+        <select value={depPick} onChange={e => setDepPick(e.target.value)}
+          className="mono" style={{
+            background: T.surface, color: T.textMuted, border: `1px solid ${T.border}`,
+            borderRadius: 6, fontSize: 11, padding: '2px 6px', cursor: 'pointer', maxWidth: 220,
+          }}>
+          <option value="">+ add blocker…</option>
+          {candidates.map(c => (
+            <option key={c.id} value={c.id}>{(c.title || '').slice(0, 60)}</option>
+          ))}
+        </select>
+        {depPick && (
+          <Btn variant="ghost" onClick={() => addDep(t, depPick)}
+            style={{ padding: '2px 10px', fontSize: 11 }}>Add</Btn>
+        )}
+      </div>
+    );
+  };
+
   const taskRow = (t) => (
-    <div key={t.id} style={{
-      display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
-      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6,
-    }}>
-      <PriorityDot priority={t.priority} />
-      <span style={{
-        fontSize: 13, flex: 1, minWidth: 0, overflowWrap: 'anywhere', lineHeight: 1.35,
-        color: t.status === 'done' ? T.textMuted : T.text,
-        textDecoration: t.status === 'done' ? 'line-through' : 'none',
-      }}>{t.title}</span>
-      {t.milestone_id && msById[t.milestone_id] &&
-        <MilestoneChip milestone={msById[t.milestone_id]} />}
-      <DueBadge task={t} />
-      {(t.tags || []).map(tag => <Badge key={tag} color={T.blue}>{tag}</Badge>)}
-      <TaskLinkIcons task={t} />
-      <select value={t.status} onChange={e => setStatus(t, e.target.value)}
-        className="mono" style={{
-          background: T.surfaceAlt, color: T.textMuted, border: `1px solid ${T.border}`,
-          borderRadius: 6, fontSize: 11, padding: '3px 6px', cursor: 'pointer', flexShrink: 0,
-        }}>
-        {PM_COLUMNS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-      </select>
-      {trashBtn('Archive task', () => delTask(t))}
+    <div key={t.id} style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
+        background: T.surface, border: `1px solid ${T.border}`,
+        borderRadius: depsFor === t.id ? '6px 6px 0 0' : 6,
+      }}>
+        <PriorityDot priority={t.priority} />
+        <span style={{
+          fontSize: 13, flex: 1, minWidth: 0, overflowWrap: 'anywhere', lineHeight: 1.35,
+          color: t.status === 'done' ? T.textMuted : T.text,
+          textDecoration: t.status === 'done' ? 'line-through' : 'none',
+        }}>{t.title}</span>
+        {t.milestone_id && msById[t.milestone_id] &&
+          <MilestoneChip milestone={msById[t.milestone_id]} />}
+        <DepsBadge task={t} byId={taskById} />
+        <DueBadge task={t} />
+        {(t.tags || []).map(tag => <Badge key={tag} color={T.blue}>{tag}</Badge>)}
+        <TaskLinkIcons task={t} />
+        {depChainBtn(t)}
+        <select value={t.status} onChange={e => setStatus(t, e.target.value)}
+          className="mono" style={{
+            background: T.surfaceAlt, color: T.textMuted, border: `1px solid ${T.border}`,
+            borderRadius: 6, fontSize: 11, padding: '3px 6px', cursor: 'pointer', flexShrink: 0,
+          }}>
+          {PM_COLUMNS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        {trashBtn('Archive task', () => delTask(t))}
+      </div>
+      {depsFor === t.id && depsEditor(t)}
     </div>
   );
 
@@ -150,6 +259,31 @@ function TasksTab() {
         </Btn>
       </div>
       {err && <div style={{ fontSize: 12, color: T.error }}>{err}</div>}
+      <RecoveryBanner recovery={board.recovery} />
+
+      {/* Health strip (only when something needs attention) */}
+      {report && ((report.overdue || []).length > 0 || (report.blocked || []).length > 0 ||
+        (report.ready || []).length > 0 ||
+        (report.milestones || []).some(m => m.at_risk)) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {(report.overdue || []).length > 0 &&
+            <Badge color={T.error}>{report.overdue.length} overdue</Badge>}
+          {(report.blocked || []).length > 0 &&
+            <Badge color={T.warn}>{report.blocked.length} blocked</Badge>}
+          {(report.ready || []).length > 0 &&
+            <Badge color={T.accent}>{report.ready.length} ready to unblock</Badge>}
+          {(report.milestones || []).filter(m => m.at_risk).map(m => (
+            <Badge key={m.id} color={T.error}>at risk: {m.name}</Badge>
+          ))}
+          {report.throughput && report.throughput.done_last_7d > 0 && (
+            <span className="mono" style={{ fontSize: 11, color: T.textDim }}>
+              {report.throughput.done_last_7d} done this week
+              {report.throughput.avg_cycle_days != null
+                ? ` · ${report.throughput.avg_cycle_days}d avg cycle` : ''}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Inline add */}
       <div style={{ display: 'flex', gap: 8 }}>
@@ -281,6 +415,39 @@ function TasksTab() {
               style={{ padding: '6px 12px', justifyContent: 'center' }}>Add note</Btn>
           </div>
         </div>
+      </div>
+
+      {/* Activity (recent PM events, collapsed by default) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div onClick={() => setShowActivity(!showActivity)}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          {sectionHeader(T.textDim, 'Activity', events.length)}
+          <span className="mono" style={{ fontSize: 10, color: T.textDim }}>
+            {showActivity ? 'hide' : 'show'}
+          </span>
+        </div>
+        {showActivity && events.length === 0 && (
+          <div style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic', paddingLeft: 14 }}>
+            no recorded events yet
+          </div>
+        )}
+        {showActivity && events.map((ev, i) => (
+          <div key={i} className="mono" style={{
+            display: 'flex', gap: 8, fontSize: 11, color: T.textMuted,
+            padding: '2px 10px', alignItems: 'baseline',
+          }}>
+            <span style={{ color: T.textDim, flexShrink: 0 }}>
+              {(ev.ts || '').slice(5, 16).replace('T', ' ')}
+            </span>
+            <span style={{ flexShrink: 0 }}>{ev.entity}.{ev.op}</span>
+            <span style={{ minWidth: 0, overflowWrap: 'anywhere', flex: 1 }}>
+              {fmtEventDetail(ev, taskById)}
+            </span>
+            {ev.actor && (
+              <span style={{ color: T.textDim, flexShrink: 0 }}>by {ev.actor}</span>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
