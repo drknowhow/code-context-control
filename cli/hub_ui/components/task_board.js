@@ -71,6 +71,7 @@ function TaskBoard({ projects, onOpenDrill }) {
   const [msFilter, setMsFilter] = useState('');       // milestone id ('' = all)
   const [err, setErr] = useState('');
   const [newTitle, setNewTitle] = useState('');
+  const [timeData, setTimeData] = useState(null);
 
   const mode = scope === 'global' ? 'global' : 'project';
 
@@ -82,6 +83,10 @@ function TaskBoard({ projects, onOpenDrill }) {
         const q = msFilter ? `&milestone=${encodeURIComponent(msFilter)}` : '';
         const b = await api.get(`/api/projects/pm?path=${encodeURIComponent(scope)}${q}`);
         setBoardData(b);
+        try {
+          setTimeData(await api.get(
+            `/api/projects/time?path=${encodeURIComponent(scope)}`));
+        } catch (e2) { setTimeData(null); }
       }
       setErr('');
     } catch (e) {
@@ -95,7 +100,7 @@ function TaskBoard({ projects, onOpenDrill }) {
   }, [scope, msFilter]);
 
   // Reset per-project state when the scope changes (avoid stale board flash).
-  useEffect(() => { setBoardData(null); setMsFilter(''); setNewTitle(''); setErr(''); }, [scope]);
+  useEffect(() => { setBoardData(null); setMsFilter(''); setNewTitle(''); setErr(''); setTimeData(null); }, [scope]);
   useEffect(() => { load(); }, [load]);
   usePoll(load, 10000);
 
@@ -251,6 +256,14 @@ function TaskBoard({ projects, onOpenDrill }) {
         </div>
       )}
 
+      {mode === 'project' && timeData && timeData.summary && (
+        <div className="mono" style={{ fontSize: 11, color: T.textDim }}>
+          ⏱ {fmtMinutes(timeData.summary.today.total_min)} today
+          {' · '}{fmtMinutes(timeData.summary.last_7d.total_min)} last 7d
+          {' · '}{fmtMinutes(timeData.summary.last_30d.total_min)} last 30d
+          {' · '}{(timeData.entries || []).length} manual
+        </div>
+      )}
       {err && <div style={{ fontSize: 12, color: T.error }}>{err}</div>}
       {mode === 'project' && <RecoveryBanner recovery={recovery} />}
 

@@ -132,7 +132,8 @@ class TestReadActions(unittest.TestCase):
     def test_read_action_set(self):
         self.assertEqual(READ_ACTIONS,
                          {"list", "get", "board", "history", "report",
-                          "milestone_list", "note_list"})
+                          "milestone_list", "note_list",
+                          "time_list", "time_summary"})
 
 
 if __name__ == "__main__":

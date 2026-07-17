@@ -39,6 +39,7 @@ from services.router import ModelRouter
 from services.session_manager import SessionManager
 from services.session_preloader import SessionPreloader
 from services.task_store import TaskStore
+from services.time_tracker import TimeTracker
 from services.validation_cache import ValidationCache
 from services.vector_store import VectorStore
 from services.watcher import CodeWatcher
@@ -85,6 +86,7 @@ class C3Runtime:
     retention: Optional[RetentionManager] = None
     task_store: Optional[TaskStore] = None
     artifact_store: Optional[ArtifactStore] = None
+    time_tracker: Optional[TimeTracker] = None
     memory_distiller: Optional[MemoryDistiller] = None
 
 
@@ -238,6 +240,9 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
     # Project management store (tasks/milestones/notes) — construction is I/O-free
     task_store = TaskStore(str(project))
 
+    # Activity-based time tracking (MCP pings) — construction is I/O-free
+    time_tracker = TimeTracker(str(project))
+
     # Agent-artifact tracking (instructions/settings/MCP/skills) — I/O-free ctor
     artifact_store = ArtifactStore(str(project), ide_name=resolved_ide)
 
@@ -322,6 +327,7 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         retention=retention,
         task_store=task_store,
         artifact_store=artifact_store,
+        time_tracker=time_tracker,
         memory_distiller=memory_distiller,
     )
     runtime.agents = create_agents(

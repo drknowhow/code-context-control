@@ -1367,6 +1367,52 @@ def api_pm_report():
     return jsonify(_task_store().report())
 
 
+# ─── API: Time tracking ──────────────────────────────────
+def _time_tracker():
+    tracker = getattr(runtime, "time_tracker", None)
+    if tracker is None:
+        from services.time_tracker import TimeTracker
+        tracker = TimeTracker(str(PROJECT_PATH))
+    return tracker
+
+
+@app.route('/api/time', methods=["GET"])
+def api_time_get():
+    """Time summary + recent auto sessions + manual entries."""
+    tracker = _time_tracker()
+    return jsonify({"summary": tracker.summary(),
+                    "sessions": tracker.sessions()[:20],
+                    "entries": tracker.list_entries(limit=100)})
+
+
+@app.route('/api/time/entry', methods=["POST", "PUT", "DELETE"])
+def api_time_entry():
+    data = request.get_json(force=True) or {}
+    tracker = _time_tracker()
+    if request.method == "POST":
+        res = tracker.add_entry(data.get("minutes"), note=data.get("note", ""),
+                                date=data.get("date") or None,
+                                task_id=data.get("task_id"), created_by="ui")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("time", "create", res["id"])
+        return jsonify({"created": True, "entry": res}), 201
+    entry_id = (data.get("id") or "").strip()
+    if not entry_id:
+        return jsonify({"error": "id is required"}), 400
+    if request.method == "PUT":
+        res = tracker.update_entry(entry_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit("time", "update", res["id"])
+        return jsonify({"updated": True, "entry": res})
+    res = tracker.delete_entry(entry_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit("time", "delete", entry_id)
+    return jsonify(res)
+
+
 # ─── API: Agent artifacts (config tracking) ──────────────
 def _artifact_store():
     store = artifact_store or getattr(runtime, "artifact_store", None)

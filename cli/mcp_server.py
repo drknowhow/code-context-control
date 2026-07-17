@@ -102,6 +102,13 @@ async def lifespan(server):
     """Initialize all services, auto-start session, start file watcher."""
     project = PROJECT_PATH
     services = build_runtime(project, ide_name=_IDE_NAME)
+    if getattr(services, "time_tracker", None) is not None:
+        try:
+            # The IDE loading the c3 MCP server marks the start of a work
+            # session for this project.
+            services.time_tracker.ping("startup")
+        except Exception:
+            pass
     transcript_index = TranscriptIndex(project)
     services.transcript_index = transcript_index
     snapshots = services.snapshots or ContextSnapshot(project)
@@ -367,6 +374,12 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
 
     svc.session_mgr.log_tool_call(tool_name, args, summary)
     svc.activity_log.log("tool_call", {"tool": tool_name, "args": args, "result_summary": summary})
+    tracker = getattr(svc, "time_tracker", None)
+    if tracker is not None:
+        try:
+            tracker.ping("tool")  # throttled heartbeat; idle gaps close sessions
+        except Exception:
+            pass
     svc.session_mgr.track_response(tool_name, response, response_tokens=response_tokens)
 
     hybrid_cfg = svc.hybrid_config or {}
@@ -847,6 +860,7 @@ async def c3_task(
     query: str = "",
     limit: int = 50,
     parent: str = "",
+    minutes: int = 0,
     ctx: Context = None,
 ) -> str:
     """TRACK WORK — durable per-project tasks, milestones, and decision notes; use when asked to create/update/complete tasks (reads safe in plan mode).
@@ -857,6 +871,9 @@ async def c3_task(
       block/unblock (task_id + ref=blocking task id; cycle-safe; completing the last open blocker auto-releases dependents to backlog),
       report (overdue, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput).
     Subtasks: one level via parent (add/update; update parent='none' clears).
+    Time: time_add (minutes 1-1440 [+note/due_date=date/task_id]), time_update / time_delete (ref=entry id),
+      time_list (manual entries + recent auto sessions), time_summary (today/7d/30d, auto vs manual).
+      Auto-tracking: server startup + tool calls ping .c3/time; idle gaps >15min close a session.
     Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %), milestone_archive.
     Notes: note_add (note [+kind=decision] [+task_id]), note_list.
     History: history ([+task_id] [+limit]) — append-only event log (who/what/when, before->after), newest first.
@@ -874,7 +891,7 @@ async def c3_task(
         due_date=due_date, tags=tags, description=description, milestone=milestone,
         note=note, kind=kind, link_type=link_type, ref=ref, label=label,
         name=name, target_date=target_date, query=query, limit=limit,
-        parent=parent)
+        parent=parent, minutes=minutes)
 
 
 @mcp.tool()

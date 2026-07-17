@@ -169,6 +169,26 @@ class TestTaskMutations(PmApiBase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()["task"]["lifecycle"], "active")
 
+    def test_time_endpoints_crud(self):
+        resp = self.client.post("/api/projects/time/entry", json={
+            "path": str(self.proj), "minutes": 90, "note": "deep work"})
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        entry = resp.get_json()["entry"]
+        resp = self.client.put("/api/projects/time/entry", json={
+            "path": str(self.proj), "id": entry["id"],
+            "fields": {"minutes": 45}})
+        self.assertEqual(resp.get_json()["entry"]["minutes"], 45)
+        resp = self.client.get(f"/api/projects/time?path={self.proj}")
+        data = resp.get_json()
+        self.assertEqual(data["summary"]["today"]["manual_min"], 45)
+        self.assertEqual(len(data["entries"]), 1)
+        resp = self.client.delete("/api/projects/time/entry", json={
+            "path": str(self.proj), "id": entry["id"]})
+        self.assertTrue(resp.get_json()["deleted"])
+        resp = self.client.post("/api/projects/time/entry", json={
+            "path": str(self.proj), "minutes": 0})
+        self.assertEqual(resp.status_code, 400)
+
 
 class TestMilestoneNoteLink(PmApiBase):
     def test_milestone_lifecycle(self):

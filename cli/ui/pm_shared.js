@@ -120,6 +120,14 @@ const DepsBadge = ({ task, byId }) => {
   );
 };
 
+// 95 -> "1h 35m", 45 -> "45m"
+function fmtMinutes(min) {
+  const m = Math.max(0, Math.round(min || 0));
+  if (m < 60) return `${m}m`;
+  const rest = m % 60;
+  return rest ? `${Math.floor(m / 60)}h ${rest}m` : `${Math.floor(m / 60)}h`;
+}
+
 // Warning strip shown when the store quarantined a corrupt pm.json.
 const RecoveryBanner = ({ recovery }) => {
   if (!recovery) return null;

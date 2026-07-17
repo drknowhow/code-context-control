@@ -1,12 +1,13 @@
 """c3_task — durable per-project tasks, milestones, and decision notes."""
 
 READ_ACTIONS = {"list", "get", "board", "history", "report",
-                "milestone_list", "note_list"}
+                "milestone_list", "note_list", "time_list", "time_summary"}
 
 _TASK_ACTIONS = ("add, update, done, list, get, board, history, report, archive, "
                  "block, unblock, link, unlink, "
                  "milestone_add, milestone_update, milestone_list, milestone_archive, "
-                 "note_add, note_list")
+                 "note_add, note_list, "
+                 "time_add, time_update, time_delete, time_list, time_summary")
 
 
 def _fmt_task(t) -> str:
@@ -19,7 +20,7 @@ def _fmt_task(t) -> str:
 def handle_task(action, svc, finalize, *, title="", task_id="", status="",
                 priority="", due_date="", tags="", description="", milestone="",
                 note="", kind="", link_type="", ref="", label="", name="",
-                target_date="", query="", limit=50, parent="") -> str:
+                target_date="", query="", limit=50, parent="", minutes=0) -> str:
     action = (action or "").strip().lower()
 
     def done_resp(resp, summ="ok"):
@@ -247,6 +248,94 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
             return done_resp(f"[task:error] {res['error']}", "error")
         return done_resp(f"[task:{action}ed] {res['id'][:8]} now has "
                          f"{len(res.get('links', []))} link(s)", action)
+
+    # ── Time tracking ──────────────────────────────────────────────
+    if action in ("time_add", "time_update", "time_delete",
+                  "time_list", "time_summary"):
+        tracker = getattr(svc, "time_tracker", None)
+        if tracker is None:
+            return done_resp("[time:error] time tracking unavailable on this "
+                             "runtime", "error")
+
+        def _fmt_min(m):
+            m = int(m or 0)
+            return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
+
+        if action == "time_add":
+            if not minutes:
+                return done_resp("[time:error] time_add requires minutes "
+                                 "(1-1440).", "error")
+            res = tracker.add_entry(minutes, note=note, date=due_date or None,
+                                    task_id=task_id or None, created_by="mcp")
+            if "error" in res:
+                return done_resp(f"[time:error] {res['error']}", "error")
+            tail = f" — {res['note']}" if res.get("note") else ""
+            return done_resp(f"[time:added] {res['id']} "
+                             f"{_fmt_min(res['minutes'])} on {res['date']}{tail}",
+                             res["id"][:8])
+
+        if action == "time_update":
+            if not ref:
+                return done_resp("[time:error] time_update requires ref "
+                                 "(entry id).", "error")
+            fields = {}
+            if minutes:
+                fields["minutes"] = minutes
+            if note:
+                fields["note"] = note
+            if due_date:
+                fields["date"] = due_date
+            if task_id:
+                fields["task_id"] = task_id
+            if not fields:
+                return done_resp("[time:error] time_update requires at least one "
+                                 "of minutes/note/due_date/task_id.", "error")
+            res = tracker.update_entry(ref, **fields)
+            if "error" in res:
+                return done_resp(f"[time:error] {res['error']}", "error")
+            return done_resp(f"[time:updated] {res['id'][:8]} "
+                             f"{_fmt_min(res['minutes'])} on {res['date']}",
+                             "updated")
+
+        if action == "time_delete":
+            if not ref:
+                return done_resp("[time:error] time_delete requires ref "
+                                 "(entry id).", "error")
+            res = tracker.delete_entry(ref)
+            if "error" in res:
+                return done_resp(f"[time:error] {res['error']}", "error")
+            e = res["entry"]
+            return done_resp(f"[time:deleted] {e['id'][:8]} "
+                             f"{_fmt_min(e['minutes'])} on {e['date']}", "deleted")
+
+        if action == "time_list":
+            rows = tracker.list_entries(limit=max(1, int(limit)))
+            sessions = tracker.sessions()[:8]
+            lines = [f"[time:list] {len(rows)} manual entrie(s), "
+                     f"{len(sessions)} recent auto session(s)"]
+            for e in rows:
+                tail = f" — {e['note']}" if e.get("note") else ""
+                task = f" task:{e['task_id'][:8]}" if e.get("task_id") else ""
+                lines.append(f"  {e['id'][:8]} {e['date']} "
+                             f"{_fmt_min(e['minutes'])}{task}{tail}")
+            for s in sessions:
+                lines.append(f"  auto {s['date']} {_fmt_min(s['minutes'])} "
+                             f"({s['start'][11:16]}-{s['end'][11:16]})")
+            return done_resp("\n".join(lines), f"{len(rows)}e")
+
+        if action == "time_summary":
+            s = tracker.summary()
+            lines = [f"[time:summary] today "
+                     f"{_fmt_min(s['today']['total_min'])} "
+                     f"· 7d {_fmt_min(s['last_7d']['total_min'])} "
+                     f"· 30d {_fmt_min(s['last_30d']['total_min'])}"]
+            for key, label in (("today", "today"), ("last_7d", "last 7d"),
+                               ("last_30d", "last 30d")):
+                w = s[key]
+                lines.append(f"  {label}: auto {_fmt_min(w['auto_min'])} "
+                             f"+ manual {_fmt_min(w['manual_min'])}")
+            return done_resp("\n".join(lines),
+                             _fmt_min(s["today"]["total_min"]))
 
     # ── Milestones ─────────────────────────────────────────────────
     if action == "milestone_add":

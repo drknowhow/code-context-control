@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Project time tracking (auto + manual, full CRUD)
+
+- **Automatic activity tracking.** Loading the c3 MCP server (Claude
+  Code or any IDE) writes a `startup` ping — the start of a work
+  session; every tool call heartbeats (throttled to one write/min).
+  Pings land in monthly files (`.c3/time/pings-YYYY-MM.jsonl`) and are
+  coalesced on read: gaps over 15 minutes close a session, so an IDE
+  left open overnight adds nothing. Session time = first→last ping
+  (isolated pings count 1 min).
+- **Manual entries, full CRUD.** `services/time_tracker.py` stores
+  entries (`minutes` 1-1440, note, date, optional task link) in
+  `.c3/time/entries.json` with the same cross-process lock +
+  atomic-write + corrupt-quarantine discipline as the task store.
+- **Surfaces.** `c3_task` actions `time_add` / `time_update` /
+  `time_delete` / `time_list` / `time_summary` (reads plan-mode safe;
+  new `minutes` param; `ref` = entry id); REST `GET /api/time` +
+  `POST/PUT/DELETE /api/time/entry` (per-project) and
+  `/api/projects/time[.../entry]` (hub), all audited; per-project Tasks
+  tab gets a **Time** section (today/7d/30d chips with auto-vs-manual
+  split, 14-day bar strip, entry list with inline edit/delete, log-time
+  form); hub board shows a time chip in project scope.
+
 ### Added — PM UI enhancements (full plan)
 
 - **Conflict-aware writes.** Both UIs now send `expected_rev` on status

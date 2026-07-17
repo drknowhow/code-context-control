@@ -1950,6 +1950,54 @@ def api_pm_report():
                     "report": _pm_store(resolved).report()})
 
 
+def _time_tracker(path):
+    from services.time_tracker import TimeTracker
+    return TimeTracker(str(path))
+
+
+@app.route("/api/projects/time", methods=["GET"])
+def api_projects_time():
+    """Time summary for one project. Query: path"""
+    resolved, err = _pm_resolve((request.args.get("path") or "").strip())
+    if err:
+        return err
+    tracker = _time_tracker(resolved)
+    return jsonify({"path": str(resolved), "summary": tracker.summary(),
+                    "sessions": tracker.sessions()[:20],
+                    "entries": tracker.list_entries(limit=100)})
+
+
+@app.route("/api/projects/time/entry", methods=["POST", "PUT", "DELETE"])
+def api_projects_time_entry():
+    data = request.get_json(force=True) or {}
+    resolved, err = _pm_resolve((data.get("path") or "").strip())
+    if err:
+        return err
+    tracker = _time_tracker(resolved)
+    if request.method == "POST":
+        res = tracker.add_entry(data.get("minutes"), note=data.get("note", ""),
+                                date=data.get("date") or None,
+                                task_id=data.get("task_id"), created_by="hub")
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "time", "create", res["id"])
+        return jsonify({"created": True, "entry": res}), 201
+    entry_id = (data.get("id") or "").strip()
+    if not entry_id:
+        return jsonify({"error": "id is required"}), 400
+    if request.method == "PUT":
+        res = tracker.update_entry(entry_id, **(data.get("fields") or {}))
+        if "error" in res:
+            return jsonify(res), 400
+        _pm_audit(resolved, "time", "update", res["id"])
+        return jsonify({"updated": True, "entry": res})
+    res = tracker.delete_entry(entry_id)
+    if "error" in res:
+        return jsonify(res), 400
+    _pm_audit(resolved, "time", "delete", entry_id)
+    return jsonify(res)
+
+
 # ── Agent artifacts: config tracking (v2.46.0) ────────────────────────────
 # Direct ArtifactStore per request (load-per-op store — no runtime build
 # needed); every mutation audited to the target project's activity log.

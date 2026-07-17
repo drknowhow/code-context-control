@@ -63,6 +63,13 @@ function TasksTab() {
   const [histFor, setHistFor] = useState('');   // task id filtering Activity
   const [archived, setArchived] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [timeData, setTimeData] = useState(null);
+  const [tMin, setTMin] = useState('');
+  const [tNote, setTNote] = useState('');
+  const [tDate, setTDate] = useState('');
+  const [editEntry, setEditEntry] = useState('');  // time entry id being edited
+  const [editMin, setEditMin] = useState('');
+  const [editNote, setEditNote] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +84,9 @@ function TasksTab() {
       const ev = await api.get(`/api/pm/events?limit=${histFor ? 50 : 20}${q}`);
       setEvents((ev && ev.events) || []);
     } catch (e) { /* report/history are best-effort extras */ }
+    try {
+      setTimeData(await api.get('/api/time'));
+    } catch (e) { /* time is a best-effort extra */ }
     setLoading(false);
   }, [histFor]);
 
@@ -156,6 +166,27 @@ function TasksTab() {
     await api.put('/api/pm/task', { id: t.id, restore: true });
     await loadArchived();
   });
+  const addTime = () => {
+    const m = parseInt(tMin, 10);
+    if (!m) return;
+    run(async () => {
+      const body = { minutes: m };
+      if (tNote.trim()) body.note = tNote.trim();
+      if (tDate.trim()) body.date = tDate.trim();
+      await api.post('/api/time/entry', body);
+      setTMin(''); setTNote(''); setTDate('');
+    });
+  };
+  const saveTimeEdit = (e) => {
+    const fields = { note: editNote };
+    const m = parseInt(editMin, 10);
+    if (m) fields.minutes = m;
+    run(async () => {
+      await api.put('/api/time/entry', { id: e.id, fields });
+      setEditEntry('');
+    });
+  };
+  const delTime = (e) => run(() => api.del('/api/time/entry', { id: e.id }));
 
   // ── Derived ───────────────────────────────────────────────────
   const board = (data || {}).board || {};
@@ -569,6 +600,100 @@ function TasksTab() {
             style={{ ...inputStyle, width: 110, fontSize: 11 }} />
           <Btn variant="ghost" onClick={addMilestone} disabled={!msName.trim()}
             style={{ padding: '6px 12px' }}>Add</Btn>
+        </div>
+      </div>
+
+      {/* Time */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {sectionHeader(T.warn, 'Time',
+          timeData && timeData.summary
+            ? `${fmtMinutes(timeData.summary.last_7d.total_min)} · 7d` : '')}
+        {timeData && timeData.summary && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingLeft: 14, flexWrap: 'wrap' }}>
+            <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>
+              today {fmtMinutes(timeData.summary.today.total_min)}
+              {' · '}7d {fmtMinutes(timeData.summary.last_7d.total_min)}
+              {' · '}30d {fmtMinutes(timeData.summary.last_30d.total_min)}
+            </span>
+            <span className="mono" title="auto = tracked from MCP/IDE activity"
+              style={{ fontSize: 10, color: T.textDim }}>
+              7d: auto {fmtMinutes(timeData.summary.last_7d.auto_min)}
+              {' + '}manual {fmtMinutes(timeData.summary.last_7d.manual_min)}
+            </span>
+            {timeData.summary.by_day.some(d => d.auto_min + d.manual_min > 0) && (
+              <svg width={14 * 12} height={26}>
+                {timeData.summary.by_day.map((d, i) => {
+                  const total = d.auto_min + d.manual_min;
+                  const max = Math.max.apply(null,
+                    timeData.summary.by_day.map(x => x.auto_min + x.manual_min)) || 1;
+                  const h = total ? Math.max(3, Math.round((total / max) * 24)) : 1;
+                  return (
+                    <rect key={i} x={i * 12} y={26 - h} width={9} height={h}
+                      fill={total ? T.warn : T.border} rx={1}>
+                      <title>{`${d.date}: ${fmtMinutes(total)}`}</title>
+                    </rect>
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+        )}
+        {((timeData && timeData.entries) || []).slice(0, 10).map(e => (
+          editEntry === e.id ? (
+            <div key={e.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '5px 10px' }}>
+              <input value={editMin} onChange={ev => setEditMin(ev.target.value)}
+                className="mono" placeholder="min"
+                style={{ ...inputStyle, width: 70, fontSize: 11 }} />
+              <input value={editNote} onChange={ev => setEditNote(ev.target.value)}
+                placeholder="note"
+                style={{ ...inputStyle, flex: 1, minWidth: 0, fontSize: 11 }} />
+              <Btn onClick={() => saveTimeEdit(e)}
+                style={{ padding: '3px 10px', fontSize: 11 }}>Save</Btn>
+              <Btn variant="ghost" onClick={() => setEditEntry('')}
+                style={{ padding: '3px 10px', fontSize: 11 }}>Cancel</Btn>
+            </div>
+          ) : (
+            <div key={e.id} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+              background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6,
+            }}>
+              <span className="mono" style={{ fontSize: 11, color: T.textDim, flexShrink: 0 }}>{e.date}</span>
+              <span className="mono" style={{ fontSize: 11, color: T.warn, flexShrink: 0 }}>{fmtMinutes(e.minutes)}</span>
+              <span style={{ fontSize: 12, color: T.text, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+                {e.note || <span style={{ color: T.textDim, fontStyle: 'italic' }}>manual entry</span>}
+              </span>
+              {e.task_id && taskById[e.task_id] && (
+                <span className="mono" title={taskById[e.task_id].title}
+                  style={{ fontSize: 10, color: T.textDim, flexShrink: 0 }}>
+                  ↳ {(taskById[e.task_id].title || '').slice(0, 18)}
+                </span>
+              )}
+              <button onClick={() => {
+                setEditEntry(e.id);
+                setEditMin(String(e.minutes));
+                setEditNote(e.note || '');
+              }} title="Edit entry" className="mono" style={{
+                background: 'transparent', border: `1px solid ${T.border}`,
+                borderRadius: 4, cursor: 'pointer', padding: '1px 6px',
+                fontSize: 10, color: T.textDim,
+              }}>edit</button>
+              {trashBtn('Delete entry', () => delTime(e))}
+            </div>
+          )
+        ))}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={tMin} onChange={e => setTMin(e.target.value)}
+            placeholder="min" className="mono"
+            style={{ ...inputStyle, width: 70, fontSize: 11 }} />
+          <input value={tNote} onChange={e => setTNote(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addTime(); }}
+            placeholder="What was the time spent on?"
+            style={{ ...inputStyle, flex: 1, minWidth: 0 }} />
+          <input value={tDate} onChange={e => setTDate(e.target.value)}
+            placeholder={new Date().toISOString().slice(0, 10)} className="mono"
+            style={{ ...inputStyle, width: 110, fontSize: 11 }} />
+          <Btn variant="ghost" onClick={addTime} disabled={!parseInt(tMin, 10)}
+            style={{ padding: '6px 12px' }}>Log time</Btn>
         </div>
       </div>
 
