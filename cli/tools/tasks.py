@@ -142,7 +142,15 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
     if action == "board":
         board = store.board()
         s = board["stats"]
-        lines = [f"[task:board] open:{s['open']} overdue:{s['overdue']} done:{s['done_total']}"]
+        lines = []
+        rec = board.get("recovery")
+        if rec:
+            src = ("restored from pm.json.bak" if rec.get("restored_from_backup")
+                   else "no backup — started empty")
+            lines.append(f"[task:warning] corrupt pm.json quarantined as "
+                         f"{rec.get('quarantined') or '?'} ({src})")
+        lines.append(f"[task:board] open:{s['open']} overdue:{s['overdue']} "
+                     f"done:{s['done_total']} rev:{board.get('rev', 0)}")
         for col, rows in board["columns"].items():
             lines.append(f"  {col} ({len(rows)}):")
             for t in rows[:10]:

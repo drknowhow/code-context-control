@@ -1217,20 +1217,13 @@ def api_pm_task():
         task_id = (data.get("id") or "").strip()
         if not task_id:
             return jsonify({"error": "id is required"}), 400
-        res = None
-        if data.get("fields"):
-            res = store.update_task(task_id, **data["fields"])
-            if "error" in res:
-                return jsonify(res), 400
-        if data.get("move"):
-            move = data["move"]
-            res = store.move_task(task_id, status=move.get("status"),
-                                  before_id=move.get("before_id"),
-                                  after_id=move.get("after_id"))
-            if "error" in res:
-                return jsonify(res), 400
-        if res is None:
+        if not (data.get("fields") or data.get("move")):
             return jsonify({"error": "fields or move required"}), 400
+        res = store.mutate_task(task_id, fields=data.get("fields"),
+                                move=data.get("move"),
+                                expected_rev=data.get("expected_rev"))
+        if "error" in res:
+            return jsonify(res), 409 if res.get("code") == "rev_conflict" else 400
         _pm_audit("task", "update", res["id"])
         return jsonify({"updated": True, "task": res})
     if data.get("purge"):
@@ -1263,9 +1256,10 @@ def api_pm_milestone():
     if not ms_id:
         return jsonify({"error": "id is required"}), 400
     if request.method == "PUT":
-        res = store.update_milestone(ms_id, **(data.get("fields") or {}))
+        res = store.update_milestone(ms_id, expected_rev=data.get("expected_rev"),
+                                     **(data.get("fields") or {}))
         if "error" in res:
-            return jsonify(res), 400
+            return jsonify(res), 409 if res.get("code") == "rev_conflict" else 400
         _pm_audit("milestone", "update", res["id"])
         return jsonify({"updated": True, "milestone": res})
     res = store.archive_milestone(ms_id)
@@ -1291,9 +1285,10 @@ def api_pm_note():
     if not note_id:
         return jsonify({"error": "id is required"}), 400
     if request.method == "PUT":
-        res = store.update_note(note_id, **(data.get("fields") or {}))
+        res = store.update_note(note_id, expected_rev=data.get("expected_rev"),
+                                **(data.get("fields") or {}))
         if "error" in res:
-            return jsonify(res), 400
+            return jsonify(res), 409 if res.get("code") == "rev_conflict" else 400
         _pm_audit("note", "update", res["id"])
         return jsonify({"updated": True, "note": res})
     res = store.archive_note(note_id)

@@ -119,6 +119,18 @@ class TestTaskMutations(PmApiBase):
                                json={"path": str(self.proj), "id": t["id"]})
         self.assertEqual(resp.status_code, 400)
 
+    def test_put_rev_conflict_409(self):
+        t = TaskStore(str(self.proj)).create_task("x")
+        resp = self.client.put("/api/projects/pm/task", json={
+            "path": str(self.proj), "id": t["id"],
+            "fields": {"priority": "p1"}, "expected_rev": 999})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.get_json().get("code"), "rev_conflict")
+        resp = self.client.put("/api/projects/pm/task", json={
+            "path": str(self.proj), "id": t["id"],
+            "fields": {"priority": "p1"}, "expected_rev": 1})
+        self.assertEqual(resp.status_code, 200)
+
 
 class TestMilestoneNoteLink(PmApiBase):
     def test_milestone_lifecycle(self):
@@ -212,6 +224,12 @@ class TestGlobal(PmApiBase):
         resp = self.client.get("/api/pm/global?status=all")
         titles = [t["title"] for t in resp.get_json()["tasks"]]
         self.assertIn("a-done", titles)
+
+    def test_status_all_open_count_excludes_done(self):
+        resp = self.client.get("/api/pm/global?status=all")
+        bp = resp.get_json()["by_project"][str(self.proj.resolve())]
+        self.assertEqual(bp["open"], 1)   # a-done is not open
+        self.assertEqual(bp["shown"], 2)  # but both rows ship to the client
 
 
 class TestInspectWiring(PmApiBase):

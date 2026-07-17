@@ -24,7 +24,8 @@ _OPEN_CALL = re.compile(r"(?<!webbrowser\.)(?<!\.)\bopen\s*\(", re.MULTILINE)
 
 # Binary-mode markers that don't require encoding=
 _BINARY_MODES = ('"rb"', "'rb'", '"wb"', "'wb'", '"ab"', "'ab'",
-                 '"rb+"', "'rb+'", '"wb+"', "'wb+'")
+                 '"rb+"', "'rb+'", '"wb+"', "'wb+'", '"ab+"', "'ab+'",
+                 '"r+b"', "'r+b'", '"w+b"', "'w+b'", '"a+b"', "'a+b'")
 
 
 def _iter_py_files():

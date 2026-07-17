@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed — PM store robustness (phase 1)
+
+- **Cross-process write safety.** `TaskStore` mutations now serialize
+  across the hub, MCP, and per-project server processes through a
+  `.c3/pm/pm.lock` OS file lock (bounded 30s acquire) in addition to the
+  in-process `threading.Lock`. Two concurrent writers can no longer
+  silently drop each other's `load -> mutate -> save` cycles. Save temp
+  files are per-writer unique (`pm.json.tmp-<pid>-<rand>`, stale ones
+  swept after 1h) instead of a shared fixed name; the data dir is
+  fsynced after replace on POSIX.
+- **Optimistic concurrency.** The PM document carries a monotonic `rev`
+  (bumped every save, exposed on `board()`); task/milestone/note update
+  paths accept an optional `expected_rev` precondition and REST PUT
+  endpoints return **409** with `code: rev_conflict` on mismatch.
+- **Atomic update+move.** New `TaskStore.mutate_task(id, fields, move,
+  expected_rev)` applies field updates and board moves in one
+  transaction; both PM REST layers now call it once instead of running
+  `update_task` then `move_task` as two separate writes (half-updated
+  state was previously observable and clobberable). `update_task` /
+  `move_task` remain as thin wrappers.
+- **Backup + surfaced recovery.** Every save keeps the previous good
+  document as `pm.json.bak`. A corrupt `pm.json` is still quarantined
+  (`pm.json.corrupt-N`) but the store now restores from the backup
+  instead of silently restarting empty — including on later loads and
+  fresh instances (missing primary falls back to backup until the next
+  mutation persists it). Recovery is surfaced via
+  `TaskStore.last_recovery`, a `recovery` key on `board()`, and a
+  `[task:warning]` line in the `c3_task` board output.
+- **Board consistency fixes.** `board()` computes its `stats` from the
+  same loaded snapshot instead of re-loading (columns and stats could
+  disagree); `include_archived` rows now respect the milestone/tag
+  filters. `GET /api/pm/global` `by_project[].open` no longer counts
+  done tasks under `status=all` (row count moved to `shown`).
+- **Windows guard.** `test_windows_reliability` now recognizes the
+  plus-variant binary open modes (`a+b`, `r+b`, `w+b`, `ab+`).
+
 ## [2.52.0] - 2026-07-17
 
 ### Removed — BREAKING

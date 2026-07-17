@@ -228,5 +228,105 @@ class TestDurability(TaskStoreBase):
         self.assertEqual(open_task_count(self.root), 1)
 
 
+class TestConcurrencyAndRev(TaskStoreBase):
+    def test_interleaved_writers_lose_no_tasks(self):
+        # Two independent instances (separate threading.Locks, same pm.json)
+        # simulate the hub/MCP/server multi-process topology: the pm.lock
+        # file lock must serialize load->mutate->save so no create is lost.
+        import threading
+        stores = [TaskStore(str(self.root)) for _ in range(2)]
+        errors = []
+
+        def hammer(store, tag):
+            for i in range(15):
+                res = store.create_task(f"{tag}-{i}")
+                if "error" in res:
+                    errors.append(res)
+
+        threads = [threading.Thread(target=hammer, args=(s, n))
+                   for n, s in enumerate(stores)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(self.store.list_tasks(limit=500)), 30)
+
+    def test_rev_increments_per_mutation(self):
+        t = self.store.create_task("x")
+        rev1 = self.store.board()["rev"]
+        self.store.update_task(t["id"], priority="p1")
+        self.assertEqual(self.store.board()["rev"], rev1 + 1)
+
+    def test_expected_rev_conflict(self):
+        t = self.store.create_task("x")
+        rev = self.store.board()["rev"]
+        ok = self.store.update_task(t["id"], expected_rev=rev, priority="p0")
+        self.assertNotIn("error", ok)
+        stale = self.store.update_task(t["id"], expected_rev=rev, priority="p3")
+        self.assertIn("error", stale)
+        self.assertEqual(stale.get("code"), "rev_conflict")
+        self.assertEqual(stale["current_rev"], rev + 1)
+
+    def test_mutate_task_fields_and_move_single_transaction(self):
+        t = self.store.create_task("x")
+        rev = self.store.board()["rev"]
+        res = self.store.mutate_task(t["id"],
+                                     fields={"description": "d"},
+                                     move={"status": "in_progress"})
+        self.assertEqual(res["description"], "d")
+        self.assertEqual(res["status"], "in_progress")
+        self.assertEqual(self.store.board()["rev"], rev + 1)
+
+    def test_mutate_task_requires_fields_or_move(self):
+        t = self.store.create_task("x")
+        self.assertIn("error", self.store.mutate_task(t["id"]))
+
+    def test_unique_temp_no_fixed_tmp_left_behind(self):
+        self.store.create_task("x")
+        self.assertFalse((self.store.data_dir / "pm.json.tmp").exists())
+        self.assertEqual(list(self.store.data_dir.glob("pm.json.tmp-*")), [])
+
+
+class TestBackupRecovery(TaskStoreBase):
+    def test_corrupt_restores_from_backup(self):
+        self.store.create_task("keep me")
+        self.store.create_task("second")  # this save writes pm.json.bak
+        self.store.pm_file.write_text("{ not json", encoding="utf-8")
+        titles = [r["title"] for r in self.store.list_tasks()]
+        self.assertIn("keep me", titles)  # backup is one op behind, not empty
+        self.assertTrue((self.store.data_dir / "pm.json.corrupt-1").exists())
+        rec = self.store.last_recovery
+        self.assertIsNotNone(rec)
+        self.assertTrue(rec["restored_from_backup"])
+        self.assertEqual(rec["quarantined"], "pm.json.corrupt-1")
+
+    def test_recovery_survives_reload_and_next_mutation_persists(self):
+        self.store.create_task("keep me")
+        self.store.create_task("second")
+        self.store.pm_file.write_text("{ not json", encoding="utf-8")
+        self.store.list_tasks()  # triggers quarantine; pm.json now missing
+        fresh = TaskStore(str(self.root))  # new instance, e.g. next hub request
+        titles = [r["title"] for r in fresh.list_tasks()]
+        self.assertIn("keep me", titles)  # served from backup, not empty
+        fresh.create_task("after recovery")  # first mutation persists backup
+        self.assertTrue(fresh.pm_file.exists())
+        titles = [r["title"] for r in TaskStore(str(self.root)).list_tasks()]
+        self.assertIn("keep me", titles)
+        self.assertIn("after recovery", titles)
+
+    def test_board_surfaces_recovery(self):
+        self.store.create_task("a")
+        self.store.create_task("b")
+        self.store.pm_file.write_text("garbage", encoding="utf-8")
+        board = self.store.board()
+        self.assertIn("recovery", board)
+        self.assertTrue(board["recovery"]["restored_from_backup"])
+
+    def test_board_rev_present(self):
+        self.store.create_task("a")
+        self.assertGreaterEqual(self.store.board()["rev"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
