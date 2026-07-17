@@ -21,7 +21,7 @@ class InitView(Vertical):
 
             with Horizontal(classes="input-row"):
                 yield Label("IDE:", classes="input-label")
-                ide_options = [(ide, ide) for ide in ["auto", "claude", "vscode", "cursor", "codex", "gemini", "antigravity"]]
+                ide_options = [(ide, ide) for ide in ["auto", "claude", "vscode", "cursor", "codex", "antigravity"]]
                 yield Select(ide_options, value="auto", id="ide_select")
                 yield Label("MCP Mode:", classes="input-label")
                 yield Select([("direct", "direct"), ("proxy", "proxy")], value="direct", id="mcp_mode_select")

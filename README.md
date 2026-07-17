@@ -3,7 +3,7 @@
 <p align="center">
   <strong>The local code-intelligence layer for AI coding tools.</strong><br>
   Stop burning tokens on whole-file reads, blind greps, and unbounded log dumps.<br>
-  Works with Claude Code, Codex, Gemini CLI, Copilot, Cursor, and Antigravity.
+  Works with Claude Code, Codex, Copilot, Cursor, and Antigravity.
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ A thin **local** layer that sits between your IDE and your repo. Every AI tool c
 | Edit, hope it compiled | `c3_edit` writes via a ledger + `c3_validate` runs `pyright`/`tsc` automatically |
 | `Bash` test runs that hang on Windows | `c3_shell` returns structured `{exit_code, stdout, stderr, duration}` with auto-filter |
 | Lose all context on `/clear` | `c3_session(snapshot)` + `c3_memory` persist decisions across sessions |
-| Re-explain the project every session | Auto-synced `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` / `copilot-instructions.md` from a single source of truth |
+| Re-explain the project every session | Auto-synced `CLAUDE.md` / `AGENTS.md` / `copilot-instructions.md` from a single source of truth |
 
 Everything runs **locally**. No source code, prompts, or model output ever leaves your machine unless you explicitly opt into a third-party model API.
 
@@ -62,7 +62,7 @@ c3 init /path/to/your/project
 ```
 
 Running `c3` with no arguments opens the interactive TUI. `c3 init` walks you through:
-1. **IDE selection** (Claude Code CLI/App, Codex CLI, VS Code, Cursor, Antigravity, Gemini CLI *(deprecated — prefer Antigravity, which reads AGENTS.md)*, or Custom)
+1. **IDE selection** (Claude Code CLI/App, Codex CLI, VS Code, Cursor, Antigravity, or Custom — the Gemini CLI profile was removed in v2.52; use Antigravity, which reads AGENTS.md)
 2. Optional local `git init`
 3. MCP server registration (auto-wired into your IDE)
 4. (Claude Code only) Permission tier selection

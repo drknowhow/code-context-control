@@ -13,7 +13,7 @@ from textual.widgets import Button, Label, Log
 class ClaudeMDView(Vertical):
     def compose(self) -> ComposeResult:
         with Card("Documentation Generator", ""):
-            yield Label("Generates or updates CLAUDE.md / GEMINI.md instructions.")
+            yield Label("Generates or updates CLAUDE.md / AGENTS.md instructions.")
             with Horizontal(classes="action-row"):
                 yield Button("Generate CLAUDE.md", id="gen_btn", variant="primary")
                 yield Button("Check Health", id="check_btn")

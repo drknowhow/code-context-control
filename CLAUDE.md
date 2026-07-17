@@ -42,17 +42,17 @@ claude-companion - v2/
   AGENTS.md
   CHANGELOG.md
   CLAUDE.md
-  GEMINI.md
   LICENSE
   LICENSING.md
   README.md
   SECURITY.md
   THIRD_PARTY_LICENSES.md
   c3.bat
-  ... +4 more
+  install.bat
+  ... +3 more
+  .agents/
   .claude/
   .codex/
-  .gemini/
   .github/
   .neoB/
   .pytest_cache/

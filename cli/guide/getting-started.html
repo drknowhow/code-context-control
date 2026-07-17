@@ -172,10 +172,6 @@ c3 init</code></pre>
             <td><code>AGENTS.md</code></td>
             <td>Instructions for Codex sessions</td>
           </tr>
-          <tr>
-            <td><code>.gemini/settings.json</code></td>
-            <td>Instructions for Gemini sessions</td>
-          </tr>
         </tbody>
       </table>
 
@@ -194,7 +190,7 @@ c3 init</code></pre>
         <span class="callout-icon">🛡️</span>
         <div class="callout-body">
           <strong>Your hand-written content is preserved</strong>
-          Generated instruction files (<code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>GEMINI.md</code>) wrap C3 content in a <code>&lt;!-- C3:BEGIN … --&gt;</code> / <code>&lt;!-- C3:END --&gt;</code> block. Re-running init (or <code>c3 claudemd save</code> / the <strong>Compact</strong> action) rewrites only that block — anything you add outside it stays put. An existing hand-written file with no block is kept and the C3 block is appended below it.
+          Generated instruction files (<code>CLAUDE.md</code>, <code>AGENTS.md</code>) wrap C3 content in a <code>&lt;!-- C3:BEGIN … --&gt;</code> / <code>&lt;!-- C3:END --&gt;</code> block. Re-running init (or <code>c3 claudemd save</code> / the <strong>Compact</strong> action) rewrites only that block — anything you add outside it stays put. An existing hand-written file with no block is kept and the C3 block is appended below it.
         </div>
       </div>
     </section>
@@ -223,9 +219,7 @@ c3 init</code></pre>
       <pre><code>c3 install-mcp antigravity</code></pre>
       <p>Updates the user-global <code>~/.gemini/antigravity/mcp_config.json</code> and <code>AGENTS.md</code>.</p>
 
-      <h3>Gemini CLI (deprecated)</h3>
-      <pre><code>c3 install-mcp gemini</code></pre>
-      <p>Updates <code>.gemini/settings.json</code> and <code>GEMINI.md</code>. Deprecated — prefer Antigravity, which reads <code>AGENTS.md</code>.</p>
+      <p><em>The Gemini CLI profile was removed in v2.52 — use Antigravity instead. <code>c3 uninstall</code> still cleans up legacy <code>.gemini/settings.json</code> and <code>GEMINI.md</code> files.</em></p>
 
       <h3>All IDEs at once</h3>
       <pre><code>c3 install-mcp all</code></pre>

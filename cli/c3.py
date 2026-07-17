@@ -711,7 +711,6 @@ def _select_init_ide(default_ide: str) -> str:
         "VS Code      — .vscode/mcp.json + Copilot instructions",
         "Cursor       — .cursor/mcp.json",
         "Codex        — .codex/config.toml + AGENTS.md",
-        "Gemini       — .gemini/settings.json + GEMINI.md (deprecated: prefer Antigravity)",
         "Antigravity  — ~/.gemini/antigravity/mcp_config.json + AGENTS.md",
     ]
     selected = _prompt_choice("Step 1/3 — Choose IDE profile", choices)
@@ -721,8 +720,7 @@ def _select_init_ide(default_ide: str) -> str:
         choices[2]: "vscode",
         choices[3]: "cursor",
         choices[4]: "codex",
-        choices[5]: "gemini",
-        choices[6]: "antigravity",
+        choices[5]: "antigravity",
     }
     chosen = mapping.get(selected or "", normalize_ide_name(default_ide) if default_ide != "auto" else "auto")
     print(f"  IDE profile: {chosen}")
@@ -887,7 +885,7 @@ def _parse_cli_ide_arg(value: str) -> str:
     normalized = normalize_ide_name(raw)
     if normalized not in PROFILES:
         raise argparse.ArgumentTypeError(
-            "Unsupported IDE. Use one of: auto, claude, vscode, cursor, codex, gemini, antigravity."
+            "Unsupported IDE. Use one of: auto, claude, vscode, cursor, codex, antigravity."
         )
     return normalized
 
@@ -955,7 +953,7 @@ def _do_init(project_path: str, ide_name: str = None):
     instructions_path.parent.mkdir(parents=True, exist_ok=True)
 
     sm = SessionManager(project_path)
-    _sync_project_instruction_docs(project_path, sm, ide=ide_name)
+    _sync_project_instruction_docs(project_path, sm)
 
 
 def cmd_init(args):
@@ -4013,29 +4011,6 @@ enabled = true
 ```
 """
 
-_GEMINI_MD_CONTENT = _C3_COMPACT_WORKFLOW + """
-
-## IDE Configuration (Gemini CLI)
-This project uses project-scoped MCP servers. Ensure your `.gemini/settings.json` includes:
-```json
-{
-  "mcpServers": {
-    "c3": {
-      "command": "c3-mcp",
-      "args": ["--project", "."]
-    }
-  }
-}
-```
-
-## Gemini Enforcement
-- `c3 init` and `c3 install-mcp` install this file as a required workflow, not a suggestion.
-- After install, use the `c3` MCP server for recall, search, structural mapping, surgical reads, filtering, and session logging before native Gemini repo exploration.
-- Do not bypass C3 with broad native search/read steps unless a matching `c3_*` tool failed or was too narrow for a final follow-up.
-- If fallback is necessary, say which `c3_*` tool was attempted or skipped and why.
-"""
-
-
 _TERSE_SKILL_CONTENT = """\
 # /terse — Terse Output Mode
 
@@ -4113,28 +4088,16 @@ Say "normal mode", start a new session, or let the turn counter expire.
 _TERSE_SKILL_MARKER = "# /terse — Terse Output Mode"
 
 
-_TERSE_GEMINI_TOML = (
-    'description = "Terse output mode. Usage: /terse [lite|full|ultra] (default: full)."\n'
-    "prompt = '''\n"
-    + _TERSE_SKILL_CONTENT.replace("'''", "''\\''")
-    + "\n'''\n"
-)
-
-
 def _ensure_terse_skill(ide: str = "claude-code") -> None:
     """Install the /terse slash command for the given IDE profile.
 
     claude-code -> ~/.claude/commands/terse.md
     codex       -> ~/.codex/prompts/terse.md
-    gemini      -> ~/.gemini/commands/terse.toml
     """
     home = Path.home()
     if ide == "codex":
         skill_path = home / ".codex" / "prompts" / "terse.md"
         content = _TERSE_SKILL_CONTENT
-    elif ide == "gemini":
-        skill_path = home / ".gemini" / "commands" / "terse.toml"
-        content = _TERSE_GEMINI_TOML
     else:
         skill_path = home / ".claude" / "commands" / "terse.md"
         content = _TERSE_SKILL_CONTENT
@@ -4357,7 +4320,7 @@ def _upsert_json_mcp_server(config_path: Path, config_key: str, server_name: str
 
 def _ensure_project_session_configs(target: Path, server_script: str, primary_profile: str | None = None,
                                     c3_mcp_exe: str | None = None) -> None:
-    """Keep project-local Codex and Gemini MCP configs in sync for new sessions."""
+    """Keep the project-local Codex MCP config in sync for new sessions."""
     # Ensure forward slashes for config portability and avoid Windows path-splitting issues
     server_script_posix = Path(server_script).as_posix()
     if c3_mcp_exe:
@@ -4381,30 +4344,16 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
         )
         print(f"{codex_state.capitalize()} {codex_path}")
 
-    # Gemini CLI is deprecated in favor of Antigravity (which reads a single
-    # user-global config): refresh an existing project config, never seed one.
-    if primary_profile != "gemini":
-        gemini_path = target / ".gemini" / "settings.json"
-        if gemini_path.exists():
-            gemini_state = _upsert_json_mcp_server(
-                gemini_path,
-                "mcpServers",
-                "c3",
-                {
-                    "command": mcp_command,
-                    "args": server_args,
-                },
-            )
-            print(f"{gemini_state.capitalize()} {gemini_path}")
+
 
 
 def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None = None,
                                      primary_profile: str | None = None) -> None:
-    """Keep user-global Codex/Gemini/Antigravity MCP configs pointing at C3.
+    """Keep user-global Codex/Antigravity MCP configs pointing at C3.
 
     These fallback entries omit `--project` so the MCP server can resolve the
     active working directory dynamically when a session starts in a project that
-    does not yet have project-local Codex/Gemini config files.
+    does not yet have a project-local Codex config file.
     """
     server_script_posix = Path(server_script).as_posix()
     # With the installed entry point, no script path is needed; --project stays
@@ -4427,28 +4376,9 @@ def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None 
     except PermissionError:
         print(f"Warning: Could not update {codex_path} (global fallback skipped)")
 
-    # Gemini CLI is deprecated in favor of Antigravity: refresh an existing
-    # global config (or create it when Gemini CLI is the chosen profile), but
-    # don't seed ~/.gemini/settings.json from other IDE installs.
-    gemini_path = Path.home() / ".gemini" / "settings.json"
-    if primary_profile == "gemini" or gemini_path.exists():
-        try:
-            gemini_state = _upsert_json_mcp_server(
-                gemini_path,
-                "mcpServers",
-                "c3",
-                {
-                    "command": c3_mcp_exe or sys.executable,
-                    "args": fallback_args,
-                },
-            )
-            print(f"{gemini_state.capitalize()} {gemini_path}  (global fallback)")
-        except PermissionError:
-            print(f"Warning: Could not update {gemini_path} (global fallback skipped)")
-
     # Antigravity shares the ~/.gemini home dir but reads its own MCP config.
     # When Antigravity is the primary profile, the main install flow already
-    # wrote this file — here we only keep it fresh for codex/gemini installs
+    # wrote this file — here we only keep it fresh for codex installs
     # on machines that have Antigravity (its config dir exists).
     antigravity_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
     if primary_profile != "antigravity" and antigravity_path.parent.is_dir():
@@ -4502,8 +4432,8 @@ def _uninstall_mcp_all(project_path: str):
             config_paths.append(Path.home() / profile.config_path)
         else:
             config_paths.append(target / profile.config_path)
-            # For Codex and Gemini, also check the global fallback in home dir
-            if ide_name in ("codex", "gemini"):
+            # For Codex, also check the global fallback in home dir
+            if ide_name == "codex":
                 config_paths.append(Path.home() / profile.config_path)
 
         for mcp_config_path in config_paths:
@@ -4625,6 +4555,22 @@ def _uninstall_mcp_all(project_path: str):
                 except Exception as e:
                     print(f"  Warning: Could not update {vscode_settings_path}: {e}")
 
+    # Legacy Gemini CLI configs (profile removed in v2.52) — still strip the c3 entry.
+    for legacy_cfg in (target / ".gemini" / "settings.json",
+                       Path.home() / ".gemini" / "settings.json"):
+        if not legacy_cfg.exists():
+            continue
+        try:
+            with open(legacy_cfg, encoding="utf-8") as f:
+                legacy_data = json.load(f)
+            if "c3" in (legacy_data.get("mcpServers") or {}):
+                del legacy_data["mcpServers"]["c3"]
+                with open(legacy_cfg, "w", encoding="utf-8") as f:
+                    json.dump(legacy_data, f, indent=2)
+                print(f"  Removed C3 from {legacy_cfg}")
+        except Exception as e:
+            print(f"  Warning: Could not update {legacy_cfg}: {e}")
+
     # Final pass: clean up empty IDE directories (.claude, .codex, .gemini, .vscode, .github)
     dirs_to_check = [".claude", ".codex", ".gemini", ".vscode", ".github"]
     for dname in dirs_to_check:
@@ -4745,38 +4691,33 @@ def _ensure_global_claude_md() -> None:
 def _instruction_documents_for_project() -> list[tuple[str, str]]:
     """Return every project-local instruction document C3 has ever managed.
 
-    Used by uninstall/cleanup paths, so it must keep listing deprecated docs
-    (GEMINI.md) even though generation is now IDE-gated.
+    Used by uninstall/cleanup paths, so it must keep listing legacy docs
+    (GEMINI.md — profile removed in v2.52; empty template, never generated).
     """
     return [
         ("CLAUDE.md", _CLAUDE_MD_CONTENT),
         ("AGENTS.md", _AGENTS_MD_CONTENT),
-        ("GEMINI.md", _GEMINI_MD_CONTENT),
+        ("GEMINI.md", ""),
     ]
 
 
-def _instruction_documents_to_generate(ide: str) -> list[tuple[str, str]]:
-    """Instruction docs to write for a project, gated by its IDE profile.
+_LEGACY_INSTRUCTION_DOCS = ("GEMINI.md",)  # Gemini CLI profile removed in v2.52
 
-    GEMINI.md is deprecated: generated only for Gemini CLI projects.
-    Antigravity reads AGENTS.md (and prefers it over GEMINI.md when both exist).
-    """
+
+def _instruction_documents_to_generate() -> list[tuple[str, str]]:
+    """Instruction docs to write for a project (legacy docs excluded)."""
     return [
         (name, template)
         for name, template in _instruction_documents_for_project()
-        if name != "GEMINI.md" or ide == "gemini"
+        if name not in _LEGACY_INSTRUCTION_DOCS
     ]
 
 
-def _sync_project_instruction_docs(project_path: str, sm: SessionManager,
-                                   ide: str | None = None) -> None:
+def _sync_project_instruction_docs(project_path: str, sm: SessionManager) -> None:
     """Write the current C3 instruction docs into the project root."""
-    if ide is None:
-        from core.ide import load_ide_config
-        ide = load_ide_config(project_path)
     repo_root = Path(__file__).resolve().parent.parent
     synced: list[str] = []
-    for instructions_file, template in _instruction_documents_to_generate(ide):
+    for instructions_file, template in _instruction_documents_to_generate():
         print(f"Generating {instructions_file}...")
         # Resolve placeholder for project-scoped MCP configs
         resolved_template = template.replace("<path-to-c3>", str(repo_root).replace("\\", "/"))
@@ -5042,8 +4983,8 @@ def cmd_install_mcp(args):
         if _found:
             c3_mcp_exe = Path(_found).resolve().as_posix()
 
-    # On Windows, Gemini CLI splits command args by space, so the script path stays a
-    # single arg. 'python' keeps the source fallback portable across platforms.
+    # Keep the script path as a single arg; 'python' keeps the source fallback
+    # portable across platforms.
     if c3_mcp_exe:
         new_entry = {"command": c3_mcp_exe, "args": ["--project", "."]}
     else:
@@ -5118,7 +5059,7 @@ def cmd_install_mcp(args):
         # instead of letting it surface as anonymous out-of-band drift.
         from services.artifact_defs import note_pending_write
         note_pending_write(target, profile.config_path, "install_mcp")
-    if profile.name in {"codex", "gemini", "antigravity"}:
+    if profile.name in {"codex", "antigravity"}:
         _ensure_project_session_configs(target, server_script, primary_profile=profile.name, c3_mcp_exe=c3_mcp_exe)
         _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe, primary_profile=profile.name)
 
@@ -5134,7 +5075,7 @@ def cmd_install_mcp(args):
     with open(c3_config_path, 'w', encoding="utf-8") as f:
         json.dump(c3_config, f, indent=2)
 
-    # ── Install hooks (Claude Code + Gemini CLI) ──
+    # ── Install hooks (Claude Code) ──
     if profile.supports_hooks and profile.settings_path:
         settings_dir = target / Path(profile.settings_path).parent
         settings_dir.mkdir(parents=True, exist_ok=True)
@@ -5165,26 +5106,15 @@ def cmd_install_mcp(args):
         hook_stop_cmd     = f"{_dispatch_base} stop"
         hook_prompt_cmd   = f"{_dispatch_base} prompt"
 
-        # Tool matcher names differ by IDE: Gemini uses snake_case built-in names.
-        if profile.name == "gemini":
-            shell_matcher  = "run_shell_command"
-            read_matcher   = "read_file"
-            grep_matcher   = "grep"
-            glob_matcher   = "find_files"
-            edit_matcher   = "edit_file"
-            write_matcher  = "write_file"
-            # Gemini has no MultiEdit / NotebookEdit equivalents.
-            extra_edit_matchers = []
-        else:
-            shell_matcher  = "Bash"
-            read_matcher   = "Read"
-            grep_matcher   = "Grep"
-            glob_matcher   = "Glob"
-            edit_matcher   = "Edit"
-            write_matcher  = "Write"
-            # Claude Code also exposes MultiEdit (batch edits) and NotebookEdit;
-            # both bypass enforcement/logging unless their matchers are registered.
-            extra_edit_matchers = ["MultiEdit", "NotebookEdit"]
+        shell_matcher  = "Bash"
+        read_matcher   = "Read"
+        grep_matcher   = "Grep"
+        glob_matcher   = "Glob"
+        edit_matcher   = "Edit"
+        write_matcher  = "Write"
+        # Claude Code also exposes MultiEdit (batch edits) and NotebookEdit;
+        # both bypass enforcement/logging unless their matchers are registered.
+        extra_edit_matchers = ["MultiEdit", "NotebookEdit"]
 
         # ── PostToolUse hooks ──
         # Matcher set is unchanged from pre-v2.42; every matcher now points at
@@ -5242,8 +5172,7 @@ def cmd_install_mcp(args):
         existing_post.extend(desired_post_hooks)
         settings.setdefault("hooks", {})[hook_event] = existing_post
 
-        # PreToolUse hooks (Claude Code: "PreToolUse", Gemini: "BeforeTool")
-        pre_event = "BeforeTool" if profile.name == "gemini" else "PreToolUse"
+        pre_event = "PreToolUse"
         pre_matchers = {h.get("matcher") for h in desired_pre_hooks}
         existing_pre = [
             h for h in settings.get("hooks", {}).get(pre_event, [])
@@ -5253,7 +5182,6 @@ def cmd_install_mcp(args):
         settings.setdefault("hooks", {})[pre_event] = existing_pre
 
         # ── Stop hooks (auto-snapshot + session stats on session end / Ctrl+C) ──
-        # Stop hooks fire for both Claude Code ("Stop") and Gemini ("Stop").
         desired_stop_hooks = [
             {
                 "matcher": "",
@@ -5288,26 +5216,25 @@ def cmd_install_mcp(args):
         settings.setdefault("hooks", {})[stop_event] = existing_stop
 
         # ── UserPromptSubmit hook (per-prompt project-memory injection) ──
-        # Claude Code only: Gemini CLI has no equivalent hook event. Same
-        # merge discipline as Stop: replace only C3's own entries (identified
-        # by the dispatcher script in the command), keep user-added ones.
-        if profile.name != "gemini":
-            prompt_event = "UserPromptSubmit"
+        # Same merge discipline as Stop: replace only C3's own entries
+        # (identified by the dispatcher script in the command), keep
+        # user-added ones.
+        prompt_event = "UserPromptSubmit"
 
-            def _is_c3_prompt_hook(entry: dict) -> bool:
-                return any(
-                    "hook_dispatch.py" in (hk.get("command") or "")
-                    for hk in entry.get("hooks", [])
-                )
-
-            existing_prompt = [
-                h for h in settings.get("hooks", {}).get(prompt_event, [])
-                if not _is_c3_prompt_hook(h)
-            ]
-            existing_prompt.append(
-                {"matcher": "", "hooks": [{"type": "command", "command": hook_prompt_cmd}]}
+        def _is_c3_prompt_hook(entry: dict) -> bool:
+            return any(
+                "hook_dispatch.py" in (hk.get("command") or "")
+                for hk in entry.get("hooks", [])
             )
-            settings.setdefault("hooks", {})[prompt_event] = existing_prompt
+
+        existing_prompt = [
+            h for h in settings.get("hooks", {}).get(prompt_event, [])
+            if not _is_c3_prompt_hook(h)
+        ]
+        existing_prompt.append(
+            {"matcher": "", "hooks": [{"type": "command", "command": hook_prompt_cmd}]}
+        )
+        settings.setdefault("hooks", {})[prompt_event] = existing_prompt
 
         # Claude Code only: enable MCP server prompt settings
         if profile.name == "claude-code":
@@ -5413,23 +5340,7 @@ def cmd_install_mcp(args):
             print(f"Warning: {global_codex_cfg} has [mcp_servers.c3] enabled = false.")
             print("  This can make C3 look disabled. Set it to true or remove that global c3 section.")
 
-    # â”€â”€ Gemini settings.json enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if profile.name == "gemini":
-        print("Note: the Gemini CLI profile is deprecated — prefer Antigravity")
-        print("  (reads AGENTS.md; run `c3 install-mcp antigravity`).")
-        # Warn about a common conflict: global Gemini config pointing elsewhere.
-        global_gemini_cfg = Path.home() / ".gemini" / "settings.json"
-        if global_gemini_cfg.exists():
-            try:
-                with open(global_gemini_cfg, 'r', encoding="utf-8") as f:
-                    g_data = json.load(f)
-                if "mcpServers" in g_data and "c3" in g_data["mcpServers"]:
-                    print(f"Note: Global config {global_gemini_cfg} also defines 'c3'.")
-                    print("  The project-local config at .gemini/settings.json should take precedence.")
-            except Exception:
-                pass
-
-    _sync_project_instruction_docs(str(target), sm, ide=profile.name)
+    _sync_project_instruction_docs(str(target), sm)
 
     # ── User-global C3 enforcement ──────────────────────────────
     try:
@@ -5438,7 +5349,7 @@ def cmd_install_mcp(args):
         print(f"Warning: Could not update global CLAUDE.md: {e}")
 
     # ── Install /terse skill for supported IDEs ──────────────────
-    if profile.name in ("claude-code", "codex", "gemini"):
+    if profile.name in ("claude-code", "codex"):
         try:
             _ensure_terse_skill(profile.name)
         except Exception as e:

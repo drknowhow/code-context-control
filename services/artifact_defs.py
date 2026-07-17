@@ -96,6 +96,12 @@ def _build_file_table() -> dict:
         _add(profile.settings_path, "settings", profile.name)
         _add(profile.instructions_file, "instructions", profile.name)
     _add(".claude/settings.json", "settings", "claude-code")
+    # Legacy Gemini CLI artifacts (profile removed in v2.52): existing projects
+    # still carry these files, so keep classifying and tracking them. MCP class
+    # first so 'settings' merges into roles, matching the old dual-role entry.
+    _add(".gemini/settings.json", "mcp", "gemini")
+    _add(".gemini/settings.json", "settings", "gemini")
+    _add("GEMINI.md", "instructions", "gemini")
     return table
 
 

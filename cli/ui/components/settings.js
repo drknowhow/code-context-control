@@ -1244,7 +1244,6 @@ const SettingsPanel = ({ stats }) => {
             <select value={mcpIde} onChange={e => setMcpIde(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 170 }}>
               <option value="auto">Auto-detect</option>
               <option value="claude">Claude Code</option>
-              <option value="gemini">Gemini CLI</option>
               <option value="vscode">VS Code Copilot</option>
               <option value="cursor">Cursor</option>
               <option value="codex">OpenAI Codex</option>
@@ -1325,7 +1324,6 @@ const SettingsPanel = ({ stats }) => {
               <option value="auto">Auto-detect IDE</option>
               <option value="claude">Claude Code</option>
               <option value="antigravity">Google Antigravity</option>
-              <option value="gemini">Gemini CLI</option>
               <option value="vscode">VS Code Copilot</option>
               <option value="cursor">Cursor</option>
               <option value="codex">OpenAI Codex</option>

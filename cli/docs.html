@@ -790,7 +790,6 @@
       <div class="subtitle">
         A local code intelligence system that reduces AI coding assistant token usage through compression,
         indexing, and persistent memory. Works with <strong>Claude Code</strong>, <strong>Google Antigravity</strong>,
-        <strong>Gemini CLI</strong>,
         <strong>VS Code Copilot</strong>, and <strong>Cursor</strong> via MCP. Available as an <strong>MCP
           server</strong>,
         <strong>CLI</strong>, and <strong>web dashboard</strong>.
@@ -955,7 +954,7 @@ c3 init /path/to/your/project</code></pre>
               <code>.c3/</code> directory, builds the code index, and then walks through a guided 3-step setup:
               choose the IDE profile, optionally run a local <code>git init</code>, and optionally install MCP.
               When MCP is installed, C3 writes the IDE config plus project-local session files such as
-              <code>.codex/config.toml</code> and <code>.gemini/settings.json</code>. For VS Code, also generates
+              <code>.codex/config.toml</code>. For VS Code, also generates
               <code>.github/copilot-instructions.md</code> (hard enforcement language) and
               <code>.vscode/settings.json</code> (Copilot instruction links). For Codex, generates
               <code>AGENTS.md</code> with the C3 session protocol. Use <code>--ide vscode</code>,
@@ -967,7 +966,7 @@ c3 init /path/to/your/project</code></pre>
           <div class="step-content">
             <div class="step-title">Restart your IDE</div>
             <div class="step-desc">Open your IDE in the project. For Claude Code, run <code>/mcp</code> to verify C3
-              tools appear. For Google Antigravity and Gemini CLI, the MCP tools will be loaded based on your config.
+              tools appear. For Google Antigravity, the MCP tools will be loaded based on your config.
               For VS Code, check MCP tools in the Copilot agent panel. For Codex, the <code>.codex/config.toml</code> is
               picked up automatically on next session start.</div>
           </div>
@@ -1022,18 +1021,10 @@ c3 init /path/to/your/project</code></pre>
           <td>No</td>
         </tr>
         <tr>
-          <td><strong>Gemini CLI</strong></td>
-          <td><code>.gemini/settings.json</code></td>
-          <td><code>GEMINI.md</code></td>
-          <td>â€”</td>
-          <td>No</td>
-          <td>No</td>
-        </tr>
-        <tr>
           <td><strong>Google Antigravity</strong></td>
           <td><code>~/.gemini/antigravity/mcp_config.json</code> <span class="badge badge-warn"
               style="font-size:10px">global</span></td>
-          <td><code>GEMINI.md</code></td>
+          <td><code>AGENTS.md</code></td>
           <td>â€”</td>
           <td>No</td>
           <td>No</td>
@@ -1059,13 +1050,12 @@ python cli/c3.py install-mcp /path/to/project --ide vscode
 python cli/c3.py install-mcp /path/to/project --ide cursor
 python cli/c3.py install-mcp /path/to/project --ide claude
 python cli/c3.py install-mcp /path/to/project --ide codex
-python cli/c3.py install-mcp /path/to/project --ide gemini
 python cli/c3.py install-mcp /path/to/project --ide antigravity
 
 # IDE shorthand when already inside the project directory
 python cli/c3.py install-mcp claude
 python cli/c3.py install-mcp codex
-python cli/c3.py install-mcp . gemini</code></pre>
+python cli/c3.py install-mcp . antigravity</code></pre>
 
       <p><code>--git</code> runs a local-only <code>git init</code>. It does not create remotes or connect to GitHub,
         GitLab, or any other hosted service.</p>
@@ -1104,30 +1094,20 @@ python cli/c3.py install-mcp . gemini</code></pre>
         </li>
       </ul>
 
-      <p><strong>Gemini CLI</strong> â€” <code>install-mcp --ide gemini</code> (and <code>c3 init --ide gemini</code>)
-        write a project-scoped JSON config and a GEMINI.md instructions file:</p>
-      <ul>
-        <li><code>.gemini/settings.json</code> â€” project-scoped MCP config under the <code>mcpServers</code> key.
-          Gemini CLI reads both this file and <code>~/.gemini/settings.json</code> (user-global). Merged with existing
-          settings. Auto-detected when a <code>.gemini/</code> directory or <code>.gemini/settings.json</code> already
-          exists.</li>
-        <li><code>GEMINI.md</code> â€” Gemini CLI reads this file as project context (loaded from the project root and
-          parent directories). Generated with REQUIRED/MANDATORY/NEVER language and the 7-step C3 session protocol. Only
-          created if absent.</li>
-      </ul>
+      <p><em>The Gemini CLI profile was removed in v2.52 — use Google Antigravity instead. <code>c3 uninstall</code>
+        still cleans up legacy <code>.gemini/settings.json</code> and <code>GEMINI.md</code> files.</em></p>
 
       <p><strong>Google Antigravity</strong> â€” <code>install-mcp --ide antigravity</code> writes the MCP config to the
-        user-global Antigravity config and a project-local <code>GEMINI.md</code>:</p>
+        user-global Antigravity config and a project-local <code>AGENTS.md</code>:</p>
       <ul>
         <li><code>~/.gemini/antigravity/mcp_config.json</code> â€” user-global Antigravity MCP config under the
           <code>mcpServers</code> key. This is the file managed by Antigravity's <em>Manage MCPs</em> UI. Merged with
           existing config. Each project still passes <code>--project</code> to the MCP server so C3 indexes the correct
           directory.
         </li>
-        <li><code>GEMINI.md</code> â€” Antigravity and Gemini CLI both read <code>GEMINI.md</code> files from the
-          project root. Same content as Gemini CLI profile. Only created if absent.</li>
-        <li>Auto-detected when <code>~/.gemini/antigravity/</code> directory already exists alongside a
-          <code>.gemini/</code> project directory.
+        <li><code>AGENTS.md</code> â€” Antigravity prefers <code>AGENTS.md</code> read from the project root
+          (shared with the Codex profile). Only created if absent.</li>
+        <li>Auto-detected when a legacy <code>.gemini/</code> project directory exists.
         </li>
       </ul>
 

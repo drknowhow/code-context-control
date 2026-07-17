@@ -26,7 +26,7 @@ class IDEProfile:
     settings_path: Optional[str]           # ".claude/settings.local.json" or None
     config_format: str = "json"            # "json" or "toml"
     config_path_global: bool = False       # True = config_path resolved from home dir, not project
-    hook_event: str = "PostToolUse"        # Claude="PostToolUse", Gemini="AfterTool"
+    hook_event: str = "PostToolUse"
 
 
 # ─── IDE Profiles ─────────────────────────────────────────
@@ -85,20 +85,6 @@ PROFILES = {
         settings_path=None,
         config_format="toml",
     ),
-    "gemini": IDEProfile(
-        name="gemini",
-        display_name="Gemini CLI",
-        config_path=".gemini/settings.json",  # project-scoped; global is ~/.gemini/settings.json
-        config_key="mcpServers",
-        needs_type_field=False,
-        instructions_file="GEMINI.md",
-        instructions_line_limit=None,
-        supports_hooks=True,
-        supports_transcripts=False,
-        supports_clear=False,
-        settings_path=".gemini/settings.json",  # same file as MCP config
-        hook_event="AfterTool",
-    ),
     "antigravity": IDEProfile(
         name="antigravity",
         display_name="Google Antigravity",
@@ -149,18 +135,14 @@ def detect_ide(project_path: str) -> str:
     if (p / ".codex" / "config.toml").exists():
         return "codex"
     if (p / ".gemini" / "settings.json").exists():
-        # Prefer antigravity if its user-global dir already exists
-        if (Path.home() / ".gemini" / "antigravity").is_dir():
-            return "antigravity"
-        return "gemini"
+        # Legacy Gemini CLI marker (profile removed) — treat as Antigravity.
+        return "antigravity"
 
     # 2. IDE directory markers (even without config yet)
     if (p / ".codex").is_dir():
         return "codex"
     if (p / ".gemini").is_dir():
-        if (Path.home() / ".gemini" / "antigravity").is_dir():
-            return "antigravity"
-        return "gemini"
+        return "antigravity"
     if (p / ".vscode").is_dir():
         return "vscode"
     if (p / ".cursor").is_dir():
