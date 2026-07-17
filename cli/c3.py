@@ -711,8 +711,8 @@ def _select_init_ide(default_ide: str) -> str:
         "VS Code      — .vscode/mcp.json + Copilot instructions",
         "Cursor       — .cursor/mcp.json",
         "Codex        — .codex/config.toml + AGENTS.md",
-        "Gemini       — .gemini/settings.json + GEMINI.md",
-        "Antigravity  — ~/.gemini/antigravity/mcp_config.json",
+        "Gemini       — .gemini/settings.json + GEMINI.md (deprecated: prefer Antigravity)",
+        "Antigravity  — ~/.gemini/antigravity/mcp_config.json + AGENTS.md",
     ]
     selected = _prompt_choice("Step 1/3 — Choose IDE profile", choices)
     mapping = {
@@ -955,7 +955,7 @@ def _do_init(project_path: str, ide_name: str = None):
     instructions_path.parent.mkdir(parents=True, exist_ok=True)
 
     sm = SessionManager(project_path)
-    _sync_project_instruction_docs(project_path, sm)
+    _sync_project_instruction_docs(project_path, sm, ide=ide_name)
 
 
 def cmd_init(args):
@@ -4381,22 +4381,26 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
         )
         print(f"{codex_state.capitalize()} {codex_path}")
 
+    # Gemini CLI is deprecated in favor of Antigravity (which reads a single
+    # user-global config): refresh an existing project config, never seed one.
     if primary_profile != "gemini":
         gemini_path = target / ".gemini" / "settings.json"
-        gemini_state = _upsert_json_mcp_server(
-            gemini_path,
-            "mcpServers",
-            "c3",
-            {
-                "command": mcp_command,
-                "args": server_args,
-            },
-        )
-        print(f"{gemini_state.capitalize()} {gemini_path}")
+        if gemini_path.exists():
+            gemini_state = _upsert_json_mcp_server(
+                gemini_path,
+                "mcpServers",
+                "c3",
+                {
+                    "command": mcp_command,
+                    "args": server_args,
+                },
+            )
+            print(f"{gemini_state.capitalize()} {gemini_path}")
 
 
-def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None = None) -> None:
-    """Keep user-global Codex/Gemini MCP configs pointing at C3.
+def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None = None,
+                                     primary_profile: str | None = None) -> None:
+    """Keep user-global Codex/Gemini/Antigravity MCP configs pointing at C3.
 
     These fallback entries omit `--project` so the MCP server can resolve the
     active working directory dynamically when a session starts in a project that
@@ -4423,20 +4427,44 @@ def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None 
     except PermissionError:
         print(f"Warning: Could not update {codex_path} (global fallback skipped)")
 
+    # Gemini CLI is deprecated in favor of Antigravity: refresh an existing
+    # global config (or create it when Gemini CLI is the chosen profile), but
+    # don't seed ~/.gemini/settings.json from other IDE installs.
     gemini_path = Path.home() / ".gemini" / "settings.json"
-    try:
-        gemini_state = _upsert_json_mcp_server(
-            gemini_path,
-            "mcpServers",
-            "c3",
-            {
-                "command": c3_mcp_exe or sys.executable,
-                "args": fallback_args,
-            },
-        )
-        print(f"{gemini_state.capitalize()} {gemini_path}  (global fallback)")
-    except PermissionError:
-        print(f"Warning: Could not update {gemini_path} (global fallback skipped)")
+    if primary_profile == "gemini" or gemini_path.exists():
+        try:
+            gemini_state = _upsert_json_mcp_server(
+                gemini_path,
+                "mcpServers",
+                "c3",
+                {
+                    "command": c3_mcp_exe or sys.executable,
+                    "args": fallback_args,
+                },
+            )
+            print(f"{gemini_state.capitalize()} {gemini_path}  (global fallback)")
+        except PermissionError:
+            print(f"Warning: Could not update {gemini_path} (global fallback skipped)")
+
+    # Antigravity shares the ~/.gemini home dir but reads its own MCP config.
+    # When Antigravity is the primary profile, the main install flow already
+    # wrote this file — here we only keep it fresh for codex/gemini installs
+    # on machines that have Antigravity (its config dir exists).
+    antigravity_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
+    if primary_profile != "antigravity" and antigravity_path.parent.is_dir():
+        try:
+            ag_state = _upsert_json_mcp_server(
+                antigravity_path,
+                "mcpServers",
+                "c3",
+                {
+                    "command": c3_mcp_exe or sys.executable,
+                    "args": fallback_args,
+                },
+            )
+            print(f"{ag_state.capitalize()} {antigravity_path}  (global fallback)")
+        except PermissionError:
+            print(f"Warning: Could not update {antigravity_path} (global fallback skipped)")
 
 
 def _uninstall_mcp_all(project_path: str):
@@ -4715,7 +4743,11 @@ def _ensure_global_claude_md() -> None:
 
 
 def _instruction_documents_for_project() -> list[tuple[str, str]]:
-    """Return the project-local instruction documents C3 should keep in sync."""
+    """Return every project-local instruction document C3 has ever managed.
+
+    Used by uninstall/cleanup paths, so it must keep listing deprecated docs
+    (GEMINI.md) even though generation is now IDE-gated.
+    """
     return [
         ("CLAUDE.md", _CLAUDE_MD_CONTENT),
         ("AGENTS.md", _AGENTS_MD_CONTENT),
@@ -4723,11 +4755,28 @@ def _instruction_documents_for_project() -> list[tuple[str, str]]:
     ]
 
 
-def _sync_project_instruction_docs(project_path: str, sm: SessionManager) -> None:
+def _instruction_documents_to_generate(ide: str) -> list[tuple[str, str]]:
+    """Instruction docs to write for a project, gated by its IDE profile.
+
+    GEMINI.md is deprecated: generated only for Gemini CLI projects.
+    Antigravity reads AGENTS.md (and prefers it over GEMINI.md when both exist).
+    """
+    return [
+        (name, template)
+        for name, template in _instruction_documents_for_project()
+        if name != "GEMINI.md" or ide == "gemini"
+    ]
+
+
+def _sync_project_instruction_docs(project_path: str, sm: SessionManager,
+                                   ide: str | None = None) -> None:
     """Write the current C3 instruction docs into the project root."""
+    if ide is None:
+        from core.ide import load_ide_config
+        ide = load_ide_config(project_path)
     repo_root = Path(__file__).resolve().parent.parent
     synced: list[str] = []
-    for instructions_file, template in _instruction_documents_for_project():
+    for instructions_file, template in _instruction_documents_to_generate(ide):
         print(f"Generating {instructions_file}...")
         # Resolve placeholder for project-scoped MCP configs
         resolved_template = template.replace("<path-to-c3>", str(repo_root).replace("\\", "/"))
@@ -5069,9 +5118,9 @@ def cmd_install_mcp(args):
         # instead of letting it surface as anonymous out-of-band drift.
         from services.artifact_defs import note_pending_write
         note_pending_write(target, profile.config_path, "install_mcp")
-    if profile.name in {"codex", "gemini"}:
+    if profile.name in {"codex", "gemini", "antigravity"}:
         _ensure_project_session_configs(target, server_script, primary_profile=profile.name, c3_mcp_exe=c3_mcp_exe)
-        _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe)
+        _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe, primary_profile=profile.name)
 
     # â”€â”€ Persist IDE choice to .c3/config.json â”€â”€
     c3_config_dir = target / ".c3"
@@ -5378,7 +5427,7 @@ def cmd_install_mcp(args):
             except Exception:
                 pass
 
-    _sync_project_instruction_docs(str(target), sm)
+    _sync_project_instruction_docs(str(target), sm, ide=profile.name)
 
     # ── User-global C3 enforcement ──────────────────────────────
     try:

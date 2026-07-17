@@ -62,7 +62,7 @@ c3 init /path/to/your/project
 ```
 
 Running `c3` with no arguments opens the interactive TUI. `c3 init` walks you through:
-1. **IDE selection** (Claude Code CLI/App, Codex CLI, Gemini CLI, VS Code, Cursor, Antigravity, or Custom)
+1. **IDE selection** (Claude Code CLI/App, Codex CLI, VS Code, Cursor, Antigravity, Gemini CLI *(deprecated — prefer Antigravity, which reads AGENTS.md)*, or Custom)
 2. Optional local `git init`
 3. MCP server registration (auto-wired into your IDE)
 4. (Claude Code only) Permission tier selection
