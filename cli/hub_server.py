@@ -1027,8 +1027,10 @@ def api_run_component():
             ollama = OllamaClient(ollama_url)
             embed_model = cfg.get("embed_model", "nomic-embed-text")
             ei = EmbeddingIndex(resolved, ollama, embed_model=embed_model)
-            if not ei.ready:
-                return jsonify({"success": True, "output": "Embedding index skipped (Ollama not available or model not pulled)."})
+            # probe() initializes lazy backends; a fresh instance's .ready
+            # is always False and would skip the build unconditionally.
+            if not ei.probe()["ready"]:
+                return jsonify({"success": True, "output": f"Embedding index skipped ({ei.unavailable_reason()})."})
             indexer = CodeIndex(resolved)
             if not indexer.chunks:
                 indexer._load_index()

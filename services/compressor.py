@@ -709,27 +709,19 @@ class CodeCompressor:
                        '.css', '.html', '.json', '.yaml', '.yml', '.md'}
         allowed = set(extensions) if extensions else default_exts
 
-        # Skip common non-essential dirs
-        skip_dirs = {'node_modules', '.git', '__pycache__', '.c3', 'venv',
-                    'env', '.venv', 'dist', 'build', '.next', '.cache'}
-
         results = []
         total_original = 0
         total_compressed = 0
         skipped_protected = []
 
-        files = sorted(dirpath.rglob('*'))[:max_files * 3]  # Pre-limit
-        count = 0
+        # Pruned walk (shared SKIP_DIRS) - never descends into
+        # node_modules/.git/etc., stops as soon as the cap is reached.
+        from services.scanner import iter_files
 
-        for fpath in files:
+        count = 0
+        for fpath in iter_files(dirpath, exts={e.lower() for e in allowed}):
             if count >= max_files:
                 break
-            if not fpath.is_file():
-                continue
-            if fpath.suffix.lower() not in allowed:
-                continue
-            if any(skip in fpath.parts for skip in skip_dirs):
-                continue
             if self.is_protected_file(fpath):
                 skipped_protected.append(self._relative_to_project(fpath))
                 continue

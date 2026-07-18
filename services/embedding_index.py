@@ -39,6 +39,8 @@ class EmbeddingIndex:
         self._collection = None
         self._available = False
         self._ollama_ok = False
+        self._ollama_up = False
+        self._model_ok = False
         self._file_hashes: dict[str, str] = {}  # doc_id -> content hash
         self._lock = threading.Lock()
         self._chunk_map: dict[str, dict] = {}  # chunk_id -> metadata
@@ -101,17 +103,46 @@ class EmbeddingIndex:
             self._available = False
 
         try:
-            self._ollama_ok = (
-                self.ollama.is_available(timeout=2)
-                and self.ollama.has_model(self.embed_model)
+            self._ollama_up = self.ollama.is_available(timeout=2)
+            self._model_ok = (
+                self._ollama_up and self.ollama.has_model(self.embed_model)
             )
         except Exception:
-            self._ollama_ok = False
+            self._ollama_up = False
+            self._model_ok = False
+        self._ollama_ok = self._ollama_up and self._model_ok
 
     @property
     def ready(self) -> bool:
         """True when both chromadb and Ollama embeddings are available."""
         return self._available and self._ollama_ok
+
+    def probe(self) -> dict:
+        """Explicitly initialize backends and report readiness.
+
+        ``ready`` alone never triggers backend init (status reporters must
+        stay cheap for build_runtime/MCP handshake), so gating a build on a
+        fresh instance's ``ready`` always skipped. Init/CLI flows call this
+        instead: it pays the one-time backend cost, then reports truthfully.
+        """
+        self._ensure_ready()
+        return {
+            "ready": self.ready,
+            "chromadb": self._available,
+            "ollama": self._ollama_up,
+            "model": self._model_ok,
+        }
+
+    def unavailable_reason(self) -> str:
+        """Human-readable reason ``ready`` is False (after probe/init)."""
+        if not self._available:
+            return "chromadb not installed"
+        if not self._ollama_up:
+            return "Ollama not reachable"
+        if not self._model_ok:
+            return (f"embed model '{self.embed_model}' not pulled "
+                    f"(run: ollama pull {self.embed_model})")
+        return ""
 
     # ── Hash tracking ─────────────────────────────────────
 
@@ -138,12 +169,14 @@ class EmbeddingIndex:
 
     # ── Build / Update ────────────────────────────────────
 
-    def build(self, code_index, force: bool = False) -> dict:
+    def build(self, code_index, force: bool = False, on_progress=None) -> dict:
         """Build or incrementally update the embedding index from CodeIndex chunks.
 
         Args:
             code_index: A CodeIndex instance with populated chunks/documents.
             force: If True, re-embed all files regardless of hash.
+            on_progress: callable(files_done, files_total, chunks_embedded),
+                invoked per file (skipped files count as done).
 
         Returns:
             Stats dict with files_processed, chunks_embedded, chunks_skipped, etc.
@@ -170,6 +203,15 @@ class EmbeddingIndex:
         files_skipped = 0
         errors = 0
         stale_ids = []
+        files_total = len(chunks_by_file)
+
+        def _report():
+            if on_progress is not None:
+                try:
+                    on_progress(files_processed + files_skipped, files_total,
+                                chunks_embedded)
+                except Exception:
+                    pass
 
         with self._lock:
             # Detect deleted files — remove their embeddings
@@ -187,6 +229,7 @@ class EmbeddingIndex:
                 if not force and self._file_hashes.get(doc_id) == new_hash:
                     files_skipped += 1
                     chunks_skipped += len(file_chunks)
+                    _report()
                     continue
 
                 # Remove old chunks for this file before re-embedding
@@ -237,6 +280,7 @@ class EmbeddingIndex:
 
                 self._file_hashes[doc_id] = new_hash
                 files_processed += 1
+                _report()
 
             self._save_hashes()
 

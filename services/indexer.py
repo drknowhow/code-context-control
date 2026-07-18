@@ -13,6 +13,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 
 from core import count_tokens
+from services.scanner import SKIP_DIRS, iter_files
 
 
 class CodeIndex:
@@ -37,10 +38,8 @@ class CodeIndex:
         self._cooccurrence = {}   # term -> {term: count} for auto-synonyms
         self._file_mtimes = {}    # doc_id -> mtime for recency bias
 
-        # Config
-        self.skip_dirs = {'node_modules', '.git', '__pycache__', '.c3', 'venv',
-                         'env', '.venv', 'dist', 'build', '.next', '.cache',
-                         'coverage', '.pytest_cache'}
+        # Config - shared pruned-walk skip set (services/scanner.py)
+        self.skip_dirs = set(SKIP_DIRS)
         self.code_exts = {
             # Python
             '.py', '.pyi', '.pyx',
@@ -87,8 +86,31 @@ class CodeIndex:
             self.exclude_prefixes = []
             self._is_excluded = None
 
-    def build_index(self, max_files: int = 500) -> dict:
-        """Build the full code index."""
+    _DEFAULT_MAX_FILES = 2000
+
+    def _configured_max_files(self) -> int:
+        """``index_max_files`` from .c3/config.json; default 2000."""
+        try:
+            cfg = json.loads((self.project_path / '.c3' / 'config.json')
+                             .read_text(encoding='utf-8'))
+            val = int(cfg.get('index_max_files', self._DEFAULT_MAX_FILES))
+            return val if val > 0 else self._DEFAULT_MAX_FILES
+        except Exception:
+            return self._DEFAULT_MAX_FILES
+
+    def build_index(self, max_files: int = None, on_progress=None) -> dict:
+        """Build the full code index.
+
+        max_files: cap on files indexed. None reads ``index_max_files``
+            from .c3/config.json (default 2000). Traversal continues past
+            the cap only to count what was left out, so callers can report
+            "indexed N of M" instead of silently truncating.
+        on_progress: callable(entries_seen, files_indexed, chunks_created),
+            invoked during the scan (directory granularity plus per file).
+        """
+        if max_files is None:
+            max_files = self._configured_max_files()
+
         self.documents = {}
         self.chunks = {}
         self.symbols = {}
@@ -96,23 +118,34 @@ class CodeIndex:
 
         files_indexed = 0
         chunks_created = 0
+        files_capped = 0
+        scan_stats = {"entries": 0}
 
-        for fpath in sorted(self.project_path.rglob('*')):
-            if files_indexed >= max_files:
-                break
-            if not fpath.is_file():
-                continue
-            if fpath.suffix.lower() not in self.code_exts:
-                continue
-            if any(skip in fpath.parts for skip in self.skip_dirs):
-                continue
-            if self.exclude_prefixes:
+        def _report(entries_seen=None, _yielded=None):
+            if entries_seen is not None:
+                scan_stats["entries"] = entries_seen
+            if on_progress is not None:
                 try:
-                    if self._is_excluded(fpath.relative_to(self.project_path).parts,
-                                         self.exclude_prefixes):
-                        continue
-                except ValueError:
+                    on_progress(scan_stats["entries"], files_indexed,
+                                chunks_created)
+                except Exception:
                     pass
+
+        exclude_parts = None
+        if self.exclude_prefixes and self._is_excluded is not None:
+            def exclude_parts(parts, _c=self._is_excluded,
+                              _p=self.exclude_prefixes):
+                return _c(parts, _p)
+
+        for fpath in iter_files(self.project_path, exts=self.code_exts,
+                                skip_dirs=self.skip_dirs,
+                                exclude_parts=exclude_parts,
+                                on_progress=_report):
+            if files_indexed >= max_files:
+                # Walk on (cheap after pruning) to count coverage;
+                # reading and chunking stop at the cap.
+                files_capped += 1
+                continue
 
             try:
                 content = fpath.read_text(errors='replace')
@@ -150,6 +183,7 @@ class CodeIndex:
                 pass
 
             files_indexed += 1
+            _report()
 
         # Build TF-IDF and co-occurrence synonyms
         self._build_tfidf()
@@ -162,7 +196,10 @@ class CodeIndex:
             "files_indexed": files_indexed,
             "chunks_created": chunks_created,
             "unique_symbols": len(self.symbols),
-            "index_path": str(self.index_dir)
+            "index_path": str(self.index_dir),
+            "entries_scanned": scan_stats["entries"],
+            "files_capped": files_capped,
+            "max_files": max_files,
         }
 
     def _chunk_file(self, content: str, ext: str, doc_id: str) -> list:

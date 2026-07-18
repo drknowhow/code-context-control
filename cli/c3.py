@@ -165,6 +165,7 @@ def _build_init_config(project_path: str) -> dict:
         "project_path": project_path,
         "version": __version__,
         "index_auto_update": True,
+        "index_max_files": 2000,
         "compression_mode": "smart",
         "mcp": {"mode": "direct"},
         "hybrid": deepcopy(HYBRID_DEFAULTS),
@@ -890,7 +891,7 @@ def _parse_cli_ide_arg(value: str) -> str:
     return normalized
 
 
-def _do_init(project_path: str, ide_name: str = None):
+def _do_init(project_path: str, ide_name: str = None, no_embed: bool = False):
     """Run the core init steps (shared by new install and re-init after clear/reset)."""
     config = _build_init_config(project_path)
     save_config(config, project_path)
@@ -898,10 +899,27 @@ def _do_init(project_path: str, ide_name: str = None):
     for subdir in _C3_INIT_SUBDIRS:
         (Path(project_path) / CONFIG_DIR / subdir).mkdir(parents=True, exist_ok=True)
 
+    import time as _t
+
+    from cli.progress import ProgressLine
+
     print("Building code index...")
+    _prog = ProgressLine()
+    _t0 = _t.perf_counter()
     indexer = CodeIndex(project_path)
-    result = indexer.build_index()
-    print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks")
+    result = indexer.build_index(
+        on_progress=lambda entries, files, chunks: _prog.update(
+            f"  scanning: {entries:,} entries | {files:,} files | {chunks:,} chunks"))
+    _prog.done()
+    entries = result.get("entries_scanned", 0)
+    print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks "
+          f"in {_t.perf_counter() - _t0:.1f}s ({entries:,} entries scanned)")
+    capped = result.get("files_capped", 0)
+    if capped:
+        total = result["files_indexed"] + capped
+        print(f"  [!] Indexed {result['files_indexed']} of {total} candidate files "
+              f"(cap: index_max_files={result.get('max_files')}).")
+        print("      Raise index_max_files in .c3/config.json for full coverage.")
 
     # Build embedding index if Ollama is available (non-blocking on failure)
     try:
@@ -912,13 +930,24 @@ def _do_init(project_path: str, ide_name: str = None):
         ollama = OllamaClient(ollama_url)
         embed_model = config.get("embed_model", "nomic-embed-text")
         ei = EmbeddingIndex(project_path, ollama, embed_model=embed_model)
-        if ei.ready:
+        if no_embed:
+            print("  Embedding index skipped (--no-embed)")
+        elif ei.probe()["ready"]:
+            # probe() initializes the lazy backends; checking .ready on a
+            # fresh instance is always False and silently skipped the build.
             print("Building embedding index...")
-            ei_result = ei.build(indexer)
+            _t0 = _t.perf_counter()
+            _eprog = ProgressLine()
+            ei_result = ei.build(
+                indexer,
+                on_progress=lambda done, total, chunks: _eprog.update(
+                    f"  embedding: file {done}/{total} | {chunks:,} chunks"))
+            _eprog.done()
             print(f"  Embedded {ei_result.get('chunks_embedded', 0)} chunks "
-                  f"({ei_result.get('files_processed', 0)} files)")
+                  f"({ei_result.get('files_processed', 0)} files) "
+                  f"in {_t.perf_counter() - _t0:.1f}s")
         else:
-            print("  Embedding index skipped (Ollama not available or model not pulled)")
+            print(f"  Embedding index skipped ({ei.unavailable_reason()})")
     except Exception:
         _log.debug("Embedding index build failed", exc_info=True)
 
@@ -926,15 +955,22 @@ def _do_init(project_path: str, ide_name: str = None):
     try:
         from services.doc_index import DocIndex
         print("Building doc index...")
+        _t0 = _t.perf_counter()
+        _dprog = ProgressLine()
         di = DocIndex(project_path)
-        di_result = di.build()
-        print(f"  Indexed {di_result['docs_indexed']} docs, {di_result['chunks_created']} chunks")
+        di_result = di.build(
+            on_progress=lambda done, total: _dprog.update(
+                f"  docs: {done}/{total}"))
+        _dprog.done()
+        print(f"  Indexed {di_result['docs_indexed']} docs, "
+              f"{di_result['chunks_created']} chunks in {_t.perf_counter() - _t0:.1f}s")
     except Exception:
         _log.debug("Doc index build failed", exc_info=True)
 
     print("Building compression dictionary...")
     protocol = CompressionProtocol(project_path)
-    new_terms = protocol.build_project_dictionary()
+    # Mine the in-memory index instead of re-reading the whole tree.
+    new_terms = protocol.build_project_dictionary(code_index=indexer)
     print(f"  Added {len(new_terms)} project-specific terms")
 
     from core.ide import detect_ide, load_ide_config
@@ -966,11 +1002,12 @@ def cmd_init(args):
     if requested_ide != "auto":
         requested_ide = normalize_ide_name(requested_ide)
     git_requested = getattr(args, "git", False)
+    no_embed = bool(getattr(args, "no_embed", False))
 
     # â”€â”€ Brand-new install â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not c3_dir.exists() or not (c3_dir / "config.json").exists():
         print_header(f"Initializing C3 for: {project_path}")
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         try:
             from services.project_manager import ProjectManager
             ProjectManager().add_project(project_path)
@@ -1123,7 +1160,7 @@ def cmd_init(args):
         ti_manifest = c3_dir / "transcript_index" / "manifest.json"
         if ti_manifest.exists():
             ti_manifest.write_text("{}", encoding="utf-8")
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         if git_requested:
             _init_local_git_repo(project_path)
         _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
@@ -1152,7 +1189,7 @@ def cmd_init(args):
     # â”€â”€ Non-interactive (--force) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if getattr(args, "force", False):
         print("\n[--force] Applying update...")
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         if git_requested:
             _init_local_git_repo(project_path)
         _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
@@ -1176,7 +1213,7 @@ def cmd_init(args):
 
     if selected.startswith("Update"):
         print()
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         if git_requested:
             _init_local_git_repo(project_path)
         _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
@@ -1192,7 +1229,7 @@ def cmd_init(args):
                 shutil.rmtree(target)
                 print(f"  Removed .c3/{subdir}/")
         print()
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         if git_requested:
             _init_local_git_repo(project_path)
         _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")
@@ -1209,7 +1246,7 @@ def cmd_init(args):
         shutil.rmtree(c3_dir)
         print("  Deleted .c3/")
         print()
-        _do_init(project_path, ide_name=requested_ide)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
         if git_requested:
             _init_local_git_repo(project_path)
         _prompt_install_mcp(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"), banner="Re-installing MCP tools...")

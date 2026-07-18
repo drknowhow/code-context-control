@@ -587,7 +587,9 @@ class SubprojectManager:
                 ollama = OllamaClient(cfg.get("ollama_base_url", "http://localhost:11434"))
                 ei = EmbeddingIndex(self.parent_path, ollama,
                                     embed_model=cfg.get("embed_model", "nomic-embed-text"))
-                if ei.ready:
+                # probe() initializes lazy backends; a fresh instance's
+                # .ready is always False and skipped this unconditionally.
+                if ei.probe()["ready"]:
                     detail["embeddings"] = ei.build(indexer, force=True)
             except Exception:
                 pass  # embeddings are best-effort; index/doc exclusion is the contract

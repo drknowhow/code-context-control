@@ -219,41 +219,52 @@ class CompressionProtocol:
         self.custom_dict[term.lower()] = code
         self.save_custom_dict()
 
-    def build_project_dictionary(self) -> dict:
-        """Auto-build a project-specific dictionary from codebase analysis."""
+    def build_project_dictionary(self, code_index=None) -> dict:
+        """Auto-build a project-specific dictionary from codebase analysis.
+
+        code_index: an already-built CodeIndex whose in-memory chunks are
+            mined instead of re-reading the whole tree from disk (init
+            passes the indexer it just built). Without one, falls back to
+            a pruned, capped scan.
+        """
         if not self.project_path.exists():
             return {}
 
         # Find commonly used terms in the project
         term_freq = {}
-        skip_dirs = {'node_modules', '.git', '__pycache__', '.c3', 'venv'}
-        code_exts = {'.py', '.js', '.ts', '.tsx', '.jsx', '.r', '.R'}
-        try:
-            from services.subprojects import make_excluder
-            _sub_excluded = make_excluder(self.project_path)
-        except Exception:
-            def _sub_excluded(_p):
-                return False
+        code_exts = {'.py', '.js', '.ts', '.tsx', '.jsx', '.r'}
 
-        for fpath in self.project_path.rglob('*'):
-            if not fpath.is_file() or fpath.suffix not in code_exts:
-                continue
-            if any(skip in fpath.parts for skip in skip_dirs):
-                continue
-            if _sub_excluded(fpath):
-                continue
-
-            try:
-                content = fpath.read_text(errors='replace')
-            except Exception:
-                continue
-
-            # Extract identifiers
-            identifiers = re.findall(r'\b[a-zA-Z_]\w{5,}\b', content)
-            for ident in identifiers:
+        def _accumulate(text: str):
+            for ident in re.findall(r'\b[a-zA-Z_]\w{5,}\b', text):
                 lower = ident.lower()
                 if lower not in ACTION_CODES and lower not in TERM_CODES:
                     term_freq[lower] = term_freq.get(lower, 0) + 1
+
+        chunks = getattr(code_index, "chunks", None) if code_index else None
+        if chunks:
+            # Sub-project exclusion already applied when the index was built.
+            from pathlib import Path as _P
+            for chunk in chunks.values():
+                if _P(chunk.get("doc_id", "")).suffix.lower() in code_exts:
+                    _accumulate(chunk.get("content", ""))
+        else:
+            from services.scanner import iter_files
+            try:
+                from services.subprojects import make_excluder
+                _sub_excluded = make_excluder(self.project_path)
+            except Exception:
+                def _sub_excluded(_p):
+                    return False
+
+            for fpath in iter_files(self.project_path, exts=code_exts,
+                                    max_files=1000):
+                if _sub_excluded(fpath):
+                    continue
+                try:
+                    content = fpath.read_text(errors='replace')
+                except Exception:
+                    continue
+                _accumulate(content)
 
         # Generate codes for frequent terms
         frequent = sorted(term_freq.items(), key=lambda x: x[1], reverse=True)[:30]

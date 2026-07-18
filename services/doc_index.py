@@ -92,15 +92,26 @@ class DocIndex:
 
     # --- Build ---
 
-    def build(self, force: bool = False) -> dict:
-        """Build or incrementally update the doc index."""
+    def build(self, force: bool = False, on_progress=None) -> dict:
+        """Build or incrementally update the doc index.
+
+        on_progress: callable(files_done, files_total), invoked per file.
+        """
         stats = {"docs_indexed": 0, "chunks_created": 0, "skipped": 0}
 
         files_to_index = self._discover_files()
         old_hashes = dict(self._file_hashes)
         new_hashes = {}
+        files_total = len(files_to_index)
+        files_done = 0
 
         for rel_path, fpath in files_to_index:
+            files_done += 1
+            if on_progress is not None:
+                try:
+                    on_progress(files_done, files_total)
+                except Exception:
+                    pass
             try:
                 content = fpath.read_text(errors="replace")
             except Exception:
@@ -154,12 +165,6 @@ class DocIndex:
 
     def _discover_files(self) -> list[tuple[str, Path]]:
         """Find all doc, config, and code files to index."""
-        skip_dirs = {
-            "node_modules", ".git", "__pycache__", ".c3", "venv",
-            "env", ".venv", "dist", "build", ".next", ".cache",
-            "coverage", ".pytest_cache",
-        }
-
         # Designated sub-projects keep their own doc index.
         try:
             from services.subprojects import make_excluder
@@ -170,15 +175,14 @@ class DocIndex:
 
         files = []
 
-        # Markdown docs
-        for ext in ("*.md", "*.mdx", "*.rst", "*.adoc"):
-            for fpath in self.project_path.rglob(ext):
-                if any(skip in fpath.parts for skip in skip_dirs):
-                    continue
-                if _sub_excluded(fpath):
-                    continue
-                rel = str(fpath.relative_to(self.project_path))
-                files.append((rel, fpath))
+        # Markdown docs - one pruned walk instead of four full rglob passes
+        from services.scanner import iter_files
+        for fpath in iter_files(self.project_path,
+                                exts={".md", ".mdx", ".rst", ".adoc"}):
+            if _sub_excluded(fpath):
+                continue
+            rel = str(fpath.relative_to(self.project_path))
+            files.append((rel, fpath))
 
         # Config files at project root
         for pattern in _CONFIG_PATTERNS:

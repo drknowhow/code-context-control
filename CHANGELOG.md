@@ -4,6 +4,52 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — `c3 init` on large projects (scan pruning + embedding gate)
+
+- **Init scans no longer walk dependency/VCS trees.** Every index build
+  (code index, doc index, compression dictionary, directory compression)
+  used `sorted(Path.rglob('*'))` — enumerating every entry under
+  `node_modules`/`.git`/`venv` before filtering, and materializing the
+  whole tree before the first file was indexed (which also defeated the
+  `max_files` early exit). On large projects `c3 init` ran for minutes or
+  appeared to hang, with zero output. A new shared walker
+  (`services/scanner.py`) prunes skip-dirs without descending, honors
+  literal directory names from the root `.gitignore` (data/log dirs),
+  yields deterministically, and supports true early exit. Measured on
+  this repo: 14,276 enumerated entries → 393. The doc index's four
+  full-tree passes collapse into one; the compression dictionary now
+  mines the already-built in-memory code index instead of re-reading
+  every code file from disk (previously uncapped).
+- **Embedding index actually builds at init again.** Since the v2.38.1
+  lazy-init change, `EmbeddingIndex.ready` on a fresh instance was always
+  False (status reporters deliberately never initialize backends), so
+  `c3 init`, the hub embeddings rebuild, and sub-project reindex all
+  silently skipped semantic-search indexing even with Ollama up and the
+  model pulled. New `EmbeddingIndex.probe()` initializes the backends and
+  reports truthfully; all three gates use it, and skip messages now say
+  why (chromadb missing vs Ollama unreachable vs model not pulled).
+- **Expanded skip set.** `target`, `.tox`, `.nox`, `.mypy_cache`,
+  `.ruff_cache`, `.gradle`, `Pods`, `obj`, `.idea`, `.terraform`,
+  `bower_components` and friends are now pruned everywhere (previously
+  walked in full).
+
+### Added — init progress and coverage honesty
+
+- **Live progress.** TTY runs show in-place counters during the
+  code-index scan (`entries | files | chunks`), the embedding build
+  (`file N/M | chunks`), and the doc index (`N/M`); each phase prints its
+  duration. Piped output stays clean — summaries only, no `\r` spam
+  (`cli/progress.py`).
+- **Honest file cap.** The index cap is configurable (`index_max_files`
+  in `.c3/config.json`, default 2000 — previously a hard-coded 500) and
+  hitting it prints `[!] Indexed N of M candidate files` plus how to
+  raise it, instead of silently truncating coverage at the first 500
+  paths in walk order.
+- **`c3 init --no-embed`.** Skip the semantic embedding build explicitly
+  (huge repos, or boxes where Ollama is busy).
+
 ## [2.53.0] - 2026-07-17
 
 Project management grew from a task list into a lean PM system in one
