@@ -3,7 +3,6 @@
 import concurrent.futures
 import json
 import queue
-import re
 import threading
 import time
 import urllib.error
@@ -31,102 +30,6 @@ from oracle.services.memory_writer import MemoryWriter
 from oracle.services.project_scanner import ProjectScanner
 from services.ollama_bridge import OllamaBridge
 
-# ── Tool definitions (embedded in system prompt) ──────────
-
-_TOOL_DEFS = """
-Available tools — call ONE at a time by outputting exactly:
-<tool_call>{"name": "tool_name", "args": {…}}</tool_call>
-
-After you see the result, continue your response using the data.
-Do NOT call a tool if you can answer from context or prior results.
-
-Tools:
-1. list_projects()
-   Returns all registered C3 projects with fact counts and paths.
-
-2. query_memory(project_path, query?, category?, limit=10)
-   Search or list memory facts from a specific project.
-   - project_path (required): full path to the project
-   - query (optional): keyword filter on fact text
-   - category (optional): filter by category
-   - limit: max results (default 10)
-
-3. search_facts(query, limit=20)
-   Search facts across ALL projects. Returns matches with project source.
-
-4. project_health(project_path)
-   Run a health check on a project's memory. Returns status, issues, stats.
-
-5. analyze_project(project_path)
-   Deep LLM-powered analysis of a project's memory patterns and themes.
-
-6. cross_insights(project_path?)
-   Get cross-project insights. If project_path given, filter to that project.
-
-7. suggest_action(project_path, action, fact_ids, reason)
-   Create a pending suggestion (merge_facts, archive_facts, or add_fact).
-   - action: "merge_facts" | "archive_facts" | "add_fact"
-   - fact_ids: list of fact IDs involved
-   - reason: explanation string
-
-8. read_graph(project_path)
-   Get memory graph statistics for a project (nodes, edges, types).
-
---- C3 Code Intelligence Tools (require project_path) ---
-
-9. c3_search(project_path, query, action="code", top_k=3, max_tokens=1200)
-   Code intelligence search within a project.
-   action: code|exact|files|semantic|transcript
-
-10. c3_read(project_path, file_path, symbols=null, lines=null)
-    Read file contents with optional symbol or line-range extraction.
-
-11. c3_edits(project_path, action="history", file="", limit=50, since="", tag="")
-    Query the edit ledger: history, versions, stats.
-
-12. c3_edits_cross(action="history", tag="", limit=20, scope="")
-    Query edit ledgers across ALL projects. No project_path needed.
-    scope: ""=all, "top"=top-level only, or a project name/path = it + its sub-projects.
-
-13. c3_memory_query(project_path, action="query", query="", category="", top_k=10)
-    Query project memory (read-only: recall, query, list, score, graph, trends).
-
-14. c3_compress(project_path, file_path, mode="map")
-    Token-efficient file summary. mode: map|dense_map|smart|diff|bug_scan
-
-15. c3_validate(project_path, file_path)
-    Syntax validation on a file.
-
-16. c3_status(project_path, view="health", detailed=false)
-    Project health/budget/sessions overview. view: budget|health|sessions
-
-17. c3_search_cross(query, action="code", top_k=3, scope="")
-    Search code across ALL projects. No project_path needed.
-    scope: ""=all, "top"=top-level only, or a project name/path = it + its sub-projects.
-
-18. delegate_task(agent_id, task, project_path="")
-    Delegate a specific sub-task to a specialized agent.
-    - agent_id: The ID of the active agent to use.
-    - task: A detailed prompt explaining what the agent needs to do.
-    - project_path: required when the agent's backend is codex/gemini/claude/auto
-      (CLI backends run inside a registered project's workspace, read-only).
-
-19. activity_report(date?, since?, until?, project_path?, narrate=false)
-    Cross-project daily activity digest: sessions, tool calls, edits, git
-    mutations, and token/cost across ALL projects (or one, via project_path).
-    Defaults to today (UTC). narrate=true adds a prose summary.
-
-20. c3_project(action="list", project="", ...)
-    Cross-project ops by registered project NAME or path. Read-only actions:
-    list|info|subprojects|search|read|compress|status|memory|impact|edits|validate.
-    Extra args mirror the underlying tool (query, file_path, mode, view,
-    mem_action, edits_action, top_k, limit, target).
-
-21. c3_artifacts(project_path, action="list", artifact="", version=0, against=0)
-    Agent-config artifact tracking (read-only): list|history|show|diff|status.
-    Version history for CLAUDE.md/settings/MCP configs/skills in a project.
-"""
-
 _SYSTEM_BASE = """You are Oracle, an AI assistant specializing in cross-project code intelligence and memory analysis.
 You have access to memory facts, project health data, cross-project insights,
 AND full C3 code intelligence (code search, file reading, edit history, validation)
@@ -148,23 +51,23 @@ _DEPTH_INSTRUCTIONS = {
     "deep": "\nProvide thorough, detailed analysis with examples, data, and recommendations. Use multiple tool calls to gather comprehensive data when needed.\n",
 }
 
+# Tools are declared via Ollama's tools= API, so the prompt carries only
+# behavioral guidance — no syntax, no catalog.
 _SYSTEM_RULES = """
-Important rules:
-- You can call multiple tools at once by outputting multiple `<tool_call>...</tool_call>` blocks.
-- Call tools in parallel when tasks are independent.
-- If the user's question can be answered from conversation context, do NOT call a tool.
-- After receiving tool results, synthesize them into a clear, helpful answer.
-- Format your answers with markdown for readability.
-"""
-
-# Native tool-calling mode: tools are declared via Ollama's tools= API, so the
-# prompt carries only behavioral guidance — no <tool_call> syntax, no catalog.
-_SYSTEM_RULES_NATIVE = """
 Important rules:
 - Use the provided tools when the user asks about specific data you don't have in context; call independent tools in parallel in one turn.
 - Do NOT call a tool if the question can be answered from conversation context or prior results.
 - After receiving tool results, synthesize them into a clear, helpful answer.
 - Use list_projects first to discover project paths before calling project-specific tools.
+- Format your answers with markdown for readability.
+"""
+
+# Appended when the model rejected native tool calling: the round is rerun
+# without tools, and the prompt must not promise capabilities it lacks.
+_NO_TOOLS_RULES = """
+Important rules:
+- No tools are available in this session. Answer from conversation context only.
+- If the question requires live project data you do not have, say so plainly.
 - Format your answers with markdown for readability.
 """
 
@@ -181,7 +84,6 @@ COMMANDS = {
     "team":    {"args": "",                  "desc": "Show active agents and their specializations"},
 }
 
-_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _MAX_TOOL_ROUNDS = 8
 # Rounds = LLM calls. One tool use needs 2 rounds (call + response synthesis).
 _DEPTH_MAX_ROUNDS = {"brief": 2, "normal": 4, "deep": 8}
@@ -190,21 +92,8 @@ _MAX_TOOL_RESULT_CHARS = 3000
 _VISIBLE_RETRY_PROMPT = (
     "Your previous response contained only hidden reasoning and no user-visible "
     "assistant content. Now provide the visible response. If you need a tool, "
-    "output exactly one <tool_call>{...}</tool_call> block in assistant content; "
-    "otherwise answer the user directly."
-)
-_VISIBLE_RETRY_PROMPT_NATIVE = (
-    "Your previous response contained only hidden reasoning and no user-visible "
-    "assistant content. Now provide the visible response. If you need a tool, "
     "use a native tool call; otherwise answer the user directly."
 )
-
-_TC_OPEN = "<tool_call>"
-_TC_CLOSE = "</tool_call>"
-# If the pre-strip visible answer in round 0 is at least this many chars, we
-# treat any trailing <tool_call> as speculative and do NOT regenerate. Prevents
-# the "correct answer then wrong answer on next round" failure mode.
-_TRUST_ANSWER_MIN_CHARS = 120
 
 
 _NATIVE_TOOLS_CACHE: list[dict] | None = None
@@ -231,76 +120,36 @@ def _native_tool_defs() -> list[dict]:
     return _NATIVE_TOOLS_CACHE
 
 
-def _classify_no_tools(exc: Exception) -> tuple[bool, bool]:
-    """Classify a streaming error raised while native tools were attached.
+def _classify_stream_400(exc: Exception, tools_attached: bool,
+                         think_enabled: bool) -> tuple[bool, bool, bool]:
+    """Classify a streaming HTTP 400 into retriable capability downgrades.
 
-    Returns ``(fallback_to_legacy, negative_cache_model)``. Any HTTP 400
-    triggers fallback (retrying without tools is one cheap request); the
-    model's capability is negative-cached only when the server names tools as
-    the problem, so an unrelated 400 doesn't permanently demote the model.
+    Returns ``(drop_tools, drop_think, cache_no_tools)``. Ollama names the
+    offending capability in the error body ("does not support thinking" /
+    "... tools"). A 400 naming neither is still treated as a tools rejection
+    when tools were attached (retrying without them is one cheap request),
+    but is never negative-cached — so an unrelated 400 doesn't permanently
+    demote the model.
     """
     if not isinstance(exc, urllib.error.HTTPError) or exc.code != 400:
-        return False, False
+        return False, False, False
     try:
-        body = exc.read().decode("utf-8", "replace")
+        body = (exc.read().decode("utf-8", "replace") or "").lower()
     except Exception:
         body = ""
-    return True, "tool" in body.lower()
+    if think_enabled and "think" in body:
+        return False, True, False
+    if tools_attached:
+        return True, False, "tool" in body
+    return False, False, False
 
 
-class _ToolCallStripper:
-    """Streaming-friendly stripper for <tool_call>...</tool_call> blocks.
-
-    Buffers chunks so partial open/close tags that straddle chunk boundaries
-    are never leaked to the UI. feed() returns only visible (stripped) text;
-    flush() emits any trailing buffer that is not inside a tool_call.
-    """
-
-    def __init__(self) -> None:
-        self._buf = ""
-        self._in_call = False
-
-    def feed(self, chunk: str) -> str:
-        self._buf += chunk
-        out: list[str] = []
-        while True:
-            if self._in_call:
-                end = self._buf.find(_TC_CLOSE)
-                if end == -1:
-                    return "".join(out)
-                self._buf = self._buf[end + len(_TC_CLOSE):]
-                self._in_call = False
-                continue
-            start = self._buf.find(_TC_OPEN)
-            if start == -1:
-                hold = 0
-                for i in range(1, len(_TC_OPEN)):
-                    if self._buf.endswith(_TC_OPEN[:i]):
-                        hold = i
-                if hold:
-                    out.append(self._buf[:-hold])
-                    self._buf = self._buf[-hold:]
-                else:
-                    out.append(self._buf)
-                    self._buf = ""
-                return "".join(out)
-            out.append(self._buf[:start])
-            self._buf = self._buf[start + len(_TC_OPEN):]
-            self._in_call = True
-
-    def flush(self) -> str:
-        if self._in_call:
-            return ""
-        tail = self._buf
-        self._buf = ""
-        return tail
-
-
-def _build_system_prompt(state: dict, native: bool = False) -> str:
+def _build_system_prompt(state: dict, tools_enabled: bool = True) -> str:
     """Build system prompt dynamically based on conversation state.
 
-    ``native=True`` omits the <tool_call> catalog/syntax (tools are declared
-    via Ollama's native API instead), keeping only behavioral guidance.
+    Tools are declared via Ollama's native API; the prompt carries only
+    behavioral guidance. ``tools_enabled=False`` (model rejected native tool
+    calling) swaps in rules that promise no tool capabilities.
     """
     parts = [_SYSTEM_BASE]
 
@@ -326,11 +175,7 @@ def _build_system_prompt(state: dict, native: bool = False) -> str:
             "or 'my project', they mean one of the focused projects.\n"
         )
 
-    if native:
-        parts.append(_SYSTEM_RULES_NATIVE)
-    else:
-        parts.append(_TOOL_DEFS)
-        parts.append(_SYSTEM_RULES)
+    parts.append(_SYSTEM_RULES if tools_enabled else _NO_TOOLS_RULES)
     return "".join(parts)
 
 
@@ -364,21 +209,19 @@ class ChatEngine:
     # ── Shared streaming drain ────────────────────────────
 
     def _drain_stream(self, messages: list[dict], model: str,
-                      stripper: "_ToolCallStripper | None" = None,
                       tools: list[dict] | None = None, think: bool | None = True):
         """Stream one LLM round, yielding SSE event dicts as they arrive.
 
         The single streamer behind the main chat loop, the visible-response
         retry, and the delegate sub-agent loop. Returns (via StopIteration
-        value — use ``yield from``) a summary dict: ``text`` (raw, including
-        any <tool_call> markup in legacy mode), ``thinking``, ``tool_calls``
-        (native protocol), ``stats``, ``chunks``, ``visible_chars``.
+        value — use ``yield from``) a summary dict: ``text``, ``thinking``,
+        ``tool_calls`` (native protocol), ``stats``, ``chunks``,
+        ``visible_chars``.
 
-        In legacy mode pass a ``_ToolCallStripper`` so <tool_call> blocks are
-        withheld from the emitted text events; native mode emits text as-is
-        (the content channel is clean) and collects structured tool calls
-        without emitting SSE for them — the executor emits the canonical
-        ``tool_call`` event with its tool_id.
+        Text is emitted as-is (the content channel is clean under native
+        tool calling); structured tool calls are collected without emitting
+        SSE for them — the executor emits the canonical ``tool_call`` event
+        with its tool_id.
         """
         full_text = ""
         thinking_text = ""
@@ -402,15 +245,9 @@ class ChatEngine:
                 tool_calls.append(chunk)
             else:
                 full_text += chunk
-                visible = stripper.feed(chunk) if stripper is not None else chunk
-                if visible:
-                    visible_chars += len(visible)
-                    yield {"type": "text", "content": visible}
-        if stripper is not None:
-            tail = stripper.flush()
-            if tail:
-                visible_chars += len(tail)
-                yield {"type": "text", "content": tail}
+                if chunk:
+                    visible_chars += len(chunk)
+                    yield {"type": "text", "content": chunk}
         return {"text": full_text, "thinking": thinking_text,
                 "tool_calls": tool_calls, "stats": stats, "chunks": chunks,
                 "visible_chars": visible_chars}
@@ -454,15 +291,18 @@ class ChatEngine:
         # Save user message
         self.store.append_message(conv_id, {"role": "user", "content": user_message})
 
-        # Native tool-calling mode: capability probe returns True/False, or
-        # None (unknown) → attempt native and fall back on live rejection.
+        # Capability probe returns True/False, or None (unknown) → attempt
+        # native tools and rerun without them on live rejection. Thinking is
+        # likewise attempted and dropped on a live "does not support" 400.
         probe = self.bridge.supports_tools(use_model) if self.bridge else False
-        use_native = probe is not False
-        tools = _native_tool_defs() if use_native else None
+        tools_enabled = probe is not False
+        tools = _native_tool_defs() if tools_enabled else None
+        think_enabled = True
 
         # Build messages for LLM
         history = self.store.get_conversation(conv_id)
-        llm_messages = self._build_llm_messages(history, state, native=use_native)
+        llm_messages = self._build_llm_messages(history, state,
+                                                tools_enabled=tools_enabled)
         context_msgs = len(llm_messages) - 1  # exclude system prompt
         yield {"type": "status", "message": "Context ready", "detail": f"{context_msgs} messages in context"}
 
@@ -476,38 +316,43 @@ class ChatEngine:
                 yield {"type": "status", "message": f"Streaming from {use_model}", "detail": round_label or "Generating response"}
 
                 stream_start = time.time()
-                try:
-                    result = yield from self._drain_stream(
-                        llm_messages, use_model,
-                        stripper=None if use_native else _ToolCallStripper(),
-                        tools=tools,
-                    )
-                except Exception as e:
-                    fallback_ok, cache_neg = (
-                        _classify_no_tools(e) if (use_native and tools) else (False, False)
-                    )
-                    if not fallback_ok:
-                        yield {"type": "error", "message": f"LLM error: {e}"}
-                        break
-                    # Mid-turn fallback: the model rejected native tools —
-                    # demote to the legacy text protocol and rerun this round.
-                    if cache_neg and self.bridge:
-                        self.bridge.set_tools_support(use_model, False)
-                    use_native = False
-                    tools = None
-                    llm_messages[0] = {
-                        "role": "system",
-                        "content": _build_system_prompt(state, native=False),
-                    }
-                    yield {"type": "status", "message": "Falling back to text tool protocol",
-                           "detail": f"{use_model} rejected native tool calling"}
+                # Up to two capability downgrades (thinking, then tools) —
+                # each dropped at most once, so this cannot loop.
+                result = None
+                for _attempt in range(3):
                     try:
                         result = yield from self._drain_stream(
-                            llm_messages, use_model, stripper=_ToolCallStripper(),
+                            llm_messages, use_model, tools=tools,
+                            think=think_enabled,
                         )
-                    except Exception as e2:
-                        yield {"type": "error", "message": f"LLM error: {e2}"}
                         break
+                    except Exception as e:
+                        drop_tools, drop_think, cache_neg = _classify_stream_400(
+                            e, tools_attached=bool(tools),
+                            think_enabled=think_enabled)
+                        if drop_think:
+                            think_enabled = False
+                            yield {"type": "status",
+                                   "message": "Continuing without thinking",
+                                   "detail": f"{use_model} does not support thinking"}
+                            continue
+                        if drop_tools:
+                            if cache_neg and self.bridge:
+                                self.bridge.set_tools_support(use_model, False)
+                            tools_enabled = False
+                            tools = None
+                            llm_messages[0] = {
+                                "role": "system",
+                                "content": _build_system_prompt(state, tools_enabled=False),
+                            }
+                            yield {"type": "status",
+                                   "message": "Continuing without tools",
+                                   "detail": f"{use_model} rejected native tool calling"}
+                            continue
+                        yield {"type": "error", "message": f"LLM error: {e}"}
+                        break
+                if result is None:
+                    break
 
                 full_text = result["text"]
                 thinking_text = result["thinking"]
@@ -524,10 +369,8 @@ class ChatEngine:
                         "message": "Retrying visible response",
                         "detail": "Model returned thinking without assistant content",
                     }
-                    retry_prompt = (
-                        _VISIBLE_RETRY_PROMPT_NATIVE if use_native else _VISIBLE_RETRY_PROMPT
-                    )
-                    retry_messages = llm_messages + [{"role": "user", "content": retry_prompt}]
+                    retry_messages = llm_messages + [
+                        {"role": "user", "content": _VISIBLE_RETRY_PROMPT}]
                     try:
                         retry = yield from self._drain_stream(
                             retry_messages, use_model, tools=tools, think=False,
@@ -556,61 +399,30 @@ class ChatEngine:
                 total_tokens += chunk_count
                 yield {"type": "status", "message": "Response received", "detail": f"{chunk_count} chunks in {stream_ms}ms"}
 
-                # Determine tool calls for this round.
-                if use_native:
-                    # Structured calls from the native protocol; content is clean.
-                    valid_calls = [
-                        {"name": c.get("name", "unknown"), "args": c.get("arguments") or {}}
-                        for c in native_calls if c.get("name")
-                    ]
-                    visible_text = full_text.strip()
-                    final_text = visible_text
-                else:
-                    tool_matches = list(_TOOL_CALL_RE.finditer(full_text))
-                    visible_text = _TOOL_CALL_RE.sub("", full_text).strip()
-                    final_text = visible_text or full_text
-                    valid_calls = []
-                    for match in tool_matches:
-                        try:
-                            valid_calls.append(json.loads(match.group(1)))
-                        except json.JSONDecodeError:
-                            continue
+                # Structured calls from the native protocol; content is clean.
+                valid_calls = [
+                    {"name": c.get("name", "unknown"), "args": c.get("arguments") or {}}
+                    for c in native_calls if c.get("name")
+                ]
+                final_text = full_text.strip()
 
                 if not valid_calls:
                     # No tool call — final answer
                     round_messages.append({"role": "assistant", "content": final_text})
                     break
 
-                # Legacy-only heuristic: if the model already produced a
-                # substantive answer alongside speculative <tool_call> blocks,
-                # trust the answer and stop — regenerating with tool results
-                # usually corrupts it. Native mode needs no such guard: models
-                # emitting structured calls expect their results.
-                if not use_native and len(visible_text) >= _TRUST_ANSWER_MIN_CHARS:
-                    round_messages.append({"role": "assistant", "content": visible_text})
-                    yield {
-                        "type": "status",
-                        "message": "Answer finalized",
-                        "detail": "Speculative tool calls skipped — answer already provided",
-                    }
-                    break
-
-                # Record the assistant response before tool results (stripped so
-                # the next LLM round sees clean context without <tool_call> noise).
+                # Record the assistant response before tool results, and echo
+                # the structured calls back so the model can pair the
+                # role:tool results that follow.
                 round_messages.append({"role": "assistant", "content": final_text})
-                if use_native:
-                    # Echo the structured calls back so the model can pair the
-                    # role:tool results that follow.
-                    llm_messages.append({
-                        "role": "assistant",
-                        "content": full_text,
-                        "tool_calls": [
-                            {"function": {"name": c["name"], "arguments": c.get("args") or {}}}
-                            for c in valid_calls
-                        ],
-                    })
-                else:
-                    llm_messages.append({"role": "assistant", "content": final_text})
+                llm_messages.append({
+                    "role": "assistant",
+                    "content": full_text,
+                    "tool_calls": [
+                        {"function": {"name": c["name"], "arguments": c.get("args") or {}}}
+                        for c in valid_calls
+                    ],
+                })
 
                 # Execute all tools in parallel
                 tool_calls_count += len(valid_calls)
@@ -702,18 +514,11 @@ class ChatEngine:
                                 "tool_name": tool_name, "tool_id": tool_id,
                             })
 
-                            # Extend next LLM context: native protocol feeds a
-                            # role:tool message; legacy re-injects as user text.
-                            if use_native:
-                                llm_messages.append({
-                                    "role": "tool", "tool_name": tool_name,
-                                    "content": truncated,
-                                })
-                            else:
-                                llm_messages.append({
-                                    "role": "user",
-                                    "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>",
-                                })
+                            # Extend next LLM context with a role:tool message.
+                            llm_messages.append({
+                                "role": "tool", "tool_name": tool_name,
+                                "content": truncated,
+                            })
 
                     # Final drain after all tools complete
                     while True:
@@ -723,21 +528,6 @@ class ChatEngine:
                             break
                         yield ev
 
-                if not use_native:
-                    # Legacy models tend to restart their answer after inlined
-                    # tool results; the nudge counters that. Native mode must
-                    # NOT inject a user message between tool_calls and their
-                    # role:tool results — the protocol handles continuation.
-                    llm_messages.append({
-                        "role": "user",
-                        "content": (
-                            "The tool results above contain the data you requested. "
-                            "Now write your final answer to the user based on those results. "
-                            "Do NOT output any <tool_call> blocks. Do NOT restart or repeat "
-                            "your previous message — the user has already seen it. "
-                            "Write only the remaining, finalized answer."
-                        ),
-                    })
                 yield {"type": "status", "message": "Finalizing answer", "detail": f"After {len(valid_calls)} parallel results"}
             else:
                 # Exhausted rounds without a final answer — synthesize one
@@ -806,14 +596,16 @@ class ChatEngine:
     # ── LLM message building ─────────────────────────────
 
     def _build_llm_messages(self, history: list[dict], state: dict | None = None,
-                            native: bool = False) -> list[dict]:
+                            tools_enabled: bool = True) -> list[dict]:
         """Convert stored history to Ollama chat messages with sliding window.
 
         Historical tool results are re-injected as ``<tool_result>`` user
-        messages in BOTH modes: safe for all models, and avoids orphaned
-        ``role:tool`` messages (no paired tool_calls) on conversation reload.
+        messages — deliberately NOT ``role:tool``: on conversation reload
+        there is no paired ``tool_calls`` assistant message, and orphaned
+        role:tool entries confuse several models. This is history
+        serialization, not the retired legacy tool-call protocol.
         """
-        system_prompt = _build_system_prompt(state or {}, native=native)
+        system_prompt = _build_system_prompt(state or {}, tools_enabled=tools_enabled)
         messages = [{"role": "system", "content": system_prompt}]
 
         # Take last N messages, skip tool_call/tool_result (they were inlined)
@@ -1000,7 +792,15 @@ class ChatEngine:
         return {"ok": True, "command": "help", "message": "\n".join(lines)}
 
     def _cmd_tools(self) -> dict:
-        return {"ok": True, "command": "tools", "message": _TOOL_DEFS.strip()}
+        # Listed from TOOL_SPECS (single source of truth) — the legacy
+        # prompt catalog this used to echo was removed with the <tool_call>
+        # text protocol.
+        from oracle.services.tool_registry import TOOL_SPECS
+        lines = ["Available tools:"]
+        for spec in TOOL_SPECS:
+            desc = (spec.get("description") or "").strip().split("\n")[0]
+            lines.append(f"- **{spec['name']}** — {desc}")
+        return {"ok": True, "command": "tools", "message": "\n".join(lines)}
 
     def _cmd_team(self) -> dict:
         cfg = load_config()
@@ -1247,17 +1047,18 @@ class ChatEngine:
                                           project_path, _emit)
 
         model = agent.get("model") or self.bridge.model
-        # Sub-agents pick their tool protocol from their OWN model.
+        # Sub-agents probe their OWN model for native tool support.
         probe = self.bridge.supports_tools(model) if self.bridge else False
-        use_native = probe is not False
-        tools = _native_tool_defs() if use_native else None
+        tools_enabled = probe is not False
+        tools = _native_tool_defs() if tools_enabled else None
+        think_enabled = True
 
-        def _sys_prompt(native: bool) -> str:
-            rules = _SYSTEM_RULES_NATIVE if native else f"{_TOOL_DEFS}\n{_SYSTEM_RULES}"
+        def _sys_prompt(enabled: bool) -> str:
+            rules = _SYSTEM_RULES if enabled else _NO_TOOLS_RULES
             return f"{agent.get('system_prompt', '')}\n\n{rules}"
 
         llm_messages = [
-            {"role": "system", "content": _sys_prompt(use_native)},
+            {"role": "system", "content": _sys_prompt(tools_enabled)},
             {"role": "user", "content": task}
         ]
 
@@ -1272,7 +1073,8 @@ class ChatEngine:
         while rounds < max_rounds:
             rounds += 1
             _emit("agent_round", agent_id=agent_id, round=rounds)
-            gen = self._drain_stream(llm_messages, model, tools=tools)
+            gen = self._drain_stream(llm_messages, model, tools=tools,
+                                     think=think_enabled)
             result = None
             try:
                 while True:
@@ -1287,18 +1089,22 @@ class ChatEngine:
                         _emit("agent_thinking", content=ev["content"])
                     # stats chunks are ignored for sub-agents
             except Exception as e:
-                if use_native and tools:
-                    fallback_ok, cache_neg = _classify_no_tools(e)
-                    if fallback_ok:
-                        # Model rejected native tools — demote to the legacy
-                        # text protocol and rerun this round.
-                        if cache_neg and self.bridge:
-                            self.bridge.set_tools_support(model, False)
-                        use_native = False
-                        tools = None
-                        llm_messages[0] = {"role": "system", "content": _sys_prompt(False)}
-                        rounds -= 1
-                        continue
+                drop_tools, drop_think, cache_neg = _classify_stream_400(
+                    e, tools_attached=bool(tools), think_enabled=think_enabled)
+                if drop_think:
+                    think_enabled = False
+                    rounds -= 1
+                    continue
+                if drop_tools:
+                    # Model rejected native tools — rerun this round without
+                    # them (the agent answers from the prompt).
+                    if cache_neg and self.bridge:
+                        self.bridge.set_tools_support(model, False)
+                    tools_enabled = False
+                    tools = None
+                    llm_messages[0] = {"role": "system", "content": _sys_prompt(False)}
+                    rounds -= 1
+                    continue
                 _emit("agent_done", agent_id=agent_id, rounds=rounds, error=str(e))
                 return {"error": f"Agent '{agent_id}' encountered LLM error: {e}"}
 
@@ -1309,33 +1115,15 @@ class ChatEngine:
                 _emit("agent_done", agent_id=agent_id, rounds=rounds, error="empty_response")
                 return {"error": f"Agent '{agent_id}' returned empty response."}
 
-            if use_native:
-                if not native_calls:
-                    total_result_chars = len(full_text)
-                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
-                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
-                          result_chars=total_result_chars, duration_ms=dur_ms)
-                    return {"agent": agent_id, "result": full_text}
-                # Sub-agents run one tool per round; take the first call.
-                first = native_calls[0]
-                call = {"name": first.get("name", "unknown"), "args": first.get("arguments") or {}}
-            else:
-                tool_match = _TOOL_CALL_RE.search(full_text)
-                if not tool_match:
-                    total_result_chars = len(full_text)
-                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
-                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
-                          result_chars=total_result_chars, duration_ms=dur_ms)
-                    return {"agent": agent_id, "result": full_text}
-
-                try:
-                    call = json.loads(tool_match.group(1))
-                except json.JSONDecodeError:
-                    total_result_chars = len(full_text)
-                    dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
-                    _emit("agent_done", agent_id=agent_id, rounds=rounds,
-                          result_chars=total_result_chars, duration_ms=dur_ms)
-                    return {"agent": agent_id, "result": full_text}
+            if not native_calls:
+                total_result_chars = len(full_text)
+                dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
+                _emit("agent_done", agent_id=agent_id, rounds=rounds,
+                      result_chars=total_result_chars, duration_ms=dur_ms)
+                return {"agent": agent_id, "result": full_text}
+            # Sub-agents run one tool per round; take the first call.
+            first = native_calls[0]
+            call = {"name": first.get("name", "unknown"), "args": first.get("arguments") or {}}
 
             tool_name = call.get("name", "unknown")
             tool_args = call.get("args", {})
@@ -1358,18 +1146,11 @@ class ChatEngine:
             if len(result_str) > _MAX_TOOL_RESULT_CHARS:
                 truncated += "... (truncated)"
 
-            if use_native:
-                llm_messages.append({
-                    "role": "assistant", "content": full_text,
-                    "tool_calls": [{"function": {"name": tool_name, "arguments": tool_args}}],
-                })
-                llm_messages.append({"role": "tool", "tool_name": tool_name, "content": truncated})
-            else:
-                llm_messages.append({"role": "assistant", "content": full_text})
-                llm_messages.append({
-                    "role": "user",
-                    "content": f"<tool_result name=\"{tool_name}\">\n{truncated}\n</tool_result>\nContinue your response using this data."
-                })
+            llm_messages.append({
+                "role": "assistant", "content": full_text,
+                "tool_calls": [{"function": {"name": tool_name, "arguments": tool_args}}],
+            })
+            llm_messages.append({"role": "tool", "tool_name": tool_name, "content": truncated})
 
         dur_ms = (time.perf_counter_ns() - agent_start_ns) // 1_000_000
         _emit("agent_done", agent_id=agent_id, rounds=rounds,

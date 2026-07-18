@@ -1,10 +1,10 @@
-"""Tests for ChatEngine's tool-calling loop (native + legacy protocols).
+"""Tests for ChatEngine's native tool-calling loop.
 
-First coverage of the Oracle chat orchestrator. A scripted FakeBridge stands
-in for Ollama so every path is exercised without a network: native structured
-tool calls, the legacy <tool_call> text protocol (stripper, trust-answer,
-malformed JSON), the unknown-capability mid-turn fallback on HTTP 400, the
-thinking-only visible-retry, round caps, and the delegate sub-agent loop.
+A scripted FakeBridge stands in for Ollama so every path is exercised
+without a network: native structured tool calls, the tool-less degradation
+paths (probe-negative models and the unknown-capability mid-turn rerun on
+HTTP 400), the thinking-only visible-retry, round caps, and the delegate
+sub-agent loop. The legacy <tool_call> text protocol was retired (issue #34).
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from oracle.services import chat_engine as ce  # noqa: E402
-from oracle.services.chat_engine import ChatEngine, _ToolCallStripper  # noqa: E402
+from oracle.services.chat_engine import ChatEngine  # noqa: E402
 
 # ── Fakes ─────────────────────────────────────────────────────────────
 
@@ -118,7 +118,6 @@ def _http400(body: bytes = b'{"error":"model does not support tools"}'):
 
 
 _NO_AGENTS = {"agents": []}
-TOOLCALL = '<tool_call>{"name": "list_projects", "args": {}}</tool_call>'
 
 
 class _EngineTestBase(unittest.TestCase):
@@ -209,21 +208,22 @@ class TestNativeMode(_EngineTestBase):
 
 
 class TestMidTurnFallback(_EngineTestBase):
-    def test_400_with_tools_falls_back_and_negative_caches(self):
+    def test_400_with_tools_reruns_toolless_and_negative_caches(self):
         bridge = _FakeBridge([
             _http400(),
-            [("text", "legacy answer")],
+            [("text", "toolless answer")],
         ], supports=None)  # unknown → attempt native
         events = list(_engine(bridge).chat(None, "hi"))
         self.assertTrue(any(
-            e["type"] == "status" and "Falling back" in e["message"] for e in events
+            e["type"] == "status" and "Continuing without tools" in e["message"]
+            for e in events
         ))
-        self.assertEqual(_text(events), "legacy answer")
+        self.assertEqual(_text(events), "toolless answer")
         self.assertEqual(bridge.support_overrides, [("fake-model", False)])
-        # Rerun request: no tools, legacy catalog restored in system prompt.
+        # Rerun request: no tools, and the prompt stops promising them.
         retry = bridge.calls[1]
         self.assertIsNone(retry["tools"])
-        self.assertIn("<tool_call>", retry["messages"][0]["content"])
+        self.assertIn("No tools are available", retry["messages"][0]["content"])
 
     def test_unrelated_error_does_not_fall_back(self):
         bridge = _FakeBridge([RuntimeError("boom")], supports=True)
@@ -241,83 +241,51 @@ class TestMidTurnFallback(_EngineTestBase):
         self.assertEqual(_text(events), "ok")
         self.assertEqual(bridge.support_overrides, [])  # capability not demoted
 
-
-# ── Legacy protocol (preserved verbatim) ──────────────────────────────
-
-
-class TestLegacyMode(_EngineTestBase):
-    def test_tool_round_via_text_protocol(self):
+    def test_400_naming_thinking_drops_think_and_keeps_tools(self):
         bridge = _FakeBridge([
-            [("text", TOOLCALL)],
-            [("text", "legacy synthesis")],
-        ], supports=False)
-        scanner = _CountingScanner()
-        events = list(_engine(bridge, scanner=scanner).chat(None, "list"))
-        kinds = _types(events)
-        self.assertIn("tool_call", kinds)
-        self.assertIn("tool_result", kinds)
-        self.assertEqual(scanner.discover_calls, 1)
-        # The <tool_call> block never leaks into text events.
-        self.assertNotIn("tool_call", _text(events))
-        # Legacy round 2: <tool_result> user message + finalize nudge present.
-        msgs = bridge.calls[1]["messages"]
+            _http400(body=b'{"error":"\\"m\\" does not support thinking"}'),
+            [("text", "thinkless answer")],
+        ], supports=True)
+        events = list(_engine(bridge).chat(None, "hi"))
+        self.assertEqual(_text(events), "thinkless answer")
         self.assertTrue(any(
-            m["role"] == "user" and m["content"].startswith("<tool_result")
-            for m in msgs
-        ))
-        self.assertTrue(any(
-            m["role"] == "user" and "Do NOT output any <tool_call>" in m["content"]
-            for m in msgs
-        ))
-        # System prompt carries the legacy catalog.
-        self.assertIn("<tool_call>", bridge.calls[0]["messages"][0]["content"])
-        self.assertIsNone(bridge.calls[0]["tools"])
-
-    def test_trust_answer_skips_speculative_tool_calls(self):
-        long_answer = "A" * 130
-        bridge = _FakeBridge([[("text", long_answer + TOOLCALL)]], supports=False)
-        scanner = _CountingScanner()
-        events = list(_engine(bridge, scanner=scanner).chat(None, "q"))
-        self.assertTrue(any(
-            e["type"] == "status" and e["message"] == "Answer finalized"
+            e["type"] == "status" and "without thinking" in e["message"]
             for e in events
         ))
-        self.assertEqual(scanner.discover_calls, 0)  # tool never executed
-        self.assertEqual(len(bridge.calls), 1)
+        # Tools survive a thinking rejection; capability is not demoted.
+        retry = bridge.calls[1]
+        self.assertTrue(retry["tools"])
+        self.assertIs(retry["think"], False)
+        self.assertEqual(bridge.support_overrides, [])
 
-    def test_malformed_tool_json_finalizes_answer(self):
-        bridge = _FakeBridge([[
-            ("text", '<tool_call>{not json}</tool_call>fallback text'),
-        ]], supports=False)
-        scanner = _CountingScanner()
-        events = list(_engine(bridge, scanner=scanner).chat(None, "q"))
-        self.assertEqual(scanner.discover_calls, 0)
+    def test_400_thinking_then_tools_downgrades_both(self):
+        bridge = _FakeBridge([
+            _http400(body=b'{"error":"\\"m\\" does not support thinking"}'),
+            _http400(),  # names tools
+            [("text", "bare answer")],
+        ], supports=None)
+        events = list(_engine(bridge).chat(None, "hi"))
+        self.assertEqual(_text(events), "bare answer")
+        self.assertEqual(bridge.support_overrides, [("fake-model", False)])
+        final = bridge.calls[2]
+        self.assertIsNone(final["tools"])
+        self.assertIs(final["think"], False)
+        self.assertIn("No tools are available", final["messages"][0]["content"])
+
+
+# ── Tool-less mode (probe-negative models) ────────────────────────────
+
+
+class TestNoToolsMode(_EngineTestBase):
+    def test_probe_false_runs_without_tools(self):
+        bridge = _FakeBridge([[("text", "plain answer")]], supports=False)
+        events = list(_engine(bridge).chat(None, "hi"))
+        self.assertEqual(_text(events), "plain answer")
         self.assertEqual(_types(events)[-1], "done")
-        self.assertEqual(_text(events), "fallback text")
-
-
-class TestToolCallStripper(unittest.TestCase):
-    def test_block_split_across_chunks_never_leaks(self):
-        s = _ToolCallStripper()
-        out = s.feed("before <tool_")
-        out += s.feed('call>{"name": "x"}</tool_')
-        out += s.feed("call> after")
-        out += s.flush()
-        self.assertEqual(out, "before  after")
-
-    def test_partial_open_tag_held_then_released_as_text(self):
-        s = _ToolCallStripper()
-        out = s.feed("hello <tool_")
-        self.assertEqual(out, "hello ")  # partial tag held back
-        out += s.feed("bar")  # not a tool_call after all
-        out += s.flush()
-        self.assertEqual(out, "hello <tool_bar")
-
-    def test_unclosed_block_suppressed(self):
-        s = _ToolCallStripper()
-        out = s.feed('x<tool_call>{"name"')
-        out += s.flush()
-        self.assertEqual(out, "x")
+        call = bridge.calls[0]
+        self.assertIsNone(call["tools"])
+        # The prompt must not promise tool capabilities the model lacks.
+        self.assertIn("No tools are available", call["messages"][0]["content"])
 
 
 # ── Delegate sub-agent loop ───────────────────────────────────────────
@@ -367,22 +335,23 @@ class TestDelegateTask(unittest.TestCase):
         # role:tool feeding in round 2.
         self.assertTrue(any(m["role"] == "tool" for m in bridge.calls[1]["messages"]))
 
-    def test_legacy_agent_tool_round(self):
+    def test_toolless_agent_answers_directly(self):
         bridge = _FakeBridge([
-            [("text", TOOLCALL)],
-            [("text", "legacy sub answer")],
+            [("text", "direct sub answer")],
         ], supports=False)
         engine = _engine(bridge)
         result = engine._tool_delegate_task("architect", "task")
-        self.assertEqual(result["result"], "legacy sub answer")
-        self.assertIn("<tool_call>", bridge.calls[0]["messages"][0]["content"])
+        self.assertEqual(result["result"], "direct sub answer")
+        call = bridge.calls[0]
+        self.assertIsNone(call["tools"])
+        self.assertIn("No tools are available", call["messages"][0]["content"])
 
     def test_sub_agents_cannot_delegate(self):
-        nested = '<tool_call>{"name": "delegate_task", "args": {"agent_id": "architect", "task": "x"}}</tool_call>'
         bridge = _FakeBridge([
-            [("text", nested)],
+            [("tool_call", {"name": "delegate_task",
+                            "arguments": {"agent_id": "architect", "task": "x"}})],
             [("text", "done anyway")],
-        ], supports=False)
+        ], supports=True)
         engine = _engine(bridge)
         engine._tool_delegate_task("architect", "task")
         results = [e for e in self._drain_sink() if e["type"] == "agent_tool_result"]
@@ -391,13 +360,15 @@ class TestDelegateTask(unittest.TestCase):
     def test_agent_mid_turn_fallback(self):
         bridge = _FakeBridge([
             _http400(),
-            [("text", "recovered legacy")],
+            [("text", "recovered")],
         ], supports=None)
         engine = _engine(bridge)
         result = engine._tool_delegate_task("architect", "task")
-        self.assertEqual(result["result"], "recovered legacy")
+        self.assertEqual(result["result"], "recovered")
         self.assertEqual(bridge.support_overrides, [("agent-model", False)])
         self.assertIsNone(bridge.calls[1]["tools"])
+        self.assertIn("No tools are available",
+                      bridge.calls[1]["messages"][0]["content"])
 
     def test_inactive_agent_errors(self):
         bridge = _FakeBridge([], supports=True)

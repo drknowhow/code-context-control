@@ -711,13 +711,18 @@ class SessionManager:
         return True
 
     def _scan_project_structure(self) -> str:
-        """Scan project and generate compressed structure."""
-        skip = {'node_modules', '.git', '__pycache__', '.c3', 'venv',
-                'env', '.venv', 'dist', 'build', '.next'}
+        """Scan project and generate compressed structure.
+
+        Prunes via the shared scanner rules (SKIP_DIRS + root .gitignore,
+        including simple globs like *.egg-info/), so the tree shipped in
+        instruction docs shows only what a clean distribution contains.
+        """
+        from services.scanner import make_dir_pruner
+        pruned = make_dir_pruner(self.project_path)
 
         structure = ["```"]
         for root, dirs, files in os.walk(self.project_path):
-            dirs[:] = sorted(d for d in dirs if d not in skip)
+            dirs[:] = sorted(d for d in dirs if not pruned(d))
             level = len(Path(root).relative_to(self.project_path).parts)
 
             indent = "  " * level

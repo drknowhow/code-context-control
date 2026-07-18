@@ -85,6 +85,32 @@ class TestGitignorePruning(_Tree):
                    "logs/\n*.tmp\ndata\n!keep\nnested/deep\n# comment\n")
         self.assertEqual(gitignore_dir_names(self.root), {"logs", "data"})
 
+    def test_glob_patterns_extracted(self):
+        from services.scanner import gitignore_dir_patterns
+        self.touch(".gitignore",
+                   "*.egg-info/\nlogs/\n!never.egg-info\nsub/*.egg-info\n")
+        names, patterns = gitignore_dir_patterns(self.root)
+        self.assertEqual(names, {"logs"})
+        self.assertEqual(patterns, ["*.egg-info"])
+
+    def test_glob_dirs_pruned_in_iter_files(self):
+        self.touch(".gitignore", "*.egg-info/\n")
+        self.touch("pkg.egg-info/SOURCES.txt")
+        self.touch("src/a.py")
+        found = {p.name for p in iter_files(self.root)}
+        self.assertIn("a.py", found)
+        self.assertNotIn("SOURCES.txt", found)
+
+    def test_make_dir_pruner(self):
+        from services.scanner import make_dir_pruner
+        self.touch(".gitignore", "*.egg-info/\nlogs/\n")
+        pruned = make_dir_pruner(self.root, extra_skip=(".claude",))
+        for name in ("node_modules", ".pytest_cache", ".ruff_cache",
+                     "logs", "pkg.egg-info", ".claude"):
+            self.assertTrue(pruned(name), name)
+        for name in ("src", "docs", ".github"):
+            self.assertFalse(pruned(name), name)
+
     def test_gitignored_dirs_pruned(self):
         self.touch(".gitignore", "logs/\n")
         self.touch("logs/big.md")
@@ -176,6 +202,35 @@ class TestEmbeddingProbe(_Tree):
         ei._ollama_up = True
         ei._model_ok = False
         self.assertIn("not pulled", ei.unavailable_reason())
+
+
+class TestDocTreePruning(_Tree):
+    """Issue #1: generated instruction-doc trees must exclude gitignored
+    build/cache dirs and reflect deletions on regeneration."""
+
+    def _tree(self):
+        from services.session_manager import SessionManager
+        return SessionManager(str(self.root))._scan_project_structure()
+
+    def test_junk_dirs_excluded_from_tree(self):
+        self.touch(".gitignore", "*.egg-info/\n.vscode/\n")
+        self.touch("src/app.py")
+        self.touch(".pytest_cache/CACHEDIR.TAG")
+        self.touch(".ruff_cache/0.15/x")
+        self.touch(".vscode/settings.json")
+        self.touch("pkg.egg-info/SOURCES.txt")
+        tree = self._tree()
+        self.assertIn("src/", tree)
+        for junk in (".pytest_cache", ".ruff_cache", ".vscode", "pkg.egg-info"):
+            self.assertNotIn(junk, tree)
+
+    def test_deleted_dir_disappears_on_regen(self):
+        import shutil
+        self.touch("src/app.py")
+        self.touch("scratch/tmp.py")
+        self.assertIn("scratch/", self._tree())
+        shutil.rmtree(self.root / "scratch")
+        self.assertNotIn("scratch/", self._tree())
 
 
 class TestDictionaryReuse(_Tree):

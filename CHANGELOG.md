@@ -4,6 +4,45 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — instruction-doc project trees respect .gitignore (#1)
+
+- **Generated CLAUDE.md/AGENTS.md trees no longer ship build/cache dirs.**
+  The doc generator's tree walker (`SessionManager._scan_project_structure`)
+  and the drift checker now prune via the shared scanner rules: SKIP_DIRS
+  plus the root `.gitignore` — including single-segment glob entries like
+  `*.egg-info/`, newly supported by `services/scanner.py` and applied to
+  the index scans too. `.pytest_cache/`, `.ruff_cache/`, `.vscode/`,
+  `*.egg-info/` and friends disappear from regenerated docs (this repo's
+  own docs regenerated as proof). The "stale cache" symptom in the issue
+  was the dirs being recreated on disk between regens (ruff/pytest runs);
+  generation itself was always live, and pruning fixes it either way.
+
+### Removed — Oracle legacy `<tool_call>` text protocol (#34)
+
+- **Native tool calling is now the only protocol.** Removed the legacy
+  prompt catalog (`_TOOL_DEFS`), regex parser, streaming
+  `_ToolCallStripper`, trust-answer heuristic, `<tool_result>`
+  user-message injection, and the finalize nudge — roughly halving the
+  chat() round complexity. `/tools` now lists from `TOOL_SPECS` (single
+  source of truth). Historical tool results are still re-injected as
+  `<tool_result>` user text on conversation reload (serialization, not
+  protocol — orphaned `role:tool` messages confuse several models).
+- **Staged capability downgrade replaces the legacy demotion.** On a live
+  HTTP 400 the engine now drops the capability the server actually names —
+  thinking first, then tools — each at most once, with status events
+  ("Continuing without thinking/tools") and an honest no-tools system
+  prompt. Fixes a pre-existing dead-end where think-incapable models
+  (e.g. llama3.2) failed every Oracle chat turn: the old classifier read
+  every 400 as a tools rejection and rerun with `think=True` again.
+  Live-verified: gpt-oss:20b full native; llama3.2 drops thinking, keeps
+  native tools, answers.
+- **Behavior change:** models that genuinely reject native tool calling
+  now run tool-less (clearly surfaced) instead of getting the text
+  protocol. Capability probe over the installed model set confirmed all
+  primary Oracle models (cloud + gpt-oss) support native tools.
+
 ## [2.54.0] - 2026-07-17
 
 ### Fixed — `c3 init` on large projects (scan pruning + embedding gate)

@@ -819,12 +819,13 @@ class ClaudeMdManager:
                 if dirname:
                     mentioned_dirs.add(dirname)
 
-        # Scan actual top-level dirs
-        skip = {'node_modules', '.git', '__pycache__', '.c3', 'venv',
-                'env', '.venv', 'dist', 'build', '.next', '.cache', '.claude'}
+        # Scan actual top-level dirs with the same pruning rules as the
+        # generator, so gitignored dirs are never reported as "new".
+        from services.scanner import make_dir_pruner
+        pruned = make_dir_pruner(self.project_path, extra_skip=('.claude',))
         actual_dirs = set()
         for item in self.project_path.iterdir():
-            if item.is_dir() and item.name not in skip and not item.name.startswith('.'):
+            if item.is_dir() and not pruned(item.name) and not item.name.startswith('.'):
                 actual_dirs.add(item.name)
 
         # Compare (use base names only)

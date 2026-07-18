@@ -11,6 +11,7 @@ os.walk with in-place dirnames pruning never descends into skipped
 directories, yields files in deterministic order, exits as soon as the
 caller stops consuming, and reports progress so long scans are visible.
 """
+import fnmatch
 import os
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Set, Tuple
@@ -29,30 +30,60 @@ SKIP_DIRS = {
 }
 
 
-def gitignore_dir_names(root) -> set:
-    """Literal directory names from the root .gitignore (best-effort).
+def gitignore_dir_patterns(root) -> tuple:
+    """(literal_names, glob_patterns) for directory pruning from .gitignore.
 
-    Only unambiguous entries are used - a bare name or ``/name/`` with no
-    wildcard, negation, or nested separator - so pruning can never be
-    broader than the ignore file itself. Data/log directories are exactly
+    Single-segment entries only - a bare name, ``/name/``, or a simple glob
+    like ``*.egg-info/`` - never negations or nested paths, so pruning can
+    only be narrower than the ignore file itself. Both sets are matched
+    against directory basenames. Data/log/build directories are exactly
     what makes large-project scans hang, and they are almost always
-    plain-name entries.
+    single-segment entries.
     """
-    names = set()
+    names: set = set()
+    patterns: list = []
     try:
         text = (Path(root) / '.gitignore').read_text(errors='replace')
     except OSError:
-        return names
+        return names, patterns
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith('#') or line.startswith('!'):
             continue
-        if any(ch in line for ch in '*?['):
-            continue
         cleaned = line.strip('/')
-        if cleaned and '/' not in cleaned and '\\' not in cleaned:
+        if not cleaned or '/' in cleaned or '\\' in cleaned:
+            continue
+        if any(ch in cleaned for ch in '*?['):
+            patterns.append(cleaned)
+        else:
             names.add(cleaned)
-    return names
+    return names, patterns
+
+
+def gitignore_dir_names(root) -> set:
+    """Literal directory names from the root .gitignore (best-effort)."""
+    return gitignore_dir_patterns(root)[0]
+
+
+def make_dir_pruner(root, extra_skip=(), respect_gitignore: bool = True):
+    """Predicate ``dirname -> bool`` (True = prune this directory).
+
+    Combines SKIP_DIRS, ``extra_skip``, and the root .gitignore (literal
+    names plus single-segment globs like ``*.egg-info/``). Shared by the
+    index scanners and the project-tree doc generator so every surface
+    agrees on what a distributable project looks like.
+    """
+    skip = set(SKIP_DIRS) | set(extra_skip)
+    patterns: list = []
+    if respect_gitignore:
+        names, patterns = gitignore_dir_patterns(root)
+        skip |= names
+
+    def pruned(dirname: str) -> bool:
+        return (dirname in skip
+                or any(fnmatch.fnmatch(dirname, p) for p in patterns))
+
+    return pruned
 
 
 def iter_files(
@@ -81,8 +112,10 @@ def iter_files(
     """
     root = Path(root)
     skip = set(SKIP_DIRS if skip_dirs is None else skip_dirs)
+    glob_skips: list = []
     if respect_gitignore:
-        skip |= gitignore_dir_names(root)
+        names, glob_skips = gitignore_dir_patterns(root)
+        skip |= names
 
     yielded = 0
     seen = 0
@@ -96,6 +129,8 @@ def iter_files(
         kept = []
         for d in sorted(dirnames):
             if d in skip:
+                continue
+            if glob_skips and any(fnmatch.fnmatch(d, p) for p in glob_skips):
                 continue
             if exclude_parts is not None and exclude_parts(rel_parts + (d,)):
                 continue
