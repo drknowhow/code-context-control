@@ -59,7 +59,7 @@ class TestHookUtf8Stdio(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(result.stdout.decode("utf-8").strip(), "─")
 
-    def test_dispatcher_prints_unicode_text_under_cp1252(self):
+    def test_dispatcher_wraps_unicode_text_as_json_under_cp1252(self):
         code = """
 import sys
 from cli import hook_dispatch
@@ -74,7 +74,26 @@ hook_dispatch.main()
 """
         result = _run_python(code, input_bytes=b"{}")
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
-        self.assertEqual(result.stdout.decode("utf-8").strip(), "─")
+        output = json.loads(result.stdout.decode("utf-8"))
+        self.assertEqual(output, {"systemMessage": "─"})
+
+    def test_posttool_plain_text_is_valid_json(self):
+        code = """
+import sys
+from cli import hook_dispatch
+hook_dispatch._RUN_CACHE.clear()
+hook_dispatch._RUN_CACHE.update({
+    'hook_edit_ledger': (lambda payload, project_path=None: {'_text': 'ledger line'}, ''),
+    'hook_artifact': (lambda payload, project_path=None: None, ''),
+})
+sys.argv = ['hook_dispatch.py', 'posttool']
+hook_dispatch.main()
+"""
+        payload = json.dumps({"tool_name": "Edit"}).encode("utf-8")
+        result = _run_python(code, input_bytes=payload)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        output = json.loads(result.stdout.decode("utf-8"))
+        self.assertEqual(output, {"systemMessage": "ledger line"})
 
     def test_terse_advisor_prints_divider_under_cp1252(self):
         with tempfile.TemporaryDirectory() as tmp:

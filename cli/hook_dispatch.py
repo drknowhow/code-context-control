@@ -139,8 +139,8 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
     - additionalContext strings are concatenated with newlines
       (critical warnings appended last);
     - tool_result replacement (hook_filter) is preserved;
-    - "_text" plain messages ride along under "_text" — main() prints them
-      raw only when no structured output exists.
+    - "_text" plain messages ride along under "_text" — main() converts
+      them to a JSON systemMessage so Codex never receives raw hook stdout.
     """
     deny_hso = None
     contexts: list = []
@@ -270,10 +270,13 @@ def main() -> None:
         return
 
     text = output.pop("_text", None)
+    if text:
+        existing = output.get("systemMessage")
+        output["systemMessage"] = (
+            f"{existing}\n{text}" if existing else str(text)
+        )
     if output:
         print(json.dumps(output))
-    elif text:
-        print(text)
 
 
 if __name__ == "__main__":
