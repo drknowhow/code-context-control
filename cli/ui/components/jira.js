@@ -20,6 +20,8 @@ const JiraPanel = () => {
   const [activeIssue, setActiveIssue] = useState(null);
   const [commentText, setCommentText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState(null);
+  const [issueActivity, setIssueActivity] = useState([]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -53,6 +55,18 @@ const JiraPanel = () => {
       setActiveIssue(issue);
       setCommentText("");
     } catch (e) { setError(String(e)); }
+    try {
+      const act = await api.get(`/api/jira/activity?key=${encodeURIComponent(key)}`);
+      setIssueActivity((act && act.entries) || []);
+    } catch { setIssueActivity([]); }
+  }, []);
+
+  const loadActivity = useCallback(async () => {
+    try {
+      const data = await api.get("/api/jira/activity");
+      setActivity(data);
+      setError("");
+    } catch (e) { setError(String(e)); }
   }, []);
 
   const doTransition = async (transitionId) => {
@@ -81,7 +95,8 @@ const JiraPanel = () => {
   useEffect(() => {
     loadStatus();
     if (view === "board") loadBoard();
-  }, [view, loadStatus, loadBoard]);
+    if (view === "activity") loadActivity();
+  }, [view, loadStatus, loadBoard, loadActivity]);
 
   // ── Render helpers ────────────────────────────────────
 
@@ -172,6 +187,43 @@ const JiraPanel = () => {
     results.map(issueCard),
   );
 
+  const keyBadge = (k) => React.createElement("span", {
+    key: k,
+    style: {
+      fontFamily: mono, fontSize: 10, color: T.accent,
+      border: `1px solid ${T.accent}55`, borderRadius: 4,
+      padding: "1px 6px", marginRight: 4,
+    },
+  }, k);
+
+  const activityRow = (entry, idx) => React.createElement("div", {
+    key: idx,
+    style: {
+      borderTop: `1px solid ${T.border}`, padding: "8px 2px", fontSize: 12,
+    },
+  },
+    React.createElement("div", { style: { marginBottom: 3 } },
+      (entry.keys || []).map(keyBadge),
+      React.createElement("span", {
+        style: { color: T.textMuted, fontSize: 11, fontFamily: mono },
+      }, ` ${entry.change_type || "edit"} · ${entry.file || ""}`),
+    ),
+    React.createElement("div", null, entry.summary || ""),
+  );
+
+  const activityView = React.createElement("div", null,
+    React.createElement("div", {
+      style: { fontSize: 12, color: T.textMuted, marginBottom: 8, fontFamily: mono },
+    },
+      `branch: ${(activity && activity.branch) || "?"} `,
+      ((activity && activity.keys) || []).map(keyBadge),
+    ),
+    ((activity && activity.entries) || []).length === 0
+      ? React.createElement("div", { style: { color: T.textMuted, fontSize: 12, padding: 8 } },
+          "No edit-ledger activity mentioning Jira issue keys yet.")
+      : activity.entries.map(activityRow),
+  );
+
   const drawer = activeIssue && React.createElement("div", {
     style: {
       position: "fixed", top: 0, right: 0, bottom: 0, width: 420,
@@ -216,6 +268,17 @@ const JiraPanel = () => {
         fontSize: 11, fontFamily: mono,
       },
     }, `→ ${t.name}`))),
+    issueActivity.length > 0 && React.createElement("div", {
+      style: { marginBottom: 12 },
+    },
+      React.createElement("div", {
+        style: {
+          fontFamily: mono, fontSize: 11, fontWeight: 700,
+          color: T.textMuted, textTransform: "uppercase", marginBottom: 4,
+        },
+      }, `Local activity (${issueActivity.length})`),
+      issueActivity.slice(0, 8).map(activityRow),
+    ),
     (activeIssue.comments || []).map((c, idx) => React.createElement("div", {
       key: c.id || idx,
       style: {
@@ -264,6 +327,7 @@ const JiraPanel = () => {
     },
       subTabBtn("board", "My Work"),
       subTabBtn("search", "Search"),
+      subTabBtn("activity", "Activity"),
       React.createElement("span", {
         style: { fontSize: 11, color: T.textMuted, fontFamily: mono, marginLeft: "auto" },
       }, connLine),
@@ -271,11 +335,11 @@ const JiraPanel = () => {
     error && React.createElement("div", {
       style: { color: "#e5534b", fontSize: 12, marginBottom: 10, fontFamily: mono },
     }, error),
-    noAccount
+    (noAccount && view !== "activity")
       ? React.createElement("div", {
           style: { color: T.textMuted, fontSize: 13, padding: 12 },
-        }, "No Jira account configured. Run `c3 jira login --url https://yoursite.atlassian.net` and reload.")
-      : (view === "board" ? boardView : searchView),
+        }, "No Jira account configured. Run `c3 jira login --url https://yoursite.atlassian.net` and reload. (The Activity tab works without an account.)")
+      : (view === "board" ? boardView : view === "search" ? searchView : activityView),
     drawer,
   );
 };

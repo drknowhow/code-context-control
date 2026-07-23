@@ -3791,6 +3791,20 @@ def api_jira_comment(key: str):
     return _jira_handle(lambda: client.add_comment(key, body))
 
 
+@app.route('/api/jira/activity')
+def api_jira_activity():
+    """Local issue-key activity — current branch + edit-ledger scan.
+    Pure local (no Jira call), so it works without a configured account."""
+    from services import jira_links
+    out = jira_links.branch_issue_keys(str(PROJECT_PATH))
+    out["entries"] = jira_links.ledger_activity(
+        str(PROJECT_PATH),
+        key=request.args.get("key", ""),
+        limit=int(request.args.get("limit", 25)),
+    )
+    return jsonify(out)
+
+
 @app.route('/api/jira/issue/<key>/assign', methods=['POST'])
 def api_jira_assign(key: str):
     client, entry, err = _jira_client_and_entry()

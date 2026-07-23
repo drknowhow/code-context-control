@@ -201,6 +201,34 @@ class TestJiraRoutes(unittest.TestCase):
     def test_jira_bundle_entry_present(self):
         self.assertIn("ui/components/jira.js", srv._UI_JS_FILES)
 
+    def test_activity_works_without_account(self):
+        (self.proj / ".c3").mkdir(parents=True, exist_ok=True)
+        (self.proj / ".c3" / "edit_ledger.jsonl").write_text(
+            json.dumps({"file": "x.py", "summary": "fix PROJ-77 bug",
+                        "timestamp": "t1"}) + "\n",
+            encoding="utf-8",
+        )
+        (self.proj / ".git").mkdir(exist_ok=True)
+        (self.proj / ".git" / "HEAD").write_text(
+            "ref: refs/heads/feature/proj-77-fix\n", encoding="utf-8"
+        )
+        resp = self.client.get("/api/jira/activity")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["keys"], ["PROJ-77"])
+        self.assertEqual(data["entries"][0]["keys"], ["PROJ-77"])
+
+    def test_activity_key_filter(self):
+        (self.proj / ".c3").mkdir(parents=True, exist_ok=True)
+        (self.proj / ".c3" / "edit_ledger.jsonl").write_text(
+            json.dumps({"file": "x.py", "summary": "PROJ-1 a"}) + "\n"
+            + json.dumps({"file": "y.py", "summary": "ENG-2 b"}) + "\n",
+            encoding="utf-8",
+        )
+        data = self.client.get("/api/jira/activity?key=ENG-2").get_json()
+        self.assertEqual(len(data["entries"]), 1)
+        self.assertEqual(data["entries"][0]["file"], "y.py")
+
 
 if __name__ == "__main__":
     unittest.main()
