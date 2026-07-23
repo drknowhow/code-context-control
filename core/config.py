@@ -379,3 +379,69 @@ def load_bitbucket_config(project_path: str) -> dict:
             if (home_overrides.get("active") or {}).get("base_url"):
                 overrides = home_overrides
     return {**BITBUCKET_DEFAULTS, **overrides}
+
+
+JIRA_DEFAULTS = {
+    # Name of the account used when a tool call doesn't specify one.
+    "default_account": "",
+    # Non-secret registry of named accounts whose tokens live in the OS
+    # keyring. Each entry: {base_url, username, deployment ("cloud" |
+    # "data_center"), default_project, verify_tls, ca_bundle}.
+    "accounts": {},
+}
+
+
+def _read_jira_section(config_file: Path) -> dict:
+    """Return the ``jira`` section of a config file, or ``{}``."""
+    if not config_file.exists():
+        return {}
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    section = data.get("jira", {})
+    return section if isinstance(section, dict) else {}
+
+
+def _jira_section_usable(section: dict) -> bool:
+    """A section is usable when its default account resolves in its OWN registry."""
+    accounts = section.get("accounts")
+    default = section.get("default_account")
+    return bool(
+        isinstance(accounts, dict) and default and isinstance(accounts.get(default), dict)
+    )
+
+
+def load_jira_config(project_path: str) -> dict:
+    """Load Jira config from .c3/config.json, merged with defaults.
+
+    Resolution precedence mirrors Bitbucket: the project config wins when its
+    ``default_account`` resolves against its own ``accounts`` registry;
+    otherwise we fall back to the global ``~/.c3/config.json`` so a one-time
+    ``c3 jira login --global`` is reusable across every C3 project.
+
+    The section is taken WHOLESALE from exactly one file — project fields are
+    never merged over a home-registered account. This is a security
+    invariant: a repository's config must not be able to override the
+    credential-bound fields (base_url, username, deployment, TLS settings)
+    of an account it did not register. Tokens are additionally keyed by
+    (base_url, username) in the OS keyring, so a rewritten base_url can
+    never retrieve the original server's token.
+    """
+    project_file = Path(project_path) / ".c3" / "config.json"
+    overrides = _read_jira_section(project_file)
+    if not _jira_section_usable(overrides):
+        # Path.home() raises RuntimeError when no home dir is resolvable (e.g.
+        # a stripped subprocess env); treat that as "no global fallback".
+        try:
+            home_file = Path.home() / ".c3" / "config.json"
+            already_home = home_file.resolve() == project_file.resolve()
+        except Exception:
+            home_file = None
+            already_home = True
+        if home_file is not None and not already_home:
+            home_overrides = _read_jira_section(home_file)
+            if _jira_section_usable(home_overrides):
+                overrides = home_overrides
+    return {**JIRA_DEFAULTS, **overrides}
