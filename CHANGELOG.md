@@ -4,6 +4,17 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.56.1] - 2026-07-23
+
+### Fixed — `c3 --version` / `c3 upgrade` reported 2.55.0 after upgrading to 2.56.0
+
+- The v2.56.0 release bumped `pyproject.toml` but left the hardcoded
+  `__version__` in `cli/c3.py` at 2.55.0 — so `c3 --version` lied and
+  `c3 upgrade` perpetually offered "v2.55.0 -> v2.56.0" even when 2.56.0
+  was already installed. Both sites now read 2.56.1, and a new
+  `tests/test_version_sync.py` asserts they match — CI gates every
+  release tag, so a mismatch can never ship again.
+
 ## [2.56.0] - 2026-07-23
 
 ### Added — Jira integration: Cloud + Data Center (agent tool, CLI, dashboard)
