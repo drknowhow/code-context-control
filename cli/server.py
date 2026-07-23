@@ -199,6 +199,7 @@ _UI_JS_FILES = [
     "ui/components/tasks.js",
     "ui/components/edits.js",
     "ui/components/bitbucket.js",
+    "ui/components/jira.js",
     "ui/components/instructions.js",
     "ui/components/settings.js",
     "ui/components/chat.js",
@@ -3586,6 +3587,234 @@ def api_bitbucket_permissions():
         "users": client.list_repo_user_permissions(project, repo),
         "groups": client.list_repo_group_permissions(project, repo),
     })
+
+
+# ─── Jira (Cloud / Data Center) ──────────────────────────
+def _jira_client_and_entry():
+    """Return (client, account_entry, error_response_or_None)."""
+    from core.config import load_jira_config
+    from services import jira_credentials as jr_creds
+    from services.jira_client import JiraClient
+
+    cfg = load_jira_config(str(PROJECT_PATH))
+    name = cfg.get("default_account", "")
+    entry = (cfg.get("accounts") or {}).get(name)
+    if not isinstance(entry, dict) or not entry.get("base_url"):
+        return None, {}, (jsonify({"error": "no Jira account — run `c3 jira login`"}), 400)
+    try:
+        token = jr_creds.load_token(entry["base_url"], entry.get("username", ""))
+    except RuntimeError as exc:
+        return None, {}, (jsonify({"error": str(exc)}), 500)
+    if not token:
+        return None, {}, (jsonify({
+            "error": f"no keyring token for {entry.get('username')}@{entry['base_url']}",
+        }), 400)
+    try:
+        client = JiraClient(
+            entry["base_url"], entry.get("username", ""), token,
+            deployment=entry.get("deployment", "cloud"),
+            verify_tls=bool(entry.get("verify_tls", True)),
+            ca_bundle=entry.get("ca_bundle", ""),
+        )
+    except ValueError as exc:
+        return None, {}, (jsonify({"error": str(exc)}), 400)
+    return client, {**entry, "name": name}, None
+
+
+def _jira_handle(call):
+    """Run a Jira API closure; translate JiraError to an HTTP response."""
+    from services.jira_client import JiraError
+    try:
+        return jsonify(call())
+    except JiraError as exc:
+        return jsonify({
+            "error": str(exc),
+            "status": exc.status,
+            "path": exc.path,
+        }), 502 if exc.status == 0 else exc.status
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+def _jira_my_jql(entry: dict) -> str:
+    clauses = ["assignee = currentUser()"]
+    project = request.args.get("project") or entry.get("default_project", "")
+    if project:
+        safe = project.replace("\\", "\\\\").replace('"', '\\"')
+        clauses.append(f'project = "{safe}"')
+    return " AND ".join(clauses) + " ORDER BY updated DESC"
+
+
+@app.route('/api/jira/status')
+def api_jira_status():
+    """Accounts registry, default account, and a connection probe."""
+    from core.config import load_jira_config
+    from services import jira_credentials as jr_creds
+    from services.jira_client import JiraClient, JiraError
+
+    cfg = load_jira_config(str(PROJECT_PATH))
+    out = {"config": cfg, "connection": {"ok": False}}
+    name = cfg.get("default_account", "")
+    entry = (cfg.get("accounts") or {}).get(name)
+    if not isinstance(entry, dict) or not entry.get("base_url"):
+        out["connection"]["error"] = "no default account"
+        return jsonify(out)
+    try:
+        token = jr_creds.load_token(entry["base_url"], entry.get("username", ""))
+    except RuntimeError as exc:
+        out["connection"]["error"] = str(exc)
+        return jsonify(out)
+    if not token:
+        out["connection"]["error"] = "no keyring token"
+        return jsonify(out)
+    try:
+        client = JiraClient(
+            entry["base_url"], entry.get("username", ""), token,
+            deployment=entry.get("deployment", "cloud"),
+            verify_tls=bool(entry.get("verify_tls", True)),
+            ca_bundle=entry.get("ca_bundle", ""),
+        )
+        info = client.server_info()
+        me = client.myself()
+        out["connection"] = {
+            "ok": True,
+            "version": info.get("version", "?"),
+            "user": me.get("displayName", ""),
+            "deployment": entry.get("deployment", ""),
+        }
+    except (JiraError, ValueError) as exc:
+        out["connection"] = {"ok": False, "error": str(exc)}
+    return jsonify(out)
+
+
+@app.route('/api/jira/issues/my')
+def api_jira_my_issues():
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    return _jira_handle(lambda: client.search(
+        _jira_my_jql(entry),
+        limit=int(request.args.get("limit", 50)),
+        cursor=request.args.get("cursor", ""),
+    ))
+
+
+@app.route('/api/jira/board')
+def api_jira_board():
+    """My issues grouped by status category — the v1 'board' derives from
+    plain JQL statusCategory grouping, no agile API involved."""
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+
+    def call():
+        result = client.search(_jira_my_jql(entry),
+                               limit=int(request.args.get("limit", 100)))
+        columns = {"new": [], "indeterminate": [], "done": []}
+        for issue in result.get("issues", []):
+            columns.setdefault(
+                issue.get("status_category") or "new", columns["new"]
+            ).append(issue)
+        return {"columns": columns, "next_cursor": result.get("next_cursor", "")}
+    return _jira_handle(call)
+
+
+@app.route('/api/jira/search')
+def api_jira_search():
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    jql = (request.args.get("jql") or "").strip()
+    if not jql:
+        return jsonify({"error": "jql query parameter is required"}), 400
+    return _jira_handle(lambda: client.search(
+        jql,
+        limit=int(request.args.get("limit", 50)),
+        cursor=request.args.get("cursor", ""),
+    ))
+
+
+@app.route('/api/jira/issue/<key>')
+def api_jira_get_issue(key: str):
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+
+    def call():
+        issue = client.get_issue(key)
+        issue["transitions"] = client.list_transitions(key)
+        return issue
+    return _jira_handle(call)
+
+
+@app.route('/api/jira/issue', methods=['POST'])
+def api_jira_create_issue():
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    data = request.get_json(force=True) or {}
+    project = data.get("project") or entry.get("default_project", "")
+    issue_type = data.get("issue_type", "")
+    summary = data.get("summary", "")
+    if not project or not issue_type or not summary:
+        return jsonify({"error": "project, issue_type, and summary are required"}), 400
+    return _jira_handle(lambda: client.create_issue(
+        project, issue_type, summary,
+        description=data.get("description", ""),
+        fields=data.get("fields") or None,
+    ))
+
+
+@app.route('/api/jira/issue/<key>/transition', methods=['POST'])
+def api_jira_transition(key: str):
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    data = request.get_json(force=True) or {}
+    transition_id = str(data.get("transition", "")).strip()
+    if not transition_id:
+        return jsonify({"error": "transition id is required"}), 400
+    return _jira_handle(lambda: client.transition_issue(
+        key, transition_id, comment=data.get("comment", ""),
+    ) or {"ok": True})
+
+
+@app.route('/api/jira/issue/<key>/comment', methods=['POST'])
+def api_jira_comment(key: str):
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    data = request.get_json(force=True) or {}
+    body = data.get("body", "")
+    if not str(body).strip():
+        return jsonify({"error": "body is required"}), 400
+    return _jira_handle(lambda: client.add_comment(key, body))
+
+
+@app.route('/api/jira/activity')
+def api_jira_activity():
+    """Local issue-key activity — current branch + edit-ledger scan.
+    Pure local (no Jira call), so it works without a configured account."""
+    from services import jira_links
+    out = jira_links.branch_issue_keys(str(PROJECT_PATH))
+    out["entries"] = jira_links.ledger_activity(
+        str(PROJECT_PATH),
+        key=request.args.get("key", ""),
+        limit=int(request.args.get("limit", 25)),
+    )
+    return jsonify(out)
+
+
+@app.route('/api/jira/issue/<key>/assign', methods=['POST'])
+def api_jira_assign(key: str):
+    client, entry, err = _jira_client_and_entry()
+    if err is not None:
+        return err
+    data = request.get_json(force=True) or {}
+    user = (data.get("user") or "").strip()
+    if not user:
+        return jsonify({"error": "user (deployment-native id) is required"}), 400
+    return _jira_handle(lambda: client.assign_issue(key, user) or {"ok": True})
 
 
 # ─── Launch ──────────────────────────────────────────────
