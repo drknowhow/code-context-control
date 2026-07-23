@@ -248,6 +248,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
+    "mcp__c3__c3_jira",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
 ]
 
