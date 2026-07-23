@@ -779,6 +779,50 @@ async def c3_bitbucket(
 
 
 @mcp.tool()
+async def c3_jira(
+    action: str,
+    issue: str = "",
+    jql: str = "",
+    project: str = "",
+    issue_type: str = "",
+    summary: str = "",
+    description: str = "",
+    body: str = "",
+    body_format: str = "text",
+    transition: str = "",
+    user: str = "",
+    query: str = "",
+    fields: str = "",
+    status_category: str = "",
+    account: str = "",
+    cursor: str = "",
+    limit: int = 25,
+    ctx: Context = None,
+) -> str:
+    """JIRA (Cloud + Data Center) — search, read, create, comment, transition, assign issues.
+    actions: status, whoami, search (jql), get_issue (issue), my_issues,
+    list_projects, list_transitions (issue), get_create_metadata (project, issue_type),
+    search_users (query), create_issue (project, issue_type, summary [description] [fields=JSON]),
+    comment (issue, body), transition (issue, transition=id|name [body]), assign (issue, user).
+    project falls back to the account's default_project; account to jira.default_account.
+    Mutating actions are ledger-logged. Tokens live in the OS keyring — `c3 jira login` first."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.jira import handle_jira
+    return await asyncio.to_thread(
+        handle_jira, action, svc, finalize,
+        issue=issue, jql=jql, project=project, issue_type=issue_type,
+        summary=summary, description=description, body=body,
+        body_format=body_format, transition=transition, user=user,
+        query=query, fields=fields, status_category=status_category,
+        account=account, cursor=cursor, limit=limit,
+    )
+
+
+@mcp.tool()
 async def c3_project(
     action: str,
     project: str = "",
