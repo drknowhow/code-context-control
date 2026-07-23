@@ -5737,6 +5737,204 @@ def _bb_cmd_set_default(args, project_path: str) -> None:
     print(f"[OK] Default repo: {args.project}/{args.repo}")
 
 
+def cmd_jira(args):
+    """Jira Cloud / Data Center credential + workspace management."""
+    sub = getattr(args, "jira_cmd", None)
+    if not sub:
+        print("Usage: c3 jira {login,logout,status,use,set-default} [args]")
+        return
+
+    project_path = getattr(args, "project_path", ".") or "."
+
+    if sub == "login":
+        _jira_cmd_login(args, project_path)
+    elif sub == "logout":
+        _jira_cmd_logout(args, project_path)
+    elif sub == "status":
+        _jira_cmd_status(args, project_path)
+    elif sub == "use":
+        _jira_cmd_use(args, project_path)
+    elif sub == "set-default":
+        _jira_cmd_set_default(args, project_path)
+    else:
+        print(f"Unknown jira subcommand: {sub}")
+
+
+def _jira_deployment_for(args, base_url: str) -> str:
+    """Explicit --deployment wins; *.atlassian.net infers cloud; else unknown."""
+    dep = getattr(args, "deployment", "") or ""
+    if dep:
+        return dep
+    host = base_url.split("//", 1)[-1].split("/", 1)[0].lower()
+    if host.endswith(".atlassian.net") or host.endswith(".jira.com"):
+        return "cloud"
+    return ""
+
+
+def _jira_cmd_login(args, project_path: str) -> None:
+    import getpass
+
+    from services import jira_credentials as jr_creds
+    from services.jira_client import JiraClient, JiraError
+
+    # --global stores the account in ~/.c3/config.json so it is reusable in
+    # every C3 project (load_jira_config falls back to it automatically).
+    if getattr(args, "use_global", False):
+        project_path = str(Path.home())
+
+    base_url = (args.url or "").rstrip("/")
+    deployment = _jira_deployment_for(args, base_url)
+    if not deployment:
+        print("[error] --deployment cloud|data_center is required for self-hosted URLs.")
+        return
+    name = getattr(args, "name", "") or ""
+    if not name:
+        host = base_url.split("//", 1)[-1].split("/", 1)[0]
+        name = host.split(".")[0] or "default"
+
+    prompt_label = "Email" if deployment == "cloud" else "Username"
+    username = args.username or input(f"{prompt_label} for {base_url}: ").strip()
+    if not username:
+        print("Login cancelled -- username required.")
+        return
+    token_label = "API token" if deployment == "cloud" else "Personal Access Token"
+    token = args.token or getpass.getpass(f"{token_label} for {username}: ").strip()
+    if not token:
+        print("Login cancelled -- token required.")
+        return
+
+    try:
+        jr_creds.save_credentials(
+            name, base_url, username, token,
+            deployment=deployment,
+            project_path=project_path,
+            set_default=not getattr(args, "no_set_default", False),
+            verify_tls=not getattr(args, "insecure", False),
+            ca_bundle=getattr(args, "ca_bundle", "") or "",
+            allow_insecure=getattr(args, "insecure", False),
+        )
+    except jr_creds.JiraCredentialError as exc:
+        print(f"[error] {exc}")
+        return
+
+    scope = "global (~/.c3)" if getattr(args, "use_global", False) else "project"
+    print(f"[OK] Stored credentials for {username}@{base_url} as '{name}' [{deployment}, {scope}]")
+
+    # Connection probe -- skippable for offline setup (--no-verify-login) and
+    # non-fatal on failure (token might be valid but the network blocked).
+    if getattr(args, "no_verify_login", False):
+        print("     Connection probe skipped (--no-verify-login) -- verify later with `c3 jira status`.")
+        return
+    try:
+        client = JiraClient(
+            base_url, username, token,
+            deployment=deployment,
+            verify_tls=not getattr(args, "insecure", False),
+            ca_bundle=getattr(args, "ca_bundle", "") or "",
+        )
+        info = client.server_info()
+        print(f"     Server: Jira {info.get('version', '?')} ({base_url})")
+    except (JiraError, ValueError) as exc:
+        print(f"[warn] Connection probe failed: {exc}")
+        print("       Token saved anyway -- re-test with `c3 jira status`.")
+        return
+    try:
+        me = client.myself()
+        if me:
+            print(
+                f"     Auth as: {me.get('displayName', username)} "
+                f"<{me.get('emailAddress', '?')}>"
+            )
+    except JiraError:
+        pass
+
+
+def _jira_cmd_logout(args, project_path: str) -> None:
+    from core.config import load_jira_config
+    from services import jira_credentials as jr_creds
+
+    name = getattr(args, "name", "") or ""
+    if not name:
+        name = load_jira_config(project_path).get("default_account", "")
+    if not name:
+        print("[error] No account specified and no default account configured.")
+        return
+    removed = jr_creds.delete_credentials(name, project_path=project_path)
+    if removed:
+        print(f"[OK] Removed Jira account '{name}'")
+    else:
+        print(f"[warn] Nothing to remove for '{name}'")
+
+
+def _jira_cmd_status(args, project_path: str) -> None:
+    from core.config import load_jira_config
+    from services import jira_credentials as jr_creds
+    from services.jira_client import JiraClient, JiraError
+
+    cfg = load_jira_config(project_path)
+    accounts = cfg.get("accounts") or {}
+    default = cfg.get("default_account", "")
+
+    print("[jira:status]")
+    print(f"  Default : {default or '-'}")
+    print(f"  Accounts ({len(accounts)}):")
+    for acct_name, a in accounts.items():
+        if not isinstance(a, dict):
+            continue
+        marker = "*" if acct_name == default else " "
+        print(
+            f"    {marker} {acct_name}: {a.get('username', '?')}@{a.get('base_url', '?')} "
+            f"[{a.get('deployment', '?')}] project={a.get('default_project') or '-'}"
+        )
+
+    entry = accounts.get(default) if isinstance(accounts.get(default), dict) else None
+    if not entry:
+        print("  Connection: (no default account)")
+        return
+    token = jr_creds.load_token(entry.get("base_url", ""), entry.get("username", ""))
+    if not token:
+        print("  Connection: FAIL -- no token in keyring")
+        return
+    try:
+        client = JiraClient(
+            entry["base_url"], entry.get("username", ""), token,
+            deployment=entry.get("deployment", "cloud"),
+            verify_tls=bool(entry.get("verify_tls", True)),
+            ca_bundle=entry.get("ca_bundle", ""),
+        )
+        info = client.server_info()
+        me = client.myself()
+        print(
+            f"  Connection: OK (Jira {info.get('version', '?')} "
+            f"as {me.get('displayName', '?')})"
+        )
+    except (JiraError, ValueError) as exc:
+        print(f"  Connection: FAIL -- {exc}")
+
+
+def _jira_cmd_use(args, project_path: str) -> None:
+    from services import jira_credentials as jr_creds
+    try:
+        jr_creds.set_default_account(args.name, project_path=project_path)
+    except jr_creds.JiraCredentialError as exc:
+        print(f"[error] {exc}")
+        return
+    print(f"[OK] Default Jira account: {args.name}")
+
+
+def _jira_cmd_set_default(args, project_path: str) -> None:
+    from services import jira_credentials as jr_creds
+    try:
+        jr_creds.set_default_project(
+            args.project, name=getattr(args, "name", "") or "",
+            project_path=project_path,
+        )
+    except jr_creds.JiraCredentialError as exc:
+        print(f"[error] {exc}")
+        return
+    print(f"[OK] Default Jira project: {args.project}")
+
+
 def cmd_oracle(args):
     """Oracle dashboard server + Discovery API key management."""
     sub = getattr(args, "oracle_cmd", None)
@@ -6836,6 +7034,7 @@ def main():
         "sub": cmd_sub,
         "hub": cmd_hub,
         "bitbucket": cmd_bitbucket,
+        "jira": cmd_jira,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,
     }

@@ -359,6 +359,48 @@ def build_parser(version: str, parse_cli_ide_arg):
     bb_default.add_argument("--repo", required=True, help="Repository slug")
     bb_default.add_argument("project_path", nargs="?", default=".")
 
+    # ── Jira Cloud / Data Center (v2.56.0) ──────────────────────────────
+    p_jira = subparsers.add_parser(
+        "jira",
+        help="Jira Cloud / Data Center credential + workspace management",
+    )
+    jira_subs = p_jira.add_subparsers(dest="jira_cmd")
+
+    jr_login = jira_subs.add_parser(
+        "login",
+        help="Authenticate with a Jira site (interactive token prompt)",
+    )
+    jr_login.add_argument("--url", required=True, help="Jira base URL (e.g. https://yoursite.atlassian.net)")
+    jr_login.add_argument("--deployment", choices=["cloud", "data_center"], default="", help="Deployment type (inferred as 'cloud' for *.atlassian.net URLs; required otherwise)")
+    jr_login.add_argument("--name", default="", help="Account name in the registry (default: derived from URL host)")
+    jr_login.add_argument("--username", help="Email (Cloud) or username (Data Center); prompted if omitted")
+    jr_login.add_argument("--token", help="API token (Cloud) / PAT (Data Center); prompted via getpass if omitted — preferred")
+    jr_login.add_argument("--no-set-default", action="store_true", help="Do not make this the default account")
+    jr_login.add_argument("--no-verify-login", action="store_true", help="Skip the connection probe (store credentials offline)")
+    jr_login.add_argument("--insecure", action="store_true", help="Disable TLS verification / allow http:// (local dev only)")
+    jr_login.add_argument("--ca-bundle", default="", help="Path to a custom CA bundle for self-signed enterprise certs")
+    jr_login.add_argument("--global", dest="use_global", action="store_true", help="Store the account in the global ~/.c3/config.json so it is reusable in every C3 project")
+    jr_login.add_argument("project_path", nargs="?", default=".")
+
+    jr_logout = jira_subs.add_parser("logout", help="Remove a Jira account from keyring + config")
+    jr_logout.add_argument("--name", default="", help="Account name (defaults to the default account)")
+    jr_logout.add_argument("project_path", nargs="?", default=".")
+
+    jr_status = jira_subs.add_parser("status", help="Show configured Jira accounts and connectivity")
+    jr_status.add_argument("project_path", nargs="?", default=".")
+
+    jr_use = jira_subs.add_parser("use", help="Switch the default Jira account")
+    jr_use.add_argument("--name", required=True, help="Registered account name")
+    jr_use.add_argument("project_path", nargs="?", default=".")
+
+    jr_default = jira_subs.add_parser(
+        "set-default",
+        help="Set the default Jira project key on an account",
+    )
+    jr_default.add_argument("--project", required=True, help="Jira project key (e.g. PROJ)")
+    jr_default.add_argument("--name", default="", help="Account name (defaults to the default account)")
+    jr_default.add_argument("project_path", nargs="?", default=".")
+
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
         "oracle",
