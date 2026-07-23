@@ -211,6 +211,7 @@ C3 exposes 18 tools as a native MCP server. Your IDE calls them directly:
 | `c3_agent` | Multi-step agentic workflows (review, investigate, refactor) |
 | `c3_edits` | Edit-ledger queries + version diffs + restore points + per-branch filter |
 | `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
+| `c3_jira` | Jira integration — Cloud + Data Center: JQL search, issues, transitions, My Work board (v2.56.0) |
 | `c3_project` | Cross-project — discover & operate on other c3-installed projects; guarded writes (v2.31.0) |
 | `c3_task` | Durable per-project PM — tasks with dependencies & subtasks, milestones, decision notes, event history, health reports, and auto+manual time tracking (v2.53.0) |
 | `c3_artifacts` | Agent-config tracking — version history, diff & restore for CLAUDE.md, settings/hooks, MCP configs, skills (v2.46.0) |
@@ -219,7 +220,7 @@ On Windows, `c3_shell` uses Git Bash when available. Git Bash does not bundle
 optional utilities such as `jq`; use `python -m json.tool` for portable JSON
 formatting, or install `jq` separately when filter expressions are required.
 
-Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_project` / `c3_task`).
+Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_jira` / `c3_project` / `c3_task`).
 
 ### Bitbucket Data Center / Server (v2.30.0)
 
@@ -246,6 +247,40 @@ c3 bitbucket status
 it has no active account C3 falls back to the global `~/.c3/config.json`. So a
 single `login --global` (or any login done from your home directory) is reusable
 across every C3 project — the PAT always lives in the OS keyring, never on disk.
+
+### Jira — Cloud + Data Center (v2.56.0)
+
+`c3_jira` connects to Jira Cloud (REST v3, email + API token) or self-hosted
+Jira Data Center / Server (REST v2, PAT) behind one tool. Tokens live in the
+**OS keyring** — never in `.c3/config.json`.
+
+```bash
+# One-time login — Cloud is inferred for *.atlassian.net
+c3 jira login --url https://yoursite.atlassian.net
+#  -> prompts for email + API token (masked)
+
+# Self-hosted Data Center / Server
+c3 jira login --url https://jira.example.com --deployment data_center
+
+# ...or store it globally so every C3 project can use it
+c3 jira login --global --url https://yoursite.atlassian.net
+
+# Pin a default project; check connectivity
+c3 jira set-default --project PROJ
+c3 jira status
+```
+
+The agent gets `c3_jira`: raw-JQL `search`, `my_issues`, issue reads, and
+ledger-logged mutations (`create_issue` is pre-validated against create
+metadata and returns machine-readable missing required fields; `transition`
+accepts an id or a name). The web UI gains a **Jira tab** — a My Work board
+grouped by status category, JQL search, an issue drawer with transitions and
+comments, and an Activity view that links edit-ledger work to issue keys
+(`PROJ-123` detected in branch names and edit summaries; works even before
+login). Named accounts support multiple sites (`--name work`, `--name
+internal`); the registry resolves project → home **wholesale from one file**,
+so a repository's config can never override the credential-bound server URL
+or TLS settings of a globally registered account.
 
 > **Upgrading:** stop the running `c3-mcp` server / CLI before `c3 upgrade`. A live
 > process can hold package files open, leaving pip's `~`-prefixed backup dirs

@@ -4,6 +4,51 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.56.0] - 2026-07-23
+
+### Added — Jira integration: Cloud + Data Center (agent tool, CLI, dashboard)
+
+- **`c3_jira` MCP tool** (`cli/tools/jira.py`): 13 actions — `status`,
+  `whoami`, `search` (raw JQL), `my_issues`, `get_issue`, `list_projects`,
+  `list_transitions`, `get_create_metadata`, `search_users` reads;
+  `create_issue` / `comment` / `transition` / `assign` mutations are
+  edit-ledger-logged (identifiers only — bodies are never logged).
+  `create_issue` pre-validates against create metadata and returns
+  machine-readable missing required fields instead of guessing defaults;
+  `transition` accepts an id or a name; helper-built JQL is always quoted.
+- **Dual-deployment client** (`services/jira_client.py` facade over
+  `services/jira_cloud.py` / `services/jira_data_center.py` strategies):
+  Cloud REST v3 — Basic email+API-token auth, ADF wrap/flatten,
+  `/search/jql` with `nextPageToken`; Data Center REST v2 — PAT Bearer,
+  plain-text bodies, `startAt` offset pagination. One normalized DTO
+  surface and an opaque pagination cursor. Transport is stdlib urllib
+  (no new dependencies) with one bounded 429 retry honoring
+  `Retry-After` for reads — mutations are never auto-retried.
+- **Credentials** (`services/jira_credentials.py` +
+  `core.config.load_jira_config`): named multi-account registry
+  (deployment, default_project, per-account TLS/CA), tokens in the OS
+  keyring keyed by `(base_url, username)`, HTTPS-only guard. Config
+  resolution is project → home and **wholesale from a single file** — a
+  repository's config can never field-override a home-registered
+  account's credential-bound URL or TLS settings (credential-redirect
+  hardening).
+- **CLI**: `c3 jira login/logout/status/use/set-default` — Cloud inferred
+  for `*.atlassian.net`, `--deployment` required for self-hosted,
+  `--no-verify-login` for offline setup, `--ca-bundle` for enterprise
+  certs, `--global` for a home config reusable across projects.
+- **Dashboard Jira tab** (`cli/ui/components/jira.js`) + ten
+  `/api/jira/*` routes: My Work board (statusCategory grouping over
+  plain JQL — no agile API in v1), JQL search, issue drawer with
+  transition buttons and comments, Activity view.
+- **Issue-key linking** (`services/jira_links.py`): `PROJ-123` detection
+  in branch names (case-insensitive, read from `.git/HEAD` — no
+  subprocess) and edit-ledger entries, with an acronym denylist so
+  UTF-8 / SHA-256 / CVE-2024 never match. `/api/jira/activity` is
+  local-only and works with no account configured; the issue drawer
+  shows the local edit-ledger activity for the open issue.
+- 107 new offline tests (credentials, config fallback, client, tool,
+  CLI smoke, routes, links) — no live Jira instance required.
+
 ## [2.55.0] - 2026-07-17
 
 ### Fixed — instruction-doc project trees respect .gitignore (#1)
