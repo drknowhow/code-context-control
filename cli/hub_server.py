@@ -333,6 +333,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/session_drawer.js",
     "hub_ui/components/drill_panel.js",
     "hub_ui/components/drill_views.js",
+    "hub_ui/components/hub_credentials.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
@@ -437,8 +438,8 @@ def api_hub_config_set():
         cfg["projects_view"] = projects_view
     if "main_view" in data:
         main_view = str(data["main_view"]).strip().lower()
-        if main_view not in {"projects", "board"}:
-            return jsonify({"error": "main_view must be 'projects' or 'board'"}), 400
+        if main_view not in {"projects", "board", "creds"}:
+            return jsonify({"error": "main_view must be 'projects', 'board' or 'creds'"}), 400
         cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
@@ -1773,12 +1774,100 @@ def api_projects_config_get():
                     "defaults": {k: _config_defaults(k) for k in _CONFIG_READ_SECTIONS}})
 
 
+# ── Credentials (hub) ────────────────────────────────────────────────────────
+# Write-only wire contract, hub edition: values go IN over POST and are never
+# returned by any hub route (no reveal exists here). `credentials` stays out of
+# _CONFIG_WRITE_SECTIONS — these dedicated routes are the only hub write path.
+
+_CRED_PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
+                       "agent_readable", "description", "storage", "created",
+                       "updated")
+
+
+def _cred_entry_public(name, entry, *, usage=None, shadows_global=None):
+    """Explicit allowlist serializer — structurally cannot emit a value."""
+    rec = {"name": name}
+    for key in _CRED_PUBLIC_FIELDS:
+        rec[key] = entry.get(key, "")
+    rec["value_len"] = entry.get("value_len", 0)
+    rec["inject"] = bool(entry.get("inject"))
+    rec["agent_readable"] = bool(entry.get("agent_readable"))
+    if usage is not None:
+        rec["last_used"] = (usage.get(name) or {}).get("last_used", "")
+        rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
+    if shadows_global is not None:
+        rec["shadows_global"] = bool(shadows_global)
+    return rec
+
+
+def _resolve_cred_target(path: str, scope: str, *, mutation: bool):
+    """Resolve a credentials request target to (project, store_path, error).
+
+    scope='global' with no path targets the shared vault (~/.c3) directly;
+    project scope requires a registered path. Mutations on a path without a
+    .c3/ dir get 409 needs_init so the hub can't scatter .c3 dirs around."""
+    from services import credential_store as cred_store
+    if scope not in ("project", "global"):
+        return None, "", (jsonify({"error": "scope must be 'project' or 'global'"}), 400)
+    if not path:
+        if scope == "project":
+            return None, "", (jsonify({"error": "path is required for project scope"}), 400)
+        home = cred_store.global_base()
+        if home is None:
+            return None, "", (jsonify({"error": "global scope unresolvable (no home dir)"}), 500)
+        return None, str(home), None
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return None, "", (jsonify({"error": str(e)}), 404)
+    if mutation and not (resolved / ".c3").is_dir():
+        return None, "", (jsonify({"error": "not initialized", "needs_init": True}), 409)
+    return resolved, str(resolved), None
+
+
+def _hub_cred_audit(action: str, name: str, scope: str, project) -> None:
+    """Names only — never values. Failure-safe. Project mutations audit to the
+    target project's ActivityLog + EditLedger; global-scope mutations also land
+    in ~/.c3/activity_log.jsonl so the shared vault keeps its own trail."""
+    if project is not None:
+        try:
+            from services.activity_log import ActivityLog
+            ActivityLog(str(project)).log("cred_action", {
+                "kind": "creds", "action": action, "name": name,
+                "scope": scope, "via": "hub",
+            })
+        except Exception:
+            pass
+        try:
+            from services.edit_ledger import EditLedger
+            EditLedger(str(project)).log_edit(
+                file=f"cred://{name}", change_type=f"cred_{action}",
+                summary=f"{action} {name} ({scope}) via Hub",
+                tags=["creds", action],
+                detail={"kind": "creds", "action": action, "name": name,
+                        "scope": scope},
+            )
+        except Exception:
+            pass
+    if scope == "global" or project is None:
+        try:
+            from services import credential_store as cred_store
+            from services.activity_log import ActivityLog
+            home = cred_store.global_base()
+            if home is not None:
+                ActivityLog(str(home)).log("cred_action", {
+                    "kind": "creds", "action": action, "name": name,
+                    "scope": scope, "via": "hub",
+                })
+        except Exception:
+            pass
+
+
 @app.route("/api/projects/credentials", methods=["GET"])
 def api_projects_credentials():
-    """Read-only masked credential registry for a project (global entries +
-    project shadows). Values never transit the hub — the explicit field
-    allowlist below returns metadata only; management lives in the project UI
-    (`credentials` is deliberately absent from _CONFIG_WRITE_SECTIONS)."""
+    """Masked credential registry for a project (global entries + project
+    shadows). Values never transit the hub outbound — the allowlist serializer
+    returns metadata, usage and shadow info only."""
     path = (request.args.get("path") or "").strip()
     if not path:
         return jsonify({"error": "path is required"}), 400
@@ -1787,20 +1876,172 @@ def api_projects_credentials():
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     from services import credential_store as cred_store
+    usage = cred_store.read_usage_state(str(resolved))
+    home = cred_store.global_base()
+    global_names = set(cred_store.list_entries(str(home))) if home else set()
     entries = []
     for name, entry in cred_store.list_entries(str(resolved)).items():
-        entries.append({
-            "name": name,
-            "scope": entry.get("scope", ""),
-            "type": entry.get("type", "token"),
-            "value_len": entry.get("value_len", 0),
-            "env_var": entry.get("env_var", ""),
-            "inject": bool(entry.get("inject")),
-            "agent_readable": bool(entry.get("agent_readable")),
-            "description": entry.get("description", ""),
-            "updated": entry.get("updated", ""),
-        })
+        entries.append(_cred_entry_public(
+            name, entry, usage=usage,
+            shadows_global=(entry.get("scope") == "project"
+                            and name in global_names)))
     return jsonify({"path": str(resolved), "entries": entries})
+
+
+@app.route("/api/projects/credentials", methods=["POST"])
+def api_projects_credentials_set():
+    """Create/update an entry from the hub. `value` optional — metadata-only
+    update when absent, touching ONLY the keys present in the payload; a
+    submitted value is stored and never echoed back. scope='global' with no
+    `path` targets the shared vault directly."""
+    from services import credential_store as cred_store
+    data = request.get_json(force=True) or {}
+    name = str(data.get("name") or "").strip()
+    scope = str(data.get("scope") or "project").strip().lower()
+    project, store_path, err = _resolve_cred_target(
+        str(data.get("path") or "").strip(), scope, mutation=True)
+    if err:
+        return err
+    value = str(data.get("value") or "")
+    ctype = str(data.get("type") or data.get("ctype") or "token")
+    try:
+        if value:
+            entry = cred_store.set_credential(
+                name, value, scope=scope, project_path=store_path, ctype=ctype,
+                description=str(data.get("description") or ""),
+                env_var=str(data.get("env_var") or ""),
+                agent_readable=bool(data.get("agent_readable")),
+                inject=bool(data.get("inject")))
+        else:
+            # Metadata-only update: touch ONLY the keys present in the payload
+            # so a single-field toggle can't clobber the others.
+            fields = {}
+            for key in ("description", "env_var"):
+                if key in data:
+                    fields[key] = str(data[key] or "")
+            for key in ("agent_readable", "inject"):
+                if key in data:
+                    fields[key] = bool(data[key])
+            if "type" in data or "ctype" in data:
+                fields["type"] = ctype
+            entry = cred_store.update_metadata(
+                name, scope=scope, project_path=store_path, **fields)
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    _hub_cred_audit("set" if value else "update", name, scope, project)
+    return jsonify({"entry": _cred_entry_public(name, {**entry, "scope": scope})})
+
+
+@app.route("/api/projects/credentials/import", methods=["POST"])
+def api_projects_credentials_import():
+    """Import KEY=VALUE lines (.env paste). Values are stored, never echoed."""
+    from services import credential_store as cred_store
+    data = request.get_json(force=True) or {}
+    scope = str(data.get("scope") or "project").strip().lower()
+    project, store_path, err = _resolve_cred_target(
+        str(data.get("path") or "").strip(), scope, mutation=True)
+    if err:
+        return err
+    try:
+        result = cred_store.import_env(
+            str(data.get("text") or ""), scope=scope, project_path=store_path,
+            overwrite=bool(data.get("overwrite")))
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    for created in result["created"]:
+        _hub_cred_audit("set", created, scope, project)
+    return jsonify(result)
+
+
+@app.route("/api/projects/credentials/<name>", methods=["DELETE"])
+def api_projects_credentials_delete(name):
+    """Delete an entry (value + registry). Scope inferred from the owning
+    realm when omitted."""
+    from services import credential_store as cred_store
+    scope = str(request.args.get("scope") or "").strip().lower()
+    path = str(request.args.get("path") or "").strip()
+    project, store_path, err = _resolve_cred_target(
+        path, scope or ("project" if path else "global"), mutation=True)
+    if err:
+        return err
+    if not scope:
+        entry = cred_store.get_entry(name, project_path=store_path)
+        scope = (entry.get("scope") or "project") if entry else \
+            ("project" if path else "global")
+    try:
+        removed = cred_store.delete_credential(
+            name, scope=scope, project_path=store_path)
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if removed:
+        _hub_cred_audit("delete", name, scope, project)
+    return jsonify({"removed": bool(removed), "scope": scope})
+
+
+@app.route("/api/projects/credentials/<name>/check", methods=["POST"])
+def api_projects_credentials_check(name):
+    """Resolvability probe — returns a fingerprint, never the value."""
+    from services import credential_store as cred_store
+    data = request.get_json(silent=True) or {}
+    path = str(data.get("path") or "").strip()
+    project, store_path, err = _resolve_cred_target(
+        path, "project" if path else "global", mutation=False)
+    if err:
+        return err
+    entry = cred_store.get_entry(name, project_path=store_path)
+    if not entry:
+        return jsonify({"error": f"no credential named '{name}'"}), 404
+    return jsonify({
+        "name": name,
+        "scope": entry["scope"],
+        "storage": entry.get("storage", "keyring"),
+        "resolvable": cred_store.get_value(name, project_path=store_path) is not None,
+        "fingerprint": cred_store.fingerprint(name, project_path=store_path),
+    })
+
+
+@app.route("/api/hub/credentials/overview", methods=["GET"])
+def api_hub_credentials_overview():
+    """Cross-project credential inventory: the global vault plus each
+    registered project's project-scoped entries, with shadow info both ways.
+    Metadata only — the allowlist serializer structurally cannot emit a value."""
+    from services import credential_store as cred_store
+    home = cred_store.global_base()
+    global_entries = cred_store.list_entries(str(home)) if home else {}
+    shadowed_in = {name: [] for name in global_entries}
+    projects_out = []
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or "", "path": ppath,
+               "initialized": True, "error": None, "entries": []}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                usage = cred_store.read_usage_state(ppath)
+                for name, entry in cred_store.list_entries(ppath).items():
+                    if entry.get("scope") != "project":
+                        continue
+                    row["entries"].append(_cred_entry_public(
+                        name, entry, usage=usage,
+                        shadows_global=name in global_entries))
+                    if name in shadowed_in:
+                        shadowed_in[name].append(
+                            {"name": row["name"], "path": ppath})
+        except Exception as e:  # per-row isolation, like /api/search/global
+            row["error"] = str(e)
+        projects_out.append(row)
+    global_usage = cred_store.read_usage_state(str(home)) if home else {}
+    global_out = [
+        {**_cred_entry_public(name, entry, usage=global_usage),
+         "shadowed_in": shadowed_in.get(name, [])}
+        for name, entry in global_entries.items()
+    ]
+    return jsonify({"global": {"entries": global_out}, "projects": projects_out})
 
 
 @app.route("/api/projects/config", methods=["PUT"])

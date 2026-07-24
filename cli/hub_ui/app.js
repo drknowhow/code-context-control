@@ -17,7 +17,7 @@ function App() {
   const [version, setVersion] = useState('');
   const [projects, setProjects] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [mainView, setMainView] = useState('projects'); // projects | board
+  const [mainView, setMainView] = useState('projects'); // projects | board | creds
   const [filter, setFilter] = useState('all');          // all | active | idle | tag:<x>
   const [search, setSearch] = useState('');
   const [view, setView] = useState('list');             // list | grid
@@ -44,7 +44,7 @@ function App() {
       if (cfg.projects_view === 'grid') setView('grid');
       if (cfg.sidebar_collapsed != null) setSidebarCollapsed(!!cfg.sidebar_collapsed);
       if (cfg.sidebar_group) setFilter(cfg.sidebar_group);
-      if (cfg.main_view === 'board') setMainView('board');
+      if (cfg.main_view === 'board' || cfg.main_view === 'creds') setMainView(cfg.main_view);
     } catch { }
     try { const v = await api.get('/api/version'); setVersion(v.c3_version || ''); } catch { }
   }, []);
@@ -112,6 +112,8 @@ function App() {
         }}>
           {mainView === 'board' ? (
             <TaskBoard projects={projects} onOpenDrill={openDrill} />
+          ) : mainView === 'creds' ? (
+            <HubCredentials projects={projects} onOpenDrill={openDrill} />
           ) : (
             <React.Fragment>
               <SummaryBar projects={projects} search={search} setSearch={setSearch}

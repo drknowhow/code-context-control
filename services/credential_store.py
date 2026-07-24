@@ -98,6 +98,11 @@ def _global_base() -> Optional[Path]:
         return None
 
 
+def global_base() -> Optional[Path]:
+    """Public accessor for the global-scope base directory (home)."""
+    return _global_base()
+
+
 def _project_is_home(project_path: str) -> bool:
     home = _global_base()
     if home is None:

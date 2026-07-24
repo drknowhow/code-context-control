@@ -125,6 +125,7 @@
       <div class="sidebar-label">SCM</div>
       <a href="#c3_task" class="sidebar-link"><span class="icon">✅</span> c3_task</a>
       <a href="#c3_bitbucket" class="sidebar-link"><span class="icon">🪣</span> c3_bitbucket</a>
+      <a href="#c3_credentials" class="sidebar-link"><span class="icon">🔐</span> c3_credentials</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Cross-project</div>
@@ -161,6 +162,7 @@
         <a href="#c3_task" class="toc-item">c3_task <span class="cat">PM</span></a>
         <a href="#c3_artifacts" class="toc-item">c3_artifacts <span class="cat">Config</span></a>
         <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
+        <a href="#c3_credentials" class="toc-item">c3_credentials <span class="cat">Secrets</span></a>
         <a href="#c3_project"  class="toc-item">c3_project  <span class="cat">Multi-project</span></a>
       </div>
     </div>
@@ -1237,6 +1239,45 @@ c3_bitbucket(action=<span class="str">'approve_pr'</span>, pr_id=<span class="nu
 c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num">42</span>)</code></pre>
 
           <p class="tool-desc"><strong>Audit trail:</strong> mutating actions (<code>merge_pr</code>, <code>create_branch</code>, <code>delete_branch</code>, webhook writes, etc.) are appended to the C3 edit ledger so the local audit log covers platform-side state changes too.</p>
+        </div>
+      </div>
+
+      <!-- c3_credentials -->
+      <div class="tool-card" id="c3_credentials">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_credentials</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">secrets</span>
+            <span class="badge">v2.58.0</span>
+          </div>
+          <span class="tool-tagline">Credential vault — the agent uses secrets by name, never by value</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">A user-managed secret store, <strong>global</strong> (<code>~/.c3</code>, visible in every project) or <strong>per-project</strong> (<code>.c3</code>, shadows the same-named global). Values live in the OS keyring (service <code>c3-creds</code>; values over ~1KB in a Fernet-encrypted <code>.c3/secrets.enc</code> whose random master key is itself a keyring entry) — never in config files, and <em>never in the model's context</em>. <strong>Injection-first:</strong> the agent addresses secrets by name and C3 decodes them only at the subprocess boundary — <code>c3_shell(env_creds='A,B')</code> injects env vars, <code>{{cred:NAME}}</code> inside <code>cmd</code> expands server-side, and <code>inject</code>-flagged entries auto-inject into every shell run; echoed values are redacted back to <code>[cred:NAME]</code>. Resolution is <strong>realm-atomic</strong>: a project-registered name resolves in the project realm or not at all, so a hostile repo's committed config can never siphon your global values (tested).</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">list</td><td>Read</td><td class="param-desc">Merged registry (project shadows global) — names, scope, type, flags, usage. Never values</td></tr>
+              <tr><td class="param-name">describe</td><td>Read</td><td class="param-desc">Metadata + storage + live fingerprint (first 8 hex of SHA-256, computed on demand, never persisted)</td></tr>
+              <tr><td class="param-name">check</td><td>Read</td><td class="param-desc">Resolvability probe — does the stored value decode?</td></tr>
+              <tr><td class="param-name">set</td><td>Write</td><td class="param-desc">Create/replace an entry. <code>agent_readable</code> may be set at creation only — raising it on an existing entry is user-only</td></tr>
+              <tr><td class="param-name">delete</td><td>Write</td><td class="param-desc">Remove value + registry entry (owning scope inferred when omitted)</td></tr>
+              <tr><td class="param-name">reveal</td><td>Gated</td><td class="param-desc">The only value-returning action — refused unless the user enabled <code>agent_readable</code> on that entry</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># What can I use? (names and metadata only)</span>
+c3_credentials(action=<span class="str">'list'</span>)
+c3_credentials(action=<span class="str">'check'</span>, name=<span class="str">'NPM_TOKEN'</span>)
+
+<span class="com"># USE a secret without ever seeing it</span>
+c3_shell(cmd=<span class="str">'npm publish'</span>, env_creds=<span class="str">'NPM_TOKEN'</span>)
+c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}" https://api.example.com'</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Surfaces:</strong> the <code>c3 creds</code> CLI (<code>set</code> / <code>get</code> / <code>list</code> / <code>rm</code> / <code>import .env</code>, <code>--global</code> for the shared scope), a per-project dashboard <strong>Credentials</strong> tab, and — since v2.59.0 — a top-level <strong>Credentials</strong> view in the Hub: a Global-vault manager plus a per-project browser with shadowing shown both ways ("shadows global" on project entries, "shadowed in N projects" on globals); the Hub's per-project drill panel manages too. No HTTP route ever returns a stored value (write-only wire contract, endpoint-sweep tested), every mutation is ledger-logged by name, the vault is hard-excluded from the Oracle Discovery API, and cross-project (<code>c3_project</code>) shells run with credentials disabled.</p>
         </div>
       </div>
     </div>
