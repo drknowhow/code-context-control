@@ -19,6 +19,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 9. **DELEGATE**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` or `c3_agent(workflow=...)` for multi-model pipelines
 10. **BITBUCKET** (when configured, v2.30.0+): `c3_bitbucket(action='...')` — for self-hosted enterprise Bitbucket Data Center / Server: PRs, branches, builds, repo admin. Tokens live in the OS keyring (set up via `c3 bitbucket login`, or `login --global` for a home config reusable across projects; account resolution precedence is project → home). Read actions are safe in plan mode; write actions (`merge_pr`, `create_branch`, etc.) are auto-logged to the edit ledger.
 10.5. **JIRA** (when configured, v2.56.0+): `c3_jira(action='...')` — Jira Cloud + Data Center: `search` (raw JQL), `my_issues`, `get_issue`, `list_transitions`, `get_create_metadata`, `search_users` reads; `create_issue` / `comment` / `transition` / `assign` mutations auto-logged to the edit ledger (identifiers only, never bodies). Tokens in the OS keyring (`c3 jira login`, or `login --global` for cross-project reuse; the jira config section resolves project → home wholesale from one file — never field-merged). Read actions are safe in plan mode.
+10.6. **CREDENTIALS** (v2.58.0+): `c3_credentials(action='...')` — named secret vault (global ~/.c3 + per-project .c3; project shadows global). `list`/`describe`/`check` return names + metadata, never values. To USE a secret do NOT reveal it — pass `env_creds='NAME1,NAME2'` to c3_shell or write `{{cred:NAME}}` inside cmd; C3 decodes at the subprocess boundary so values never enter context, and echoed values are auto-redacted to `[cred:NAME]`. `reveal` works only on entries the user marked `agent_readable` (that flag cannot be raised on an existing entry by the agent). `set`/`delete` allowed; all mutations + reveals ledger-logged by name. Users manage entries via the Credentials UI tab or `c3 creds`.
 11. **CROSS-PROJECT** (v2.31.0+): `c3_project(action='list|scan|info|search|read|edit|shell|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. `list`/`scan` need no project; reads (search/read/compress/status/memory/impact/edits/validate/filter) run freely; writes (`edit`, `shell`, memory add/update/delete) require `allow_write=true` and are logged to the target project's ledger.
 12. **AGENT CONFIG** (v2.46.0+): `c3_artifacts(action='status|list|history|diff|restore')` — version history for the files that shape the agent itself: instruction docs (CLAUDE.md/AGENTS.md/GEMINI.md), settings/hooks, MCP configs, .claude skills/agents/commands. Out-of-band edits are captured automatically; `diff` any version against live, `restore` writes a prior version back (forward-only, ledger-logged).
 
@@ -50,7 +51,7 @@ claude-companion - v2/
   THIRD_PARTY_LICENSES.md
   c3.bat
   install.bat
-  ... +5 more
+  ... +3 more
   .agents/
   .github/
     FUNDING.yml
@@ -144,7 +145,7 @@ claude-companion - v2/
     test_circuit_breaker.py
     test_claude_md_merge.py
     test_cli_smoke.py
-    ... +81 more
+    ... +82 more
   tui/
     __init__.py
     backend.py
@@ -170,8 +171,8 @@ Python (Modern)
 
 ## Key Facts (use c3_memory for more)
 
-- Session summary (20260701): Files (modified): README.md, services/subprojects.py, services/project_manager.py, services/
 - [validate] U:\1. Projects\Claude Code Companion (C3)\claude-companion - v2\cli\hub_ui\components\toasts.js has syntax er
 - Sub-projects (v2.44.0): three-way link — parent config subprojects[] (POSIX rel_path = source of truth), child config pa
 - Hub v2 (v2.44.0): cli/hub_ui.html + cli/hub_ui/ 22-file concat bundle served at / (hub.html frozen at /legacy until v2.4
 - Session summary (20260702): Files (modified): services/subprojects.py, .github/workflows/release.yml, pyproject.toml, cl
+- Session summary (20260703): Files (modified): cli/tools/edit.py, cli/tools/read.py, tests/test_read_edit_parity.py, C:\U

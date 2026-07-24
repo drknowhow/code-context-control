@@ -355,6 +355,22 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     snap_pct = 0
     svc = _svc(ctx)
 
+    # Credential hygiene: scrub any decoded vault value from every PERSISTED
+    # copy (session store, activity log, auto-memory). The response returned
+    # to the model is deliberately untouched — reveal is gated upstream by
+    # the per-entry agent_readable flag, and injected values only appear in
+    # output when a subprocess echoed them (already scrubbed in c3_shell;
+    # this is the belt-and-braces layer for every other tool).
+    persisted_response = response
+    try:
+        from services import credential_store as _creds
+        if _creds._ACTIVE_SECRETS:
+            args = _creds.redact_obj(args)
+            summary = _creds.redact_text(summary)
+            persisted_response = _creds.redact_text(response)
+    except Exception:
+        pass
+
     # Minimal critical section: only the module-global timing state needs
     # exclusive access. Disk I/O happens outside the lock so concurrent tool
     # calls don't serialize on append-only JSONL writes.
@@ -380,7 +396,7 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
             tracker.ping("tool")  # throttled heartbeat; idle gaps close sessions
         except Exception:
             pass
-    svc.session_mgr.track_response(tool_name, response, response_tokens=response_tokens)
+    svc.session_mgr.track_response(tool_name, persisted_response, response_tokens=response_tokens)
 
     hybrid_cfg = svc.hybrid_config or {}
 
@@ -399,7 +415,7 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     # --- Outside lock: auto-memory extraction (may do file I/O / Ollama) ---
     if hasattr(svc, "auto_memory"):
         try:
-            svc.auto_memory.on_tool_complete(tool_name, args, summary, response)
+            svc.auto_memory.on_tool_complete(tool_name, args, summary, persisted_response)
         except Exception:
             pass
 
@@ -422,7 +438,7 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     return response
 
 
-# ─── TOOL REGISTRATIONS (18 tools) ────────────────────────────────
+# ─── TOOL REGISTRATIONS (19 tools) ────────────────────────────────
 # Each tool's first docstring line should state WHEN to reach for it —
 # that's what Claude reads when selecting between tools.
 
@@ -711,10 +727,14 @@ async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
 @mcp.tool()
 async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
                    filter_output: bool = True, log: bool = True,
+                   env_creds: str = "",
                    ctx: Context = None) -> str:
     """EXECUTE shell command — structured returns, auto-filter, ledger-aware.
     Use for tests, git, build, scripts. Returns exit_code/stdout/stderr/duration_ms.
     Auto-filters stdout >30 lines; auto-logs git mutations to the edit ledger.
+    Credentials: env_creds='NAME1,NAME2' injects vault entries as env vars, and
+    {{cred:NAME}} inside cmd expands server-side — decoded values never enter
+    model context (see c3_credentials; echoed values are auto-redacted).
     Best-effort block of catastrophic commands (rm -rf of /, a top-level system dir, or
     $HOME/~; fork bombs; whole-drive wipes) — a guard, NOT a sandbox. Soft-warns on
     --force, --no-verify, reset --hard.
@@ -725,7 +745,8 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize)
+    return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize,
+                              env_creds=env_creds)
 
 
 @mcp.tool()
@@ -819,6 +840,40 @@ async def c3_jira(
         body_format=body_format, transition=transition, user=user,
         query=query, fields=fields, status_category=status_category,
         account=account, cursor=cursor, limit=limit,
+    )
+
+
+@mcp.tool()
+async def c3_credentials(
+    action: str,
+    name: str = "",
+    value: str = "",
+    scope: str = "",
+    description: str = "",
+    ctype: str = "",
+    env_var: str = "",
+    inject: bool = False,
+    agent_readable: bool = False,
+    ctx: Context = None,
+) -> str:
+    """CREDENTIAL VAULT — named secrets the user manages (global + per-project), injection-first.
+    actions: list, describe (name), check (name), reveal (name — only entries the
+    user marked agent_readable), set (name, value [scope=project|global] [ctype=token|env|multiline]
+    [description] [env_var] [inject]), delete (name [scope]).
+    To USE a credential, do NOT reveal it — pass env_creds='NAME1,NAME2' to c3_shell
+    (injected as env vars) or write {{cred:NAME}} inside the cmd (expanded server-side);
+    the decoded value never enters model context. Values live in the OS keyring /
+    an encrypted sidecar, never in config files. Mutations and reveals are ledger-logged."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.credentials import handle_credentials
+    return await asyncio.to_thread(
+        handle_credentials, action, svc, finalize,
+        name=name, value=value, scope=scope, description=description,
+        ctype=ctype, env_var=env_var, inject=inject, agent_readable=agent_readable,
     )
 
 

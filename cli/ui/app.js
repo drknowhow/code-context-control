@@ -11,6 +11,7 @@ const tabs = [
   { id: "edits", label: "Edits", icon: "edit" },
   { id: "bitbucket", label: "Bitbucket", icon: "gitBranch" },
   { id: "jira", label: "Jira", icon: "check" },
+  { id: "credentials", label: "Credentials", icon: "lock" },
   { id: "instructions", label: "Instructions", icon: "fileText" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -126,6 +127,9 @@ function App() {
         </div>
         <div style={{ display: tab === "jira" ? "block" : "none", height: "100%" }}>
           <JiraPanel />
+        </div>
+        <div style={{ display: tab === "credentials" ? "block" : "none", height: "100%" }}>
+          <CredentialsPanel />
         </div>
         <div style={{ display: tab === "instructions" ? "block" : "none", height: "100%" }}>
           <Instructions />

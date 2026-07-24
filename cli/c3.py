@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.57.1"
+__version__ = "2.58.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -248,7 +248,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
-    "mcp__c3__c3_jira",
+    "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
 ]
 
@@ -5738,6 +5738,150 @@ def _bb_cmd_set_default(args, project_path: str) -> None:
     print(f"[OK] Default repo: {args.project}/{args.repo}")
 
 
+def cmd_creds(args):
+    """Credential vault management (global + per-project scopes)."""
+    sub = getattr(args, "creds_cmd", None)
+    if not sub:
+        print("Usage: c3 creds {set,get,list,rm,import} [args]")
+        return
+
+    project_path = getattr(args, "project_path", ".") or "."
+
+    if sub == "set":
+        _creds_cmd_set(args, project_path)
+    elif sub == "get":
+        _creds_cmd_get(args, project_path)
+    elif sub == "list":
+        _creds_cmd_list(args, project_path)
+    elif sub == "rm":
+        _creds_cmd_rm(args, project_path)
+    elif sub == "import":
+        _creds_cmd_import(args, project_path)
+    else:
+        print(f"Unknown creds subcommand: {sub}")
+
+
+def _creds_scope(args) -> str:
+    return "global" if getattr(args, "use_global", False) else "project"
+
+
+def _creds_entry_line(name: str, entry: dict) -> str:
+    flags = [f for f in ("inject", "agent_readable") if entry.get(f)]
+    parts = [
+        f"{name:<24} {entry.get('scope', '?'):<8} {entry.get('type', 'token'):<10}"
+        f" len={entry.get('value_len', '?')}",
+    ]
+    if entry.get("env_var"):
+        parts.append(f"env_var={entry['env_var']}")
+    if flags:
+        parts.append("[" + ",".join(flags) + "]")
+    if entry.get("description"):
+        parts.append(f"-- {entry['description']}")
+    return "  ".join(parts)
+
+
+def _creds_cmd_set(args, project_path: str) -> None:
+    import getpass
+
+    from services import credential_store as cred_store
+
+    value = getattr(args, "value", "") or ""
+    if getattr(args, "stdin", False):
+        value = sys.stdin.read().rstrip("\n")
+    if not value:
+        value = getpass.getpass(f"Value for {args.name}: ")
+    if not value:
+        print("Cancelled -- value required.")
+        return
+    scope = _creds_scope(args)
+    try:
+        entry = cred_store.set_credential(
+            args.name, value,
+            scope=scope, project_path=project_path,
+            description=getattr(args, "desc", "") or "",
+            ctype=getattr(args, "ctype", "token") or "token",
+            env_var=getattr(args, "env_var", "") or "",
+            agent_readable=bool(getattr(args, "agent_readable", False)),
+            inject=bool(getattr(args, "inject", False)),
+        )
+    except (cred_store.CredentialError, RuntimeError) as exc:
+        print(f"[error] {exc}")
+        return
+    print(f"[OK] Stored credential '{args.name}' "
+          f"(scope={scope}, storage={entry['storage']}, len={entry['value_len']})")
+    if entry["agent_readable"]:
+        print("[warn] agent_readable=true -- the agent can read this value "
+              "into its context and transcripts.")
+
+
+def _creds_cmd_get(args, project_path: str) -> None:
+    from services import credential_store as cred_store
+
+    entry = cred_store.get_entry(args.name, project_path=project_path)
+    if not entry:
+        print(f"[error] no credential named '{args.name}'")
+        return
+    print(_creds_entry_line(args.name, entry))
+    print(f"storage={entry.get('storage', 'keyring')}  "
+          f"created={entry.get('created', '?')}  updated={entry.get('updated', '?')}")
+    fp = cred_store.fingerprint(args.name, project_path=project_path)
+    print(f"fingerprint={fp or 'unresolvable'}")
+    if getattr(args, "show", False):
+        value = cred_store.get_value(args.name, project_path=project_path)
+        print(value if value is not None else "[error] value missing from store")
+
+
+def _creds_cmd_list(args, project_path: str) -> None:
+    from services import credential_store as cred_store
+
+    entries = cred_store.list_entries(project_path)
+    if not entries:
+        print("No credentials registered. Use `c3 creds set NAME` "
+              "(add --global for all projects).")
+        return
+    print(f"{len(entries)} credential(s) — project scope shadows global:")
+    for name, entry in entries.items():
+        print("  " + _creds_entry_line(name, entry))
+
+
+def _creds_cmd_rm(args, project_path: str) -> None:
+    from services import credential_store as cred_store
+
+    scope = _creds_scope(args)
+    entry = cred_store.get_entry(args.name, project_path=project_path)
+    if entry and entry["scope"] == "global" and scope == "project":
+        print(f"[error] '{args.name}' is a global credential -- "
+              "re-run with --global to delete it.")
+        return
+    if cred_store.delete_credential(args.name, scope=scope, project_path=project_path):
+        print(f"[OK] Removed credential '{args.name}' (scope={scope})")
+    else:
+        print(f"[error] no credential named '{args.name}' in {scope} scope")
+
+
+def _creds_cmd_import(args, project_path: str) -> None:
+    from services import credential_store as cred_store
+
+    env_path = Path(getattr(args, "env_file", ""))
+    if not env_path.exists():
+        print(f"[error] file not found: {env_path}")
+        return
+    try:
+        text = env_path.read_text(encoding="utf-8")
+        result = cred_store.import_env(
+            text, scope=_creds_scope(args), project_path=project_path,
+            overwrite=bool(getattr(args, "overwrite", False)),
+        )
+    except (cred_store.CredentialError, RuntimeError) as exc:
+        print(f"[error] {exc}")
+        return
+    print(f"[OK] Imported {len(result['created'])} credential(s): "
+          f"{', '.join(result['created']) or '-'}")
+    if result["skipped"]:
+        print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
+              "(use --overwrite to replace)")
+
+
 def cmd_jira(args):
     """Jira Cloud / Data Center credential + workspace management."""
     sub = getattr(args, "jira_cmd", None)
@@ -7036,6 +7180,7 @@ def main():
         "hub": cmd_hub,
         "bitbucket": cmd_bitbucket,
         "jira": cmd_jira,
+        "creds": cmd_creds,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,
     }

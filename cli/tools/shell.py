@@ -124,13 +124,15 @@ def _select_bash() -> str | None:
     return _bash_cache[0]
 
 
-def _popen_kwargs() -> dict:
+def _popen_kwargs(extra_env: dict | None = None) -> dict:
     # Force UTF-8 in child processes so Unicode output (→, box-drawing, emoji)
     # doesn't crash on Windows' legacy cp1252 console encoding. setdefault so an
     # intentional caller-set encoding still wins.
     env = dict(os.environ)
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    if extra_env:
+        env.update(extra_env)
     kw: dict = {"stdin": subprocess.DEVNULL, "env": env}
     if sys.platform == "win32":
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -166,7 +168,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 pass
 
 
-def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
+def _run_sync(cmd: str, cwd: str, timeout: int,
+              extra_env: dict | None = None) -> dict:
     """Blocking subprocess run with hard kill on timeout. Returns structured dict."""
     start = time.time()
     bash = _select_bash()
@@ -184,7 +187,7 @@ def _run_sync(cmd: str, cwd: str, timeout: int) -> dict:
             popen_target, shell=use_shell, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
-            **_popen_kwargs(),
+            **_popen_kwargs(extra_env),
         )
     except (OSError, ValueError) as exc:
         return {
@@ -361,7 +364,8 @@ def _sweep_new_ghost_files(root: Path, before: set[str]) -> list[str]:
 
 
 async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
-                       log: bool, svc, finalize) -> str:
+                       log: bool, svc, finalize, env_creds: str = "",
+                       enable_creds: bool = True) -> str:
     if not cmd or not cmd.strip():
         return "[c3_shell:error] empty command"
     if _BLOCKED.search(cmd):
@@ -374,6 +378,41 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
     work_cwd = cwd or svc.project_path
     work_cwd = str(Path(work_cwd).resolve())
 
+    # ── credential injection (local runtime only) ─────────
+    # `cmd` stays the RAW template form for every echo/log below; only
+    # `exec_cmd` (never logged) carries decoded values. Cross-project proxies
+    # (cli/tools/project.py) pass enable_creds=False so one project can never
+    # siphon another's secrets through a proxied shell.
+    from services import credential_store as _creds
+    exec_cmd = cmd
+    extra_env: dict[str, str] = {}
+    cred_names: list[str] = []
+    if enable_creds:
+        try:
+            exec_cmd, tmpl_used, tmpl_missing = _creds.expand_templates(
+                cmd, svc.project_path)
+            requested = [n.strip() for n in (env_creds or "").split(",") if n.strip()]
+            auto = [n for n, e in _creds.list_entries(svc.project_path).items()
+                    if e.get("inject") and n not in requested]
+            values, missing = _creds.resolve(requested + auto, svc.project_path)
+            # Explicitly requested / templated names must resolve; inject:true
+            # entries that don't resolve are silently inert (see the
+            # no-fall-through invariant in services/credential_store.py).
+            hard_missing = sorted(set(tmpl_missing) | (set(missing) & set(requested)))
+            if hard_missing:
+                return (
+                    f"[c3_shell:error] unknown credential(s): "
+                    f"{', '.join(hard_missing)} — see c3_credentials(action='list')"
+                )
+            for cname, cval in values.items():
+                entry = _creds.get_entry(cname, project_path=svc.project_path)
+                extra_env[entry.get("env_var") or cname] = cval
+            cred_names = sorted(set(tmpl_used) | set(values))
+        except RuntimeError as exc:  # keyring/crypto unavailable
+            return f"[c3_shell:error] credential store unavailable: {exc}"
+        if exec_cmd != cmd and _BLOCKED.search(exec_cmd):
+            return "[c3_shell:error] blocked pattern after credential expansion"
+
     ghost_root = Path(work_cwd)
     _ghosts_before = _list_root_files(ghost_root)
     git_before = (
@@ -382,9 +421,18 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         else None
     )
 
-    result = await asyncio.to_thread(_run_sync, cmd, work_cwd, timeout)
+    result = await asyncio.to_thread(
+        _run_sync, exec_cmd, work_cwd, timeout, extra_env or None)
 
     swept_ghosts = _sweep_new_ghost_files(ghost_root, _ghosts_before)
+
+    # Scrub decoded values a child process may have echoed (env dumps, set,
+    # crash output) BEFORE filtering/ledger/logging see the text.
+    if enable_creds:
+        result["stdout"] = _creds.redact_text(result["stdout"])
+        result["stderr"] = _creds.redact_text(result["stderr"])
+        if cred_names:
+            _creds.touch_last_used(cred_names, svc.project_path)
 
     raw_stdout = result["stdout"]
     filtered_note = ""
@@ -443,6 +491,8 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         body += f"--- hint ---\n{dependency_hint}\n"
     if touched_files:
         body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
+    if cred_names:
+        body += f"--- creds ---\ninjected: {', '.join(cred_names)}\n"
     if swept_ghosts:
         body += (
             f"--- ghost-sweep ---\nremoved {len(swept_ghosts)} stray 0-byte "

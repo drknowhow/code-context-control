@@ -200,6 +200,7 @@ _UI_JS_FILES = [
     "ui/components/edits.js",
     "ui/components/bitbucket.js",
     "ui/components/jira.js",
+    "ui/components/credentials.js",
     "ui/components/instructions.js",
     "ui/components/settings.js",
     "ui/components/chat.js",
@@ -2636,6 +2637,152 @@ def api_memory_llm_key_set():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"api_key_set": True})
+
+
+# ── Credential vault (v2.58.0) ──────────────────────────
+# Write-only wire contract: no endpoint ever returns a stored value.
+# Values go IN over POST and come out only at the subprocess boundary
+# (cli/tools/shell.py). GETs return masked metadata + live fingerprint.
+
+
+def _cred_route_audit(action: str, name: str, scope: str) -> None:
+    """Names only — never values. Failure-safe."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(str(PROJECT_PATH)).log("cred_action", {
+            "kind": "creds", "action": action, "name": name,
+            "scope": scope, "via": "ui",
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(PROJECT_PATH)).log_edit(
+            file=f"cred://{name}", change_type=f"cred_{action}",
+            summary=f"{action} {name} ({scope}) via Credentials UI",
+            tags=["creds", action],
+            detail={"kind": "creds", "action": action, "name": name,
+                    "scope": scope},
+        )
+    except Exception:
+        pass
+
+
+@app.route('/api/credentials', methods=['GET'])
+def api_credentials_list():
+    """Masked entry list (values never included)."""
+    from services import credential_store as cred_store
+    pp = str(PROJECT_PATH)
+    usage = cred_store.read_usage_state(pp)
+    out = []
+    for name, entry in cred_store.list_entries(pp).items():
+        rec = dict(entry)
+        rec["name"] = name
+        rec["last_used"] = (usage.get(name) or {}).get("last_used", "")
+        rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
+        out.append(rec)
+    return jsonify({"entries": out})
+
+
+@app.route('/api/credentials', methods=['POST'])
+def api_credentials_set():
+    """Create/update an entry. `value` optional — metadata-only update when
+    absent; a submitted value is stored and never echoed back."""
+    from services import credential_store as cred_store
+    data = request.get_json() or {}
+    name = str(data.get("name") or "").strip()
+    scope = str(data.get("scope") or "project").strip()
+    value = str(data.get("value") or "")
+    ctype = str(data.get("type") or data.get("ctype") or "token")
+    meta = {
+        "description": str(data.get("description") or ""),
+        "env_var": str(data.get("env_var") or ""),
+        "agent_readable": bool(data.get("agent_readable")),
+        "inject": bool(data.get("inject")),
+    }
+    try:
+        if value:
+            entry = cred_store.set_credential(
+                name, value, scope=scope, project_path=str(PROJECT_PATH),
+                ctype=ctype, **meta)
+        else:
+            # Metadata-only update: touch ONLY the keys present in the payload
+            # so a single-field toggle can't clobber the others.
+            fields = {}
+            for key in ("description", "env_var"):
+                if key in data:
+                    fields[key] = str(data[key] or "")
+            for key in ("agent_readable", "inject"):
+                if key in data:
+                    fields[key] = bool(data[key])
+            if "type" in data or "ctype" in data:
+                fields["type"] = ctype
+            entry = cred_store.update_metadata(
+                name, scope=scope, project_path=str(PROJECT_PATH), **fields)
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    entry = dict(entry)
+    entry["name"] = name
+    entry["scope"] = scope
+    _cred_route_audit("set" if value else "update", name, scope)
+    return jsonify({"entry": entry})
+
+
+@app.route('/api/credentials/import', methods=['POST'])
+def api_credentials_import():
+    """Import KEY=VALUE lines (.env paste). Values are stored, never echoed."""
+    from services import credential_store as cred_store
+    data = request.get_json() or {}
+    text = str(data.get("text") or "")
+    scope = str(data.get("scope") or "project").strip()
+    try:
+        result = cred_store.import_env(
+            text, scope=scope, project_path=str(PROJECT_PATH),
+            overwrite=bool(data.get("overwrite")),
+        )
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    for created in result["created"]:
+        _cred_route_audit("set", created, scope)
+    return jsonify(result)
+
+
+@app.route('/api/credentials/<name>', methods=['DELETE'])
+def api_credentials_delete(name):
+    from services import credential_store as cred_store
+    pp = str(PROJECT_PATH)
+    scope = str(request.args.get("scope") or "").strip()
+    if not scope:
+        entry = cred_store.get_entry(name, project_path=pp)
+        scope = entry.get("scope") or "project" if entry else "project"
+    try:
+        removed = cred_store.delete_credential(name, scope=scope, project_path=pp)
+    except cred_store.CredentialError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if removed:
+        _cred_route_audit("delete", name, scope)
+    return jsonify({"removed": bool(removed), "scope": scope})
+
+
+@app.route('/api/credentials/<name>/check', methods=['POST'])
+def api_credentials_check(name):
+    """Resolvability probe — returns a fingerprint, never the value."""
+    from services import credential_store as cred_store
+    pp = str(PROJECT_PATH)
+    entry = cred_store.get_entry(name, project_path=pp)
+    if not entry:
+        return jsonify({"error": f"no credential named '{name}'"}), 404
+    return jsonify({
+        "name": name,
+        "scope": entry["scope"],
+        "storage": entry.get("storage", "keyring"),
+        "resolvable": cred_store.get_value(name, project_path=pp) is not None,
+        "fingerprint": cred_store.fingerprint(name, project_path=pp),
+    })
 
 
 @app.route('/api/delegate', methods=['POST'])

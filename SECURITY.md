@@ -40,6 +40,30 @@ Out of scope:
 - Social-engineering attacks against C3 maintainers.
 - Issues only reproducible on unsupported versions.
 
+## Credential vault (v2.58.0+)
+
+`c3_credentials` stores named secrets in the OS keyring (service `c3-creds`);
+values larger than the keyring blob limit go to a Fernet-encrypted
+`.c3/secrets.enc` whose random master key is itself a keyring entry. Design
+boundaries operators should understand:
+
+- **The trust boundary is your OS user account.** Windows Credential Manager
+  (DPAPI user scope) and Linux Secret Service let *any* process running as
+  the same user read entries — C3 cannot claim per-app isolation the OS
+  doesn't provide. macOS Keychain offers per-app prompts.
+- **Injection-first by design.** Decoded values reach child processes
+  (`env_creds` / `{{cred:NAME}}`) but not the model's context, transcripts,
+  or C3's logs; echoed values are best-effort redacted. The `reveal` action
+  is disabled per entry until the user sets `agent_readable` — treat
+  enabling it as putting that value into the conversation record.
+- **No endpoint returns a value.** The HTTP APIs are write-only for secrets
+  (enforced by tests); the hub reads metadata only. `c3_credentials` is
+  excluded from the Oracle Discovery API and from cross-project
+  (`c3_project`) dispatch, and proxied shells run with credentials disabled.
+- **Redaction is exact-match**, not semantic: a value transformed by a child
+  process (base64, split, re-encoded) will not be caught. Prefer scoped,
+  revocable tokens over long-lived master secrets.
+
 ## Hardening notes for operators
 
 - All C3 web servers (Hub, per-project UI, Oracle) bind to `127.0.0.1` by

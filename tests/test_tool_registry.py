@@ -34,7 +34,10 @@ class TestToolRegistry(unittest.TestCase):
 
     def test_no_code_edit_tools(self):
         names = {s["name"] for s in TOOL_SPECS}
-        for forbidden in ("c3_edit", "edit", "c3_shell", "write", "c3_delegate"):
+        # c3_credentials must NEVER be exposed to external LLMs — the vault
+        # is reachable only from the local MCP server (see cli/tools/credentials.py).
+        for forbidden in ("c3_edit", "edit", "c3_shell", "write", "c3_delegate",
+                          "c3_credentials", "credentials"):
             self.assertNotIn(forbidden, names)
 
     def test_tier_filtering(self):

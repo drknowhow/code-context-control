@@ -220,6 +220,7 @@ C3 exposes 18 tools as a native MCP server. Your IDE calls them directly:
 | `c3_edits` | Edit-ledger queries + version diffs + restore points + per-branch filter |
 | `c3_bitbucket` | Bitbucket Data Center integration — PRs, branches, builds, repo admin (v2.30.0) |
 | `c3_jira` | Jira integration — Cloud + Data Center: JQL search, issues, transitions, My Work board (v2.56.0) |
+| `c3_credentials` | Credential vault — named secrets (global + per-project), injection-first: agents use them by name, values never enter model context (v2.58.0) |
 | `c3_project` | Cross-project — discover & operate on other c3-installed projects; guarded writes (v2.31.0) |
 | `c3_task` | Durable per-project PM — tasks with dependencies & subtasks, milestones, decision notes, event history, health reports, and auto+manual time tracking (v2.53.0) |
 | `c3_artifacts` | Agent-config tracking — version history, diff & restore for CLAUDE.md, settings/hooks, MCP configs, skills (v2.46.0) |
@@ -228,7 +229,7 @@ On Windows, `c3_shell` uses Git Bash when available. Git Bash does not bundle
 optional utilities such as `jq`; use `python -m json.tool` for portable JSON
 formatting, or install `jq` separately when filter expressions are required.
 
-Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_jira` / `c3_project` / `c3_task`).
+Every tool is **read-only safe in plan mode** (except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task`).
 
 ### Bitbucket Data Center / Server (v2.30.0)
 
@@ -255,6 +256,44 @@ c3 bitbucket status
 it has no active account C3 falls back to the global `~/.c3/config.json`. So a
 single `login --global` (or any login done from your home directory) is reusable
 across every C3 project — the PAT always lives in the OS keyring, never on disk.
+
+### Credential vault (v2.58.0)
+
+`c3_credentials` gives agents a protected, user-managed place for API keys,
+tokens, and `.env`-style values — **global** (`~/.c3`, every project) or
+**per-project** (`.c3`, shadows the global name). Values live in the **OS
+keyring** (large values in a Fernet-encrypted `.c3/secrets.enc` whose master
+key lives in the keyring) — never in config files, and *never in the model's
+context*: the agent addresses secrets by name and C3 decodes them only at the
+subprocess boundary.
+
+```bash
+# Store a secret for this project (value prompted, masked)
+c3 creds set OPENAI_KEY --desc "OpenAI billing key"
+
+# ...or globally for every C3 project
+c3 creds set NPM_TOKEN --global
+
+# Bulk-import an existing .env; list what the agent can see
+c3 creds import .env
+c3 creds list
+```
+
+The agent then runs commands *with* the secret but without ever seeing it:
+
+```
+c3_shell(cmd='npm publish', env_creds='NPM_TOKEN')       # injected as env var
+c3_shell(cmd='curl -H "Authorization: Bearer {{cred:OPENAI_KEY}}" …')  # expanded server-side
+```
+
+Echoed values are auto-redacted from output (`env` dumps come back as
+`[cred:NAME]`), every use is ledger-logged by name, and `reveal` — the only
+action that returns a value — is disabled per entry until you flip
+`agent_readable` in the **Credentials UI tab** or via
+`c3 creds set NAME --agent-readable`. A hostile repo config can't siphon your
+global secrets (realm-atomic resolution, tested), cross-project shells run
+with credentials disabled, and the vault is hard-excluded from the Oracle
+Discovery API.
 
 ### Jira — Cloud + Data Center (v2.56.0)
 

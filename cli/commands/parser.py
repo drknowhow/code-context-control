@@ -401,6 +401,46 @@ def build_parser(version: str, parse_cli_ide_arg):
     jr_default.add_argument("--name", default="", help="Account name (defaults to the default account)")
     jr_default.add_argument("project_path", nargs="?", default=".")
 
+    # ── Credential vault (v2.58.0) ──────────────────────────────────────
+    p_creds = subparsers.add_parser(
+        "creds",
+        help="Credential vault — named secrets for agents (global + per-project)",
+    )
+    creds_subs = p_creds.add_subparsers(dest="creds_cmd")
+
+    cr_set = creds_subs.add_parser(
+        "set", help="Create or update a credential (value via hidden prompt)"
+    )
+    cr_set.add_argument("name", help="Entry name (env-var safe: [A-Za-z_][A-Za-z0-9_]*)")
+    cr_set.add_argument("--value", default="", help="Secret value (prompted via getpass if omitted — preferred)")
+    cr_set.add_argument("--stdin", action="store_true", help="Read the value from stdin (piped/multiline values)")
+    cr_set.add_argument("--type", dest="ctype", choices=["token", "env", "multiline"], default="token", help="Entry type")
+    cr_set.add_argument("--desc", default="", help="Human description shown in list/UI")
+    cr_set.add_argument("--env-var", default="", help="Env var name used at injection (default: entry name)")
+    cr_set.add_argument("--agent-readable", action="store_true", help="Allow the agent to reveal the decoded value into its context (default: injection-only)")
+    cr_set.add_argument("--inject", action="store_true", help="Auto-inject into every c3_shell run")
+    cr_set.add_argument("--global", dest="use_global", action="store_true", help="Store in the global scope (~/.c3) so every C3 project can use it")
+    cr_set.add_argument("project_path", nargs="?", default=".")
+
+    cr_get = creds_subs.add_parser("get", help="Show entry metadata (masked; --show prints the value)")
+    cr_get.add_argument("name")
+    cr_get.add_argument("--show", action="store_true", help="Print the decoded value to the terminal")
+    cr_get.add_argument("project_path", nargs="?", default=".")
+
+    cr_list = creds_subs.add_parser("list", help="List credentials visible to this project")
+    cr_list.add_argument("project_path", nargs="?", default=".")
+
+    cr_rm = creds_subs.add_parser("rm", help="Delete a credential (value + registry entry)")
+    cr_rm.add_argument("name")
+    cr_rm.add_argument("--global", dest="use_global", action="store_true", help="Delete from the global scope")
+    cr_rm.add_argument("project_path", nargs="?", default=".")
+
+    cr_import = creds_subs.add_parser("import", help="Import KEY=VALUE lines from a .env file")
+    cr_import.add_argument("env_file", help="Path to the .env file")
+    cr_import.add_argument("--global", dest="use_global", action="store_true", help="Import into the global scope")
+    cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
+    cr_import.add_argument("project_path", nargs="?", default=".")
+
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
         "oracle",
