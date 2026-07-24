@@ -114,6 +114,14 @@ Every C3-initialized project on your machine appears here automatically — `c3 
 
 Per-card actions cover the full lifecycle: launch the IDE, open the per-project UI, edit name / tags / notes, transfer the registration to a new path, **merge** another project's memory + conversation history + edit ledger into this one (with optional source cleanup), or remove it from the registry.
 
+**Sub-projects — nested repos as first-class children.** Designate any sub-folder (a service in a monorepo, a vendored tool) as a linked child project with its own `.c3`: the parent's index excludes the child's subtree, and `c3_search` / `c3_memory` fan out across children on demand (`scope='all'` or one child by name). The whole hierarchy is manageable from the hub:
+
+- **Designate** from any project card or the drill-in **Sub-projects** tab — folder picker with upfront validation, adopt-vs-initialize preview, and IDE choice. An existing top-level project that physically sits inside a parent can be re-linked via **"Make sub-project of…"**.
+- **Link health is passive** — parent cards show a red "N link issues" badge and children show their link status automatically; **Reconcile** shows exactly what's broken and repairs it on confirm.
+- **Cascade** update / reindex / health across all children (cancellable, optionally including the parent), **promote** a child back to top-level, or **de-initialize** it entirely behind a typed-name confirm.
+- **Change parent…** moves a child between parents honestly: folders must physically nest, so the wizard stages the move, validates every step, and never leaves a broken state silently.
+- Federation behavior per parent — memory roll-up, search fan-out, children per query — is editable in the project's config editor.
+
 **Open in your IDE of choice** — C3 auto-detects which CLIs you have installed and gives you one-click launchers:
 
 <p align="center">

@@ -198,6 +198,30 @@ class TestConfigEditor(HubApiBase):
             "path": str(self.proj), "section": "bitbucket", "values": {"x": 1}})
         self.assertEqual(resp.status_code, 400)
 
+    def test_put_federation_dict_allowed(self):
+        resp = self.client.put("/api/projects/config", json={
+            "path": str(self.proj), "section": "hybrid",
+            "values": {"subprojects": {"memory_rollup": False,
+                                       "max_children_per_query": 4}},
+        })
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        cfg = json.loads((self.proj / ".c3" / "config.json").read_text())
+        self.assertIs(cfg["hybrid"]["subprojects"]["memory_rollup"], False)
+        self.assertEqual(cfg["hybrid"]["subprojects"]["max_children_per_query"], 4)
+
+    def test_put_federation_dict_schema_enforced(self):
+        bad = (
+            {"subprojects": {"unknown_key": 1}},
+            {"subprojects": {"memory_rollup": "yes"}},
+            {"subprojects": {"max_children_per_query": 0}},
+            {"subprojects": {"max_children_per_query": True}},
+            {"subprojects": {"parent": {"path": "x"}}},
+        )
+        for values in bad:
+            resp = self.client.put("/api/projects/config", json={
+                "path": str(self.proj), "section": "hybrid", "values": values})
+            self.assertEqual(resp.status_code, 400, values)
+
 
 class TestHubConfigPrefs(unittest.TestCase):
     def test_new_keys_persist(self):

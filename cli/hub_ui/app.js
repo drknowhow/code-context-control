@@ -128,7 +128,7 @@ function App() {
       {drawerProject &&
         <SessionDrawer project={drawerProject} onClose={() => setDrawerProject(null)} />}
       {drill &&
-        <DrillPanel project={drill} tab={drillTab} setTab={setDrillTab}
+        <DrillPanel project={drill} tab={drillTab} setTab={setDrillTab} projects={projects}
           onClose={() => setDrill(null)} onChanged={loadProjects} onOpenModal={openModal} />}
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} projects={projects}
         onOpenProject={(p, tab) => { setSearchOpen(false); openDrill(p, tab || 'overview'); }} />

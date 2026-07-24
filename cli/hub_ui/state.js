@@ -90,8 +90,12 @@ const buildProjectTree = (projects) => {
   projects.forEach(p => {
     const parentKey = (p.parent_path || '').toLowerCase();
     if (parentKey && byPath[parentKey]) {
+      p.parent_name = byPath[parentKey].name || '';
       (childrenOf[parentKey] = childrenOf[parentKey] || []).push(p);
     } else {
+      // Child rendered as a root (parent filtered out or unregistered):
+      // keep parent context visible on the card via a path-derived name.
+      if (parentKey) p.parent_name = (p.parent_path || '').split(/[\\/]/).filter(Boolean).pop() || '';
       roots.push(p);
     }
   });

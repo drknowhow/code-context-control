@@ -333,6 +333,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/session_drawer.js",
     "hub_ui/components/drill_panel.js",
     "hub_ui/components/drill_views.js",
+    "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
     "hub_ui/components/drill_artifacts.js",
@@ -477,6 +478,129 @@ def _notification_count(project_path: str) -> int:
     return count
 
 
+_sub_links_cache = {"fp": None, "ts": 0.0, "data": None, "computing": False}
+_sub_links_lock = threading.Lock()
+_SUB_LINKS_TTL = 15.0
+
+
+def _invalidate_subproject_links():
+    """Drop the cached link-health snapshot (call after any hierarchy mutation)."""
+    with _sub_links_lock:
+        _sub_links_cache.update({"fp": None, "ts": 0.0, "data": None})
+
+
+def _sub_federation_errors(sub):
+    """Schema check for the hybrid.subprojects federation dict (config PUT)."""
+    allowed = {"memory_rollup", "search_fanout", "max_children_per_query"}
+    unknown = sorted(set(sub) - allowed)
+    if unknown:
+        return f"unknown keys {unknown}"
+    for k in ("memory_rollup", "search_fanout"):
+        if k in sub and not isinstance(sub[k], bool):
+            return f"'{k}' must be a boolean"
+    v = sub.get("max_children_per_query")
+    if v is not None and (isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 256):
+        return "'max_children_per_query' must be an integer between 1 and 256"
+    return ""
+
+
+def _norm_realpath(s):
+    """resolve()+normcase, matching services.subprojects._norm — plain
+    normcase alone would flag symlinked/8.3/trailing-slash registry rows
+    as false orphans that Reconcile then denies."""
+    try:
+        return os.path.normcase(str(Path(s).resolve()))
+    except Exception:
+        return os.path.normcase(str(s or ""))
+
+
+def _compute_subproject_links(projects):
+    """Statuses only — deliberately NOT SubprojectManager.list(), which
+    also parses facts.json and notifications.jsonl per child; those counts
+    were computed and thrown away on every poll recompute."""
+    from services.subprojects import SubprojectManager, get_subprojects
+    parents_out, children_out = {}, {}
+    registry = None
+    for parent in projects:
+        if not (parent.get("is_parent") or parent.get("subproject_count")):
+            continue
+        try:
+            mgr = SubprojectManager(parent.get("path", ""))
+            entries = get_subprojects(mgr.parent_path)
+            if registry is None:
+                registry = mgr.pm._read_projects()
+        except Exception:
+            continue
+        issues = 0
+        config_paths = set()
+        for entry in entries:
+            try:
+                key = _norm_realpath(mgr._abs_child(entry.get("rel_path", "")))
+                status = mgr._entry_status(entry, registry)
+            except Exception:
+                continue
+            config_paths.add(key)
+            if status != "ok":
+                issues += 1
+            children_out[key] = status
+        parent_key = _norm_realpath(parent.get("path", ""))
+        for row in projects:
+            rp = row.get("parent_path")
+            if (rp and _norm_realpath(rp) == parent_key
+                    and _norm_realpath(row.get("path", "")) not in config_paths):
+                issues += 1
+                children_out[_norm_realpath(row.get("path", ""))] = "orphan"
+        if issues:
+            parents_out[parent_key] = issues
+    return {"parents": parents_out, "children": children_out}
+
+
+def _annotate_subproject_links(projects):
+    """Per-parent link-health rollup + per-child link_status for the cards.
+
+    SubprojectManager.list() is config + filesystem + raw-registry reads
+    only (no child runtimes, no port probing). Registry orphans (rows
+    claiming a parent that has no matching config entry) count as issues
+    too — same rule as reconcile. The snapshot is cached _SUB_LINKS_TTL
+    seconds and computed single-flight, so overlapping UI polls never
+    stack behind a slow disk (e.g. a disconnected network drive); the
+    fingerprint ties the cache to the registry rows, and mutating
+    sub-project endpoints call _invalidate_subproject_links().
+    """
+    fp = tuple(sorted((os.path.normcase(p.get("path", "")),
+                       os.path.normcase(p.get("parent_path") or ""))
+                      for p in projects))
+    now = time.time()
+    do_compute = False
+    with _sub_links_lock:
+        snap = _sub_links_cache["data"]
+        fresh = (snap is not None and _sub_links_cache["fp"] == fp
+                 and now - _sub_links_cache["ts"] < _SUB_LINKS_TTL)
+        if not fresh:
+            if _sub_links_cache["computing"]:
+                if _sub_links_cache["fp"] != fp:
+                    snap = None          # stale snapshot of a different registry — skip
+            else:
+                _sub_links_cache["computing"] = True
+                do_compute = True
+    if do_compute:
+        try:
+            snap = _compute_subproject_links(projects)
+            with _sub_links_lock:
+                _sub_links_cache.update({"fp": fp, "ts": time.time(), "data": snap})
+        finally:
+            with _sub_links_lock:
+                _sub_links_cache["computing"] = False
+    if not snap:
+        return
+    for p in projects:
+        key = _norm_realpath(p.get("path", ""))
+        if key in snap["parents"]:
+            p["subproject_issues"] = snap["parents"][key]
+        if key in snap["children"]:
+            p["link_status"] = snap["children"][key]
+
+
 @app.route("/api/projects", methods=["GET"])
 def api_projects_list():
     try:
@@ -487,6 +611,7 @@ def api_projects_list():
             p["notification_count"] = _notification_count(p.get("path", ""))
             p["is_parent"] = os.path.normcase(p.get("path", "")) in parent_paths
             p["open_task_count"] = open_task_count(p.get("path", ""))
+        _annotate_subproject_links(projects)
         return jsonify(projects)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -519,6 +644,8 @@ def api_projects_remove():
         orphans = [p.get("path") for p in _pm().list_projects()
                    if p.get("parent_path") and os.path.normcase(p["parent_path"]) == resolved]
         result = {"removed": _pm().remove_project(path)}
+        if result["removed"]:
+            _invalidate_subproject_links()
         if result["removed"] and orphans:
             result["orphaned_children"] = orphans
         return jsonify(result)
@@ -1226,6 +1353,8 @@ def api_subprojects_add():
     res = _run_c3(args, timeout=300)
     payload = _parse_json_tail(res.get("output", ""))
     ok = res.get("success") and bool((payload or {}).get("added"))
+    if ok:
+        _invalidate_subproject_links()
     body = {"success": ok, "result": payload, "output": res.get("output", "")}
     return jsonify(body), (201 if ok else 500)
 
@@ -1247,6 +1376,8 @@ def api_subprojects_remove():
     res = _run_c3(args, timeout=300)
     payload = _parse_json_tail(res.get("output", ""))
     ok = res.get("success") and bool((payload or {}).get("removed"))
+    if ok:
+        _invalidate_subproject_links()
     body = {"success": ok, "result": payload, "output": res.get("output", "")}
     return jsonify(body), (200 if ok else 500)
 
@@ -1259,8 +1390,11 @@ def api_subprojects_reconcile():
     if not parent:
         return jsonify({"error": "parent is required"}), 400
     try:
-        return jsonify(_sub_manager(parent).reconcile(
-            fix=bool(data.get("fix")), prune=bool(data.get("prune"))))
+        result = _sub_manager(parent).reconcile(
+            fix=bool(data.get("fix")), prune=bool(data.get("prune")))
+        if data.get("fix"):
+            _invalidate_subproject_links()
+        return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -1321,6 +1455,7 @@ def _sub_cascade_worker(op: str, targets: list):
         _sub_cascade_state["running"] = False
         _sub_cascade_state["done"] = True
         _sub_cascade_state["current"] = None
+    _invalidate_subproject_links()
 
 
 @app.route("/api/projects/subprojects/cascade", methods=["POST"])
@@ -1339,11 +1474,20 @@ def api_subprojects_cascade():
         return jsonify({"error": "op must be update|reindex|health"}), 400
     try:
         sm = _sub_manager(parent)
-        targets = sm.list()
+        listed = sm.list()
+        # Skipped children (missing folder; missing .c3 unless the op can
+        # create it) are excluded up front so total and the success
+        # denominator reflect real work — previously they inflated total
+        # and reported as failures.
+        skipped = [t for t in listed
+                   if t.get("status") == "missing_folder"
+                   or (t.get("status") == "missing_c3" and op != "update")]
+        targets = [t for t in listed if t not in skipped]
         if data.get("include_parent"):
             targets.append({"name": "(parent)", "path": sm.parent_path, "status": "ok"})
         if not targets:
-            return jsonify({"error": "No sub-projects designated"}), 400
+            return jsonify({"error": "No cascade-eligible sub-projects"
+                            + (f" ({len(skipped)} skipped)" if skipped else "")}), 400
         with _sub_cascade_lock:
             _sub_cascade_state = {
                 "running": True, "cancelled": False, "results": [],
@@ -1352,7 +1496,8 @@ def api_subprojects_cascade():
             }
         t = threading.Thread(target=_sub_cascade_worker, args=(op, targets), daemon=True)
         t.start()
-        return jsonify({"started": True, "total": len(targets), "op": op})
+        return jsonify({"started": True, "total": len(targets), "op": op,
+                        "skipped": len(skipped)})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -1643,6 +1788,18 @@ def api_projects_config_put():
         return jsonify({"error": "values must be an object"}), 400
     for refused in _CONFIG_REFUSED_KEYS:
         if refused in values:
+            # 'subprojects' under the hybrid section is the federation
+            # settings DICT (memory_rollup / search_fanout / …), not the
+            # top-level child-links ARRAY — the array stays refused (and is
+            # unreachable through the section whitelist anyway). Schema-check
+            # the dict: exactly these keys, exactly these types — the generic
+            # deep-merge below would happily persist anything.
+            if (section == "hybrid" and refused == "subprojects"
+                    and isinstance(values["subprojects"], dict)):
+                bad = _sub_federation_errors(values["subprojects"])
+                if bad:
+                    return jsonify({"error": f"hybrid.subprojects: {bad}"}), 400
+                continue
             return jsonify({"error": f"'{refused}' cannot be edited here"}), 400
     try:
         resolved = _resolve_project_path(path)

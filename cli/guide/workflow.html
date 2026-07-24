@@ -249,6 +249,7 @@
       <a href="#plan-mode" class="sidebar-link"><span class="icon">📐</span> Plan Mode</a>
       <a href="#session-restart" class="sidebar-link"><span class="icon">🔄</span> Session Restart</a>
       <a href="#terse-skill" class="sidebar-link"><span class="icon">⚡</span> /terse Skill</a>
+      <a href="#subprojects" class="sidebar-link"><span class="icon">🌳</span> Sub-projects</a>
       <a href="#native-fallback" class="sidebar-link"><span class="icon">⚠️</span> Native Fallback</a>
     </div>
   </aside>
@@ -354,6 +355,12 @@
             <td><strong>Cross-project</strong></td>
             <td><code>c3_project(action='list')</code></td>
             <td>v2.31.0 — discover and operate on OTHER c3-installed projects; reads run free, writes need <code>allow_write=true</code>. <a href="tools.html#c3_project">Tool card →</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">+</span></td>
+            <td><strong>Sub-projects</strong></td>
+            <td><code>c3 sub add &lt;folder&gt;</code></td>
+            <td>v2.44.0 — link child projects living inside a parent; federated search/memory + Hub management. <a href="#subprojects">Section →</a></td>
           </tr>
         </tbody>
       </table>
@@ -893,6 +900,86 @@ c3_session(action=<span class="str">'restore'</span>)</code></pre>
           <tr><td><code>c3 terse status</code></td><td>Show current advisor state</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Sub-projects -->
+    <section class="section" id="subprojects">
+      <div class="section-title"><span class="icon">🌳</span> Sub-projects</div>
+
+      <p>Since v2.44.0, a c3 project can link folders that physically live inside it as <strong>sub-projects</strong>. Each child gets its own full <code>.c3</code> (index, memory, config), the parent's index excludes the child's subtree, and the link is recorded in three places at once: the parent config's <code>subprojects[]</code> array, a back-link in the child's config, and the hub registry. Links are depth-1 — a child cannot have children of its own.</p>
+
+      <div class="callout callout-tip">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          Use sub-projects for monorepos and nested apps: each child stays independently searchable with its own memory, while the parent can fan queries out across the whole family.
+        </div>
+      </div>
+
+      <h4>CLI — <code>c3 sub</code></h4>
+      <table class="table">
+        <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>c3 sub add &lt;folder&gt; [--name --ide]</code></td>
+            <td>Link a folder inside the current project. Adopts an existing <code>.c3</code>, otherwise runs a full init. <code>--no-init</code> links without initializing; <code>--parent &lt;path&gt;</code> targets a different parent.</td>
+          </tr>
+          <tr>
+            <td><code>c3 sub list</code></td>
+            <td>Tree of linked children with status (the default when no sub-command is given).</td>
+          </tr>
+          <tr>
+            <td><code>c3 sub remove &lt;ref&gt; [--clear]</code></td>
+            <td>Unlink a child and promote it to a standalone top-level project (its <code>.c3</code> is kept). <code>--clear</code> also wipes <code>.c3</code>, uninstalls the MCP config and instruction docs, and deregisters it.</td>
+          </tr>
+          <tr>
+            <td><code>c3 sub run &lt;update|reindex|health&gt; [--include-parent]</code></td>
+            <td>Cascade an operation across every child. <code>--mcp</code> also reinstalls the MCP config during <code>update</code>.</td>
+          </tr>
+          <tr>
+            <td><code>c3 sub check [--fix --prune]</code></td>
+            <td>Reconcile the three-way links. <code>--fix</code> repairs from the parent config; adding <code>--prune</code> drops entries whose folder is gone.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>Agent surface — the <code>scope</code> parameter</h4>
+      <p><code>c3_search</code> and <code>c3_memory</code> accept a <code>scope</code> parameter on parent projects:</p>
+      <table class="table">
+        <thead><tr><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>''</code></td><td>Current project only (default)</td></tr>
+          <tr><td><code>'all'</code></td><td>Fan out across the parent and all linked children</td></tr>
+          <tr><td><code>'&lt;child&gt;'</code></td><td>One specific sub-project by name</td></tr>
+        </tbody>
+      </table>
+
+      <pre><code>c3_search(query=<span class="str">'auth middleware'</span>, scope=<span class="str">'all'</span>)
+c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'payment gotchas'</span>, scope=<span class="str">'billing-service'</span>)</code></pre>
+
+      <p>With <code>hybrid.subprojects.memory_rollup</code> enabled, a parent-side recall also unions in the children's facts automatically.</p>
+
+      <h4>Hub UI management (v2.57.0)</h4>
+      <p>Everything the CLI does — plus the operations that need multi-step safety — is available in the Hub:</p>
+      <ul>
+        <li><strong>Designate</strong> — kebab menu → "Designate sub-project…" on any project card, or from the drill-in <strong>Sub-projects</strong> tab. A folder picker fenced to the parent's subtree validates the choice, shows adopt-vs-initialize expectations up front, and offers an instruction-docs/IDE picker (<code>auto | claude | vscode | cursor | codex | antigravity</code>).</li>
+        <li><strong>"Make sub-project of…"</strong> — the reverse move: a top-level card whose folder physically sits inside a registered parent can link itself under it (containment is mandatory).</li>
+        <li><strong>Sub-projects drill tab</strong> — per-child rows with inline <em>Validate</em> and <em>Promote</em>; inline <em>Reconcile</em> with per-issue detail and planned repair actions; a <em>Cascade</em> launcher with operation picker, include-parent toggle, affected-children preview, live progress, and Cancel.</li>
+        <li><strong>Link health, passively</strong> — parents show a red "N link issues" badge and children a status badge (<code>ok · backlink_broken · unregistered · missing_folder · missing_c3 · orphan</code>), computed from config + filesystem on every listing — no manual reconcile needed to spot trouble.</li>
+        <li><strong>"Change parent…"</strong> — a staged wizard, because folders must physically move: ready-now targets relink immediately; otherwise unlink → move the folder yourself → validate → relink, with a per-step checklist and Undo before the move.</li>
+        <li><strong>"De-initialize…"</strong> — clear-mode removal behind a typed-name confirmation: deletes <code>.c3</code>, uninstalls the MCP config, removes instruction docs, deregisters. Your code is untouched.</li>
+        <li><strong>Federation toggles</strong> — the config editor's Sub-projects section on parent projects: memory roll-up, search fan-out for <code>scope='all'</code>, and max children per query, persisted under <code>hybrid.subprojects</code>.</li>
+        <li><strong>Ctrl-K scope chips</strong> — global search can target All, Top-level only, or one parent + its children; child results carry a "parent › child" breadcrumb.</li>
+      </ul>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>Managed keys</strong>
+          The raw <code>subprojects</code> / <code>parent</code> config keys render read-only in the Hub config editor by design — hierarchy changes only go through the dedicated actions above (CLI or Hub), never by hand-editing the link records.
+        </div>
+      </div>
     </section>
 
     <hr class="divider">
