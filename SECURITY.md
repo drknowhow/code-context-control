@@ -57,9 +57,15 @@ boundaries operators should understand:
   is disabled per entry until the user sets `agent_readable` — treat
   enabling it as putting that value into the conversation record.
 - **No endpoint returns a value.** The HTTP APIs are write-only for secrets
-  (enforced by tests); the hub reads metadata only. `c3_credentials` is
-  excluded from the Oracle Discovery API and from cross-project
-  (`c3_project`) dispatch, and proxied shells run with credentials disabled.
+  (enforced by endpoint-sweep tests). Since v2.59.0 the hub can also *manage*
+  entries (its own write-only routes; values transit inbound-only at set
+  time, there is no `reveal` on the hub, and mutations are audited by name to
+  the target project's ledger — global-scope mutations to
+  `~/.c3/activity_log.jsonl`); hub reads remain metadata-only via an explicit
+  field allowlist, and the `credentials` config section stays excluded from
+  the hub's generic config-write path. `c3_credentials` is excluded from the
+  Oracle Discovery API and from cross-project (`c3_project`) dispatch, and
+  proxied shells run with credentials disabled.
 - **Redaction is exact-match**, not semantic: a value transformed by a child
   process (base64, split, re-encoded) will not be caught. Prefer scoped,
   revocable tokens over long-lived master secrets.

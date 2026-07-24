@@ -295,6 +295,14 @@ global secrets (realm-atomic resolution, tested), cross-project shells run
 with credentials disabled, and the vault is hard-excluded from the Oracle
 Discovery API.
 
+Since **v2.59.0** the Hub has a top-level **Credentials** view: manage the
+global vault (`~/.c3`) and every registered project's entries from one place —
+create / edit / delete / `.env` import / flag toggles, with shadowing shown
+both ways ("shadows global" on project entries, "shadowed in N projects" on
+globals). The write-only wire contract extends to the hub: values are
+submitted inbound-only and **no hub route ever returns a stored value** (there
+is no `reveal` on the hub at all).
+
 ### Jira — Cloud + Data Center (v2.56.0)
 
 `c3_jira` connects to Jira Cloud (REST v3, email + API token) or self-hosted

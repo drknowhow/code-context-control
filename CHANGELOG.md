@@ -4,6 +4,43 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.59.0] - 2026-07-24
+
+### Added — Hub Credentials: top-level tab with global vault + cross-project management
+
+The credential vault gets a home in the hub. A third top-level view
+(Projects | Tasks | **Credentials**) manages the **global vault** (`~/.c3`) —
+which previously had no UI of its own — and every registered project's
+entries, with shadowing shown both ways.
+
+- **Hub UI** — new `cli/hub_ui/components/hub_credentials.js`: shared
+  `CredsManager` (create / edit-keeping-value / delete / `.env` import / flag
+  toggles with the `agent_readable` confirm / fingerprint check) parameterized
+  by project path, `path=null` targeting the global vault. Top-level
+  `HubCredentials` page with **Global vault** and **Projects** sub-tabs; the
+  per-project drill Credentials tab upgrades from read-only to the same full
+  manager. Project rows show a "shadows global" badge; global rows show
+  "shadowed in N projects".
+- **Hub REST** — the write-only wire contract extends to the hub: new
+  `POST /api/projects/credentials` (set, or metadata-only partial update),
+  `POST .../import`, `DELETE .../<name>`, `POST .../<name>/check`, all taking
+  `path` + `scope` where `scope=global` with no path targets the shared vault
+  directly; plus read-only `GET /api/hub/credentials/overview` (global +
+  per-project inventory with shadow info). **No hub route ever returns a
+  stored value** — values transit inbound-only at set time, there is no
+  `reveal` on the hub, and the serializer is an explicit field allowlist
+  (endpoint-sweep tested). `credentials` remains excluded from the hub config
+  write sections; these dedicated routes are the only hub write path.
+  Mutations on uninitialized paths get 409 `needs_init`.
+- **Audit** — `via:"hub"` `cred_action` events (names only, never values) to
+  the target project's ActivityLog + EditLedger; global-scope mutations also
+  land in `~/.c3/activity_log.jsonl` so the shared vault keeps its own trail.
+- **Service** — public `credential_store.global_base()` accessor (the only
+  service change).
+- **Docs** — `c3_credentials` gets its tools-guide entry (sidebar / TOC /
+  full card — it shipped in v2.58.0 undocumented there); README vault section
+  and SECURITY.md updated for the hub's new write posture.
+
 ## [2.58.0] - 2026-07-24
 
 ### Added — Credential vault: `c3_credentials` + Credentials UI (injection-first)
