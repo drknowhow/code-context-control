@@ -374,21 +374,52 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
     setUpdating(false);
   };
 
+  // Launch the UI server, then open its tab once the port shows up in the
+  // registry. launch_session cannot return the port (the detached child
+  // picks it), so open a placeholder tab synchronously — still inside the
+  // click gesture, so popup blockers allow it — and navigate it when
+  // polling /api/projects finds the port.
   const start = async (e) => {
     e.stopPropagation();
     if (starting) return;
     setStarting(true);
+    const win = window.open('', '_blank');
+    if (win) {
+      try {
+        win.document.write(
+          `<title>Starting ${p.name}…</title>` +
+          '<body style="background:#0d1117;color:#8b949e;font-family:sans-serif;' +
+          'display:flex;align-items:center;justify-content:center;height:100vh">' +
+          `Starting ${p.name}…</body>`);
+      } catch { }
+    }
+    const fail = (msg) => {
+      if (win) win.close();
+      notify(msg, 'err');
+      setStarting(false);
+    };
     try {
       const d = await api.post('/api/sessions/start', { path: p.path });
-      if (d.launched) {
-        notify(`Starting ${p.name}…`);
-        setTimeout(onChanged, 1500);
-        setTimeout(onChanged, 4000);
-      } else {
-        notify('Launch failed', 'err');
-      }
-    } catch (err) { notify('Start: ' + err.message, 'err'); }
-    setStarting(false);
+      if (!d.launched) { fail('Launch failed'); return; }
+      notify(`Starting ${p.name}…`);
+      setTimeout(onChanged, 1500);
+      const poll = async (tries) => {
+        let rows = [];
+        try { rows = await api.get('/api/projects'); } catch { }
+        const row = (Array.isArray(rows) ? rows : []).find(r =>
+          (r.path || '').toLowerCase() === (p.path || '').toLowerCase());
+        if (row && row.port) {
+          const url = 'http://127.0.0.1:' + row.port;
+          if (win) { win.location = url; } else { window.open(url, '_blank'); }
+          onChanged();
+          setStarting(false);
+          return;
+        }
+        if (tries >= 20) { fail(`${p.name}: UI server did not report a port — check .c3/ui.log`); return; }
+        setTimeout(() => poll(tries + 1), 1500);
+      };
+      setTimeout(() => poll(0), 1200);
+    } catch (err) { fail('Start: ' + err.message); }
   };
 
   const stop = async (e) => {

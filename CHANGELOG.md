@@ -4,6 +4,29 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.57.1] - 2026-07-24
+
+### Fixed — Hub "Open UI" on active projects without a running UI server
+
+- Clicking **Open UI** on a project whose agent session is live but whose UI
+  server isn't running used to launch the server in the background and never
+  open a tab — the button looked dead. `launch_session` can't return a port
+  (the detached child picks it), so the card now opens a placeholder tab
+  synchronously (inside the click gesture, so popup blockers allow it),
+  polls `/api/projects` until the port registers, then navigates the tab —
+  or closes it with a clear error pointing at `.c3/ui.log`.
+
+### Changed — per-project UI: real active-project switcher
+
+- The sidebar's project switcher was a bare count icon in the footer that
+  rendered only when *other UI servers* were already running — invisible in
+  the common case. It is now an always-visible "Switch project" control:
+  opening it scans on demand (`/api/registry/active`, new — running UI
+  servers plus registered projects with a live agent session; probes ports,
+  so it is never polled), jumps directly to running UIs, and for
+  session-only projects launches their UI via `/api/registry/launch` (new)
+  and navigates when the port appears.
+
 ## [2.57.0] - 2026-07-24
 
 ### Added — Hub sub-project management overhaul (UI/UX)
