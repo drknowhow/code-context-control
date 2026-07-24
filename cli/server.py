@@ -396,6 +396,33 @@ def api_health():
 
 
 # ─── API: Session Registry ───────────────────────────────
+@app.route('/api/registry/active')
+def api_registry_active():
+    """Running UI servers PLUS registered projects with a live agent session
+    but no UI (port None) — the project switcher's data. On-demand only:
+    get_active_sessions() probes ports, so this must never be polled."""
+    try:
+        from services.project_manager import ProjectManager
+        return jsonify(ProjectManager().get_active_sessions())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/registry/launch', methods=['POST'])
+def api_registry_launch():
+    """Launch another project's UI server so the switcher can jump to it."""
+    data = request.get_json(force=True) or {}
+    path = (data.get('path') or '').strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        from services.project_manager import ProjectManager
+        result = ProjectManager().launch_session(path)
+        return jsonify(result), (200 if result.get("launched") else 400)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/registry')
 def api_registry():
     """Return all live C3 sessions from the global registry."""

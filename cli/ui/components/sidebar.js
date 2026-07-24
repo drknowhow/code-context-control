@@ -1,6 +1,13 @@
 // ─── Sidebar ─────────────────────────────
+// Switch between ACTIVE projects: other running UI servers (direct jump)
+// plus projects with a live agent session but no UI yet (launch, then
+// jump). The cheap polled /api/registry prop only seeds the count hint;
+// the authoritative list (/api/registry/active — it probes ports) loads
+// on demand when the menu opens, never on a poll.
 function ProjectSwitcher({ registry }) {
   const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState(null);   // null = scanning
+  const [busyPath, setBusyPath] = useState(null); // path being launched
   const ref = React.useRef(null);
   const myPort = parseInt(window.location.port) || 3333;
 
@@ -20,37 +27,81 @@ function ProjectSwitcher({ registry }) {
     return "Unknown";
   };
 
-  const others = (registry || []).filter(e => e.port !== myPort);
-  if (others.length === 0) return null;
+  const others = (list) => (list || []).filter(e => e.port !== myPort);
+
+  const loadActive = async () => {
+    setEntries(null);
+    try {
+      const r = await api.get('/api/registry/active');
+      setEntries(others(Array.isArray(r) ? r : []));
+    } catch { setEntries(others(registry)); }
+  };
+
+  const toggle = () => { const next = !open; setOpen(next); if (next) loadActive(); };
+
+  // Portless entry = live agent session without a UI server: launch one,
+  // poll until it registers a port, then navigate this tab to it.
+  const jump = async (e) => {
+    if (busyPath) return;
+    setBusyPath(e.project_path);
+    try {
+      await api.post('/api/registry/launch', { path: e.project_path });
+      const poll = async (tries) => {
+        let list = [];
+        try { list = await api.get('/api/registry/active'); } catch { }
+        const row = (Array.isArray(list) ? list : []).find(x =>
+          (x.project_path || '').toLowerCase() === (e.project_path || '').toLowerCase() && x.port);
+        if (row) { window.location.href = `http://localhost:${row.port}`; return; }
+        if (tries >= 15) { setBusyPath(null); return; }
+        setTimeout(() => poll(tries + 1), 1500);
+      };
+      setTimeout(() => poll(0), 1200);
+    } catch { setBusyPath(null); }
+  };
+
+  const hint = others(registry).length;
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <button onClick={() => setOpen(!open)} title="Switch project"
+      <button onClick={toggle} title="Switch to another active project"
         style={{
-          padding: "3px 6px", borderRadius: 4, border: `1px solid ${T.border}`, background: "transparent",
-          cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: T.textDim
+          width: "100%", padding: "4px 6px", borderRadius: 4, border: `1px solid ${T.border}`,
+          background: "transparent", cursor: "pointer", display: "flex", alignItems: "center",
+          gap: 5, fontSize: 10, color: T.textDim
         }}>
         <I name="shuffle" size={10} color={T.textDim} />
-        <span>{others.length}</span>
+        <span>Switch project</span>
+        {hint > 0 && <span className="mono" style={{ marginLeft: "auto", color: T.textMuted }}>{hint}</span>}
       </button>
       {open && (
         <div style={{
-          position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 100,
+          position: "absolute", bottom: "100%", left: 0, marginBottom: 4, zIndex: 100,
           background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6,
-          boxShadow: "0 4px 12px rgba(0,0,0,0.3)", minWidth: 200, overflow: "hidden"
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)", minWidth: 220, overflow: "hidden"
         }}>
-          {others.map(e => (
-            <a key={e.port} href={`http://localhost:${e.port}`}
+          {entries === null && (
+            <div style={{ padding: "8px 12px", fontSize: 11, color: T.textDim }}>Scanning active sessions…</div>
+          )}
+          {entries !== null && entries.length === 0 && (
+            <div style={{ padding: "8px 12px", fontSize: 11, color: T.textDim }}>No other active projects.</div>
+          )}
+          {(entries || []).map(e => (
+            <a key={e.project_path || e.port}
+              href={e.port ? `http://localhost:${e.port}` : '#'}
+              onClick={(ev) => { if (!e.port) { ev.preventDefault(); jump(e); } }}
               style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
                 color: T.text, textDecoration: "none", fontSize: 12,
-                borderBottom: `1px solid ${T.border}20`, transition: "background 0.1s"
+                borderBottom: `1px solid ${T.border}20`, transition: "background 0.1s",
+                opacity: busyPath && busyPath !== e.project_path ? 0.5 : 1
               }}
               onMouseEnter={ev => ev.currentTarget.style.background = T.surfaceAlt}
               onMouseLeave={ev => ev.currentTarget.style.background = "transparent"}>
-              <GlowDot color={T.accent} size={5} />
+              <GlowDot color={e.port ? T.accent : T.warn} size={5} />
               <span style={{ flex: 1 }}>{entryName(e)}</span>
-              <span className="mono" style={{ fontSize: 9, color: T.textDim }}>:{e.port}</span>
+              <span className="mono" style={{ fontSize: 9, color: T.textDim }}>
+                {e.port ? `:${e.port}` : (busyPath === e.project_path ? 'starting…' : 'session')}
+              </span>
             </a>
           ))}
         </div>
