@@ -101,16 +101,16 @@ class TestCredsCliSmoke(unittest.TestCase):
 
     def test_set_and_list_project_scope(self):
         out = self._run(["creds", "set", "API_KEY", "--value", "sec",
-                         "--desc", "test key", self.proj])
+                         "--desc", "test key", "--path", self.proj])
         self.assertIn("[OK] Stored credential 'API_KEY'", out)
         self.assertIn("API_KEY", self._entries(self.proj))
-        listing = self._run(["creds", "list", self.proj])
+        listing = self._run(["creds", "list", "--path", self.proj])
         self.assertIn("API_KEY", listing)
         self.assertNotIn("sec", listing.replace("test key", ""))
 
     def test_set_global_scope(self):
         out = self._run(["creds", "set", "SHARED", "--value", "gv", "--global",
-                         self.proj])
+                         "--path", self.proj])
         self.assertIn("scope=global", out)
         self.assertEqual(self._stub.get_password("c3-creds", "global|SHARED"), "gv")
         self.assertIn("SHARED", self._entries(self._tmp_home.name))
@@ -118,28 +118,28 @@ class TestCredsCliSmoke(unittest.TestCase):
 
     def test_agent_readable_warns(self):
         out = self._run(["creds", "set", "OPEN", "--value", "v",
-                         "--agent-readable", self.proj])
+                         "--agent-readable", "--path", self.proj])
         self.assertIn("[warn] agent_readable=true", out)
 
     def test_get_masked_and_show(self):
-        self._run(["creds", "set", "K", "--value", "hidden-val", self.proj])
-        masked = self._run(["creds", "get", "K", self.proj])
+        self._run(["creds", "set", "K", "--value", "hidden-val", "--path", self.proj])
+        masked = self._run(["creds", "get", "K", "--path", self.proj])
         self.assertIn("fingerprint=", masked)
         self.assertNotIn("hidden-val", masked)
-        shown = self._run(["creds", "get", "K", "--show", self.proj])
+        shown = self._run(["creds", "get", "K", "--show", "--path", self.proj])
         self.assertIn("hidden-val", shown)
 
     def test_rm_requires_global_flag_for_global_entry(self):
-        self._run(["creds", "set", "G", "--value", "v", "--global", self.proj])
-        out = self._run(["creds", "rm", "G", self.proj])
+        self._run(["creds", "set", "G", "--value", "v", "--global", "--path", self.proj])
+        out = self._run(["creds", "rm", "G", "--path", self.proj])
         self.assertIn("re-run with --global", out)
-        out = self._run(["creds", "rm", "G", "--global", self.proj])
+        out = self._run(["creds", "rm", "G", "--global", "--path", self.proj])
         self.assertIn("[OK] Removed credential 'G'", out)
 
     def test_import_env_file(self):
         env_file = Path(self.proj) / "test.env"
         env_file.write_text("FOO=bar\n# comment\nBAZ='q'\n", encoding="utf-8")
-        out = self._run(["creds", "import", str(env_file), self.proj])
+        out = self._run(["creds", "import", str(env_file), "--path", self.proj])
         self.assertIn("Imported 2 credential(s)", out)
         self.assertEqual(
             cs.get_value("FOO", project_path=self.proj), "bar"

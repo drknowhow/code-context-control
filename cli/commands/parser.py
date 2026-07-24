@@ -420,26 +420,28 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_set.add_argument("--agent-readable", action="store_true", help="Allow the agent to reveal the decoded value into its context (default: injection-only)")
     cr_set.add_argument("--inject", action="store_true", help="Auto-inject into every c3_shell run")
     cr_set.add_argument("--global", dest="use_global", action="store_true", help="Store in the global scope (~/.c3) so every C3 project can use it")
-    cr_set.add_argument("project_path", nargs="?", default=".")
+    # --path (not a trailing positional): a second positional after options
+    # breaks argparse on py<3.12 ("unrecognized arguments").
+    cr_set.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_get = creds_subs.add_parser("get", help="Show entry metadata (masked; --show prints the value)")
     cr_get.add_argument("name")
     cr_get.add_argument("--show", action="store_true", help="Print the decoded value to the terminal")
-    cr_get.add_argument("project_path", nargs="?", default=".")
+    cr_get.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_list = creds_subs.add_parser("list", help="List credentials visible to this project")
-    cr_list.add_argument("project_path", nargs="?", default=".")
+    cr_list.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_rm = creds_subs.add_parser("rm", help="Delete a credential (value + registry entry)")
     cr_rm.add_argument("name")
     cr_rm.add_argument("--global", dest="use_global", action="store_true", help="Delete from the global scope")
-    cr_rm.add_argument("project_path", nargs="?", default=".")
+    cr_rm.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_import = creds_subs.add_parser("import", help="Import KEY=VALUE lines from a .env file")
     cr_import.add_argument("env_file", help="Path to the .env file")
     cr_import.add_argument("--global", dest="use_global", action="store_true", help="Import into the global scope")
     cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
-    cr_import.add_argument("project_path", nargs="?", default=".")
+    cr_import.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
