@@ -126,6 +126,7 @@
       <a href="#c3_task" class="sidebar-link"><span class="icon">✅</span> c3_task</a>
       <a href="#c3_bitbucket" class="sidebar-link"><span class="icon">🪣</span> c3_bitbucket</a>
       <a href="#c3_credentials" class="sidebar-link"><span class="icon">🔐</span> c3_credentials</a>
+      <a href="#c3_jira" class="sidebar-link"><span class="icon">🎫</span> c3_jira</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Cross-project</div>
@@ -163,6 +164,7 @@
         <a href="#c3_artifacts" class="toc-item">c3_artifacts <span class="cat">Config</span></a>
         <a href="#c3_bitbucket" class="toc-item">c3_bitbucket <span class="cat">SCM</span></a>
         <a href="#c3_credentials" class="toc-item">c3_credentials <span class="cat">Secrets</span></a>
+        <a href="#c3_jira" class="toc-item">c3_jira <span class="cat">Issues</span></a>
         <a href="#c3_project"  class="toc-item">c3_project  <span class="cat">Multi-project</span></a>
       </div>
     </div>
@@ -1278,6 +1280,57 @@ c3_shell(cmd=<span class="str">'npm publish'</span>, env_creds=<span class="str"
 c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}" https://api.example.com'</span>)</code></pre>
 
           <p class="tool-desc"><strong>Surfaces:</strong> the <code>c3 creds</code> CLI (<code>set</code> / <code>get</code> / <code>list</code> / <code>rm</code> / <code>import .env</code>, <code>--global</code> for the shared scope), a per-project dashboard <strong>Credentials</strong> tab, and — since v2.59.0 — a top-level <strong>Credentials</strong> view in the Hub: a Global-vault manager plus a per-project browser with shadowing shown both ways ("shadows global" on project entries, "shadowed in N projects" on globals); the Hub's per-project drill panel manages too. No HTTP route ever returns a stored value (write-only wire contract, endpoint-sweep tested), every mutation is ledger-logged by name, the vault is hard-excluded from the Oracle Discovery API, and cross-project (<code>c3_project</code>) shells run with credentials disabled.</p>
+        </div>
+      </div>
+
+      <!-- c3_jira -->
+      <div class="tool-card" id="c3_jira">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_jira</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">issue tracking</span>
+            <span class="badge">v2.56.0</span>
+          </div>
+          <span class="tool-tagline">Jira Cloud + Data Center — search, create, transition, comment through one tool</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">One tool for both Jira deployments: <strong>Cloud</strong> (REST v3, email + API token, ADF bodies handled transparently) and self-hosted <strong>Data Center / Server</strong> (REST v2, PAT Bearer, plain-text bodies) — normalized to a single DTO surface with an opaque pagination cursor. Transport is stdlib <code>urllib</code> (no new dependencies); reads get one bounded 429 retry honoring <code>Retry-After</code>, mutations are <em>never</em> auto-retried. Tokens live in the OS keyring keyed by <code>(base_url, username)</code>; the <code>jira</code> config section resolves project → home <strong>wholesale from a single file</strong>, so a repository's committed config can never field-override a home account's URL or TLS settings (credential-redirect hardening). HTTPS-only.</p>
+
+          <p class="tool-desc"><strong>Setup:</strong> <code>c3 jira login --url https://yoursite.atlassian.net</code> (Cloud inferred for <code>*.atlassian.net</code>; add <code>--deployment data_center</code> for self-hosted, <code>--ca-bundle</code> for enterprise certs, <code>--global</code> for a home config reusable across projects), then <code>c3 jira set-default --project PROJ</code>. Manage accounts with <code>c3 jira status / use / logout</code>.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">status, whoami</td><td>Read</td><td class="param-desc">Active account, deployment, defaults, server probe / authenticated user</td></tr>
+              <tr><td class="param-name">search</td><td>Read</td><td class="param-desc">Raw JQL, paginated (helper-built JQL elsewhere is always quoted)</td></tr>
+              <tr><td class="param-name">my_issues</td><td>Read</td><td class="param-desc">Open issues assigned to the token's user (statusCategory-aware)</td></tr>
+              <tr><td class="param-name">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments / project discovery / legal transitions for an issue</td></tr>
+              <tr><td class="param-name">get_create_metadata, search_users</td><td>Read</td><td class="param-desc">Required + allowed fields per project/type; user lookup for assignment</td></tr>
+              <tr><td class="param-name">create_issue</td><td>Write</td><td class="param-desc">Pre-validates against create metadata and returns machine-readable missing required fields instead of guessing defaults</td></tr>
+              <tr><td class="param-name">comment, transition, assign</td><td>Write</td><td class="param-desc">Comment on / move (accepts transition id <em>or</em> name) / assign an issue</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Connection + account probe, then my open work</span>
+c3_jira(action=<span class="str">'status'</span>)
+c3_jira(action=<span class="str">'my_issues'</span>)
+
+<span class="com"># Raw JQL search</span>
+c3_jira(action=<span class="str">'search'</span>, jql=<span class="str">'project = PROJ AND status != Done ORDER BY updated DESC'</span>)
+
+<span class="com"># Create — required fields come from metadata, not guesses</span>
+c3_jira(action=<span class="str">'get_create_metadata'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Task'</span>)
+c3_jira(action=<span class="str">'create_issue'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Task'</span>,
+        summary=<span class="str">'Fix login flow'</span>, description=<span class="str">'Steps in thread'</span>)
+
+<span class="com"># Move it along — id or name both work</span>
+c3_jira(action=<span class="str">'list_transitions'</span>, issue=<span class="str">'PROJ-123'</span>)
+c3_jira(action=<span class="str">'transition'</span>, issue=<span class="str">'PROJ-123'</span>, transition=<span class="str">'In Progress'</span>)
+c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ-123'</span>, body=<span class="str">'Deployed to staging'</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Surfaces &amp; audit:</strong> the per-project dashboard gets a <strong>Jira tab</strong> (My Work board grouped by statusCategory, JQL search, an issue drawer with transition buttons + comments, and an Activity view) backed by <code>/api/jira/*</code> routes. Issue keys like <code>PROJ-123</code> are auto-linked from branch names and edit-ledger entries (acronym denylist, so UTF-8 / SHA-256 / CVE-2024 never match), and the issue drawer shows the local ledger activity for the open issue — that Activity view works with no account configured. Mutations (<code>create_issue</code>, <code>comment</code>, <code>transition</code>, <code>assign</code>) are edit-ledger-logged with identifiers only — bodies are never logged. Read actions are safe in plan mode.</p>
         </div>
       </div>
     </div>
