@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-context-control"
-version = "2.56.1"
-description = "Local code-intelligence layer for AI coding tools (Claude Code, Codex, Copilot, Cursor, Antigravity). Retrieve less, read less, edit safer — and version the configs that shape your agent (CLAUDE.md, skills, hooks, MCP)."
+version = "2.57.0"
+description = "Local code-intelligence layer for AI coding tools (Claude Code, Codex, Copilot, Cursor, Antigravity). Retrieve less, read less, edit safer — version the configs that shape your agent (CLAUDE.md, skills, hooks, MCP), and manage multi-project + sub-project hierarchies from a local hub."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

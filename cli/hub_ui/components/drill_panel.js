@@ -5,6 +5,7 @@
 
 const DRILL_PANEL_TABS = [
   ['overview', 'Overview'],
+  ['subprojects', 'Sub-projects'],
   ['tasks', 'Tasks'],
   ['artifacts', 'Artifacts'],
   ['memory', 'Memory'],
@@ -106,9 +107,24 @@ function DrillNeedsInit({ project, onReady }) {
   );
 }
 
-function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal }) {
+function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal, projects }) {
+  // Children can't have children (depth-1) — hide the Sub-projects tab for them.
+  const isChild = !!project.parent_path;
+  const tabs = DRILL_PANEL_TABS.filter(([id]) => id !== 'subprojects' || !isChild);
+  // "under <parent>" chip: friendly name from the loaded project list when
+  // available (optional prop), else the last path segment.
+  const parentName = (() => {
+    if (!isChild) return null;
+    const norm = (s) => String(s || '').replace(/[\\/]+$/, '').toLowerCase();
+    const row = (projects || []).find(pr => norm(pr.path) === norm(project.parent_path));
+    if (row && row.name) return row.name;
+    const segs = String(project.parent_path).split(/[\\/]/).filter(Boolean);
+    return segs[segs.length - 1] || project.parent_path;
+  })();
   const renderTab = () => {
     switch (tab) {
+      case 'subprojects':
+        return <DrillSubprojects project={project} onChanged={onChanged} onOpenModal={onOpenModal} />;
       case 'tasks': return <DrillTasks project={project} onChanged={onChanged} />;
       case 'artifacts': return <DrillArtifacts project={project} onChanged={onChanged} />;
       case 'memory': return <DrillMemory project={project} />;
@@ -132,10 +148,23 @@ function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px 8px' }}>
           <GlowDot color={project.active ? T.accent : T.textDim} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{
-              fontSize: 15, fontWeight: 700, color: T.text,
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>{project.name || project.path}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <div style={{
+                fontSize: 15, fontWeight: 700, color: T.text, minWidth: 0,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              }}>{project.name || project.path}</div>
+              {parentName && (
+                <span title={'Sub-project of ' + project.parent_path} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0,
+                  fontSize: 10, fontWeight: 600, color: T.textMuted, background: T.surfaceAlt,
+                  border: `1px solid ${T.border}`, borderRadius: 999, padding: '2px 8px',
+                  whiteSpace: 'nowrap',
+                }}>
+                  <I name="gitBranch" size={10} color={T.textMuted} />
+                  under {parentName}
+                </span>
+              )}
+            </div>
             <div className="mono" title={project.path} style={{
               fontSize: 11, color: T.textMuted,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -152,7 +181,7 @@ function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal }) {
           display: 'flex', gap: 2, padding: '4px 20px 0',
           borderBottom: `1px solid ${T.border}`, overflowX: 'auto', flexShrink: 0,
         }}>
-          {DRILL_PANEL_TABS.map(([id, label]) => (
+          {tabs.map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{
               background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px',
               fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1,

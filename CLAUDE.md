@@ -50,7 +50,7 @@ claude-companion - v2/
   THIRD_PARTY_LICENSES.md
   c3.bat
   install.bat
-  ... +4 more
+  ... +5 more
   .agents/
   .github/
     FUNDING.yml
@@ -126,7 +126,7 @@ claude-companion - v2/
     compressor.py
     context_snapshot.py
     conversation_store.py
-    ... +52 more
+    ... +53 more
     bench/ (1 files)
   tests/
     test_activity_reporter.py
@@ -144,7 +144,7 @@ claude-companion - v2/
     test_circuit_breaker.py
     test_claude_md_merge.py
     test_cli_smoke.py
-    ... +77 more
+    ... +81 more
   tui/
     __init__.py
     backend.py
@@ -170,8 +170,8 @@ Python (Modern)
 
 ## Key Facts (use c3_memory for more)
 
-- Session summary (20260701): Decision: Deep 4-agent evaluation of C3 completed (tool surface, hooks, services, claims-vs-
 - Session summary (20260701): Files (modified): README.md, services/subprojects.py, services/project_manager.py, services/
 - [validate] U:\1. Projects\Claude Code Companion (C3)\claude-companion - v2\cli\hub_ui\components\toasts.js has syntax er
 - Sub-projects (v2.44.0): three-way link — parent config subprojects[] (POSIX rel_path = source of truth), child config pa
 - Hub v2 (v2.44.0): cli/hub_ui.html + cli/hub_ui/ 22-file concat bundle served at / (hub.html frozen at /legacy until v2.4
+- Session summary (20260702): Files (modified): services/subprojects.py, .github/workflows/release.yml, pyproject.toml, cl

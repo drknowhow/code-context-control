@@ -22,6 +22,14 @@ const parseApiResponse = async (r) => {
   if (json !== null) return json;
   return {};
 };
+// Digs the real failure reason out of hub error bodies: sub-project
+// endpoints fail as 500 {success, result:{error}, output} with no
+// top-level `error`, so err.message alone is just "HTTP 500".
+const apiErr = (e) => {
+  const p = (e && e.payload) || {};
+  const r = p.result || {};
+  return r.error || p.error || (e && e.message) || 'unknown error';
+};
 const api = {
   get: async (path) => parseApiResponse(await fetch(`${API}${path}`)),
   post: async (path, body) => parseApiResponse(await fetch(`${API}${path}`, {

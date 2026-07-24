@@ -4,6 +4,94 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.57.0] - 2026-07-24
+
+### Added — Hub sub-project management overhaul (UI/UX)
+
+Manual parent/child control becomes a first-class Hub surface.
+
+- **First-child bootstrap fix**: "Designate sub-project…" now renders on every
+  non-child project card — previously it only appeared once a project already
+  HAD registered children, so the first child could only be created via
+  `c3 sub add` (the UI feature was invisible until the CLI had been used).
+- **Passive link health**: `GET /api/projects` now annotates parent rows with
+  `subproject_issues` (count of broken three-way links + registry orphans)
+  and child rows with `link_status` (`ok | backlink_broken | unregistered |
+  missing_folder | missing_c3 | orphan`) via a new
+  `_annotate_subproject_links` helper — config + filesystem + raw-registry
+  reads only, no port probing. Cards surface red "N link issues" badges on
+  parents and amber/red status badges on children without anyone having to
+  run Reconcile manually.
+- **Sub-projects drill tab** (`drill_subprojects.js`, new): dedicated
+  management surface — per-child rows (status, facts, alerts) with inline
+  Validate and Promote actions; Designate button (fixes bootstrap in the
+  drill too, with an educational empty state); inline Reconcile with
+  per-issue detail and planned repair actions; Cascade launcher with op
+  picker, include-parent toggle, affected-children preview, live progress,
+  Cancel, and 409 attach-to-running handling.
+- **"Make sub-project of…"** on eligible top-level cards: reverse designate —
+  lists only registered parents whose folder physically contains the project
+  (containment is mandatory), validates via the existing endpoint, links with
+  adopt semantics.
+- **Clear-mode de-init**: the child kebab's duplicate "Unlink" (same server op
+  as Promote) is replaced by "De-initialize…" — the previously CLI-only
+  `remove mode='clear'` (deletes `.c3`, uninstalls MCP config, removes
+  instruction docs, deregisters) behind a typed-name confirm dialog.
+- **Cascade UX**: progress toasts gained a cancel affordance (the
+  `/cascade/cancel` endpoint existed with zero UI); the card submenu gained
+  an "Include parent" toggle (`include_parent` was accepted server-side but
+  never sent).
+- **Hierarchy visibility**: child cards show an "↳ parent" chip (annotated in
+  `buildProjectTree`, path-derived fallback when the parent row is filtered
+  out or unregistered); the drill header shows an "under parent" chip; grid
+  view child rows — previously inert — now carry kebab menus and link-status
+  badges; removing a parent pre-warns in the confirm dialog that its N
+  children become top-level (was a post-hoc toast).
+- **Ctrl-K hierarchy** (`global_search.js`): child result groups render a
+  "parent › child" breadcrumb; a scope chip row (All / Top-level only /
+  per-parent "+ children") drives real server-side filtering through the
+  endpoint's existing `projects` param.
+- **FolderPicker polish** (`modals.js`): navigation fenced to the parent
+  subtree (breadcrumb segments above the parent render inert instead of
+  post-hoc validation failures); explicit adopt/re-link messaging for
+  `has_c3` / already-registered folders; "Instruction docs / IDE" picker
+  (`auto | claude | vscode | cursor | codex | antigravity`) wired to the
+  endpoint's existing `ide` param; adopt-vs-initialize expectation shown
+  before designating.
+- **Inheritance toggles**: the config editor gains a "Sub-projects" section on
+  parent projects — "Parent memory recall includes child facts"
+  (`memory_rollup`), "Search scope 'all' fans out to children"
+  (`search_fanout`), and "Max children per query", persisted as a partial
+  deep-merge under `hybrid.subprojects`. The config PUT now permits that
+  federation dict (the top-level child-links `subprojects[]` array stays
+  refused — hierarchy still changes only through the dedicated actions).
+- **Staged re-parent wizard**: "Change parent…" on child cards — an honest
+  multi-step flow, never a fake one-click move (physical containment is
+  mandatory). Ready-now targets relink immediately; otherwise the wizard
+  unlinks first (deliberate: the child back-link can only be cleared while
+  the folder is still at its old path), offers Undo until the user moves the
+  folder, gates the new link behind validation, and cleans up the stale
+  registry row — with a per-step checklist that reports the exact state on
+  any failure.
+- **Config editor honesty**: `subprojects` / `parent` keys — previously
+  silently hidden — render as read-only rows with a "managed via sub-project
+  actions" hint; drill Overview status colors now branch on the real status
+  vocabulary (the old `'missing'`/`'error'` branches were dead code, so real
+  errors rendered as warnings).
+
+### Added — Hub UI: Reconcile action for sub-project links
+
+- Parent project cards' kebab menu gains **"Reconcile links"** (wrench icon):
+  runs the existing `/api/projects/subprojects/reconcile` consistency check
+  as a dry-run, reports "all N links consistent" when clean, and otherwise
+  shows a confirm dialog summarizing the damage (broken back-links,
+  unregistered children, registry orphans, missing folders) before repairing
+  with `fix=true`. `prune=true` is sent only when missing-folder entries were
+  detected, so pruning is always surfaced to the user before it happens.
+  `missing_c3` children are called out as not repairable by reconcile
+  (re-designate or Cascade update instead). The endpoint was previously
+  CLI/API-only.
+
 ## [2.56.1] - 2026-07-23
 
 ### Fixed — `c3 --version` / `c3 upgrade` reported 2.55.0 after upgrading to 2.56.0

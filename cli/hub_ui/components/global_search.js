@@ -1,10 +1,13 @@
 // ─── Global cross-project search (Ctrl-K overlay) ──────────────
-// POST /api/search/global {query, kind} → results grouped per project.
+// POST /api/search/global {query, kind, projects?} → results grouped per
+// project. Scope chips narrow which projects are searched (hierarchy-aware);
+// child-project result groups render a "parent › child" breadcrumb.
 // Esc close is handled by app.js; backdrop click + the X button close too.
 
 function GlobalSearch({ open, onClose, projects, onOpenProject }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState('both');
+  const [scope, setScope] = useState('all');  // 'all' | 'top' | <parent path>
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -16,6 +19,18 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
     if (open && inputRef.current) inputRef.current.focus();
   }, [open]);
 
+  const lc = s => (s || '').toLowerCase();
+  const lastSeg = p => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
+
+  // Paths to search for the current scope; null → server default (all).
+  const scopePaths = () => {
+    if (scope === 'all') return null;
+    if (scope === 'top') return (projects || []).filter(p => !p.parent_path).map(p => p.path);
+    return (projects || [])
+      .filter(p => lc(p.path) === lc(scope) || lc(p.parent_path) === lc(scope))
+      .map(p => p.path);
+  };
+
   // Debounced search: 400ms after typing stops, min 2 chars.
   useEffect(() => {
     if (!open) return;
@@ -25,7 +40,17 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
     const seq = ++seqRef.current;
     const t = setTimeout(async () => {
       try {
-        const d = await api.post('/api/search/global', { query: q, kind });
+        const body = { query: q, kind };
+        const paths = scopePaths();
+        if (paths) {
+          if (!paths.length) {
+            // Scoped target vanished (removed/renamed) — reset visibly
+            // instead of silently widening the search to everything.
+            setScope('all'); setLoading(false); return;
+          }
+          body.projects = paths;
+        }
+        const d = await api.post('/api/search/global', body);
         if (seq !== seqRef.current) return;   // superseded by a newer search
         setData(d); setError(null); setLoading(false);
       } catch (e) {
@@ -34,7 +59,7 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [query, kind, open]);
+  }, [query, kind, scope, open]);
 
   if (!open) return null;
 
@@ -47,12 +72,25 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
 
   const fmtLines = (lines) => Array.isArray(lines) ? lines.join('-') : (lines || '');
 
-  const chip = (id, label) => (
-    <button key={id} onClick={() => setKind(id)} className="mono" style={{
+  // "parent › child" breadcrumb source for child-project result groups.
+  const parentNameOf = (p) => {
+    const pp = (p && p.parent_path) || '';
+    if (!pp) return '';
+    const parent = (projects || []).find(x => lc(x.path) === lc(pp));
+    return (parent && parent.name) || lastSeg(pp);
+  };
+
+  // Parents for scope chips: flagged is_parent, or referenced by a child row.
+  const parents = (projects || []).filter(p =>
+    p.is_parent || (projects || []).some(c => lc(c.parent_path) === lc(p.path)));
+  const hasTree = parents.length > 0;
+
+  const chip = (id, label, value, setValue) => (
+    <button key={id} onClick={() => setValue(id)} className="mono" style={{
       padding: '4px 12px', borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: 'pointer',
-      border: `1px solid ${kind === id ? T.accent : T.border}`,
-      background: kind === id ? T.accentDim : 'transparent',
-      color: kind === id ? T.accent : T.textMuted,
+      border: `1px solid ${value === id ? T.accent : T.border}`,
+      background: value === id ? T.accentDim : 'transparent',
+      color: value === id ? T.accent : T.textMuted,
     }}>{label}</button>
   );
 
@@ -88,8 +126,21 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
 
         {/* Kind chips */}
         <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${T.border}` }}>
-          {chip('both', 'Both')}{chip('code', 'Code')}{chip('memory', 'Memory')}
+          {chip('both', 'Both', kind, setKind)}{chip('code', 'Code', kind, setKind)}{chip('memory', 'Memory', kind, setKind)}
         </div>
+
+        {/* Scope chips — which projects get searched (only when a hierarchy exists) */}
+        {hasTree && (
+          <div style={{
+            display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${T.border}`,
+            flexWrap: 'wrap', alignItems: 'center',
+          }}>
+            <span className="mono" style={{ fontSize: 10, color: T.textDim }}>SCOPE</span>
+            {chip('all', 'All projects', scope, setScope)}
+            {chip('top', 'Top-level only', scope, setScope)}
+            {parents.map(p => chip(p.path, `${p.name || lastSeg(p.path)} + children`, scope, setScope))}
+          </div>
+        )}
 
         {/* Results */}
         <div style={{ overflowY: 'auto', flex: 1 }}>
@@ -116,11 +167,13 @@ function GlobalSearch({ open, onClose, projects, onOpenProject }) {
             const memHits = row.memory || [];
             if (!codeHits.length && !memHits.length && !row.error) return null;
             const proj = row.project || {};
+            const parentLabel = parentNameOf(findProject(proj));
             return (
               <div key={proj.path || proj.name} style={{ borderBottom: `1px solid ${T.border}` }}>
                 {/* Project header */}
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '10px 16px 6px' }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: T.text, whiteSpace: 'nowrap' }}>
+                    {parentLabel && <span style={{ color: T.textMuted, fontWeight: 600 }}>{parentLabel} › </span>}
                     {proj.name || proj.path}
                   </span>
                   <span className="mono" style={{

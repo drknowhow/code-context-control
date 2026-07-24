@@ -8,7 +8,7 @@ const notify = (msg, kind = 'ok') => {
 };
 
 // Progress toast: call repeatedly with the same id to update; done:true removes
-// after a grace period. spec: {label, current, total, done, error}
+// after a grace period. spec: {label, current, total, done, error, cancelled, onCancel}
 const notifyProgress = (id, spec) => {
   if (_toastDispatch) _toastDispatch({ type: 'progress', id, spec });
 };
@@ -51,9 +51,16 @@ function ToastHost() {
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
             <span style={{ color: T.text, fontWeight: 600 }}>{t.progress.label}</span>
             <span className="mono" style={{ color: t.progress.error ? T.error : T.textMuted }}>
-              {t.progress.done ? (t.progress.error ? 'failed' : 'done')
+              {t.progress.done
+                ? (t.progress.error ? 'failed' : (t.progress.cancelled ? 'cancelled' : 'done'))
                 : `${t.progress.current || 0}/${t.progress.total || '?'}`}
             </span>
+            {!t.progress.done && t.progress.onCancel && (
+              <span onClick={t.progress.onCancel} style={{
+                cursor: 'pointer', color: T.textMuted, fontSize: 11,
+                textDecoration: 'underline', flexShrink: 0,
+              }}>cancel</span>
+            )}
           </div>
           <ProgressBar value={t.progress.current || 0} max={t.progress.total || 1}
             color={t.progress.error ? T.error : T.accent} height={4} />

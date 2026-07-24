@@ -16,6 +16,18 @@ function drillFactText(f) {
   return f.fact || f.text || f.content || JSON.stringify(f);
 }
 
+// Sub-project status vocabulary (services/subprojects.py _entry_status):
+// 'ok' | 'backlink_broken' | 'unregistered' | 'missing_folder' | 'missing_c3'.
+function drillSubStatusMeta(status) {
+  const s = String(status || '');
+  if (s === 'ok') return { color: T.accent, label: 'ok' };
+  if (s === 'backlink_broken') return { color: T.warn, label: 'broken back-link' };
+  if (s === 'unregistered') return { color: T.warn, label: 'unregistered' };
+  if (s === 'missing_folder') return { color: T.error, label: 'missing folder' };
+  if (s === 'missing_c3') return { color: T.error, label: 'missing .c3' };
+  return { color: T.warn, label: s || '?' };
+}
+
 // ── Overview ───────────────────────────────────────────────────
 function DrillOverview({ project, onChanged, setTab }) {
   const [data, setData] = useState(null);
@@ -96,27 +108,27 @@ function DrillOverview({ project, onChanged, setTab }) {
           {!subs ? <DrillMsg text="Loading sub-projects…" /> : (
             <React.Fragment>
               {(subs.children || []).length === 0 && <DrillMsg text="No sub-projects designated." />}
-              {(subs.children || []).map(c => (
-                <div key={c.path || c.rel_path} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0',
-                  borderBottom: `1px solid ${T.border}`,
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{c.name || c.rel_path}</div>
-                    <div className="mono" title={c.path} style={{
-                      fontSize: 11, color: T.textDim,
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>{c.rel_path || c.path}</div>
+              {(subs.children || []).map(c => {
+                const statusMeta = drillSubStatusMeta(c.status);
+                return (
+                  <div key={c.path || c.rel_path} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0',
+                    borderBottom: `1px solid ${T.border}`,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{c.name || c.rel_path}</div>
+                      <div className="mono" title={c.path} style={{
+                        fontSize: 11, color: T.textDim,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>{c.rel_path || c.path}</div>
+                    </div>
+                    {c.facts_count != null &&
+                      <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>{c.facts_count} facts</span>}
+                    {c.notification_count > 0 && <Badge color={T.warn}>{c.notification_count} alerts</Badge>}
+                    <Badge color={statusMeta.color}>{statusMeta.label}</Badge>
                   </div>
-                  {c.facts_count != null &&
-                    <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>{c.facts_count} facts</span>}
-                  {c.notification_count > 0 && <Badge color={T.warn}>{c.notification_count} alerts</Badge>}
-                  <Badge color={c.status === 'ok' ? T.accent
-                    : (c.status === 'missing' || c.status === 'error') ? T.error : T.warn}>
-                    {c.status || '?'}
-                  </Badge>
-                </div>
-              ))}
+                );
+              })}
               {rollup && (
                 <div className="mono" style={{ fontSize: 11, color: T.textMuted, paddingTop: 10 }}>
                   {rollup.children} sub-project{rollup.children === 1 ? '' : 's'}

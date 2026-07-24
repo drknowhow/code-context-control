@@ -6,6 +6,15 @@
 const CFG_ED_SECTIONS = ['hybrid', 'agents', 'delegate', 'proxy', 'mcp', 'meta', 'memory_llm', 'bitbucket'];
 const CFG_ED_READONLY = ['bitbucket'];
 const CFG_ED_REFUSED = ['version', 'project_path', 'permission_tier', 'subprojects', 'parent', 'api_key'];
+// Refused keys worth surfacing read-only when present, rather than hiding —
+// still never editable here (server refuses the write regardless).
+const CFG_ED_MANAGED = ['subprojects', 'parent'];
+const CFG_ED_MANAGED_HINT = 'Managed via sub-project actions — use the project card menu or drill-in panel.';
+// hybrid.subprojects federation settings get a friendly "Sub-projects"
+// section on parent projects. The hub API accepts dict-valued 'subprojects'
+// under section=hybrid (schema-checked server-side); the read-only fallback
+// below only engages if this flag is ever flipped off again.
+const CFG_ED_SUBPROJECTS_WRITABLE = true;
 
 function ConfigEditor({ project }) {
   const [section, setSection] = useState('hybrid');
@@ -36,11 +45,43 @@ function ConfigEditor({ project }) {
   };
   useEffect(() => { setCfg(null); load(); }, [project.path, section]);
 
+  // ── Sub-projects (hybrid.subprojects): friendly federation controls ─────
+  // Shown for parent projects on the hybrid section. Edits nest under one
+  // 'subprojects' key holding only the changed sub-keys, so the server's
+  // deep-merge preserves untouched siblings (e.g. parent_memory_visible).
+  const isParent = !!project.is_parent || (project.subproject_count || 0) > 0;
+  const showSubprojects = section === 'hybrid' && !!cfg
+    && (isParent || cfg.subprojects !== undefined);
+  const subCfg = (cfg && cfg.subprojects && typeof cfg.subprojects === 'object') ? cfg.subprojects : {};
+  const subDefs = (defs.subprojects && typeof defs.subprojects === 'object') ? defs.subprojects : {};
+  const subEdits = (edits.subprojects && typeof edits.subprojects === 'object') ? edits.subprojects : {};
+  const subVal = (k) => Object.prototype.hasOwnProperty.call(subEdits, k) ? subEdits[k]
+    : (subCfg[k] !== undefined ? subCfg[k] : subDefs[k]);
+  const subEdited = (k) => Object.prototype.hasOwnProperty.call(subEdits, k);
+  const subDot = (k) => subEdited(k)
+    ? <span style={{ width: 6, height: 6, borderRadius: '50%', background: T.accent, display: 'inline-block', flexShrink: 0 }} />
+    : null;
+  const setSubEdit = (k, v) => {
+    if (!CFG_ED_SUBPROJECTS_WRITABLE) return;
+    setEdits(e => {
+      const cur = Object.assign({}, (e.subprojects && typeof e.subprojects === 'object') ? e.subprojects : {});
+      cur[k] = v;
+      return Object.assign({}, e, { subprojects: cur });
+    });
+  };
+
   const keys = [];
+  const managedKeys = [];
   if (cfg) {
-    Object.keys(defs).forEach(k => { if (CFG_ED_REFUSED.indexOf(k) < 0) keys.push(k); });
+    Object.keys(defs).forEach(k => {
+      if (CFG_ED_REFUSED.indexOf(k) < 0) keys.push(k);
+      else if (CFG_ED_MANAGED.indexOf(k) >= 0 && managedKeys.indexOf(k) < 0
+        && !(k === 'subprojects' && showSubprojects)) managedKeys.push(k);
+    });
     Object.keys(cfg).forEach(k => {
-      if (CFG_ED_REFUSED.indexOf(k) < 0 && keys.indexOf(k) < 0) keys.push(k);
+      if (CFG_ED_REFUSED.indexOf(k) < 0) { if (keys.indexOf(k) < 0) keys.push(k); }
+      else if (CFG_ED_MANAGED.indexOf(k) >= 0 && managedKeys.indexOf(k) < 0
+        && !(k === 'subprojects' && showSubprojects)) managedKeys.push(k);
     });
   }
   const currentVal = (k) => Object.prototype.hasOwnProperty.call(edits, k) ? edits[k]
@@ -66,6 +107,14 @@ function ConfigEditor({ project }) {
           v = Number(v);
           if (!isFinite(v)) throw new Error(`'${k}' must be a number`);
         }
+        if (k === 'subprojects' && v && typeof v === 'object'
+          && Object.prototype.hasOwnProperty.call(v, 'max_children_per_query')) {
+          const n = Number(v.max_children_per_query);
+          if (!isFinite(n) || n < 1 || Math.floor(n) !== n) {
+            throw new Error("'max_children_per_query' must be a positive integer");
+          }
+          v = Object.assign({}, v, { max_children_per_query: n });
+        }
         values[k] = v;
       });
       const d = await api.put('/api/projects/config', { path: project.path, section, values });
@@ -83,6 +132,13 @@ function ConfigEditor({ project }) {
     Object.keys(defs).forEach(k => {
       if (CFG_ED_REFUSED.indexOf(k) < 0) next[k] = JSON.parse(JSON.stringify(defs[k] === undefined ? null : defs[k]));
     });
+    if (showSubprojects && CFG_ED_SUBPROJECTS_WRITABLE) {
+      next.subprojects = {
+        memory_rollup: subDefs.memory_rollup !== false,
+        search_fanout: subDefs.search_fanout !== false,
+        max_children_per_query: subDefs.max_children_per_query !== undefined ? subDefs.max_children_per_query : 8,
+      };
+    }
     setEdits(next);
     setJsonText({}); setJsonBad({});
     notify(`Prefilled ${section} defaults — review, then Save section`, 'warn');
@@ -90,6 +146,18 @@ function ConfigEditor({ project }) {
 
   const dirty = Object.keys(edits).length > 0;
   const invalid = Object.keys(jsonBad).some(k => jsonBad[k]);
+
+  const renderManagedField = (k) => {
+    const val = cfg && cfg[k] !== undefined ? cfg[k] : defs[k];
+    const text = (val !== null && typeof val === 'object')
+      ? JSON.stringify(val) : String(val === undefined ? '' : val);
+    return (
+      <div key={k} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '6px 0', opacity: 0.55 }}>
+        <span className="mono" style={{ fontSize: 11, color: T.textDim, width: 200, flexShrink: 0, overflowWrap: 'anywhere' }}>{k}</span>
+        <span className="mono" style={{ fontSize: 11, color: T.textDim, flex: 1, overflowWrap: 'anywhere' }}>{text}</span>
+      </div>
+    );
+  };
 
   const renderField = (k) => {
     const kind = kindOf(k);
@@ -215,6 +283,62 @@ function ConfigEditor({ project }) {
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {keys.map(renderField)}
           </div>
+          {showSubprojects && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>Sub-projects</div>
+              <div style={{ fontSize: 11, color: T.textDim, margin: '2px 0 4px' }}>
+                How this parent federates with its linked children (<span className="mono">hybrid.subprojects</span>).
+              </div>
+              {!CFG_ED_SUBPROJECTS_WRITABLE && (
+                <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>
+                  Read-only for now — the hub API refuses <span className="mono">subprojects</span> config writes.
+                  Edit <span className="mono">.c3/config.json</span> directly to change these.
+                </div>
+              )}
+              <div style={CFG_ED_SUBPROJECTS_WRITABLE ? undefined : { opacity: 0.55, pointerEvents: 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    {renderBoolToggle('Parent memory recall includes child facts', !!subVal('memory_rollup'),
+                      () => setSubEdit('memory_rollup', !subVal('memory_rollup')),
+                      `memory_rollup — default: ${subDefs.memory_rollup === false ? 'off' : 'on'}`)}
+                  </div>
+                  {subDot('memory_rollup')}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    {renderBoolToggle("Search scope 'all' fans out to children", !!subVal('search_fanout'),
+                      () => setSubEdit('search_fanout', !subVal('search_fanout')),
+                      `search_fanout — default: ${subDefs.search_fanout === false ? 'off' : 'on'}`)}
+                  </div>
+                  {subDot('search_fanout')}
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '8px 0' }}>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: T.textMuted, fontSize: 12 }}>Max children per query</span>
+                      {subDot('max_children_per_query')}
+                    </span>
+                    <span style={{ color: T.textDim, fontSize: 11 }}>
+                      max_children_per_query — cap per federated call, default: {subDefs.max_children_per_query !== undefined ? subDefs.max_children_per_query : 8}
+                    </span>
+                  </span>
+                  <input type="number" min={1} step={1} disabled={!CFG_ED_SUBPROJECTS_WRITABLE}
+                    value={subVal('max_children_per_query') == null ? '' : String(subVal('max_children_per_query'))}
+                    onChange={ev => setSubEdit('max_children_per_query', ev.target.value)}
+                    className="mono"
+                    style={drillFieldStyle({ width: 110, textAlign: 'right', fontSize: 11 })} />
+                </label>
+              </div>
+            </div>
+          )}
+          {managedKeys.length > 0 && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, color: T.textDim, marginBottom: 8 }}>{CFG_ED_MANAGED_HINT}</div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {managedKeys.map(renderManagedField)}
+              </div>
+            </div>
+          )}
           {!readOnly && (
             <div style={{
               display: 'flex', alignItems: 'center', gap: 10, marginTop: 20,

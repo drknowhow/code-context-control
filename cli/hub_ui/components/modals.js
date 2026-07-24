@@ -58,10 +58,439 @@ function HubModals({ modal, projects, onClose, onChanged }) {
     case 'merge': return <MergeModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'ide': return <IdePickerModal project={project} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'folderPick': return <FolderPickerModal project={project} onClose={onClose} onChanged={onChanged} {...props} />;
+    case 'makeSub': return <MakeSubprojectModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
+    case 'reparent': return <ReparentModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'batch': return <BatchUpdateModal projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'settings': return <SettingsModal onClose={onClose} onChanged={onChanged} {...props} />;
     default: return null;
   }
+}
+
+// ── Make sub-project of… ───────────────────────────────────────
+// Reverse designate: pick a registered parent that physically
+// contains this project (containment is mandatory server-side) and
+// link it as a child via the same validate/add endpoints.
+function MakeSubprojectModal({ project, projects, onClose, onChanged }) {
+  const norm = (s) => (s || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  const self = norm(project.path);
+  const candidates = (projects || []).filter(c => {
+    const cp = norm(c.path);
+    return cp && cp !== self && !c.parent_path && self.startsWith(cp + '\\');
+  });
+  const [selected, setSelected] = useState(candidates.length === 1 ? candidates[0].path : '');
+  const [validation, setValidation] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!selected) { setValidation(null); return; }
+    let live = true;
+    setValidation({ pending: true });
+    api.post('/api/projects/subprojects/validate', { parent: selected, folder: project.path })
+      .then(v => { if (live) setValidation(v); })
+      .catch(e => { if (live) setValidation({ ok: false, warnings: [e.message] }); });
+    return () => { live = false; };
+  }, [selected]);
+
+  const designate = async () => {
+    setBusy(true);
+    try {
+      const d = await api.post('/api/projects/subprojects/add',
+        { parent: selected, folder: project.path, name: project.name });
+      const res = d.result || d;
+      const parentName = (candidates.find(c => c.path === selected) || {}).name || selected;
+      notify(`${res.adopted ? 'Adopted' : 'Linked'} ${project.name} under ${parentName}`);
+      onChanged(); onClose();
+    } catch (e) { notify('Designate: ' + e.message, 'err'); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title={`Make sub-project of — ${project.name || ''}`} width={520} onClose={onClose}>
+      <MdlPath>{project.path}</MdlPath>
+      {candidates.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: T.textMuted, lineHeight: 1.6, margin: '10px 0' }}>
+          No registered project contains this folder. A sub-project must live
+          physically inside its parent — move the folder under the intended
+          parent (then designate from the parent's card), or register the
+          containing folder as a project first.
+        </div>
+      ) : (
+        <React.Fragment>
+          <MdlLabel>Parent project</MdlLabel>
+          <select value={selected} onChange={e => setSelected(e.target.value)} style={mdlInputStyle()}>
+            <option value="">— choose —</option>
+            {candidates.map(c => <option key={c.path} value={c.path}>{c.name} — {c.path}</option>)}
+          </select>
+          {validation && !validation.pending && (
+            <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.5 }}>
+              {(validation.warnings || []).map((w, i) => (
+                <div key={i} style={{ color: T.warn }}>⚠ {w}</div>
+              ))}
+              {validation.ok && (
+                <div style={{ color: T.accent }}>✓ Valid — existing .c3 and hub registration are kept and re-linked.</div>
+              )}
+            </div>
+          )}
+        </React.Fragment>
+      )}
+      <MdlFooter>
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn disabled={!selected || busy || !(validation && validation.ok)} onClick={designate}>
+          {busy ? 'Linking…' : 'Make sub-project'}
+        </Btn>
+      </MdlFooter>
+    </Modal>
+  );
+}
+
+// ── Change parent (re-parent) ──────────────────────────────────
+// Staged wizard. A sub-project's folder MUST physically live inside
+// its parent (services/subprojects.py validate() enforces strict
+// containment), so re-parenting can never be one click. Order is
+// unlink → [manual move] → verify → link → cleanup, with the unlink
+// FIRST while the folder is still at its registered location: `sub
+// remove` clears the child's .c3 back-link only when the folder
+// exists there, and a stale back-link makes the new-parent add fail
+// with "already a sub-project of <old>" — which no hub endpoint can
+// repair (config PUT refuses the `parent` section). The intermediate
+// state is valid and reversible: top-level, still registered, .c3
+// intact; Undo re-links under the old parent until the folder moves.
+// Unlink:  POST /api/projects/subprojects/remove {parent, ref, mode:'unlink'}
+// Verify:  POST /api/projects/subprojects/validate {parent, folder}
+// Link:    POST /api/projects/subprojects/add {parent, folder, name}
+// Cleanup: POST /api/projects/remove {path} — after a physical move,
+// add_project appends a NEW registry row for the new path (rows are
+// keyed by exact path, never migrated), so the old row must go.
+function ReparentModal({ project, projects, onClose, onChanged }) {
+  const norm = (s) => String(s || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  const self = norm(project.path);
+  const oldParentPath = project.parent_path || '';
+  const oldParentName = ((projects || []).find(c => norm(c.path) === norm(oldParentPath)) || {}).name || oldParentPath;
+  const folderName = (project.path || '').split(/[\\/]/).filter(Boolean).pop() || project.name;
+
+  // Candidate new parents: registered, not this project, not the current
+  // parent, not themselves children (nesting depth > 1 is unsupported),
+  // not inside this project. `ready` = the folder is already physically
+  // inside the candidate, so no move is needed.
+  const candidates = (projects || []).filter(c => {
+    const cp = norm(c.path);
+    return cp && cp !== self && cp !== norm(oldParentPath) && !c.parent_path
+      && !cp.startsWith(self + '\\');
+  }).map(c => {
+    const ready = self.startsWith(norm(c.path) + '\\');
+    const sep = c.path.includes('\\') ? '\\' : '/';
+    return { ...c, ready, destination: ready ? project.path : c.path.replace(/[\\/]+$/, '') + sep + folderName };
+  });
+
+  const [target, setTarget] = useState(null);      // chosen candidate (+ ready/destination)
+  const [phase, setPhase] = useState('choose');    // choose | run
+  const [steps, setSteps] = useState([]);          // [{id, label, status, detail}]
+  const [outcome, setOutcome] = useState(null);    // {kind: done|warn|stopped, message}
+  const [busy, setBusy] = useState(false);         // a request is in flight
+  const mutatedRef = useRef(false);
+
+  const setStep = (id, patch) => setSteps(s => s.map(st => (st.id === id ? { ...st, ...patch } : st)));
+  const stepById = (id) => steps.find(st => st.id === id);
+  // apiErr (cli/ui/api.js) digs result.error out of 500 bodies.
+  const finish = (kind, message) => {
+    setOutcome({ kind, message });
+    if (mutatedRef.current) onChanged();
+  };
+
+  const doUnlink = async () => {
+    setBusy(true);
+    setStep('unlink', { status: 'running', detail: '' });
+    try {
+      const d = await api.post('/api/projects/subprojects/remove',
+        { parent: oldParentPath, ref: project.path, mode: 'unlink' });
+      const res = (d && d.result) || {};
+      if (!d.success || !res.removed) throw new Error(res.error || 'unlink failed');
+      mutatedRef.current = true;
+      setStep('unlink', { status: 'ok', detail: 'Now top-level: still registered, .c3 intact.' });
+      setBusy(false);
+      return true;
+    } catch (e) {
+      setStep('unlink', { status: 'fail', detail: apiErr(e) });
+      finish('stopped', `Stopped at unlink. If nothing was removed, ${project.name} is still linked under ` +
+        `${oldParentName} exactly as before. If the failure looks partial, run "Reconcile links" on ` +
+        `${oldParentName}'s card to check and repair.`);
+      setBusy(false);
+      return false;
+    }
+  };
+
+  const doLink = async (folder) => {
+    setBusy(true);
+    setStep('link', { status: 'running', detail: 'Adopting the existing .c3 (no re-init)…' });
+    try {
+      const d = await api.post('/api/projects/subprojects/add',
+        { parent: target.path, folder, name: project.name });
+      const res = (d && d.result) || {};
+      if (!d.success || !res.added) throw new Error(res.error || 'link failed');
+      mutatedRef.current = true;
+      setStep('link', { status: 'ok', detail: `${res.adopted ? 'Adopted' : 'Linked'} under ${target.name}.` });
+      setBusy(false);
+      return true;
+    } catch (e) {
+      setStep('link', { status: 'fail', detail: apiErr(e) });
+      finish('stopped', target.ready
+        ? `Current state: ${project.name} is a TOP-LEVEL project — still registered, .c3 intact, not linked ` +
+          `under any parent. Nothing is lost. Retry the link below, or Undo to re-link under ${oldParentName}.`
+        : `Current state: the folder lives at ${target.destination} with its .c3 intact, but is NOT linked ` +
+          `under ${target.name}, and the hub registry still has the old-path row. Nothing is lost — retry the ` +
+          `link below, or finish later via "Designate sub-project…" on ${target.name}'s card.`);
+      setBusy(false);
+      return false;
+    }
+  };
+
+  // Old registry row: add_project never migrates it, so remove explicitly.
+  const doCleanup = async () => {
+    setBusy(true);
+    setStep('cleanup', { status: 'running', detail: '' });
+    let ok = true;
+    try {
+      const d = await api.post('/api/projects/remove', { path: project.path });
+      setStep('cleanup', { status: 'ok', detail: d.removed
+        ? `Removed the stale registry row for ${project.path}.`
+        : 'No stale row found — registry already clean.' });
+    } catch (e) {
+      ok = false;
+      setStep('cleanup', { status: 'fail', detail: apiErr(e) });
+    }
+    setBusy(false);
+    return ok;
+  };
+
+  const linkAndCleanup = async () => {
+    setOutcome(null);
+    if (!await doLink(target.destination)) return;
+    if (await doCleanup()) {
+      finish('done', `${project.name} is now a sub-project of ${target.name} at its new location.`);
+    } else {
+      finish('warn', `Re-parent complete, but the stale registry row for the old path (${project.path}) ` +
+        `could not be removed — remove that card from the hub manually.`);
+    }
+  };
+
+  const runReadyLink = async () => {
+    setOutcome(null);
+    if (await doLink(project.path)) {
+      finish('done', `${project.name} is now a sub-project of ${target.name}. No files moved.`);
+    }
+  };
+
+  // Verify the manual move — read-only until it passes; nothing further
+  // is touched while the folder is not confirmed at the destination.
+  const recheck = async () => {
+    setBusy(true);
+    setStep('move', { status: 'waiting', detail: 'Checking…' });
+    try {
+      const v = await api.post('/api/projects/subprojects/validate',
+        { parent: target.path, folder: target.destination });
+      if (v.ok) {
+        setStep('move', { status: 'ok', detail: `Verified — folder present and linkable at ${target.destination}.` });
+        setBusy(false);
+        await linkAndCleanup();
+        return;
+      }
+      if (!v.is_dir) {
+        setStep('move', { status: 'waiting', detail: 'Not there yet — no folder at the destination. Move it, then Re-check.' });
+      } else if (v.already_child_of) {
+        setStep('move', { status: 'waiting', detail:
+          `The folder at the destination still back-links ${v.already_child_of} in its .c3/config.json ` +
+          `(it was moved before the unlink step could clear the link). Delete the "parent" key from that ` +
+          `file by hand, then Re-check. Nothing has been changed at the destination.` });
+      } else {
+        setStep('move', { status: 'waiting', detail:
+          'Validation failed: ' + ((v.warnings || []).join('; ') || 'unknown reason') + '. Fix and Re-check.' });
+      }
+    } catch (e) {
+      setStep('move', { status: 'waiting', detail: 'Re-check failed: ' + apiErr(e) + '. Try again.' });
+    }
+    setBusy(false);
+  };
+
+  // Undo — valid only while the folder is still at its old path.
+  const undoRelink = async () => {
+    setBusy(true);
+    try {
+      const d = await api.post('/api/projects/subprojects/add',
+        { parent: oldParentPath, folder: project.path, name: project.name });
+      const res = (d && d.result) || {};
+      if (!d.success || !res.added) throw new Error(res.error || 'relink failed');
+      if (stepById('move')) setStep('move', { status: 'skip', detail: 'Cancelled — the folder was not moved.' });
+      setStep('link', { status: 'skip', detail: '' });
+      finish('stopped', `Undone: ${project.name} is linked under ${oldParentName} again, exactly as before.`);
+    } catch (e) {
+      notify('Undo failed: ' + apiErr(e), 'err');
+    }
+    setBusy(false);
+  };
+
+  const start = async () => {
+    if (!target) return;
+    mutatedRef.current = false;
+    setOutcome(null);
+    setSteps([
+      { id: 'unlink', label: `Unlink from ${oldParentName}`, status: 'pending', detail: '' },
+      ...(target.ready ? [] : [{ id: 'move', label: 'Move the folder (manual)', status: 'pending', detail: '' }]),
+      { id: 'link', label: `Link under ${target.name}`, status: 'pending', detail: '' },
+      ...(target.ready ? [] : [{ id: 'cleanup', label: 'Remove stale registry row (old path)', status: 'pending', detail: '' }]),
+    ]);
+    setPhase('run');
+    if (!await doUnlink()) return;
+    if (target.ready) {
+      await runReadyLink();
+    } else {
+      onChanged();   // hub now truthfully shows it as top-level while we wait
+      setStep('move', { status: 'waiting', detail: '' });
+    }
+  };
+
+  const safeClose = () => { if (!busy) onClose(); };
+  const linkFailed = (stepById('link') || {}).status === 'fail';
+  const waitingMove = (stepById('move') || {}).status === 'waiting';
+  const stStatusColor = (st) =>
+    st === 'ok' ? T.accent : st === 'fail' ? T.error : st === 'running' || st === 'waiting' ? T.warn : T.textDim;
+
+  return (
+    <Modal title={`Change parent — ${project.name || ''}`} width={560} onClose={safeClose}>
+      <MdlPath>{project.path}</MdlPath>
+      <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 4 }}>
+        Current parent: <span style={{ color: T.text, fontWeight: 600 }}>{oldParentName || '—'}</span>
+      </div>
+
+      {!oldParentPath && (
+        <div style={{ fontSize: 12.5, color: T.textMuted, lineHeight: 1.6, margin: '10px 0' }}>
+          This project has no parent — use "Make sub-project of…" to link it under one.
+        </div>
+      )}
+
+      {oldParentPath && phase === 'choose' && (candidates.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: T.textMuted, lineHeight: 1.6, margin: '10px 0' }}>
+          No eligible new parent. Candidates must be registered, top-level (not themselves
+          sub-projects), and not this project or its current parent.
+        </div>
+      ) : (
+        <React.Fragment>
+          <MdlLabel>New parent</MdlLabel>
+          <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflowY: 'auto', maxHeight: 220, background: T.surfaceAlt }}>
+            {candidates.map(c => {
+              const sel = target && target.path === c.path;
+              return (
+                <div key={c.path} onClick={() => setTarget(c)} style={{
+                  padding: '8px 10px', cursor: 'pointer', borderBottom: `1px solid ${T.border}40`,
+                  background: sel ? T.accentDim : 'transparent',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <I name="gitBranch" size={13} color={sel ? T.accent : T.textMuted} />
+                    <span style={{ fontSize: 13, color: sel ? T.accent : T.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {c.name}
+                    </span>
+                    <Badge color={c.ready ? T.accent : T.warn}>{c.ready ? 'ready now' : 'move needed'}</Badge>
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: T.textDim, marginTop: 2, paddingLeft: 21, wordBreak: 'break-all' }}>
+                    {c.ready ? 'already inside — no move required' : `requires: ${c.destination}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {target && (
+            <div style={{ marginTop: 12, fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
+              <div style={{ color: T.text, fontWeight: 600 }}>Plan</div>
+              {target.ready ? (
+                <React.Fragment>
+                  <div>1. Unlink from {oldParentName} &nbsp; 2. Link under {target.name}</div>
+                  <div>The folder is already inside {target.name} — no files move.</div>
+                </React.Fragment>
+              ) : (
+                <React.Fragment>
+                  <div>1. Unlink from {oldParentName} (runs immediately)</div>
+                  <div>2. You move the folder to the required path — the hub never moves files</div>
+                  <div>3. Re-check verifies the destination, then links under {target.name}</div>
+                  <div>4. Remove the stale registry row for the old path</div>
+                  <div style={{ color: T.warn, marginTop: 6 }}>
+                    The unlink must run before the move: clearing the child's back-link is only possible
+                    while the folder is at its current path (a stale back-link would block the new link).
+                    Between steps, {project.name} is simply a top-level registered project — nothing
+                    breaks, and Undo can re-link it under {oldParentName} until the folder is moved.
+                  </div>
+                </React.Fragment>
+              )}
+            </div>
+          )}
+        </React.Fragment>
+      ))}
+
+      {phase === 'run' && (
+        <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.surfaceAlt, marginTop: 4 }}>
+          {steps.map(st => (
+            <div key={st.id} style={{ padding: '8px 10px', borderBottom: `1px solid ${T.border}40` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {st.status === 'ok' && <I name="check" size={13} color={T.accent} />}
+                {st.status === 'fail' && <I name="xCircle" size={13} color={T.error} />}
+                {st.status === 'waiting' && <I name="alertTriangle" size={13} color={T.warn} />}
+                {st.status === 'running' && <GlowDot color={T.warn} />}
+                {(st.status === 'pending' || st.status === 'skip') && <GlowDot color={T.textDim} />}
+                <span style={{ fontSize: 13, color: T.text, flex: 1 }}>{st.label}</span>
+                <span className="mono" style={{ fontSize: 11, color: stStatusColor(st.status) }}>
+                  {st.status === 'running' ? 'running…' : st.status === 'waiting' ? 'action needed' : st.status === 'skip' ? 'skipped' : st.status}
+                </span>
+              </div>
+              {st.detail && (
+                <div style={{ fontSize: 11, color: st.status === 'fail' ? T.error : T.textMuted, marginTop: 3, paddingLeft: 21, lineHeight: 1.5, wordBreak: 'break-word' }}>
+                  {st.detail}
+                </div>
+              )}
+              {st.id === 'move' && st.status === 'waiting' && (
+                <div style={{ paddingLeft: 21, marginTop: 6 }}>
+                  <div className="mono" style={{ fontSize: 11, color: T.text, wordBreak: 'break-all' }}>{project.path}</div>
+                  <div className="mono" style={{ fontSize: 11, color: T.textDim, wordBreak: 'break-all' }}>→ {target.destination}</div>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                    Move the folder yourself (File Explorer / terminal — the hub does not move files),
+                    then click Re-check. Until the folder is verified at the destination, nothing further
+                    is touched — {project.name} stays a valid top-level project. You can also close this
+                    wizard and finish later via "Designate sub-project…" on {target.name}'s card.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <Btn onClick={recheck} disabled={busy}>{busy ? 'Checking…' : 'Re-check'}</Btn>
+                    <Btn variant="ghost" onClick={undoRelink} disabled={busy}>Undo — re-link under {oldParentName}</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {outcome && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.6,
+          border: `1px solid ${outcome.kind === 'done' ? T.accent : outcome.kind === 'warn' ? T.warn : T.error}50`,
+          background: outcome.kind === 'done' ? T.accentDim : outcome.kind === 'warn' ? T.warnDim : T.errorDim,
+          color: outcome.kind === 'done' ? T.accent : outcome.kind === 'warn' ? T.warn : T.error,
+        }}>
+          {outcome.message}
+        </div>
+      )}
+
+      <MdlFooter>
+        {phase === 'choose' && <Btn variant="ghost" onClick={onClose}>Cancel</Btn>}
+        {phase === 'choose' && (
+          <Btn onClick={start} disabled={!target || !oldParentPath}>Start re-parent</Btn>
+        )}
+        {phase === 'run' && linkFailed && !waitingMove && (
+          <Btn onClick={target && target.ready ? runReadyLink : linkAndCleanup} disabled={busy}>Retry link</Btn>
+        )}
+        {phase === 'run' && linkFailed && target && target.ready && (
+          <Btn variant="ghost" onClick={undoRelink} disabled={busy}>Undo — re-link under {oldParentName}</Btn>
+        )}
+        {phase === 'run' && <Btn variant="ghost" onClick={safeClose} disabled={busy}>Close</Btn>}
+      </MdlFooter>
+    </Modal>
+  );
 }
 
 // ── IDE picker ─────────────────────────────────────────────────
@@ -313,7 +742,8 @@ function MergeModal({ project, projects, onClose, onChanged }) {
 // ── Folder picker (designate a sub-project) ────────────────────
 // Browse: POST /api/projects/browse {path}
 // Validate: POST /api/projects/subprojects/validate {parent, folder}
-// Designate: POST /api/projects/subprojects/add {parent, folder, name?}
+// Designate: POST /api/projects/subprojects/add {parent, folder, name?, ide?}
+// Navigation is fenced to the parent subtree (crumbs above it are inert).
 const _pathCrumbs = (full) => {
   if (!full) return [];
   const sep = full.includes('\\') ? '\\' : '/';
@@ -326,6 +756,16 @@ const _pathCrumbs = (full) => {
   });
 };
 
+// Legal `c3 sub add --ide` values (cli/commands/parser.py); 'auto' = CLI default.
+const _SUB_IDE_OPTIONS = [
+  { id: 'auto', label: 'Auto-detect' },
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'vscode', label: 'VS Code' },
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'antigravity', label: 'Antigravity' },
+];
+
 function FolderPickerModal({ project, onClose, onChanged }) {
   const parentPath = (project && project.path) || '';
   const [listing, setListing] = useState(null);
@@ -334,9 +774,18 @@ function FolderPickerModal({ project, onClose, onChanged }) {
   const [validation, setValidation] = useState(null);
   const [validating, setValidating] = useState(false);
   const [name, setName] = useState('');
+  const [ide, setIde] = useState('auto');
   const [busy, setBusy] = useState(false);
 
+  // Fence: only the parent project's subtree is browsable.
+  const _norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const inParent = (p) => {
+    const a = _norm(p), b = _norm(parentPath);
+    return !!b && (a === b || a.startsWith(b + '/'));
+  };
+
   const loadDir = async (path) => {
+    if (!inParent(path)) path = parentPath;   // clamp any escape to the parent root
     setBrowsing(true);
     setSelected(null); setValidation(null); setName('');
     try {
@@ -370,6 +819,7 @@ function FolderPickerModal({ project, onClose, onChanged }) {
       const body = { parent: parentPath, folder: selected.path };
       const nm = name.trim();
       if (nm) body.name = nm;
+      if (ide && ide !== 'auto') body.ide = ide;
       const d = await api.post('/api/projects/subprojects/add', body);   // long-running (full init)
       const res = (d && d.result) || {};
       if (!d.success) throw new Error(res.error || 'Designation failed');
@@ -393,10 +843,14 @@ function FolderPickerModal({ project, onClose, onChanged }) {
         {crumbs.map((c, i) => (
           <span key={c.path} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
             {i > 0 && <span style={{ color: T.textDim }}>/</span>}
-            <span onClick={() => loadDir(c.path)} style={{
-              color: i === crumbs.length - 1 ? T.text : T.textMuted,
-              cursor: 'pointer', padding: '1px 3px', borderRadius: 4,
-            }}>{c.label}</span>
+            {inParent(c.path) ? (
+              <span onClick={() => loadDir(c.path)} style={{
+                color: i === crumbs.length - 1 ? T.text : T.textMuted,
+                cursor: 'pointer', padding: '1px 3px', borderRadius: 4,
+              }}>{c.label}</span>
+            ) : (
+              <span style={{ color: T.textDim, padding: '1px 3px' }}>{c.label}</span>
+            )}
           </span>
         ))}
       </div>
@@ -442,22 +896,45 @@ function FolderPickerModal({ project, onClose, onChanged }) {
           {validating && (
             <div style={{ fontSize: 11, color: T.textMuted, animation: 'pulse 1s infinite' }}>Validating…</div>
           )}
-          {!validating && validation && (validation.warnings || []).map((w, i) => (
+          {!validating && validation && (validation.warnings || [])
+            .filter(w => !(validation.ok && validation.has_c3 && w.includes('adopted')))   // superseded by the explicit adopt line below
+            .map((w, i) => (
             <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: T.warn, marginTop: 3 }}>
               <I name="alertTriangle" size={11} color={T.warn} style={{ marginTop: 1, flexShrink: 0 }} />{w}
             </div>
           ))}
+          {!validating && validation && validation.ok && validation.has_c3 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: T.accent, marginTop: 3 }}>
+              <I name="check" size={11} color={T.accent} style={{ marginTop: 1, flexShrink: 0 }} />
+              Existing .c3 will be adopted as-is (no re-init).
+            </div>
+          )}
+          {!validating && validation && validation.ok && validation.registered && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: T.blue, marginTop: 3 }}>
+              <I name="check" size={11} color={T.blue} style={{ marginTop: 1, flexShrink: 0 }} />
+              Already registered in the hub — will be re-linked under this parent.
+            </div>
+          )}
           {!validating && validation && validation.ok && (
             <div>
               <MdlLabel>Name (optional)</MdlLabel>
               <input value={name} onChange={e => setName(e.target.value)}
                 placeholder={selected.name} style={mdlInputStyle()} />
+              <MdlLabel>Instruction docs / IDE</MdlLabel>
+              <select value={ide} onChange={e => setIde(e.target.value)} style={mdlInputStyle()}>
+                {_SUB_IDE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
             </div>
           )}
         </div>
       )}
 
       <MdlFooter>
+        {!validating && validation && validation.ok && (
+          <span style={{ marginRight: 'auto', alignSelf: 'center', fontSize: 11, color: T.textMuted }}>
+            {validation.has_c3 ? 'Will adopt existing .c3' : 'Will initialize a new .c3'}
+          </span>
+        )}
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
         <Btn onClick={designate} disabled={busy || validating || !(validation && validation.ok)}>
           {busy ? 'Designating…' : 'Designate'}
