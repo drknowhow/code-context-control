@@ -283,6 +283,56 @@ function DrillLedger({ project }) {
 }
 
 // ── Sessions ───────────────────────────────────────────────────
+// Read-only: the hub never transits credential values — this lists metadata
+// from GET /api/projects/credentials; management lives in the project UI.
+function DrillCredentials({ project }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+
+  const load = async () => {
+    setErr(null);
+    try {
+      const d = await api.get('/api/projects/credentials?path=' + encodeURIComponent(project.path));
+      setData(d);
+    } catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { setData(null); load(); }, [project.path]);
+
+  if (err) return <DrillMsg text={'Failed to load credentials: ' + err} color={T.error} />;
+  if (!data) return <DrillMsg text="Loading credentials…" />;
+
+  const entries = data.entries || [];
+  return (
+    <div className="fade-up">
+      <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5, marginBottom: 12 }}>
+        Read-only view — values never transit the hub. Manage entries (and the
+        agent_readable / inject flags) in this project's own UI Credentials tab
+        or via <span className="mono">c3 creds</span>.
+      </div>
+      {entries.length === 0 ? (
+        <DrillMsg text="No credentials registered for this project." />
+      ) : entries.map((entry) => (
+        <div key={entry.scope + '|' + entry.name} style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
+          borderBottom: `1px solid ${T.border}`, fontSize: 12,
+        }}>
+          <I name="lock" size={12} color={T.textMuted} />
+          <span className="mono" style={{ fontWeight: 600, color: T.text }}>{entry.name}</span>
+          <Badge color={entry.scope === 'global' ? T.accent : T.ok}>{entry.scope}</Badge>
+          <Badge color={T.textMuted}>{entry.type}</Badge>
+          <span className="mono" style={{ color: T.textDim }}>len={entry.value_len}</span>
+          {!!entry.inject && <Badge color={T.warn}>inject</Badge>}
+          {!!entry.agent_readable && <Badge color={T.error}>agent_readable</Badge>}
+          <span style={{
+            flex: 1, color: T.textMuted, fontSize: 11, textAlign: 'right',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>{entry.description}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DrillSessions({ project }) {
   const [data, setData] = useState(null);
   const [needsInit, setNeedsInit] = useState(false);

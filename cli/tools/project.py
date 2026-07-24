@@ -284,8 +284,12 @@ def _proxy(action, fsvc, *, query, file_path, symbols, lines, mode, view, top_k,
     if action == "shell":
         from cli.tools.shell import handle_shell
 
+        # enable_creds=False: a proxied shell must never expand or inject the
+        # TARGET project's credentials — its vault is reachable only from its
+        # own runtime.
         return asyncio.run(handle_shell(cmd, project_path, timeout, True, True,
-                                       fsvc, _foreign_finalize))
+                                       fsvc, _foreign_finalize,
+                                       enable_creds=False))
     return f"[c3_project:error] Unhandled op '{action}'."
 
 

@@ -13,6 +13,7 @@ const DRILL_PANEL_TABS = [
   ['sessions', 'Sessions'],
   ['health', 'Health'],
   ['budget', 'Budget'],
+  ['creds', 'Credentials'],
   ['config', 'Config'],
   ['mcp', 'MCP'],
 ];
@@ -132,6 +133,7 @@ function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal, pro
       case 'sessions': return <DrillSessions project={project} />;
       case 'health': return <DrillHealth project={project} onChanged={onChanged} />;
       case 'budget': return <DrillBudget project={project} />;
+      case 'creds': return <DrillCredentials project={project} />;
       case 'config': return <ConfigEditor project={project} />;
       case 'mcp': return <McpManager project={project} onChanged={onChanged} />;
       default: return <DrillOverview project={project} onChanged={onChanged} setTab={setTab} />;

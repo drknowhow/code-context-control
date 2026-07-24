@@ -1773,6 +1773,36 @@ def api_projects_config_get():
                     "defaults": {k: _config_defaults(k) for k in _CONFIG_READ_SECTIONS}})
 
 
+@app.route("/api/projects/credentials", methods=["GET"])
+def api_projects_credentials():
+    """Read-only masked credential registry for a project (global entries +
+    project shadows). Values never transit the hub — the explicit field
+    allowlist below returns metadata only; management lives in the project UI
+    (`credentials` is deliberately absent from _CONFIG_WRITE_SECTIONS)."""
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    from services import credential_store as cred_store
+    entries = []
+    for name, entry in cred_store.list_entries(str(resolved)).items():
+        entries.append({
+            "name": name,
+            "scope": entry.get("scope", ""),
+            "type": entry.get("type", "token"),
+            "value_len": entry.get("value_len", 0),
+            "env_var": entry.get("env_var", ""),
+            "inject": bool(entry.get("inject")),
+            "agent_readable": bool(entry.get("agent_readable")),
+            "description": entry.get("description", ""),
+            "updated": entry.get("updated", ""),
+        })
+    return jsonify({"path": str(resolved), "entries": entries})
+
+
 @app.route("/api/projects/config", methods=["PUT"])
 def api_projects_config_put():
     """Whitelisted section write: deep-merge, atomic replace, audited on the target."""

@@ -4,6 +4,55 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.58.0] - 2026-07-24
+
+### Added — Credential vault: `c3_credentials` + Credentials UI (injection-first)
+
+A general-purpose secret store for agents, global (`~/.c3`) + per-project
+(`.c3`) scoped, designed so decoded values never enter the model's context.
+
+- **`services/credential_store.py`** — named entries; metadata registry in
+  `config.json`, values in the OS keyring under `c3-creds`, keyed by
+  `(realm, name)` (`global` / `proj|<path>`). Values >1KB route to a
+  Fernet-encrypted `.c3/secrets.enc` whose random master key lives in the
+  keyring (Windows Credential Manager caps blobs at ~2.5KB); `cryptography`
+  is lazily imported like `keyring`. No plaintext fallback, ever.
+- **Realm-atomic resolution** (security invariant): a project-registered name
+  resolves in the project realm or not at all — a cloned repo's committed
+  `.c3/config.json` can register a name with `inject:true` but can never
+  siphon the global value; behavioral flags are honored only from the realm
+  that holds the value. Explicitly tested.
+- **`c3_credentials` MCP tool (19th)** — `list` / `describe` / `check` return
+  names + metadata + live fingerprint, never values. `reveal` is gated by a
+  per-entry `agent_readable` flag only the user can enable (the agent cannot
+  raise it on an existing entry). `set`/`delete` allowed; every mutation and
+  reveal is ledger-logged with identifiers only.
+- **`c3_shell` integration** — `env_creds='NAME1,NAME2'` injects entries as
+  env vars into the child process; `{{cred:NAME}}` inside `cmd` expands
+  server-side. The raw template form is what every log/echo surface shows;
+  child stdout/stderr are scrubbed against the decoded values (`env` dumps
+  come back as `[cred:NAME]`); `inject:true` entries auto-inject.
+  Cross-project `c3_project(action='shell')` proxies run with credentials
+  disabled — one project can never read another's vault.
+- **Choke-point redaction** in `_finalize_response`: any active decoded value
+  is scrubbed from the persisted copies (activity log, session store,
+  auto-memory) of every tool response.
+- **`c3 creds` CLI** — `set` (getpass / `--stdin`), `get` (masked; `--show`),
+  `list`, `rm`, `import <.env>`; `--global` targets the shared scope.
+- **REST + Credentials UI tab** — `/api/credentials` (masked GET, write-only
+  POST, scoped DELETE, `check` probe, `.env` import). New per-project UI tab
+  with create/edit form, flag toggles (with an explicit warning before
+  enabling `agent_readable`), usage stats, and fingerprint checks. No route
+  ever returns a stored value (endpoint-sweep tested).
+- **Hub** — read-only Credentials drill tab (`GET /api/projects/credentials`,
+  explicit metadata field allowlist); the `credentials` config section stays
+  out of `_CONFIG_WRITE_SECTIONS`, preserving "secrets never transit the hub".
+- **Oracle exclusion** — `c3_credentials` is hard-excluded from Discovery
+  `TOOL_SPECS` (regression-tested), so external LLMs can never reach the vault.
+- **Git hygiene** — the store self-writes a `.c3/.gitignore` guarding
+  `secrets.enc` + `cred_state.json` for projects that track their `.c3/`.
+- 60 new tests across store/tool/shell/CLI/routes/hub.
+
 ## [2.57.1] - 2026-07-24
 
 ### Fixed — Hub "Open UI" on active projects without a running UI server
