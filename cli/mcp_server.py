@@ -337,8 +337,34 @@ mcp = FastMCP(f"C3 v{C3_VERSION}", instructions=_build_instructions(_IDE_NAME), 
 
 # ─── Helper Functions ─────────────────────────────────────────────
 
+_repo_map_ensured = False
+
+
+def _ensure_repo_map_once(rt) -> None:
+    """First tool call of this server process kicks a background repo-map
+    freshness pass. In-process single-flight here; cross-process single-flight
+    via the lock file inside RepoMapService.ensure(). Never blocks the tool
+    call that triggered it."""
+    global _repo_map_ensured
+    if _repo_map_ensured:
+        return
+    _repo_map_ensured = True
+
+    def _bg():
+        try:
+            from services.repo_map import RepoMapService
+            RepoMapService(rt.project_path,
+                           session_mgr=getattr(rt, "session_mgr", None)).ensure()
+        except Exception:
+            pass
+
+    threading.Thread(target=_bg, daemon=True, name="repo-map-ensure").start()
+
+
 def _svc(ctx: Context) -> C3Runtime:
-    return ctx.request_context.lifespan_context
+    rt = ctx.request_context.lifespan_context
+    _ensure_repo_map_once(rt)
+    return rt
 
 
 _last_tool_call_time: float = 0.0

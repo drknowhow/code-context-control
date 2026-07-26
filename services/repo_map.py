@@ -72,7 +72,8 @@ def mark_map_dirty(project_path, reason: str = "") -> None:
 def is_structural_change(file_path: str, change_type: str = "") -> bool:
     """True when an edit should dirty the map: create/delete/rename or a
     dependency-manifest change. Ordinary line edits return False."""
-    if change_type in ("create", "delete", "rename"):
+    if change_type in ("create", "created", "delete", "deleted",
+                       "rename", "renamed"):
         return True
     return Path(file_path).name.lower() in MANIFEST_NAMES
 

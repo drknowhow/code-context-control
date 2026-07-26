@@ -274,6 +274,60 @@ class TestDirtySentinel(unittest.TestCase):
             self.assertLess(sentinel.stat().st_size, 16384)
 
 
+class TestLedgerHookIntegration(unittest.TestCase):
+    """PostToolUse ledger hook marks the map dirty on structural changes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / ".c3").mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_hook(self, fname, is_new=False):
+        from cli import hook_edit_ledger
+        fp = self.root / fname
+        fp.write_text("x = 1\n", encoding="utf-8")
+        tool_input = {"file_path": str(fp), "old_string": "a", "new_string": "b"}
+        if is_new:
+            tool_input["_is_new"] = True
+        return hook_edit_ledger.run(
+            {"tool_name": "Write" if is_new else "Edit",
+             "tool_input": tool_input},
+            project_path=self.root)
+
+    def test_new_file_marks_dirty(self):
+        self._run_hook("brand_new.py", is_new=True)
+        self.assertTrue((self.root / ".c3" / DIRTY_NAME).exists())
+
+    def test_manifest_edit_marks_dirty(self):
+        self._run_hook("pyproject.toml")
+        self.assertTrue((self.root / ".c3" / DIRTY_NAME).exists())
+
+    def test_plain_edit_does_not_mark_dirty(self):
+        self._run_hook("existing.py")
+        self.assertFalse((self.root / ".c3" / DIRTY_NAME).exists())
+
+
+class TestServerLedgerIntegration(unittest.TestCase):
+    """Server-side EditLedger.log_edit marks the map dirty too (c3_edit path)."""
+
+    def test_created_change_marks_dirty(self):
+        from services.edit_ledger import EditLedger
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = EditLedger(tmp)
+            ledger.log_edit("new_module.py", "created", "s", include_git=False)
+            self.assertTrue((Path(tmp) / ".c3" / DIRTY_NAME).exists())
+
+    def test_modified_change_does_not_mark_dirty(self):
+        from services.edit_ledger import EditLedger
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = EditLedger(tmp)
+            ledger.log_edit("mod.py", "modified", "s", include_git=False)
+            self.assertFalse((Path(tmp) / ".c3" / DIRTY_NAME).exists())
+
+
 class TestDisabled(_Base):
     def test_disabled_via_config(self):
         (self.root / ".c3").mkdir(exist_ok=True)
