@@ -530,7 +530,7 @@ def _wf_codex_test_gen(scope, context, svc, steps_log):
     if context:
         gen_context += f"\n\nAdditional context: {context}"
 
-    model = dcfg.get("codex_default_model", "gpt-5.3-codex-spark")
+    model = dcfg.get("codex_default_model", "")
     timeout = int(dcfg.get("codex_timeout", 180))
 
     steps_log.append("codex_generate")
@@ -544,7 +544,7 @@ def _wf_codex_test_gen(scope, context, svc, steps_log):
     parts = [f"--- Test generation for {len(files)} file(s) ---"]
     parts.append(f"Files: {file_list}")
     parts.append("Sandbox: workspace-write")
-    parts.append(f"Model: {model}")
+    parts.append(f"Model: {model or 'cli-default'}")
     if ok:
         parts.append(f"\n--- Codex output ---\n{output}")
     else:
@@ -1005,7 +1005,7 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
                 steps_log.append("codex(skipped:health_check_failed)")
                 return ""
             cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
-            model = dcfg.get("codex_default_model") or cdef.get("model", "gpt-5.3-codex-spark")
+            model = dcfg.get("codex_default_model") or cdef.get("model", "")
             sandbox = dcfg.get("codex_default_sandbox") or cdef.get("sandbox", "read-only")
             reasoning = dcfg.get("codex_reasoning_effort") or cdef.get("reasoning", "high")
             timeout = int(dcfg.get("codex_timeout", 90))
@@ -1109,7 +1109,7 @@ def _try_delegate(svc, task_type: str, task: str, context: str, steps_log: list,
             )
             if _codex_ok and _dm_auto._codex_available is not False:
                 cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
-                c_model = dcfg.get("codex_default_model") or cdef.get("model", "gpt-5.3-codex-spark")
+                c_model = dcfg.get("codex_default_model") or cdef.get("model", "")
                 c_sandbox = dcfg.get("codex_default_sandbox") or cdef.get("sandbox", "read-only")
                 c_reason = dcfg.get("codex_reasoning_effort") or cdef.get("reasoning", "high")
                 c_timeout = int(dcfg.get("codex_timeout", 90))
