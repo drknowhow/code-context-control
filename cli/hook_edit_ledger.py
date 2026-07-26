@@ -212,6 +212,15 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     with open(ledger_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
+    # Structural changes (file created / manifest edited) dirty the repo map.
+    # Sentinel touch only — the scan happens later, in RepoMapService.ensure().
+    try:
+        from services.repo_map import is_structural_change, mark_map_dirty
+        if is_structural_change(rel, change_type):
+            mark_map_dirty(project_path, f"{change_type}:{rel}")
+    except Exception:
+        pass
+
     return {
         "_text": (
             f"[c3:ledger] {rel} {entry['version']} auto-logged. "

@@ -1554,7 +1554,7 @@ class EditLedgerEnricherAgent(BackgroundAgent):
                 f"--- {f} ---\n{d}" for _, f, d in batch
             )
             task = "Review these recent edits for regressions, bugs, or issues. Be concise — only flag real problems."
-            model = self.delegate_config.get("codex_default_model", "gpt-5.3-codex-spark")
+            model = self.delegate_config.get("codex_default_model", "")
             timeout = int(self.delegate_config.get("codex_timeout", 120))
 
             output, ok = _run_codex(

@@ -133,6 +133,13 @@ class EditLedger:
                 f.write(json.dumps(entry) + "\n")
         if self._total_count is not None:
             self._total_count += 1
+        # Structural changes dirty the repo map (sentinel touch, never raises).
+        try:
+            from services.repo_map import is_structural_change, mark_map_dirty
+            if is_structural_change(rel, change_type):
+                mark_map_dirty(self.project_path, f"{change_type}:{rel}")
+        except Exception:
+            pass
         return entry
 
     def get_history(self, file: str = None, limit: int = 50,

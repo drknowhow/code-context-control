@@ -115,15 +115,19 @@ def _popen_kwargs():
 # Codex CLI backend
 # ---------------------------------------------------------------------------
 
+# No "model" keys here on purpose: a pinned model name goes stale and breaks
+# accounts that don't support it (ChatGPT-plan logins reject retired models
+# outright). Resolution order: .c3 config codex_default_model → the user's own
+# Codex CLI default (~/.codex/config.toml). Empty model = omit -m entirely.
 CODEX_MODELS = {
-    "review":   {"model": "gpt-5.3-codex-spark", "sandbox": "read-only",      "reasoning": "high"},
-    "explain":  {"model": "gpt-5.3-codex-spark", "sandbox": "read-only",      "reasoning": "medium"},
-    "improve":  {"model": "gpt-5.4",             "sandbox": "read-only",      "reasoning": "high"},
-    "diagnose": {"model": "gpt-5.3-codex",       "sandbox": "read-only",      "reasoning": "high"},
-    "test":     {"model": "gpt-5.3-codex-spark", "sandbox": "workspace-write", "reasoning": "medium"},
-    "summarize":{"model": "gpt-5.3-codex-spark", "sandbox": "read-only",      "reasoning": "low"},
-    "docstring":{"model": "gpt-5.3-codex-spark", "sandbox": "read-only",      "reasoning": "low"},
-    "ask":      {"model": "gpt-5.3-codex-spark", "sandbox": "read-only",      "reasoning": "medium"},
+    "review":   {"sandbox": "read-only",       "reasoning": "high"},
+    "explain":  {"sandbox": "read-only",       "reasoning": "medium"},
+    "improve":  {"sandbox": "read-only",       "reasoning": "high"},
+    "diagnose": {"sandbox": "read-only",       "reasoning": "high"},
+    "test":     {"sandbox": "workspace-write", "reasoning": "medium"},
+    "summarize":{"sandbox": "read-only",       "reasoning": "low"},
+    "docstring":{"sandbox": "read-only",       "reasoning": "low"},
+    "ask":      {"sandbox": "read-only",       "reasoning": "medium"},
 }
 
 _codex_available: bool | None = None  # cached after first check
@@ -560,6 +564,26 @@ def check_codex() -> dict:
         return {"status": "error", "detail": str(e)}
 
 
+def _codex_cmd(prompt: str, model: str, sandbox: str, reasoning: str) -> list:
+    """Build the codex exec argv.
+
+    An empty/falsy model omits ``-m`` so the user's own Codex CLI default
+    (~/.codex/config.toml) applies — never pin a fallback model name here.
+    """
+    codex_exe = _which("codex") or "codex"
+    cmd = [codex_exe, "exec"]
+    if model:
+        cmd += ["-m", model]
+    cmd += [
+        "--config", f"model_reasoning_effort={reasoning}",
+        "--sandbox", sandbox,
+        "--full-auto",
+        "--skip-git-repo-check",
+        prompt,
+    ]
+    return cmd
+
+
 def _run_codex(task: str, context: str, model: str, sandbox: str,
                reasoning: str = "high", timeout: int = 120,
                idle_timeout: int = 20,
@@ -570,16 +594,7 @@ def _run_codex(task: str, context: str, model: str, sandbox: str,
     seconds (catches MCP startup hangs). Also enforces total timeout.
     """
     prompt = f"{task}\n\nContext:\n{context}" if context else task
-    codex_exe = _which("codex") or "codex"
-    cmd = [
-        codex_exe, "exec",
-        "-m", model,
-        "--config", f"model_reasoning_effort={reasoning}",
-        "--sandbox", sandbox,
-        "--full-auto",
-        "--skip-git-repo-check",
-        prompt,
-    ]
+    cmd = _codex_cmd(prompt, model, sandbox, reasoning)
     try:
         proc = subprocess.Popen(
             harden_win_argv(cmd),
@@ -897,7 +912,7 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
 
     # Resolve model/sandbox/reasoning from config or defaults
     cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
-    model = dcfg.get("codex_default_model") or cdef.get("model", "gpt-5.3-codex-spark")
+    model = dcfg.get("codex_default_model") or cdef.get("model", "")
     sandbox = dcfg.get("codex_default_sandbox") or cdef.get("sandbox", "read-only")
     reasoning = dcfg.get("codex_reasoning_effort") or cdef.get("reasoning", "high")
     timeout = int(dcfg.get("codex_timeout", 120))
@@ -926,7 +941,7 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
                         cached_resp, "cached")
 
     # Run Codex
-    _log_progress(svc, f"[delegate] Codex {model} ({sandbox}, reasoning={reasoning})...")
+    _log_progress(svc, f"[delegate] Codex {model or 'cli-default'} ({sandbox}, reasoning={reasoning})...")
     t0 = time.monotonic()
     output, ok = _run_codex(
         task=task, context=enriched,

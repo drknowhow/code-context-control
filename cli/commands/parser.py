@@ -61,6 +61,10 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_claudemd.add_argument("claudemd_cmd", choices=["generate", "save", "check"])
     p_claudemd.add_argument("--nano", action="store_true", help="Generate nano mode (~250 tokens) instead of full compact mode")
 
+    p_map = subparsers.add_parser("map", help="Live repo map (.c3/MAP.md) management")
+    p_map.add_argument("map_cmd", choices=["status", "ensure", "refresh"])
+    p_map.add_argument("--json", action="store_true", help="Emit JSON result")
+
     subparsers.add_parser("stats", help="Show statistics")
 
     p_benchmark = subparsers.add_parser("benchmark", help="Run with/without-C3 workflow benchmark")

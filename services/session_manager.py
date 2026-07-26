@@ -507,24 +507,40 @@ class SessionManager:
             })
         return result
 
+    def _repo_map_enabled(self) -> bool:
+        """Live repo map is default-on; map.enabled=false restores the
+        legacy embedded tree (mirrors ClaudeMdManager._repo_map_enabled)."""
+        try:
+            with open(self.project_path / ".c3" / "config.json",
+                      encoding="utf-8") as f:
+                cfg = json.load(f) or {}
+            return bool(cfg.get("map", {}).get("enabled", True))
+        except (OSError, ValueError):
+            return True
+
     def generate_claude_md(self, include_sessions: bool = True) -> str:
         """Auto-generate token-efficient project context for instructions files."""
         parts = []
 
-        # Project structure
+        # Project context: stable pointer to the live repo map when enabled
+        # (v2.60.0), legacy embedded tree otherwise.
         parts.append("# Project Context\n")
-        parts.append(self._scan_project_structure())
+        if self._repo_map_enabled():
+            from services.claude_md import MAP_POINTER_BLOCK
+            parts.append(MAP_POINTER_BLOCK)
+        else:
+            parts.append(self._scan_project_structure())
 
-        # Tech stack detection
-        parts.append("\n## Tech Stack\n")
-        parts.append(self._detect_tech_stack())
+            # Tech stack detection
+            parts.append("\n## Tech Stack\n")
+            parts.append(self._detect_tech_stack())
 
-        # Key files (conventional entry points + session history)
-        key_files = self._detect_key_files()
-        if key_files:
-            parts.append("\n## Key Files\n")
-            for kf in key_files[:5]:
-                parts.append(f"- `{kf['file']}` — {kf['reason']}")
+            # Key files (conventional entry points + session history)
+            key_files = self._detect_key_files()
+            if key_files:
+                parts.append("\n## Key Files\n")
+                for kf in key_files[:5]:
+                    parts.append(f"- `{kf['file']}` — {kf['reason']}")
 
         # Key facts from memory store (if wired in)
         memory_store = getattr(self, '_memory_store', None)

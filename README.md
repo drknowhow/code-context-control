@@ -180,6 +180,8 @@ Manage `CLAUDE.md`, `AGENTS.md` (Codex), `GEMINI.md`, and `.github/copilot-instr
 
 C3-generated content is wrapped in a `<!-- C3:BEGIN … -->` / `<!-- C3:END -->` block. Regenerating (or `Compact`) only rewrites that block — **anything you write outside it is preserved**, so it's safe to keep your own notes in the same file.
 
+**Live repo map (v2.60.0):** generated docs no longer embed a frozen project tree. They carry a stable pointer to `.c3/MAP.md` — a machine-owned, byte-stable map (commands, entry points, module one-liners, tree) that C3 refreshes automatically via edit hooks and a first-tool-call freshness check. Manage it with `c3 map status|ensure|refresh`; set `map.enabled=false` in `.c3/config.json` to restore the embedded tree.
+
 ### 7. Chat — browse prior AI conversations
 
 <p align="center">
