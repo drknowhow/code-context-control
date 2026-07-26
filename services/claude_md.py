@@ -55,6 +55,16 @@ In plan mode, all c3_* read tools (search, read, compress, filter, validate, sta
 - Reading entire files when c3_compress + c3_read would be more surgical
 - Skipping c3_validate after making edits"""
 
+# Pointer that replaces the embedded Project Context tree (v2.60.0).
+# The live map is machine-owned and auto-refreshed; instruction docs carry
+# only this stable pointer so they never go stale and never fight the
+# line budget. Works for every consumer (Claude Code, Codex, Antigravity).
+MAP_POINTER_BLOCK = """\
+Live repo map: `.c3/MAP.md` — tree, commands, entry points, module
+one-liners. Read it BEFORE any file discovery. C3 refreshes it
+automatically (edit hooks + first tool call); if it is missing or looks
+stale, run `c3 map refresh`. Freshness state: `.c3/map.meta.json`."""
+
 # Ultra-compact workflow for nano mode (~250 tokens vs ~800 for full)
 C3_NANO_WORKFLOW = """\
 ## C3 Tools — MANDATORY
@@ -230,6 +240,17 @@ class ClaudeMdManager:
 
         return workflow
 
+    def _repo_map_enabled(self) -> bool:
+        """Live repo map is default-on; map.enabled=false in .c3/config.json
+        restores the legacy embedded tree."""
+        try:
+            with open(self.project_path / ".c3" / "config.json",
+                      encoding="utf-8") as f:
+                cfg = json.load(f) or {}
+            return bool(cfg.get("map", {}).get("enabled", True))
+        except (OSError, ValueError):
+            return True
+
     def generate(self, include_sessions: bool = True, mode: str = "compact") -> dict:
         """Generate token-efficient CLAUDE.md from live project data.
 
@@ -264,20 +285,29 @@ class ClaudeMdManager:
         # C3 workflow instructions (compact)
         parts.append(self._build_c3_workflow(nano=False))
 
-        # Project structure
-        parts.append("\n# Project Context\n")
-        parts.append(self.session_mgr._scan_project_structure())
+        # Project context: pointer to the live repo map when enabled
+        # (v2.60.0), legacy embedded tree otherwise. The map is regenerated
+        # automatically (hooks + first-tool-call ensure), so the pointer
+        # never goes stale the way an embedded tree did.
+        map_enabled = self._repo_map_enabled()
+        if map_enabled:
+            parts.append("\n# Project Context\n")
+            parts.append(MAP_POINTER_BLOCK)
+        else:
+            # Project structure
+            parts.append("\n# Project Context\n")
+            parts.append(self.session_mgr._scan_project_structure())
 
-        # Tech stack
-        parts.append("\n## Tech Stack\n")
-        parts.append(self.session_mgr._detect_tech_stack())
+            # Tech stack
+            parts.append("\n## Tech Stack\n")
+            parts.append(self.session_mgr._detect_tech_stack())
 
-        # Key files (compact)
-        key_files = self._detect_key_files()
-        if key_files:
-            parts.append("\n## Key Files\n")
-            for kf in key_files[:5]:
-                parts.append(f"- `{kf['file']}` — {kf['reason']}")
+            # Key files (compact)
+            key_files = self._detect_key_files()
+            if key_files:
+                parts.append("\n## Key Files\n")
+                for kf in key_files[:5]:
+                    parts.append(f"- `{kf['file']}` — {kf['reason']}")
 
         # Top learned facts only (rest available via c3_memory recall)
         promoted_facts = [

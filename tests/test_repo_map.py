@@ -328,6 +328,29 @@ class TestServerLedgerIntegration(unittest.TestCase):
             self.assertFalse((Path(tmp) / ".c3" / DIRTY_NAME).exists())
 
 
+class TestDocGeneratorPointer(_Base):
+    """Instruction docs embed the stable pointer, not the tree (v2.60.0)."""
+
+    def _generate(self):
+        from services.session_manager import SessionManager
+        return SessionManager(str(self.root)).generate_claude_md()
+
+    def test_default_emits_pointer_not_tree(self):
+        content = self._generate()
+        self.assertIn(".c3/MAP.md", content)
+        self.assertIn("c3 map refresh", content)
+        self.assertNotIn("## Tech Stack", content)
+
+    def test_disabled_map_restores_legacy_tree(self):
+        (self.root / ".c3").mkdir(exist_ok=True)
+        (self.root / ".c3" / "config.json").write_text(
+            json.dumps({"map": {"enabled": False}}), encoding="utf-8")
+        content = self._generate()
+        self.assertNotIn(".c3/MAP.md", content)
+        self.assertIn("## Tech Stack", content)
+        self.assertIn("src/", content)
+
+
 class TestDisabled(_Base):
     def test_disabled_via_config(self):
         (self.root / ".c3").mkdir(exist_ok=True)
