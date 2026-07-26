@@ -1313,6 +1313,12 @@ def cmd_claudemd(args):
     return common_cmd_claudemd(args, _command_deps())
 
 
+def cmd_map(args):
+    """Live repo map (.c3/MAP.md) commands."""
+    from cli.commands.common import cmd_map as common_cmd_map
+    return common_cmd_map(args, _command_deps())
+
+
 def cmd_stats(args):
     """Show comprehensive stats."""
     return common_cmd_stats(args, _command_deps())
@@ -7162,6 +7168,7 @@ def main():
         "decode": cmd_decode,
         "session": cmd_session,
         "claudemd": cmd_claudemd,
+        "map": cmd_map,
         "stats": cmd_stats,
         "benchmark": cmd_benchmark,
         "session-benchmark": cmd_session_benchmark,

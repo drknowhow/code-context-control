@@ -159,6 +159,57 @@ def cmd_session(args, deps: CommandDeps):
         print(context)
 
 
+def cmd_map(args, deps: CommandDeps):
+    """Live repo map (.c3/MAP.md): status | ensure | refresh."""
+    config = deps.load_config()
+    project_path = config.get("project_path", ".")
+
+    from services.repo_map import RepoMapService
+
+    sm = deps.SessionManager(project_path)
+    svc = RepoMapService(project_path, session_mgr=sm)
+
+    if args.map_cmd == "status":
+        result = svc.status()
+    elif args.map_cmd == "ensure":
+        result = svc.ensure()
+    else:
+        result = svc.refresh()
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return
+
+    if args.map_cmd == "status":
+        state = "STALE" if result["stale"] else ("FRESH" if result["exists"] else "MISSING")
+        deps.print_header(f"Repo Map — {state}")
+        print(f"  Path: {svc.map_path}")
+        if result.get("generated_at"):
+            print(f"  Generated: {result['generated_at']}")
+        if result.get("tokens"):
+            print(f"  Tokens: {result['tokens']}")
+        if result.get("reasons"):
+            print(f"  Stale reasons: {', '.join(result['reasons'])}")
+        if result.get("truncated"):
+            print("  [WARN] Map is truncated (file cap or token budget hit)")
+    else:
+        action = result.get("action", "?")
+        label = {
+            "regenerated": "Map regenerated",
+            "meta_only": "Content unchanged (meta refreshed)",
+            "fresh": "Already fresh — nothing to do",
+            "locked": "Another process is regenerating — skipped",
+            "disabled": "Repo map disabled (map.enabled=false in .c3/config.json)",
+        }.get(action, action)
+        deps.print_header(f"Repo Map — {label}")
+        if result.get("tokens"):
+            print(f"  Tokens: {result['tokens']}, duration: {result.get('duration_ms', '?')}ms")
+        if result.get("reasons"):
+            print(f"  Triggered by: {', '.join(result['reasons'])}")
+        if result.get("truncated"):
+            print("  [WARN] Map is truncated (file cap or token budget hit)")
+
+
 def cmd_claudemd(args, deps: CommandDeps):
     """Instructions file generation commands."""
     config = deps.load_config()

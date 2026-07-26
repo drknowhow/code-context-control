@@ -482,6 +482,7 @@ class RepoMapService:
             dirs = sorted(
                 d.name for d in self.project_path.iterdir()
                 if d.is_dir() and not pruned(d.name)
+                and not d.name.startswith(".")
             )
         except OSError:
             return out
