@@ -20,6 +20,7 @@
       <a href="getting-started.html" class="active">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="credentials.html">Credentials</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
@@ -38,6 +39,7 @@
       <a href="#first-session" class="sidebar-link"><span class="icon">▶️</span> First Session</a>
       <a href="#permissions" class="sidebar-link"><span class="icon">🔒</span> Permissions</a>
       <a href="#hub" class="sidebar-link"><span class="icon">🌐</span> Web UI &amp; Hub</a>
+      <a href="#credentials" class="sidebar-link"><span class="icon">🔐</span> Credentials</a>
       <a href="#bitbucket" class="sidebar-link"><span class="icon">🪣</span> Bitbucket</a>
       <a href="#uninstall" class="sidebar-link"><span class="icon">🗑️</span> Uninstall</a>
     </div>
@@ -185,6 +187,14 @@ c3 init</code></pre>
 
       <h3>Re-init / upgrade</h3>
       <p>Running <code>c3 init</code> on an existing project is safe — it merges new config without overwriting your customizations.</p>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>Upgrading to v2.61.0 on Windows? Re-run <code>c3 init</code> in every project.</strong>
+          Versions before v2.61.0 wrote Windows hook commands wrapped in <code>cmd.exe /c</code>. Git Bash rewrites a standalone <code>/c</code> into <code>C:/</code> before <code>cmd.exe</code> runs, so the hook silently never executed — and a <code>&gt;</code> anywhere in the hook's stdin payload became a shell redirect that created empty junk files in the repo root. The generator is fixed, but the broken command string lives in each project's <code>.claude/settings.local.json</code>: <strong>upgrading the package does not repair existing projects</strong>. Re-run <code>c3 init</code> (or <code>c3 install-mcp</code>) per project to rewrite it.
+        </div>
+      </div>
 
       <div class="callout callout-info">
         <span class="callout-icon">🛡️</span>
@@ -397,6 +407,33 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
           The web UI and Hub run as separate Flask servers from the MCP server. They read shared state from the <code>.c3/</code> directory on disk.
         </div>
       </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Credentials -->
+    <section class="section" id="credentials">
+      <div class="section-title"><span class="icon">🔐</span> Credentials (optional)</div>
+
+      <p>Stop pasting API keys into the chat. Store them once, and the agent uses them <strong>by name</strong> — C3 decodes the value into the subprocess environment, so it never enters the model's context or the conversation transcript.</p>
+
+      <pre><code><span class="com"># Value is read from a hidden prompt — never in shell history</span>
+c3 creds set NPM_TOKEN
+
+<span class="com"># Shared across every C3 project on this machine</span>
+c3 creds set OPENAI_API_KEY --global
+
+<span class="com"># Names and metadata only — the value is never printed</span>
+c3 creds list</code></pre>
+
+      <p>The agent then names the secret instead of knowing it:</p>
+      <pre><code>c3_shell(cmd=<span class="str">'npm publish'</span>, env_creds=<span class="str">'NPM_TOKEN'</span>)</code></pre>
+
+      <p>Manage everything visually in the Hub's <strong>Credentials</strong> tab — search across all projects with <kbd>/</kbd>, open a settings drawer per credential, right-click for actions.</p>
+
+      <p>
+        Storage internals, the global/project override model, exposure flags, search qualifiers, and troubleshooting are on the dedicated <a href="credentials.html"><strong>credential vault guide</strong></a>.
+      </p>
     </section>
 
     <hr class="divider">

@@ -298,12 +298,30 @@ with credentials disabled, and the vault is hard-excluded from the Oracle
 Discovery API.
 
 Since **v2.59.0** the Hub has a top-level **Credentials** view: manage the
-global vault (`~/.c3`) and every registered project's entries from one place —
-create / edit / delete / `.env` import / flag toggles, with shadowing shown
-both ways ("shadows global" on project entries, "shadowed in N projects" on
-globals). The write-only wire contract extends to the hub: values are
-submitted inbound-only and **no hub route ever returns a stored value** (there
-is no `reveal` on the hub at all).
+global vault (`~/.c3`) and every registered project's entries from one place,
+with overriding shown both ways ("overrides global" on project entries,
+"overridden ×N" on globals). **v2.61.0** makes it navigable at scale:
+
+- **Cross-project search** — <kbd>/</kbd> or <kbd>Ctrl/⌘-K</kbd>. Free words
+  match name / description / env var / project; `project:` `scope:` `type:`
+  `storage:` `name:` `env:` `inject:` `agent:` `shadow:` qualifiers narrow
+  further. Results are **grouped by credential name**, so "where is
+  `STRIPE_KEY` defined and which one wins?" is one glance instead of forty
+  accordions. `agent:true` and `inject:true` are one-key exposure audits.
+- **Per-credential settings drawer** — metadata, the two exposure switches
+  with their blast radius written out, an on-demand resolution check +
+  fingerprint, write-only value replacement, usage and override
+  relationships, and a separated danger zone.
+- **Right-click context menu** on any row (also `⋯` and <kbd>Shift</kbd>+<kbd>F10</kbd>),
+  with typed confirmations replacing `window.confirm`: deleting or granting
+  agent-read access requires typing the credential's name.
+
+The write-only wire contract extends to the hub: values are submitted
+inbound-only, **no hub route ever returns a stored value** (there is no
+`reveal` on the hub at all), and search indexes metadata only.
+
+Full documentation: [`cli/guide/credentials.html`](cli/guide/credentials.html)
+— open it in the app at `/guide/credentials.html`.
 
 ### Jira — Cloud + Data Center (v2.56.0)
 
