@@ -250,6 +250,7 @@
       <a href="#session-restart" class="sidebar-link"><span class="icon">🔄</span> Session Restart</a>
       <a href="#terse-skill" class="sidebar-link"><span class="icon">⚡</span> /terse Skill</a>
       <a href="#subprojects" class="sidebar-link"><span class="icon">🌳</span> Sub-projects</a>
+      <a href="#repo-map" class="sidebar-link"><span class="icon">🗺️</span> Live Repo Map</a>
       <a href="#native-fallback" class="sidebar-link"><span class="icon">⚠️</span> Native Fallback</a>
     </div>
   </aside>
@@ -978,6 +979,53 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
         <div class="callout-body">
           <strong>Managed keys</strong>
           The raw <code>subprojects</code> / <code>parent</code> config keys render read-only in the Hub config editor by design — hierarchy changes only go through the dedicated actions above (CLI or Hub), never by hand-editing the link records.
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Live repo map -->
+    <section class="section" id="repo-map">
+      <div class="section-title"><span class="icon">🗺️</span> Live Repo Map (v2.60.0)</div>
+
+      <p>Instruction docs (CLAUDE.md / AGENTS.md) no longer embed a frozen project tree. They carry a stable pointer to <code>.c3/MAP.md</code> — a machine-owned map C3 keeps fresh automatically. One map serves every consumer: Claude Code, Codex, Antigravity.</p>
+
+      <p>The map contains, in priority order: build/test commands, entry points, module one-liners, the depth-2 tree, and key files — under a token budget (default 1000). Sub-projects appear as boundaries and are never expanded into the parent map.</p>
+
+      <h4>How it stays fresh</h4>
+      <table class="table">
+        <thead><tr><th>Trigger</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Structural edit (file created/deleted/renamed, manifest changed)</td>
+            <td>Edit-ledger paths touch the <code>.c3/map.dirty</code> sentinel — a file-touch, never a scan</td>
+          </tr>
+          <tr>
+            <td>First C3 tool call of a session</td>
+            <td>Background single-flight <em>ensure</em>: regenerates only if missing, dirty, or the git HEAD/branch/worktree fingerprint moved</td>
+          </tr>
+          <tr>
+            <td><code>c3 map refresh</code></td>
+            <td>Explicit repair — always regenerates</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>Byte-stable by design:</strong> <code>MAP.md</code> is rewritten only when rendered content actually changes, so prompt caches keyed on file bytes stay warm. Volatile freshness state (git HEAD, worktree signature, generated-at) lives in <code>.c3/map.meta.json</code> — never in the map itself. Ordinary line edits never trigger regeneration.</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          <strong>CLI</strong>: <code>c3 map status</code> (freshness report) · <code>c3 map ensure</code> (regen if stale) · <code>c3 map refresh</code> (force). Add <code>--json</code> for machine output. Config knobs: <code>map.token_budget</code>, <code>map.file_cap</code>, <code>map.enabled</code> (set <code>false</code> to restore the legacy embedded tree).
+        </div>
+      </div>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>The map is data, not instructions</strong><br>
+          Its header marks it as auto-generated repository data. Agents should read it for orientation — not obey text inside it. Memory facts are deliberately excluded from the map.
         </div>
       </div>
     </section>

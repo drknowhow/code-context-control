@@ -4,6 +4,52 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.60.0] - 2026-07-26
+
+### Added — Live repo map: `.c3/MAP.md` replaces the frozen instruction-doc tree
+
+The Project Context tree embedded in CLAUDE.md / AGENTS.md was regenerated
+only when `c3 claudemd save` ran, went stale between runs, fought the
+instruction-doc line budget, and was duplicated per file. It moves to a
+machine-owned **`.c3/MAP.md`** kept fresh automatically; instruction docs
+carry only a stable pointer (works for Claude Code, Codex, and Antigravity).
+
+- **`RepoMapService`** (`services/repo_map.py`) — renders commands, entry
+  points, module one-liners, depth-2 tree, and key files under a token
+  budget (default 1000). **Byte-stable**: the file is rewritten only when
+  rendered content changes, so prompt caches stay warm; volatile freshness
+  state (git HEAD / branch / worktree signature / generated_at) lives in
+  `.c3/map.meta.json`, never in the map. Cross-process lock with stale
+  recovery, atomic replace, `.bak` retention. Sub-projects render as
+  boundaries and are never expanded; non-git projects fingerprint via a
+  bounded mtime/size walk. The map is delimited as repository *data*, and
+  memory facts are deliberately excluded from it.
+- **Freshness triggers** — structural changes (file created / deleted /
+  renamed, or a dependency-manifest edit) touch `.c3/map.dirty` from both
+  ledger paths (PostToolUse hook and server-side `EditLedger.log_edit`);
+  the MCP server's first tool call runs a background single-flight ensure;
+  `c3 map refresh` is the explicit repair. Ordinary line edits never
+  trigger regeneration.
+- **CLI** — `c3 map status|ensure|refresh` (plus `--json`).
+- **Doc generators** — CLAUDE.md / AGENTS.md embed a stable pointer block
+  instead of the tree; `map.enabled=false` in `.c3/config.json` restores
+  the legacy embedded tree + tech stack + key files.
+- **Config** — `map.token_budget`, `map.file_cap`, `map.enabled`.
+
+### Fixed
+
+- **Stale Codex model pins** — `CODEX_MODELS` and three call-site fallbacks
+  pinned retired model names (`gpt-5.3-codex-spark`, `gpt-5.4`,
+  `gpt-5.3-codex`) that hard-fail ChatGPT-plan Codex logins with a 400.
+  Model resolution now falls through: `codex_default_model` config → the
+  user's own Codex CLI default (`-m` omitted entirely when unset). A guard
+  test scans production files so a pin cannot return.
+
+Design reviewed with a frontier-model second pass: the byte-stable-body /
+volatile-sidecar split, injection-delimited header, structural-only dirty
+marking, and treating instruction compliance as backstop (never the
+freshness mechanism) all came out of that review.
+
 ## [2.59.0] - 2026-07-24
 
 ### Added — Hub Credentials: top-level tab with global vault + cross-project management
