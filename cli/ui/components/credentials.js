@@ -157,7 +157,7 @@ const CredentialsPanel = () => {
       {notice && (
         <div style={{
           padding: "8px 12px", borderRadius: 6, marginBottom: 10, fontSize: 12,
-          background: `${T.ok}22`, color: T.ok, border: `1px solid ${T.ok}55`,
+          background: `${T.accent}22`, color: T.accent, border: `1px solid ${T.accent}55`,
         }}>{notice}</div>
       )}
 
@@ -310,7 +310,7 @@ const CredentialsPanel = () => {
                 <span className="mono" style={{ fontWeight: 600, color: T.text, minWidth: 160 }}>
                   {entry.name}
                 </span>
-                <Badge color={entry.scope === "global" ? T.accent : T.ok}>{entry.scope}</Badge>
+                <Badge color={entry.scope === "global" ? T.accent : T.blue}>{entry.scope}</Badge>
                 <Badge color={T.textMuted}>{entry.type || "token"}</Badge>
                 <span className="mono" style={{ color: T.textMuted }}>
                   •••• len={entry.value_len}
@@ -322,7 +322,7 @@ const CredentialsPanel = () => {
                 {!!entry.agent_readable && <Badge color={T.error}>agent_readable</Badge>}
                 {chk && (
                   <span className="mono" style={{
-                    color: chk.resolvable ? T.ok : T.error, fontSize: 11,
+                    color: chk.resolvable ? T.accent : T.error, fontSize: 11,
                   }}>
                     {chk.resolvable ? `✓ ${chk.fingerprint}` : "✗ unresolvable"}
                   </span>

@@ -4,6 +4,109 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.61.0] - 2026-07-26
+
+This release also carries the Windows hook fix prepared as 2.60.1, which was
+never tagged or published — see its section below.
+
+### Added — Credential vault guide (`/guide/credentials.html`)
+
+The vault had shipped across three releases (v2.58.0 store, v2.59.0 Hub tab,
+v2.61.0 search) with documentation spread over a tool card and a README
+section. It now has a dedicated guide page, alongside the Bitbucket and
+Oracle ones: storage internals and where each byte lives, the scope/override
+model and why resolution is realm-atomic, the three injection paths, what
+each exposure flag actually costs you, a Hub UI tour, the full search
+qualifier table, the `c3 creds` CLI, the audit trail, and troubleshooting.
+Linked from the guide nav, the home page, the `c3_credentials` tool card, and
+a new Credentials section in Getting Started.
+
+### Changed — Hub Credentials: cross-project search, a per-credential settings drawer, and a context menu
+
+The Credentials tab shipped in v2.59.0 as a flat list with no way to find
+anything: 40+ projects behind accordions, and one overloaded row per entry
+packing eleven badges plus five unlabelled icon buttons — where the `eye`
+icon toggled `agent_readable` (the flag that lets the agent pull plaintext
+into its transcript) one pixel from `edit`. The write-only wire is unchanged:
+no route returns a value, and search indexes metadata only.
+
+- **Cross-project search** — one field above the sub-tabs, `/` or `Ctrl/⌘-K`
+  to focus. Free tokens AND-match name / description / env var / owner;
+  `key:value` qualifiers narrow further (`project:` `scope:` `type:`
+  `storage:` `name:` `env:` `inject:` `agent:` `shadow:`). Results are
+  **grouped by credential name**, so "where is `STRIPE_KEY` defined" is one
+  glance across the global vault and every project instead of forty manual
+  expansions. Scope chips (All / Global / Project) and sorts by name, most
+  defined, last used, most used, or exposure. `↑↓` walks results, `↵` opens.
+- **Per-credential settings drawer** — the single surface for editing one
+  entry: General (description, type, env var), Exposure (both switches with
+  the blast radius spelled out), Secret (on-demand resolution check +
+  fingerprint, and a write-only Replace field that starts empty and is
+  cleared the instant the request settles), Usage & relationships (created /
+  updated / last used / use count / storage, plus which projects override
+  this name or are overridden by it), and a separated Danger zone.
+- **Right-click context menu** — on any row, plus a `⋯` button and
+  `Shift-F10` / the Menu key for keyboard users. Open settings, check
+  resolution, replace secret, toggle either exposure flag, copy name /
+  env var / fingerprint, open the project drill, delete. Rows are focusable
+  and open the drawer on `↵`; the bare `eye` and `zap` icons are gone.
+- **Typed confirmations replace `window.confirm`** — deleting or raising an
+  exposure flag now shows what actually happens (which projects are affected,
+  that transcripts are searchable, that C3 keeps no copy of the value) and
+  deleting requires typing the credential name.
+- **One manager mounted at a time** — the Projects sub-tab is a single-open
+  accordion with its own filter, so N expanded projects no longer means N
+  independent fetchers going stale against each other. Rows surface
+  agent-readable and overriding-global counts before you expand.
+- **Fixed** — `T.ok` is not a theme token and never has been. Five call sites
+  across `hub_credentials.js` and `ui/components/credentials.js` rendered
+  project-scope badges, the resolvable-fingerprint marker, and a success
+  banner with `color: undefined` and `background: "undefined15"`.
+- **Fixed** — `Escape` closed the drawer *and* wiped the search query behind
+  it; it now closes the topmost layer only.
+
+## [2.60.1] - 2026-07-26
+
+### Fixed — Windows hooks never ran: the `cmd.exe` wrapper ate its own switch
+
+Every hook C3 installed on Windows was dead on arrival, silently. `c3 init`
+wrote commands of the form `cmd.exe /c '<python>' '<hook_dispatch.py>' posttool`.
+Claude Code runs hooks under Git Bash, and MSYS argument conversion rewrites a
+standalone `/c` into `C:/` before `cmd.exe` is executed:
+
+```
+$ python -c "import sys;print(sys.argv)" /c foo
+['-c', 'C:/', 'foo']
+```
+
+So `cmd.exe` launched with no switch, opened an **interactive** session, printed
+its banner, and read the hook's stdin JSON payload as console commands. The hook
+never ran. Worse, a `>` token anywhere in that payload became a shell redirect,
+creating empty junk files in the repo root (observed in the wild: `a`, `void`,
+`export`, `UI`).
+
+The wrapper existed to protect paths containing parentheses (e.g.
+`Claude Code Companion (C3)`) from bash word-splitting. It was never needed —
+a double-quoted forward-slash path is parsed correctly by both bash and cmd:
+
+```
+"C:/.../python.exe" "U:/1. Projects/Claude Code Companion (C3)/cli/hook_dispatch.py" pretool
+```
+
+Hook commands are now emitted in that form on Windows (POSIX keeps `shlex.quote`).
+Verified end-to-end: the dispatcher runs, returns its `additionalContext`, exits
+0, and leaves no junk files, from a project path containing both a space and
+parentheses.
+
+This wiring has now broken twice — first `cmd /c` (bash cannot resolve bare
+`cmd`), then `cmd.exe /c`. `tests/test_install_mcp_entrypoint.py::
+test_hook_commands_are_not_wrapped_in_cmd_exe` is a regression guard: no
+`cmd`/`cmd.exe` prefix, no single-quoted paths, no backslashes.
+
+**Existing projects are not repaired by upgrading** — the broken command string
+lives in each project's `.claude/settings.local.json`. Re-run `c3 init` (or
+`c3 install-mcp`) per project to rewrite it.
+
 ## [2.60.0] - 2026-07-26
 
 ### Added — Live repo map: `.c3/MAP.md` replaces the frozen instruction-doc tree

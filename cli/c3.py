@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.60.0"
+__version__ = "2.61.0"
 
 
 def _command_deps() -> CommandDeps:
@@ -5128,22 +5128,33 @@ def cmd_install_mcp(args):
         settings = _safe_read_json(settings_path, str(settings_path))
 
         # Build hook commands using the Python executable that runs c3.
-        # On Windows, Claude Code executes hooks via /usr/bin/bash (Git Bash), which cannot
-        # parse Windows absolute paths containing parentheses (e.g. "(C3)"). Prefix with
-        # cmd.exe so it handles path resolution instead of bash.
         #
-        # Use "cmd.exe" WITH the extension, not bare "cmd": Git Bash does not resolve bare
-        # "cmd" on PATH, so the old "cmd /c …" prefix silently failed to launch any hook
-        # (verified: under bash, "cmd.exe /c '<py>' '<hook>'" runs and writes the signal
-        # file; "cmd /c …" returns "cmd: command not found"). The single-quoted paths are
-        # correct — bash strips them and re-quotes for cmd.exe, preserving spaces/parens.
-        _hook_prefix = "cmd.exe /c " if sys.platform == "win32" else ""
+        # Windows: do NOT wrap in cmd.exe. Claude Code runs hooks through Git Bash,
+        # whose MSYS argument conversion rewrites a standalone "/c" into "C:/" before
+        # cmd.exe ever sees it — so cmd.exe starts INTERACTIVELY, prints its banner,
+        # and reads the hook's stdin JSON payload as console commands. The hook never
+        # runs, and any ">" token in the payload becomes a shell redirect that silently
+        # creates junk files in the repo root.
+        #
+        # Verified 2026-07-26 under Git Bash on Windows 11:
+        #   python -c "import sys;print(sys.argv)" /c foo   ->  ['-c', 'C:/', 'foo']
+        #   cmd.exe /c '<py>' -c "print('x')"               ->  banner, no execution
+        #   '<py>' '<hook>' posttool                        ->  runs, stdin intact
+        # Both "cmd /c" (bash cannot resolve bare "cmd") and "cmd.exe /c" are broken;
+        # the wrapper was never needed. A double-quoted forward-slash path is parsed
+        # correctly by bash AND cmd, including paths containing spaces or parentheses
+        # (e.g. "Claude Code Companion (C3)"), which is why the wrapper was added.
+        def _hook_arg(raw: str) -> str:
+            if sys.platform == "win32":
+                return '"' + str(raw).replace("\\", "/") + '"'
+            return shlex.quote(str(raw))
+
         # v2.42: single dispatcher script per hook event instead of N separate
         # per-hook commands. One interpreter spawn per event; the dispatcher
         # (cli/hook_dispatch.py) runs all applicable sub-hooks in-process.
         _dispatch_base = (
-            f"{_hook_prefix}{shlex.quote(sys.executable)} "
-            f"{shlex.quote(str(cli_dir / 'hook_dispatch.py'))}"
+            f"{_hook_arg(sys.executable)} "
+            f"{_hook_arg(str(cli_dir / 'hook_dispatch.py'))}"
         )
         hook_pretool_cmd  = f"{_dispatch_base} pretool"
         hook_posttool_cmd = f"{_dispatch_base} posttool"

@@ -69,6 +69,40 @@ class TestInstallMcpEntryPoint(unittest.TestCase):
         self.assertTrue(entry["args"][0].endswith("mcp_server.py"))
         self.assertEqual(entry["args"][1:], ["--project", "."])
 
+    def test_hook_commands_are_not_wrapped_in_cmd_exe(self):
+        """Windows hooks must invoke python directly, never through cmd.exe.
+
+        Claude Code runs hooks under Git Bash, whose MSYS argument conversion
+        rewrites a standalone "/c" into "C:/". cmd.exe therefore never sees its
+        switch, starts interactively, and swallows the hook's stdin JSON as
+        console input — the hook silently never runs, and a ">" in the payload
+        redirects into a junk file at the repo root. Regression guard: this
+        wiring has broken twice ("cmd /c", then "cmd.exe /c").
+        """
+        claude_dir = self.project / ".claude"
+        claude_dir.mkdir()
+
+        with mock.patch("shutil.which", return_value=None):
+            self._run_install()
+
+        settings = json.loads(
+            (claude_dir / "settings.local.json").read_text(encoding="utf-8"))
+        cmds = [hk.get("command", "")
+                for event in settings.get("hooks", {}).values()
+                for h in event
+                for hk in h.get("hooks", [])]
+        self.assertTrue(cmds, "install registered no hook commands")
+
+        for c in cmds:
+            self.assertNotIn("cmd.exe", c, f"cmd.exe wrapper reintroduced: {c}")
+            self.assertNotIn("cmd /c", c, f"cmd wrapper reintroduced: {c}")
+            if sys.platform == "win32":
+                # Double quotes + forward slashes survive both bash and cmd;
+                # shlex's single quotes do not survive cmd.
+                self.assertNotIn("'", c, f"single-quoted path is cmd-unsafe: {c}")
+                self.assertTrue(c.startswith('"'), f"interpreter not quoted: {c}")
+                self.assertNotIn("\\", c, f"backslash path in hook command: {c}")
+
     def test_install_preserves_existing_user_config(self):
         """install-mcp must not clobber the user's .mcp.json or settings.local.json."""
         # Pre-existing user content that must survive install.
