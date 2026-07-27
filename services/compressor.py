@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from core import count_tokens, measure_savings
+from services import access_guard
 from services.parser import HAS_TREE_SITTER, extract_sections_ast
 
 # Language-specific comment patterns
@@ -174,6 +175,11 @@ class CodeCompressor:
         - "summary": High-level LLM summary (requires router)
         - "bug_scan": Structure map + annotated exception-handling hotspots with line numbers
         """
+        # Access Guard: read verdict before any cache or disk access — denied
+        # paths raise AccessDenied (docs/access-guard.md §3). Callers that
+        # need string returns catch it and surface exc.message. Checked
+        # before exists() so probes can't distinguish missing from denied.
+        access_guard.enforce(str(filepath), "read", str(self.project_root))
         filepath = Path(filepath).resolve()
         if not filepath.exists():
             return {"error": f"File not found: {filepath}", "compressed": ""}
@@ -726,7 +732,10 @@ class CodeCompressor:
                 skipped_protected.append(self._relative_to_project(fpath))
                 continue
 
-            result = self.compress_file(str(fpath), mode)
+            try:
+                result = self.compress_file(str(fpath), mode)
+            except access_guard.AccessDenied:
+                continue  # R2 deny-ENUMERATE: denied paths never appear in listings
             if "error" not in result:
                 results.append(result)
                 total_original += result.get("original_tokens", 0)

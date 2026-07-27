@@ -51,6 +51,76 @@ def _runtime_for(path: str):
     return shared_cache().get(path)
 
 
+def _is_registered(path: str) -> bool:
+    """True when *path* is in the cross-project registry. Fails closed."""
+    try:
+        from services import project_runtime as _pr
+        resolved = _pr._resolved(path)
+        return any(_pr._resolved(p.get("path", "")) == resolved
+                   for p in _pr._read_registry())
+    except Exception:
+        return False
+
+
+def _registration_error(action: str, resolved: dict) -> str:
+    return (
+        f"[c3_project:error] '{resolved['name']}' ({resolved['path']}) is not "
+        f"a registered project — '{action}' requires registration; a bare "
+        "directory containing .c3/ is not enough. Fix: "
+        f"c3_project(action='register', project='{resolved['path']}')."
+    )
+
+
+def _proxy_guard(action: str, resolved: dict, caller_path: str, *,
+                 file_path: str = "") -> str:
+    """Access Guard pre-checks for proxied ops (docs/access-guard.md §3, S5).
+
+    Effective rules for a proxied path = global ∪ caller-project ∪ the
+    containing realm of the RESOLVED absolute path. Realm entry is checked
+    for every proxied op (a caller/global rule can fence off a whole foreign
+    tree); file-level verdicts run for read/compress/edit. Inner handlers
+    enforce again through the target runtime — this layer exists so a
+    foreign realm can never be MORE permissive than the caller's own policy.
+    Returns a refusal string, or '' when permitted. Fails closed.
+    """
+    try:
+        from services import access_guard as ag
+    except Exception:
+        return ("[c3_project:error] Access Guard evaluator unavailable — "
+                "failing closed for proxied access.")
+    target_root = resolved["path"]
+    name = resolved["name"]
+
+    def _deny(path: str, op: str) -> str:
+        try:
+            # caller realm (global ∪ caller rules; abs/basename globs) …
+            d = ag.check(path, op, caller_path or ".")
+            if d is None:
+                # … then the containing realm of the RESOLVED path.
+                d = ag.check(path, op, target_root)
+        except Exception as exc:  # evaluator error → fail closed
+            d = ag.Denial("<evaluator-error>", "deny", "builtin",
+                          f"evaluator error: {type(exc).__name__}")
+        if d is None:
+            return ""
+        return ag.refusal(d, path, op, surface="proxy", project=name)
+
+    msg = _deny(target_root, "read")  # realm entry — is the target reachable?
+    if msg:
+        return msg
+    if action in ("read", "compress", "edit") and (file_path or "").strip():
+        op = "write" if action == "edit" else "read"
+        for fp in str(file_path).split(","):
+            fp = fp.strip()
+            if not fp:
+                continue
+            p = fp if Path(fp).is_absolute() else str(Path(target_root) / fp)
+            msg = _deny(p, op)
+            if msg:
+                return msg
+    return ""
+
+
 # ── Discovery renderers ────────────────────────────────────────────────────
 
 
@@ -129,6 +199,8 @@ def _do_subprojects(action: str, project: str, *, target: str = "", tag: str = "
         resolved = resolve_project(project)
     except ValueError as e:
         return f"[c3_project:error] {e}"
+    if not _is_registered(resolved["path"]):
+        return _registration_error(action, resolved)
     from services.subprojects import (
         VALID_CASCADE_OPS,
         VALID_REMOVE_MODES,
@@ -358,6 +430,22 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
         resolved = resolve_project(project)
     except ValueError as e:
         return done(f"[c3_project:error] {e}", "error")
+
+    # Registration gate (Access Guard T2c): a bare directory that merely
+    # contains .c3/ is NOT a valid proxy target — only list/scan/register/
+    # info accept unregistered paths. This closes the mint-a-rule-free-
+    # project pivot (create a fresh .c3 dir, proxy through its empty realm).
+    if not _is_registered(resolved["path"]):
+        return done(_registration_error(action, resolved), "error")
+
+    # Access Guard proxy verdicts (S5) — before the foreign runtime is even
+    # built, so a denied realm never spins up an indexer.
+    guard_msg = _proxy_guard(
+        action, resolved, str(getattr(svc, "project_path", "") or "."),
+        file_path=file_path)
+    if guard_msg:
+        return done(guard_msg, "denied")
+
     try:
         fsvc = _runtime_for(resolved["path"])
     except Exception as e:

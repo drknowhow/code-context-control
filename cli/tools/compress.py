@@ -10,6 +10,7 @@ from pathlib import Path
 
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
+from services import access_guard
 
 
 def _run_memory_mcp_cli(args: list, cwd: str, timeout: int = 30) -> tuple:
@@ -114,6 +115,13 @@ def handle_compress(file_path: str, mode: str, svc,
 
 def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> str:
     """Compress a single file."""
+    # Access Guard: read verdict up front — covers the map/dense_map paths
+    # that never reach compressor.compress_file (docs/access-guard.md §3).
+    denial = access_guard.check(file_path, "read", svc.project_path)
+    if denial:
+        return finalize("c3_compress", {"file_path": file_path, "mode": mode},
+                        access_guard.refusal(denial, file_path, "read"),
+                        "access-denied")
     full = Path(svc.project_path) / file_path
     if not full.exists():
         full = Path(file_path)
@@ -157,7 +165,11 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
             raw_tokens=raw_tokens, optimized_tokens=map_tokens or None,
             response_tokens=map_tokens)
 
-    res = svc.compressor.compress_file(str(full), mode)
+    try:
+        res = svc.compressor.compress_file(str(full), mode)
+    except access_guard.AccessDenied as exc:
+        return finalize("c3_compress", {"file_path": file_path, "mode": mode},
+                        exc.message, "access-denied")
     if "error" in res:
         return f"Error: {res['error']}"
     resp = res['compressed']
@@ -178,6 +190,11 @@ def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
     def _do_one(fp):
         """Returns (fp, compressed_text, raw_tokens, optimized_tokens, error)."""
         try:
+            # Access Guard: per-member read verdict — the S1 refusal becomes
+            # this member's batch line; other members are still served.
+            denial = access_guard.check(fp, "read", svc.project_path)
+            if denial:
+                return fp, None, None, None, access_guard.refusal(denial, fp, "read")
             full = Path(svc.project_path) / fp
             if not full.exists():
                 full = Path(fp)

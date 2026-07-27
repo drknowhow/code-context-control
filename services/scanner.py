@@ -86,6 +86,45 @@ def make_dir_pruner(root, extra_skip=(), respect_gitignore: bool = True):
     return pruned
 
 
+def make_access_excluder(root) -> Callable[[object], bool]:
+    """Index-time Access Guard exclusion (docs/access-guard.md §3, scanner row).
+
+    Returns ``predicate(path) -> bool`` — True means the path must not enter
+    any index (TF-IDF/vector, .c3/MAP.md, file_memory). Rules are loaded
+    ONCE per walk (calling ``access_guard.check`` per file would re-read
+    both config scopes for every file); matching still uses only the
+    evaluator's own ``canonicalize`` and ``Rule.matches`` — no path or glob
+    logic lives here. Only deny-kind rules exclude: ``read_only`` permits
+    reads and therefore indexing. Fails closed: a corrupt scope or an
+    evaluator error excludes everything, the same deny-all posture as
+    ``access_guard.check``.
+    """
+    try:
+        from services import access_guard as ag
+    except Exception:
+        return lambda _p: True
+    root_s = str(root)
+    try:
+        rules, corrupt = ag.load_rules(root_s)
+    except Exception:
+        return lambda _p: True
+    if corrupt:
+        return lambda _p: True
+    deny_rules = tuple(r for r in rules if r.kind == 'deny')
+
+    def excluded(path) -> bool:
+        try:
+            canon, rel, denial = ag.canonicalize(path, root_s)
+            if denial is not None:
+                return True
+            name = canon.rsplit('/', 1)[-1]
+            return any(r.matches(canon, rel, name) for r in deny_rules)
+        except Exception:
+            return True
+
+    return excluded
+
+
 def iter_files(
     root,
     exts: Optional[Set[str]] = None,
@@ -116,6 +155,8 @@ def iter_files(
     if respect_gitignore:
         names, glob_skips = gitignore_dir_patterns(root)
         skip |= names
+    # Access Guard: denied paths never enter any index (no opt-out).
+    guard_excluded = make_access_excluder(root)
 
     yielded = 0
     seen = 0
@@ -134,6 +175,8 @@ def iter_files(
                 continue
             if exclude_parts is not None and exclude_parts(rel_parts + (d,)):
                 continue
+            if guard_excluded(os.path.join(dirpath, d)):
+                continue  # denied subtree — never descended, never listed
             kept.append(d)
         dirnames[:] = kept
         seen += len(filenames) + len(kept)
@@ -144,6 +187,8 @@ def iter_files(
                     continue
             if exclude_parts is not None and exclude_parts(rel_parts + (fname,)):
                 continue
+            if guard_excluded(os.path.join(dirpath, fname)):
+                continue  # access-denied file — never indexed
             yield Path(dirpath) / fname
             yielded += 1
             if max_files is not None and yielded >= max_files:

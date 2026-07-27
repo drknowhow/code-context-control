@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from services import access_guard
+
 _SKIP_DIRS = frozenset({
     ".git", ".c3", "__pycache__", "node_modules", ".venv", "venv",
     ".pytest_cache", ".mypy_cache", "dist", "build", ".eggs",
@@ -110,6 +112,14 @@ def handle_impact(target: str, file_path: str, mode: str, svc, finalize) -> str:
 
     project = Path(svc.project_path)
 
+    # Access Guard: refuse outright when the named source file is read-denied.
+    if file_path:
+        denial = access_guard.check(file_path, "read", str(project))
+        if denial:
+            return finalize("c3_impact", {"target": target, "mode": mode},
+                            access_guard.refusal(denial, file_path, "read"),
+                            "access-denied")
+
     # Gather references
     refs = _grep_git(target, project)
     if refs is None:
@@ -124,6 +134,16 @@ def handle_impact(target: str, file_path: str, mode: str, svc, finalize) -> str:
     if file_path:
         norm = file_path.replace("\\", "/").lstrip("./")
         by_file = {k: v for k, v in by_file.items() if not k.endswith(norm)}
+
+    # Access Guard: denied reference files never appear in the listing
+    # (R2 deny-ENUMERATE; fails closed on evaluator errors).
+    def _readable(rel: str) -> bool:
+        try:
+            return access_guard.check(rel, "read", str(project)) is None
+        except Exception:
+            return False
+
+    by_file = {k: v for k, v in by_file.items() if _readable(k)}
 
     # Unstaged overlay for mode='unstaged'
     unstaged: set = set()

@@ -7,9 +7,34 @@ from pathlib import Path
 
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
+from services import access_guard
 
 # Hard cap: responses above this are truncated to avoid filling context.
 _RESPONSE_TOKEN_CAP = 2400
+
+
+def _read_denied(path, svc) -> bool:
+    """True when Access Guard denies reading `path` (fails closed on errors).
+
+    Used as the per-action pre-filter (docs/access-guard.md §3): denied paths
+    are dropped BEFORE dedup/top_k/map-building so they never appear in
+    search output (R2 deny-ENUMERATE) and never consume result slots.
+    """
+    try:
+        return access_guard.check(path, "read", svc.project_path) is not None
+    except Exception:
+        return True
+
+
+def _with_access_footer(resp: str, svc) -> str:
+    """Append the S4 limitation notice exactly once (self-gates on rules)."""
+    try:
+        footer = access_guard.search_footer(svc.project_path)
+    except Exception:
+        footer = ""
+    if footer and resp and footer not in resp:
+        return resp + "\n" + footer
+    return resp
 
 
 def _approx_tokens(text: str) -> int:
@@ -54,25 +79,24 @@ def handle_search(query: str, action: str, top_k: int, max_tokens: int,
                                     finalize, maybe_facts, scope)
 
     if action == "exact":
-        return _exact_search(query, top_k, max_tokens, svc, finalize)
-
-    if action == "files":
+        resp = _exact_search(query, top_k, max_tokens, svc, finalize)
+    elif action == "files":
         resp = _files_search(query, top_k, svc, finalize)
         if prefetch:
             resp = _append_prefetch(resp, query, top_k, svc)
-        return _cap_response(resp)
-
-    if action == "transcript":
-        return _transcript_search(query, top_k, max_tokens, svc, finalize)
-
-    if action == "semantic":
-        return _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
-
-    # Default: Code Search
-    resp = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
-    if prefetch:
-        resp = _append_prefetch(resp, query, top_k, svc)
-    return _cap_response(resp)
+        resp = _cap_response(resp)
+    elif action == "transcript":
+        resp = _transcript_search(query, top_k, max_tokens, svc, finalize)
+    elif action == "semantic":
+        resp = _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+    else:
+        # Default: Code Search
+        resp = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+        if prefetch:
+            resp = _append_prefetch(resp, query, top_k, svc)
+        resp = _cap_response(resp)
+    # S4: one Access Guard limitation footer per response (self-gated).
+    return _with_access_footer(resp, svc)
 
 
 def _exact_search(query, top_k, max_tokens, svc, finalize):
@@ -116,6 +140,8 @@ def _exact_search(query, top_k, max_tokens, svc, finalize):
             if result is None:
                 continue
             rel, file_matches = result
+            if _read_denied(rel, svc):
+                continue  # R2: denied paths never appear in results
             chunk = f"--- {rel} ---\n" + "\n".join(file_matches)
             chunk_tokens = count_tokens(chunk)
             if total_tokens + chunk_tokens > max_tokens and matched_parts:
@@ -137,6 +163,8 @@ def _exact_search(query, top_k, max_tokens, svc, finalize):
 
 def _files_search(query, top_k, svc, finalize):
     res = svc.indexer.search(query, top_k=top_k, include_content=False)
+    # Access Guard pre-filter before any map-building (R2 deny-ENUMERATE).
+    res = [r for r in res if not _read_denied(r.get("file", ""), svc)]
     if not res:
         return finalize("c3_search", {"action": "files"},
                         f"[search:files:{query}] 0 results", "0")
@@ -232,6 +260,8 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
         return _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
 
     results = ei.search(query, top_k=top_k, max_tokens=max_tokens)
+    # Access Guard pre-filter before result assembly (R2 deny-ENUMERATE).
+    results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:
         return finalize("c3_search", {"query": query, "action": "semantic"},
                         f"[semantic:{query}] 0 results (falling back to code search)",
@@ -256,6 +286,8 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
 def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
     results = svc.indexer.search(query, top_k=max(top_k + 1, top_k * 2),
                                  max_tokens=max_tokens, include_content=True)
+    # Access Guard pre-filter BEFORE dedup/top_k (R2 deny-ENUMERATE).
+    results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:
         return finalize("c3_search", {"query": query}, f"[search:{query}] 0 results", "0")
 
@@ -308,6 +340,9 @@ def _append_prefetch(resp: str, query: str, top_k: int, svc) -> str:
             path = line[2:].split(" (L")[0].strip()
             if path and path not in files:
                 files.append(path)
+
+    # Defense-in-depth: never prefetch a map for an access-denied path (R2).
+    files = [f for f in files if not _read_denied(f, svc)]
 
     cfg = (svc.hybrid_config or {}).get("agent_workflows", {})
     max_files = max(1, int(cfg.get("prefetch_max_files", 3)))

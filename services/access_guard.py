@@ -215,7 +215,11 @@ def load_rules(project_path: str = ".") -> tuple:
 def has_active_rules(project_path: str = ".") -> bool:
     """True when any user rules (or corrupt scopes) exist — drives S4."""
     rules, corrupt = load_rules(project_path)
-    return bool(corrupt) or len(rules) > len(_BUILTIN_RULES) + 1
+    # Count the install-dir rule only when it actually loaded: in a dev
+    # checkout it is absent, and a fixed "+1" made a single user rule
+    # invisible to S4 (footer suppressed while filtering was active).
+    n_baseline = len(_BUILTIN_RULES) + (1 if _install_dir_rule() else 0)
+    return bool(corrupt) or len(rules) > n_baseline
 
 
 # ── Canonicalization (docs/access-guard.md §2 — the ONE implementation) ─────
@@ -387,3 +391,183 @@ def enforce(path, operation: str, project_path: str = ".", *,
         raise AccessDenied(denial, refusal(
             denial, path, operation, surface=surface, tool=tool,
             project=project))
+
+
+# ── Rule management (HUMAN surfaces only: UI / REST / `c3 access` CLI) ──────
+# Privileged internal writes: this module maintains its own store (the
+# `access` section of config.json) server-side on behalf of a human surface.
+# The builtin .c3 write-deny governs agent tools, not the module writing its
+# own state. No agent-facing mutation surface exists (docs/access-guard.md §1);
+# callers are responsible for ledger/activity logging.
+
+# §5 coverage matrix — single source for the UI tab, c3_status, and the guide.
+COVERAGE_MATRIX = (
+    "Enforced: C3 MCP tools (all agents using C3) · Claude Code native tools "
+    "(hooks) · c3_shell (best-effort scan, advisory). NOT enforced: "
+    "non-Claude agents' raw shell, direct file APIs, editors."
+)
+
+_VALID_SCOPES = ("global", "project")
+
+
+def _scope_config_path(scope: str, project_path: str = ".") -> Path:
+    """Config file that owns *scope*'s rules (never the builtin pseudo-scope)."""
+    if scope == "project":
+        return Path(project_path).resolve() / ".c3" / "config.json"
+    if scope == "global":
+        base = _global_base()
+        if base is None:
+            raise ValueError("global scope unavailable: no home directory")
+        return base / ".c3" / "config.json"
+    raise ValueError(f"unknown scope '{scope}' — expected one of: "
+                     f"{', '.join(_VALID_SCOPES)}")
+
+
+def _norm_glob(glob) -> str:
+    """POSIX forward-slash canonical storage form (spec §1)."""
+    return str(glob or "").replace("\\", "/").strip()
+
+
+def _str_list(value) -> list:
+    return [g for g in value if isinstance(g, str)] if isinstance(value, list) else []
+
+
+def _raw_scope_section(cfg: Path) -> tuple:
+    """(section_dict, corrupt) — best-effort raw view of one scope's rules."""
+    if not cfg.is_file():
+        return {}, False
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}, True
+    section = data.get("access") if isinstance(data, dict) else None
+    if section is None:
+        return {}, False
+    if not isinstance(section, dict):
+        return {}, True
+    corrupt = bool(set(section) - _VALID_KEYS)
+    for kind in _VALID_KEYS:
+        globs = section.get(kind, [])
+        if not isinstance(globs, list) or validate_globs(_str_list(globs)) \
+                or len(_str_list(globs)) != len(globs):
+            corrupt = True
+    return section, corrupt
+
+
+def list_rules(project_path: str = ".") -> dict:
+    """Raw config view per scope + the always-on ``builtin`` pseudo-scope.
+
+    {"builtin": {"deny": [...], "read_only": [...], "corrupt": False},
+     "global":  {"deny": [...], "read_only": [...], "corrupt": bool},
+     "project": {...}}
+
+    Builtin write-denies surface under ``read_only`` (they deny write-class
+    operations only; reads stay open). Corrupt scopes still show whatever
+    string globs are recoverable, flagged ``corrupt`` — that scope evaluates
+    deny-all until the human repairs config.json by hand.
+    """
+    builtin_ro = list(BUILTIN_WRITE_DENY)
+    inst = _install_dir_rule()
+    if inst:
+        builtin_ro.append(inst.glob)
+    out = {"builtin": {"deny": list(BUILTIN_DENY), "read_only": builtin_ro,
+                       "corrupt": False}}
+    for scope in _VALID_SCOPES:
+        try:
+            cfg = _scope_config_path(scope, project_path)
+        except ValueError:
+            out[scope] = {"deny": [], "read_only": [], "corrupt": False}
+            continue
+        section, corrupt = _raw_scope_section(cfg)
+        out[scope] = {
+            _KIND_DENY: _str_list(section.get(_KIND_DENY)),
+            _KIND_READ_ONLY: _str_list(section.get(_KIND_READ_ONLY)),
+            "corrupt": corrupt,
+        }
+    return out
+
+
+def _load_config_for_write(cfg: Path) -> tuple:
+    """(config_dict, access_section) for read-modify-write of one scope.
+
+    Refuses corrupt state: unparseable JSON, a non-dict access section,
+    unknown keys (especially ``allow``), or non-string-list globs are never
+    silently rewritten — the scope fails closed until the human repairs
+    config.json by hand (frozen spec §1).
+    """
+    data = {}
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            raise ValueError(
+                f"{cfg} is not valid JSON — fix it by hand before editing "
+                f"access rules ({exc})")
+    if not isinstance(data, dict):
+        raise ValueError(f"{cfg} root is not a JSON object — fix it by hand")
+    section = data.setdefault("access", {})
+    if not isinstance(section, dict) or set(section) - _VALID_KEYS:
+        raise ValueError(
+            "access section is invalid (unknown keys or wrong shape) — the "
+            "scope fails closed; fix config.json 'access' by hand")
+    for kind in _VALID_KEYS:
+        globs = section.get(kind, [])
+        if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
+            raise ValueError(
+                f"access.{kind} must be a list of glob strings — the scope "
+                "fails closed; fix config.json 'access' by hand")
+    return data, section
+
+
+def _write_scope_config(cfg: Path, data: dict) -> None:
+    """Atomic same-directory replace; privileged internal write."""
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cfg.with_name(cfg.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, cfg)
+
+
+def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
+    """Add one rule to *scope*'s config. Human surfaces only; callers log.
+
+    Returns {"glob", "kind", "scope", "added"} — ``added`` False when an
+    equivalent (casefolded) glob is already present. Raises ValueError on an
+    unknown kind/scope, an invalid glob, or a corrupt config.
+    """
+    if kind not in _VALID_KEYS:
+        raise ValueError(f"unknown kind '{kind}' — expected one of: "
+                         f"{_KIND_DENY}, {_KIND_READ_ONLY}")
+    canon = _norm_glob(glob)
+    bad = validate_globs([canon])
+    if bad:
+        raise ValueError(f"invalid glob: {bad}")
+    cfg = _scope_config_path(scope, project_path)
+    data, section = _load_config_for_write(cfg)
+    target = section.setdefault(kind, [])
+    if any(_norm_glob(g).casefold() == canon.casefold() for g in target):
+        return {"glob": canon, "kind": kind, "scope": scope, "added": False}
+    target.append(canon)
+    _write_scope_config(cfg, data)
+    return {"glob": canon, "kind": kind, "scope": scope, "added": True}
+
+
+def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
+    """Remove one rule from *scope*'s config. Human surfaces only; callers log.
+
+    Returns {"glob", "kind", "scope", "removed"}. Raises ValueError on an
+    unknown kind/scope or a corrupt config (a corrupt section is repaired by
+    hand, never rewritten here).
+    """
+    if kind not in _VALID_KEYS:
+        raise ValueError(f"unknown kind '{kind}' — expected one of: "
+                         f"{_KIND_DENY}, {_KIND_READ_ONLY}")
+    canon = _norm_glob(glob)
+    cfg = _scope_config_path(scope, project_path)
+    data, section = _load_config_for_write(cfg)
+    target = section.get(kind, [])
+    keep = [g for g in target if _norm_glob(g).casefold() != canon.casefold()]
+    removed = len(keep) != len(target)
+    if removed:
+        section[kind] = keep
+        _write_scope_config(cfg, data)
+    return {"glob": canon, "kind": kind, "scope": scope, "removed": removed}

@@ -8,6 +8,7 @@ from typing import Any
 
 from cli.tools._helpers import finalize_with_tokens, maybe_related_facts
 from core import count_tokens
+from services import access_guard
 
 
 def _coerce_list(val: Any) -> list[str] | None:
@@ -117,6 +118,17 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
                         combined,
                         f"multi:{len(paths)}files->{combined_tokens}tok",
                         response_tokens=combined_tokens)
+
+    # Access Guard: read verdict per file (docs/access-guard.md §3), checked
+    # before existence so probes get the same refusal whether or not the
+    # target exists (R2). Batch members hit this via the per-file dispatch,
+    # so allowed members are served and denied ones carry the S1 line inline.
+    denial = access_guard.check(file_path, "read", svc.project_path)
+    if denial:
+        resp = access_guard.refusal(denial, file_path, "read")
+        if finalize is None:
+            return resp
+        return finalize("c3_read", {"file": file_path}, resp, "access-denied")
 
     full = Path(svc.project_path) / file_path
     if not full.exists():

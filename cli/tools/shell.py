@@ -27,6 +27,7 @@ from pathlib import Path
 
 from cli.tools.filter import handle_filter
 from core import count_tokens
+from services import access_guard
 
 # Commands that mutate repo state — trigger edit-ledger refresh after success.
 _GIT_MUTATING = re.compile(
@@ -324,6 +325,98 @@ def _dependency_hint(cmd: str, result: dict) -> str:
     )
 
 
+# ── Access Guard advisory scanner (T2c) ────────────────────────────────────
+# ADVISORY ONLY — this is best-effort, NEVER enforcement. A shell command can
+# reach paths through subshells, variables, globs, quoting, and indirection
+# that no static token scan can see. A hit here is meaningful (the command is
+# refused); a clean scan proves nothing and must never be described as
+# enforcement. The enforced surfaces are the MCP read/edit tools and the cwd
+# check in handle_shell.
+_TOKEN_SEPARATORS = re.compile(r"[\s;&|<>()`]+")
+_MSYS_DRIVE = re.compile(r"^/([a-zA-Z])(/|$)")   # /c/foo → c:/foo (any drive)
+_URL_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+_DRIVE_PREFIX = re.compile(r"^[a-zA-Z]:[/\\]")
+_MAX_SCAN_TOKENS = 64
+
+
+def _scan_candidates(command: str, work_cwd: str) -> list[str]:
+    """Path-shaped tokens from a command string (best-effort tokenizer).
+
+    Advisory heuristics: strips quotes, splits `--flag=path` / `VAR=path`,
+    translates MSYS drive spellings, skips flags/URLs/`host:port`-shaped
+    tokens, and keeps tokens that look like paths (separator, extension, or
+    an existing entry under the effective cwd). Quoted paths containing
+    spaces are split and may be missed — documented best-effort behavior.
+    """
+    out: list[str] = []
+    for chunk in _TOKEN_SEPARATORS.split(command):
+        for raw in chunk.split():
+            tok = raw.strip("'\"")
+            todo = [tok]
+            if "=" in tok:                          # --flag=path / VAR=path
+                todo.append(tok.split("=", 1)[1].strip("'\""))
+            for t in todo:
+                if not t or t.startswith("-"):
+                    continue
+                m = _MSYS_DRIVE.match(t)
+                if m:                               # MSYS spelling → drive path
+                    t = m.group(1) + ":/" + t[len(m.group(1)) + 2:]
+                if _URL_SCHEME.match(t):
+                    continue                        # URLs are not local paths
+                if ":" in t and not _DRIVE_PREFIX.match(t):
+                    continue                        # host:port, {{cred:N}}, ADS…
+                pathish = "/" in t or "\\" in t or "." in t.strip(".")
+                if not pathish:
+                    try:
+                        pathish = os.path.exists(os.path.join(work_cwd, t))
+                    except (OSError, ValueError):
+                        pathish = False
+                if not pathish:
+                    continue
+                out.append(t)
+                if len(out) >= _MAX_SCAN_TOKENS:
+                    return out
+    return out
+
+
+def _advisory_guard_scan(command: str, work_cwd: str, project_path: str):
+    """(denial, token) when a path-shaped token hits a deny rule, else (None, '').
+
+    ADVISORY: only deny-kind rule hits (and the corrupt-config deny-all)
+    refuse; canonicalization artifacts on tokens that may not be paths at
+    all (UNC-ish, 8.3, unresolvable) are skipped so non-path tokens cannot
+    veto commands. Evaluator errors fail closed (synthetic denial), matching
+    the hook layer's posture.
+    """
+    for tok in _scan_candidates(command, work_cwd):
+        target = tok if os.path.isabs(tok) else os.path.join(work_cwd, tok)
+        try:
+            denial = access_guard.check(target, "read", project_path)
+        except Exception as exc:  # fail closed — mirror hook _FAIL_CLOSED
+            return access_guard.Denial(
+                "<evaluator-error>", "deny", "builtin",
+                f"evaluator error: {type(exc).__name__}"), tok
+        if denial is None or denial.kind != "deny":
+            continue
+        if denial.rule.startswith("<") and denial.rule != "<corrupt-config>":
+            continue  # canonicalization artifact on a maybe-not-a-path token
+        return denial, tok
+    return None, ""
+
+
+def _log_access_denied(svc, work_cwd: str, denial, surface: str) -> None:
+    """Record a guard refusal — with the effective cwd — in the activity log."""
+    if not getattr(svc, "activity_log", None):
+        return
+    try:
+        svc.activity_log.log("access_denied", {
+            "tool": "c3_shell", "surface": surface, "cwd": work_cwd,
+            "rule": denial.rule, "scope": denial.scope,
+        })
+    except Exception:
+        pass
+
+
 # git diagnostics whose output the caller almost always needs verbatim — never
 # auto-filter these, even past the line threshold.
 _GIT_DIAGNOSTIC = re.compile(
@@ -378,6 +471,20 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
     work_cwd = cwd or svc.project_path
     work_cwd = str(Path(work_cwd).resolve())
 
+    # ── Access Guard: HARD deny when the effective cwd is under a deny rule
+    # (docs/access-guard.md §3, handle_shell row). The cwd itself is
+    # enforced; what the command touches beyond it is only covered by the
+    # ADVISORY token scan below. Evaluator errors fail closed.
+    try:
+        cwd_denial = access_guard.check(work_cwd, "read", str(svc.project_path))
+    except Exception as exc:
+        cwd_denial = access_guard.Denial(
+            "<evaluator-error>", "deny", "builtin",
+            f"evaluator error: {type(exc).__name__}")
+    if cwd_denial is not None and cwd_denial.kind == "deny":
+        _log_access_denied(svc, work_cwd, cwd_denial, "cwd")
+        return access_guard.refusal(cwd_denial, work_cwd, "read")
+
     # ── credential injection (local runtime only) ─────────
     # `cmd` stays the RAW template form for every echo/log below; only
     # `exec_cmd` (never logged) carries decoded values. Cross-project proxies
@@ -412,6 +519,30 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             return f"[c3_shell:error] credential store unavailable: {exc}"
         if exec_cmd != cmd and _BLOCKED.search(exec_cmd):
             return "[c3_shell:error] blocked pattern after credential expansion"
+
+    # ── Access Guard ADVISORY token scan — best-effort, not enforcement.
+    # Mirrors the _BLOCKED post-expansion re-check above: the raw template
+    # `cmd` is always scanned and, when credential expansion changed the
+    # string, the expanded `exec_cmd` is scanned too — a {{cred:NAME}}
+    # template can neither smuggle in nor mask a denied path. Subshells,
+    # variables, and globs are invisible to a token scan, so a clean pass
+    # is never treated (or described) as enforcement.
+    for scan_text in ([cmd] if exec_cmd == cmd else [cmd, exec_cmd]):
+        scan_denial, hit_tok = _advisory_guard_scan(
+            scan_text, work_cwd, str(svc.project_path))
+        if scan_denial is not None:
+            _log_access_denied(svc, work_cwd, scan_denial, "token_scan")
+            msg = access_guard.refusal(scan_denial, hit_tok, "read") + (
+                "\n[c3_shell:note] shell path scanning is best-effort "
+                "(advisory) — a denied hit refuses the whole command, but a "
+                "clean scan is not enforcement."
+            )
+            if enable_creds:
+                try:  # never leak a decoded credential via the refusal text
+                    msg = _creds.redact_text(msg)
+                except Exception:
+                    pass
+            return msg
 
     ghost_root = Path(work_cwd)
     _ghosts_before = _list_root_files(ghost_root)
