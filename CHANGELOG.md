@@ -4,6 +4,36 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.61.1] - 2026-07-27
+
+### Fixed — Hub Start-UI placeholder tab could hang forever on "Starting …"
+
+Clicking **Start** (or **Open UI** on an active session that has no UI server
+yet) opens an `about:blank` placeholder tab synchronously — inside the click
+gesture, so popup blockers allow it — while the detached UI-server child picks
+a port and registers it. All of the polling, redirect, timeout, and cleanup
+logic lived in the *hub tab* that opened it. If that hub tab was reloaded,
+closed, or its start request hung at any point in the ~31-second launch
+window, the placeholder was orphaned: a black page reading "Starting
+&lt;project&gt;…" forever. Even on the clean failure path, the only feedback
+was a toast in a different tab.
+
+The placeholder is now self-sufficient. The document written into it carries
+its own script (`about:blank` inherits the hub's origin, so its fetches are
+same-origin): it polls `/api/projects` itself, navigates itself to the UI
+server's port, shows a spinner while waiting, and renders failures — launch
+error, no port after 30 s, hub unreachable — inside the tab, with a pointer
+to the project's `.c3/ui.log`. The hub-side poll is reduced to bookkeeping
+(card refresh, busy state) and only steers the tab in the fallback case where
+the placeholder could not be written (popup blocked). Verified live by
+clicking Start and immediately reloading the hub tab: the placeholder
+redirected itself ~3 s later.
+
+Escaping note for future editors: the hub bundle is inlined into
+`hub_ui.html` inside a `<script type="text/babel">` block, so the
+placeholder's closing script tag must be written as `<\/script>` in JS
+source — a literal closer would truncate the entire bundle.
+
 ## [2.61.0] - 2026-07-26
 
 This release also carries the Windows hook fix prepared as 2.60.1, which was
