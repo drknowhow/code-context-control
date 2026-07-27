@@ -377,24 +377,63 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
   // Launch the UI server, then open its tab once the port shows up in the
   // registry. launch_session cannot return the port (the detached child
   // picks it), so open a placeholder tab synchronously — still inside the
-  // click gesture, so popup blockers allow it — and navigate it when
-  // polling /api/projects finds the port.
+  // click gesture, so popup blockers allow it. The placeholder carries its
+  // own poll/redirect script (about:blank inherits this tab's origin, so
+  // its fetches are same-origin) and resolves even if this hub tab is
+  // closed, reloaded, or hung mid-launch — it must never depend on the
+  // opener surviving the launch window.
   const start = async (e) => {
     e.stopPropagation();
     if (starting) return;
     setStarting(true);
     const win = window.open('', '_blank');
+    // armed = the placeholder polls and navigates itself; when false
+    // (write failed / popup blocked) the hub-side poll navigates instead.
+    let armed = false;
     if (win) {
       try {
+        const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const jsStr = (s) => JSON.stringify(String(s)).replace(/</g, '\\u003c');
         win.document.write(
-          `<title>Starting ${p.name}…</title>` +
+          `<title>Starting ${escHtml(p.name)}…</title>` +
           '<body style="background:#0d1117;color:#8b949e;font-family:sans-serif;' +
-          'display:flex;align-items:center;justify-content:center;height:100vh">' +
-          `Starting ${p.name}…</body>`);
+          'display:flex;align-items:center;justify-content:center;height:100vh;margin:0">' +
+          '<div style="text-align:center;max-width:560px;padding:0 20px">' +
+          '<div id="spin" style="margin:0 auto 14px;width:22px;height:22px;' +
+          'border:2px solid #21262d;border-top-color:#58a6ff;border-radius:50%;' +
+          'animation:s .8s linear infinite"></div>' +
+          '<style>@keyframes s{to{transform:rotate(360deg)}}</style>' +
+          `<div id="msg" style="color:#c9d1d9">Starting ${escHtml(p.name)}…</div>` +
+          '<div id="sub" style="margin-top:6px;font-size:12px">waiting for the UI server to report a port</div>' +
+          '</div><script>' +
+          `var ORIGIN=${jsStr(location.origin)},TARGET=${jsStr((p.path || '').toLowerCase())},NAME=${jsStr(p.name)},tries=0,dead=0;` +
+          'function fail(why){dead=1;document.getElementById("spin").style.display="none";' +
+          'document.getElementById("msg").textContent=NAME+": "+why;' +
+          'document.getElementById("sub").textContent=' +
+          '"Check the project\'s .c3/ui.log — you can close this tab.";}' +
+          'window.__c3fail=fail;' +
+          'function poll(){if(dead)return;' +
+          'fetch(ORIGIN+"/api/projects").then(function(r){return r.json()})' +
+          '.then(function(rows){if(dead)return;' +
+          'var row=(Array.isArray(rows)?rows:[]).find(function(r){' +
+          'return (r.path||"").toLowerCase()===TARGET});' +
+          'if(row&&row.port){location.replace("http://127.0.0.1:"+row.port);return}' +
+          'if(++tries>=20){fail("UI server did not report a port after 30s");return}' +
+          'setTimeout(poll,1500)}).catch(function(){if(dead)return;' +
+          'if(++tries>=20){fail("hub unreachable");return}setTimeout(poll,1500)})}' +
+          'setTimeout(poll,1200);<\/script>');
+        win.document.close();
+        armed = true;
       } catch { }
     }
     const fail = (msg) => {
-      if (win) win.close();
+      if (win) {
+        // Surface the error inside the tab the user is looking at; close
+        // it only when the placeholder script isn't there to show it.
+        let shown = false;
+        try { if (armed && win.__c3fail) { win.__c3fail(msg); shown = true; } } catch { }
+        if (!shown) { try { win.close(); } catch { } }
+      }
       notify(msg, 'err');
       setStarting(false);
     };
@@ -403,19 +442,28 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
       if (!d.launched) { fail('Launch failed'); return; }
       notify(`Starting ${p.name}…`);
       setTimeout(onChanged, 1500);
+      // Bookkeeping poll: refresh the card and clear the busy state. Only
+      // navigates or closes the tab when the placeholder isn't armed.
       const poll = async (tries) => {
         let rows = [];
         try { rows = await api.get('/api/projects'); } catch { }
         const row = (Array.isArray(rows) ? rows : []).find(r =>
           (r.path || '').toLowerCase() === (p.path || '').toLowerCase());
         if (row && row.port) {
-          const url = 'http://127.0.0.1:' + row.port;
-          if (win) { win.location = url; } else { window.open(url, '_blank'); }
+          if (!armed) {
+            const url = 'http://127.0.0.1:' + row.port;
+            if (win) { win.location = url; } else { window.open(url, '_blank'); }
+          }
           onChanged();
           setStarting(false);
           return;
         }
-        if (tries >= 20) { fail(`${p.name}: UI server did not report a port — check .c3/ui.log`); return; }
+        if (tries >= 20) {
+          if (!armed && win) { try { win.close(); } catch { } }
+          notify(`${p.name}: UI server did not report a port — check .c3/ui.log`, 'err');
+          setStarting(false);
+          return;
+        }
         setTimeout(() => poll(tries + 1), 1500);
       };
       setTimeout(() => poll(0), 1200);
