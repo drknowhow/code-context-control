@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import count_tokens
 from core.config import load_delegate_config, load_mcp_config, load_proxy_config
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
+from services import access_guard
 from services.protocol import CompressionProtocol
 from services.runtime import build_runtime, stop_runtime
 from services.session_manager import SessionManager
@@ -1512,7 +1513,10 @@ def api_artifacts_restore():
     if not data.get("artifact") or not data.get("version"):
         return jsonify({"error": "artifact and version are required"}), 400
     store = _artifact_store()
-    res = store.restore(data["artifact"], int(data["version"]), session_id="ui")
+    try:
+        res = store.restore(data["artifact"], int(data["version"]), session_id="ui")
+    except access_guard.AccessDenied as exc:
+        return jsonify({"error": exc.message}), 403
     if "error" in res:
         return jsonify(res), 400
     ledger = getattr(runtime, "edit_ledger", None)

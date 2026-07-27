@@ -92,6 +92,16 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
+
+
+def _compress_file_cli(compressor, path, mode="smart", **kw):
+    """compress_file for human-CLI paths: AccessDenied → error dict, not a
+    traceback. The refusal text names the rule so the operator can act."""
+    from services import access_guard as _ag
+    try:
+        return compressor.compress_file(path, mode, **kw)
+    except _ag.AccessDenied as exc:
+        return {"error": exc.message}
 __version__ = "2.61.1"
 
 
@@ -1338,7 +1348,7 @@ def _benchmark_extract_preview(full_path: Path, compressor: CodeCompressor, patt
     extracted = ""
 
     if ext in code_exts and not pattern:
-        result = compressor.compress_file(str(full_path), "smart")
+        result = _compress_file_cli(compressor, str(full_path), "smart")
         extracted = result.get("compressed", "") if "error" not in result else f"Error: {result['error']}"
 
     elif ext == ".jsonl" and not pattern:
@@ -1617,7 +1627,7 @@ def _benchmark_delegate_optional(project_path: Path, sample: list[tuple[Path, st
         "Focus on responsibilities, important functions/classes, and notable dependencies."
     )
 
-    compressed_result = compressor.compress_file(str(fpath), "smart")
+    compressed_result = _compress_file_cli(compressor, str(fpath), "smart")
     compressed_context = compressed_result.get("compressed", "") if isinstance(compressed_result, dict) else ""
     if not compressed_context:
         compressed_context = raw_content
@@ -3478,7 +3488,7 @@ def cmd_benchmark(args):
             raw_content = content
         comp_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
         t0 = time.perf_counter()
-        result = compressor.compress_file(str(fpath), "smart")
+        result = _compress_file_cli(compressor, str(fpath), "smart")
         comp_c3_latencies.append((time.perf_counter() - t0) * 1000)
         raw_tokens = count_tokens(raw_content)
         comp_orig += raw_tokens
@@ -3544,7 +3554,7 @@ def cmd_benchmark(args):
                         tmp.write(raw_extracted)
                         tmp_path = tmp.name
                     try:
-                        comp_res = compressor.compress_file(tmp_path, mode="smart")
+                        comp_res = _compress_file_cli(compressor, tmp_path, mode="smart")
                         extracted_text += comp_res.get("compressed", raw_extracted)
                     finally:
                         if os.path.exists(tmp_path):
