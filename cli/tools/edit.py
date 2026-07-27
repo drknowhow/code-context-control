@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 from services import access_guard
+from services import credential_store as _cs
 
 # Per-file locks — keyed by resolved absolute path string.
 _file_locks: dict[str, threading.Lock] = {}
@@ -238,6 +239,12 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     if not path.is_absolute():
         path = Path(svc.project_path) / path
     path = path.resolve()
+
+    # Vault write-guard: the credential registry/state is never agent-writable
+    # (covers create, edit, and batch modes — and c3_project's edit proxy).
+    guard = _cs.vault_guard_reason(path)
+    if guard:
+        return finalize("c3_edit", {"file": file_path}, guard, "vault-protected")
 
     # Relative path for ledger + display (computed even for new files)
     try:

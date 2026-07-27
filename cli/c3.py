@@ -92,6 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
+__version__ = "2.61.2"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -102,7 +103,6 @@ def _compress_file_cli(compressor, path, mode="smart", **kw):
         return compressor.compress_file(path, mode, **kw)
     except _ag.AccessDenied as exc:
         return {"error": exc.message}
-__version__ = "2.61.1"
 
 
 def _command_deps() -> CommandDeps:
