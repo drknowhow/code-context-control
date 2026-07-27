@@ -30,6 +30,9 @@ def handle_status(view: str, detailed: bool, svc, finalize) -> str:
     if view == "ghost_files":
         return _ghost_files_view(svc, finalize)
 
+    if view == "access":
+        return _access_view(svc, finalize)
+
     # Graceful migration for removed views
     removed = {
         "tokens": "Merged into 'budget'. Use c3_status(view='budget', detailed=True).",
@@ -42,7 +45,7 @@ def handle_status(view: str, detailed: bool, svc, finalize) -> str:
         return finalize("c3_status", {"view": view},
                         f"[status:moved] '{view}' view removed from MCP. {removed[view]}", "moved")
 
-    return f"[status:error] Unknown view: {view}. Available: budget, health, notifications, sessions, ghost_files"
+    return f"[status:error] Unknown view: {view}. Available: budget, health, notifications, sessions, ghost_files, access"
 
 
 def _budget_view(svc, detailed, finalize):
@@ -336,6 +339,33 @@ def _notifications_view(svc, finalize):
         lines.append(f"\n(+{info_count} info events archived — not shown)")
     return finalize("c3_status", {"view": "notifications"},
                     "\n".join(lines), f"{len(pending)}p")
+
+
+def _access_view(svc, finalize):
+    """Access Guard summary — the agent's READ-ONLY view of the rule registry.
+
+    Rule counts per scope, corrupt-scope warnings, and the §5 coverage
+    matrix. Rule MUTATIONS are human-only (UI tab / `c3 access` CLI) —
+    no agent-facing mutation surface exists. Plan-mode safe.
+    """
+    from services import access_guard
+
+    scopes = access_guard.list_rules(str(svc.project_path))
+    lines = ["# Access Guard"]
+    for scope in ("builtin", "global", "project"):
+        sec = scopes.get(scope) or {}
+        n_deny = len(sec.get("deny") or [])
+        n_ro = len(sec.get("read_only") or [])
+        line = f"[{scope}] {n_deny} deny, {n_ro} read_only"
+        if sec.get("corrupt"):
+            line += ("  [warn] access section invalid — scope fails closed "
+                     "(deny-all); fix config.json 'access' by hand")
+        lines.append(line)
+    lines.append("")
+    lines.append(access_guard.COVERAGE_MATRIX)
+    lines.append("Rules: `c3 access list` or the Access Guard tab "
+                 "(mutations are human-only).")
+    return finalize("c3_status", {"view": "access"}, "\n".join(lines), "ok")
 
 
 def _ghost_files_view(svc, finalize):
