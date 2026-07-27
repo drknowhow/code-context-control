@@ -135,6 +135,56 @@ def _account(realm_s: str, name: str) -> str:
     return f"{realm_s}|{name}"
 
 
+def _flag_account(realm_s: str, name: str) -> str:
+    return f"{realm_s}|{name}::agent_readable"
+
+
+# Files the agent must never write through c3 tool surfaces: the vault
+# registry (config.json) and its sidecar state. Editing these outside the
+# credentials API is how a prompt-injected agent would grant itself reveal
+# access. Mirrored in cli/hook_pretool_enforce.py (parity-tested).
+VAULT_PROTECTED_FILES = frozenset({"config.json", "secrets.enc", "cred_state.json"})
+
+
+def vault_guard_reason(path) -> str:
+    """Non-empty refusal message when ``path`` is a vault file under .c3/."""
+    p = Path(path)
+    if p.name.lower() in VAULT_PROTECTED_FILES and p.parent.name.lower() == ".c3":
+        return (
+            f"[c3:vault-protected] {p.name} belongs to the credential vault "
+            "(registry/state) and cannot be modified by the agent. Changes go "
+            "through the Credentials UI or the `c3 creds` CLI — ask the user."
+        )
+    return ""
+
+
+def _write_flag_attestation(realm_s: str, name: str, readable: bool) -> None:
+    """Keyring copy of agent_readable — reveal trusts registry AND keyring.
+
+    A registry flag flipped by editing config.json directly (outside this
+    API) disagrees with the attestation, and reveal fails closed.
+    """
+    try:
+        _keyring_module().set_password(
+            KEYRING_SERVICE, _flag_account(realm_s, name), "1" if readable else "0")
+    except Exception:
+        pass  # keyring-less env: verify_agent_readable fails closed anyway
+
+
+def verify_agent_readable(name: str, *, scope: str, project_path: str = ".") -> bool:
+    """True only when the keyring attestation agrees the flag is enabled.
+
+    Fails closed: a missing attestation (pre-v2.61.2 entry, keyring failure,
+    or a registry edited outside this API) reads as not-readable.
+    """
+    try:
+        realm_s = realm(_norm_scope(scope, project_path), project_path)
+        return _keyring_module().get_password(
+            KEYRING_SERVICE, _flag_account(realm_s, name)) == "1"
+    except Exception:
+        return False
+
+
 def _scope_dir(scope: str, project_path: str) -> Optional[Path]:
     """Base directory holding .c3/ for the scope; None when global is unresolvable."""
     if scope == "global":
@@ -376,6 +426,7 @@ def set_credential(
     section["entries"][name] = entry
     config["credentials"] = section
     _save_config(base, config)
+    _write_flag_attestation(realm_s, name, bool(agent_readable))
     return dict(entry)
 
 
@@ -407,6 +458,9 @@ def update_metadata(name: str, *, scope: str, project_path: str = ".", **fields)
     entry["updated"] = _utcnow()
     config["credentials"] = section
     _save_config(base, config)
+    if "agent_readable" in fields:
+        _write_flag_attestation(
+            realm(scope, project_path), name, bool(fields["agent_readable"]))
     return dict(entry)
 
 
@@ -465,6 +519,10 @@ def delete_credential(name: str, *, scope: str, project_path: str = ".") -> bool
     try:
         _keyring_module().delete_password(KEYRING_SERVICE, _account(realm_s, name))
         removed_value = True
+    except Exception:
+        pass
+    try:
+        _keyring_module().delete_password(KEYRING_SERVICE, _flag_account(realm_s, name))
     except Exception:
         pass
     config = _load_config(base)
