@@ -4,6 +4,84 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.62.0] - 2026-07-27
+
+### Added — Access Guard: path-level read/write prevention for agents
+
+The Credential Vault protects *values*; Access Guard protects *files and
+folders*. Two glob lists — `deny` (no read, no write, no create, no
+enumerate) and `read_only` (no write) — in the `access` section of
+`.c3/config.json` (project) and `~/.c3/config.json` (global), enforced by
+one shared evaluator at every C3 surface. Designed by an adversarial board
+review (five seats + chair) whose amendments shaped everything below.
+
+- **`services/access_guard.py`** — the single evaluator: two-scope
+  tighten-only union (no `allow` list exists; unknown keys are a hard
+  config error; a corrupt section makes that scope deny-all — fail
+  closed), POSIX case-insensitive globs (basename patterns match at any
+  depth), and ONE `canonicalize()` handling `\\?\`/UNC pre-stripping,
+  nearest-existing-parent resolution for not-yet-existing targets, and
+  Windows-gated trailing-dot/space, alternate-data-stream, and 8.3
+  short-name defenses. Builtins (non-overridable): `**/.env*` and the
+  vault sidecars denied outright; write-denies on `.c3/**`, `~/.c3/**`,
+  `.claude/settings*.json`, `.git/**` (reads stay open), and the installed
+  C3 package (dev checkouts exempt). `*.pem`/`id_rsa*`/`*.key` ship as
+  visible, removable default rules.
+- **Service-layer enforcement** (never the MCP wrappers, so the Oracle
+  Discovery bridge, `c3_project`, and `c3_delegate` inherit):
+  `compress_file` and `ArtifactStore.restore` raise a typed
+  `AccessDenied`; read/edit/compress/validate/filter/impact convert to
+  refusals; search pre-filters denied paths from results (deny-ENUMERATE)
+  and appends a presence-only `[c3-access:limited]` footer whenever rules
+  are active; `scanner.iter_files` excludes denied paths at index time so
+  they never enter the TF-IDF/vector index, MAP.md, or file_memory.
+- **Hook layer, fail-closed** — new `hook_access_guard.py` runs FIRST in
+  the PreToolUse route: native Read/Edit/Write/MultiEdit/NotebookEdit
+  verdicts before any unlock logic (sticky unlocks cannot readmit a policy
+  denial); explicit-path Grep/Glob denial with rootless searches kept
+  advisory; best-effort existence-gated Bash token scan. If the guard
+  itself fails to import or crashes, write-class tools are DENIED with an
+  actionable reason instead of falling through. install-mcp now registers
+  `Bash` + `run_shell_command` PreToolUse matchers — previously the hook
+  layer never fired for shell at all. Unlock-map keys are now canonical
+  (resolved/casefolded, old stores migrate at load), closing a
+  case-spelling bypass; the enforcement evidence window counts tool_call
+  entries so denial storms can't evict it.
+- **`c3_shell`** hard-denies a denied working directory and runs an
+  advisory post-credential-expansion token scan (MSYS path translation,
+  refusals redacted). **`c3_project`** evaluates proxied paths against
+  global ∪ caller ∪ the containing realm and requires target registration
+  (no more rule-free pivot projects). **`c3_delegate`** pins codex to
+  `--sandbox read-only` when rules exist and gates write-capable backends
+  behind an explicit `allow_write_delegation` opt-in.
+- **Human surfaces — all rule mutations are human-only and ledger-logged;
+  agents have no mutation surface.** Per-project **Access Guard UI tab**
+  (scope-grouped rules, locked builtins, typed-glob delete confirmation,
+  test-path probe showing the exact refusal, corrupt-scope banner,
+  coverage-matrix footer), REST `/api/access` (+ `check` probe),
+  `c3 access list|add|remove|check` CLI, and a read-only
+  `c3_status(view='access')`.
+- **Refusals as API** — stable machine tags (`[c3-access:denied]`,
+  `[c3-access:read_only]`, `[c3-access:limited]`, `[c3-access:error]`)
+  with the matched rule, scope, and explicit do-not-retry / plan-disposition
+  guidance, frozen verbatim in `docs/access-guard.md` before
+  implementation.
+- **Honest coverage, stated everywhere it matters**: enforced for C3 MCP
+  tools (any agent using C3), Claude Code native tools (hooks), and
+  best-effort for `c3_shell` — NOT for a non-Claude agent's raw shell,
+  direct file APIs, or external editors. A cooperative-agent guard against
+  mistakes and prompt-injection, not a sandbox. Known v1 residuals are
+  documented: shell renames/moves, TOCTOU, pre-existing index content.
+- **CI meta-tests against drift** — every `cli/tools` module doing raw
+  file I/O must import the guard or be allowlisted with a written reason;
+  direct `Path.resolve()` is banned in enforcement-adjacent code; a
+  denial-storm regression pins the evidence window.
+- **Guide** — new `cli/guide/access.html` (linked from every guide page),
+  README section, and the coverage matrix in tab + status + docs.
+
+~130 new tests across evaluator, wiring, hooks, shell/project/delegate,
+surfaces, and meta suites. Full suite: 1546 passed.
+
 ## [2.61.2] - 2026-07-27
 
 ### Security — vault write-guard: closes an `agent_readable` escalation

@@ -264,7 +264,7 @@ def canonicalize(path, project_root=".") -> tuple:
     for name in reversed(residual):
         cleaned = name
         if windows:
-            # open('x.') / open('x ') land on 'x' on NTFS — model it.
+            # Creating 'x.' or 'x ' lands on 'x' on NTFS — model it.
             while cleaned != cleaned.rstrip(". "):
                 cleaned = cleaned.rstrip(". ")
         if not cleaned:

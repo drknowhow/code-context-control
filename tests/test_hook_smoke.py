@@ -123,7 +123,7 @@ class TestC3Read(SmokeBase):
             project_path=self.tmp)
         self.assertIn("[c3:edit-ready]", out["additionalContext"])
         state = _hook_utils.load_enforcement_state(self.tmp)
-        cats = state["unlocked_files"].get(str(fp.resolve()), [])
+        cats = state["unlocked_files"].get(_hook_utils.canonical_key(fp), [])
         self.assertEqual(cats, ["edit", "read"])
 
     def test_other_tools_ignored(self):
@@ -153,7 +153,7 @@ class TestEditUnlock(SmokeBase):
         out = hook_edit_unlock.run(self._payload(fp), project_path=self.tmp)
         self.assertIn("[c3:edit-ready]", out["additionalContext"])
         state = _hook_utils.load_enforcement_state(self.tmp)
-        self.assertIn(str(fp.resolve()), state["unlocked_files"])
+        self.assertIn(_hook_utils.canonical_key(fp), state["unlocked_files"])
 
     def test_duplicate_nudge_suppressed(self):
         fp = self.tmp / "mod.py"
