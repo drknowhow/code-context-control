@@ -80,9 +80,11 @@ class TestRouting(unittest.TestCase):
         from cli._hook_utils import normalize_tool_name
         return list(hook_dispatch._routes(event, tool, normalize_tool_name(tool)))
 
-    def test_pretool_routes_to_enforce(self):
-        self.assertEqual(self._routes("pretool", "Read"), ["hook_pretool_enforce"])
-        self.assertEqual(self._routes("pretool", "Edit"), ["hook_pretool_enforce"])
+    def test_pretool_routes_access_guard_first(self):
+        self.assertEqual(self._routes("pretool", "Read"),
+                         ["hook_access_guard", "hook_pretool_enforce"])
+        self.assertEqual(self._routes("pretool", "Edit"),
+                         ["hook_access_guard", "hook_pretool_enforce"])
 
     def test_posttool_bash_routes(self):
         self.assertEqual(self._routes("posttool", "Bash"),
@@ -216,7 +218,7 @@ class TestDispatchEndToEnd(DispatchBase):
         state = _hook_utils.load_enforcement_state(self.tmp)
         self.assertEqual(state["session_id"], "sess-1")
         self.assertEqual(state["last_c3_call"]["tool"], "c3_compress")
-        self.assertIn(str(fp.resolve()), state["unlocked_files"])
+        self.assertIn(_hook_utils.canonical_key(fp), state["unlocked_files"])
         # Full round-trip: the signal written by posttool unlocks pretool Read.
         out2 = dispatch("pretool",
                         {"tool_name": "Read", "session_id": "sess-1",

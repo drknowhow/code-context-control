@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from core import count_tokens
+from services import access_guard
 from services.circuit_breaker import CircuitBreaker
 from services.win_subprocess import harden_win_argv
 
@@ -914,6 +915,17 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
     cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
     model = dcfg.get("codex_default_model") or cdef.get("model", "")
     sandbox = dcfg.get("codex_default_sandbox") or cdef.get("sandbox", "read-only")
+    try:
+        _pin = access_guard.has_active_rules(str(svc.project_path))
+    except Exception:
+        _pin = True  # evaluator failure → fail closed
+    if _pin:
+        # Access Guard rules are active → pin the sandbox to read-only no
+        # matter what config asked for. Codex is the one delegated backend
+        # whose sandbox C3 can pin; the guard's file rules cannot be pushed
+        # into a foreign CLI, so delegation runs read-only instead. With
+        # ZERO user rules this branch never fires (byte-identical behavior).
+        sandbox = "read-only"
     reasoning = dcfg.get("codex_reasoning_effort") or cdef.get("reasoning", "high")
     timeout = int(dcfg.get("codex_timeout", 120))
 
@@ -925,6 +937,8 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
                 res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
                 if isinstance(res, dict) and res.get("compressed"):
                     enriched += f"\n--- file: {p} ---\n{res['compressed']}"
+            except access_guard.AccessDenied:
+                raise  # policy refusal must surface, never be swallowed (spec §3)
             except Exception:
                 continue
 
@@ -1048,6 +1062,8 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
                 res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
                 if isinstance(res, dict) and res.get("compressed"):
                     enriched += f"\n--- file: {p} ---\n{res['compressed']}"
+            except access_guard.AccessDenied:
+                raise  # policy refusal must surface, never be swallowed (spec §3)
             except Exception:
                 continue
 
@@ -1125,10 +1141,24 @@ def _gemini_memory_bridge(output: str, task_type: str, task: str, svc):
 
 
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
-                    svc, finalize, backend: str = "ollama") -> str:
+                    svc, finalize, backend: str = "ollama",
+                    allow_write_delegation: bool = False) -> str:
     dcfg = svc.delegate_config or {}
     if not dcfg.get("enabled", True):
         return "[delegate:disabled]"
+
+    # ── Access Guard (T2c) delegation posture ──────────────────────────────
+    # With ZERO user rules `_guard_active` is False and every branch below is
+    # inert — behavior is byte-identical to the pre-guard tool. When rules
+    # exist: codex is pinned to --sandbox read-only; backends that run
+    # autonomously with potential write access (gemini --approval-mode yolo,
+    # claude -p inheriting the project's permission allowlist, codex_resume
+    # reusing an unpinnable prior-session sandbox) require the explicit
+    # allow_write_delegation=true user opt-in. Evaluator errors fail closed.
+    try:
+        _guard_active = access_guard.has_active_rules(str(svc.project_path))
+    except Exception:
+        _guard_active = True
 
     # --- Health checks -----------------------------------------------------
     if task_type == "available":
@@ -1196,6 +1226,15 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         if not dcfg.get("codex_enabled", False):
             return finalize("c3_delegate", {"task_type": "codex_resume"},
                             "[delegate:error] Codex not enabled in config", "disabled")
+        if _guard_active and not allow_write_delegation:
+            return finalize(
+                "c3_delegate", {"task_type": "codex_resume"},
+                "[delegate:blocked] Access Guard rules are active and "
+                "codex_resume reuses the previous session's sandbox, which C3 "
+                "cannot pin to read-only. Re-run with "
+                "allow_write_delegation=true (explicit user opt-in) or run "
+                "codex directly.",
+                "blocked")
         timeout = int(dcfg.get("codex_timeout", 120))
         output, ok = _run_codex_resume(task, timeout=timeout,
                                         cwd=str(svc.project_path))
@@ -1219,6 +1258,11 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         skips: list[str] = []
         chosen = ""
         for cand in _cascade_order(task_type, dcfg):
+            if (_guard_active and not allow_write_delegation
+                    and cand in ("gemini", "claude")):
+                skips.append(f"{cand} blocked by Access Guard (write-capable; "
+                             "allow_write_delegation=false)")
+                continue
             reason = _cascade_skip_reason(cand, dcfg, svc)
             if reason is None:
                 chosen = cand
@@ -1236,6 +1280,19 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
             cascade_note = f"[delegate] {'; '.join(skips)} -> routed to {chosen}"
             _log_progress(svc, cascade_note)
             finalize = _with_cascade_note(finalize, cascade_note)
+
+    if backend in ("gemini", "claude") and _guard_active and not allow_write_delegation:
+        detail = ("--approval-mode yolo auto-approves writes"
+                  if backend == "gemini"
+                  else "claude -p inherits the project's tool permission allowlist")
+        return finalize(
+            "c3_delegate", {"task_type": task_type, "backend": backend},
+            f"[delegate:blocked] Access Guard rules are active and the "
+            f"'{backend}' backend runs autonomously with potential write "
+            f"access ({detail}) that C3 cannot fence to the guard's rules. "
+            "Re-run with allow_write_delegation=true (explicit user opt-in) "
+            f"or run {backend} directly.",
+            "blocked")
 
     if backend == "codex":
         _log_progress(svc, f"[delegate] Routing {task_type} → Codex...")
@@ -1268,6 +1325,8 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                 res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
                 if isinstance(res, dict) and res.get("compressed"):
                     enriched += f"\n--- file: {p} ---\n{res['compressed']}"
+            except access_guard.AccessDenied:
+                raise  # policy refusal must surface, never be swallowed (spec §3)
             except Exception:
                 continue
 

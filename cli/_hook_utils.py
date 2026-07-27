@@ -175,6 +175,17 @@ def load_enforcement_state(project_path: Path | None = None, session_id: str = "
     # session must not grant unlocks (signal files used to survive /clear).
     if session_id and state.get("session_id") and state["session_id"] != session_id:
         return _empty_state(session_id)
+    # Migrate unlock keys written before canonical_key (raw resolve() form):
+    # lookups are canonical now, so re-key at load — old and new forms merge.
+    migrated: dict = {}
+    for k, cats in state.get("unlocked_files", {}).items():
+        try:
+            key = canonical_key(k)
+        except OSError:
+            continue
+        merged = set(migrated.get(key, [])) | set(cats)
+        migrated[key] = sorted(merged)
+    state["unlocked_files"] = migrated
     return state
 
 
@@ -205,6 +216,16 @@ def record_c3_signal(
     save_enforcement_state(state, project_path)
 
 
+def canonical_key(path) -> str:
+    """Canonical unlock-map key: resolved, forward-slash, casefolded.
+
+    Must stay form-identical to services.access_guard.canonicalize()'s canon
+    string for existing paths (parity-tested) — the unlock map and the
+    access evaluator must never disagree about path identity on Windows.
+    """
+    return str(Path(path).resolve()).replace("\\", "/").casefold()
+
+
 def record_unlocked_files(
     paths,
     categories,
@@ -223,7 +244,7 @@ def record_unlocked_files(
         if not fp:
             continue
         try:
-            normalized = str(Path(fp).resolve())
+            normalized = canonical_key(fp)
         except OSError:
             continue
         cats = set(state["unlocked_files"].get(normalized, []))

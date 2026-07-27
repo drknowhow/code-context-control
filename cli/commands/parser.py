@@ -447,6 +447,42 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
     cr_import.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
+    # ── Access Guard (v2.62.0) ──────────────────────────────────────────
+    # Human-only mutation surface (frozen spec docs/access-guard.md §1):
+    # rule changes happen here or in the UI tab, never via an agent tool.
+    p_access = subparsers.add_parser(
+        "access",
+        help="Access Guard — path deny/read-only rules the agent must respect",
+    )
+    access_subs = p_access.add_subparsers(dest="access_cmd")
+
+    ac_list = access_subs.add_parser(
+        "list", help="Show rules per scope (builtin + global + project) and coverage"
+    )
+    ac_list.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    ac_add = access_subs.add_parser("add", help="Add a rule to the project (or --global) scope")
+    ac_add.add_argument("glob", help="POSIX glob (** crosses directories), e.g. 'secrets/**' or '*.pem'")
+    ac_add.add_argument("--kind", choices=["deny", "read_only"], required=True,
+                        help="deny = no read/write/enumerate; read_only = no write")
+    ac_add.add_argument("--global", dest="use_global", action="store_true",
+                        help="Store in the global scope (~/.c3) so every C3 project enforces it")
+    ac_add.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    ac_remove = access_subs.add_parser("remove", help="Remove a rule from the project (or --global) scope")
+    ac_remove.add_argument("glob", help="The stored glob to remove (case-insensitive match)")
+    ac_remove.add_argument("--kind", choices=["deny", "read_only"], required=True,
+                           help="Which rule list the glob lives in")
+    ac_remove.add_argument("--global", dest="use_global", action="store_true",
+                           help="Remove from the global scope (~/.c3)")
+    ac_remove.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    ac_check = access_subs.add_parser("check", help="Test a path: verdict + matched rule + refusal string")
+    ac_check.add_argument("target", help="Path to test (absolute or project-relative)")
+    ac_check.add_argument("--op", choices=["read", "write"], default="read",
+                          help="Operation to evaluate (default: read)")
+    ac_check.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
         "oracle",

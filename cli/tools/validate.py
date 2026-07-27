@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from services import access_guard
+
 
 async def _deep_type_check(full: Path, ext: str, timeout: int = 15) -> list[str]:
     """Run pyright (Python) or tsc (TypeScript) if available. Returns advisory type-warning strings."""
@@ -164,6 +166,11 @@ async def handle_validate(file_path: str, svc, finalize) -> str:
 
 async def _validate_one(file_path: str, svc) -> tuple:
     """Validate a single file and return (status_word, detail_line)."""
+    # Access Guard: read verdict (docs/access-guard.md §3) — the S1 refusal
+    # becomes the batch line for this member; other members are still served.
+    denial = access_guard.check(file_path, "read", svc.project_path)
+    if denial:
+        return ("SKIP", access_guard.refusal(denial, file_path, "read"))
     full = Path(svc.project_path) / file_path
     if not full.exists():
         full = Path(file_path)
@@ -241,6 +248,12 @@ async def _validate_one(file_path: str, svc) -> tuple:
 
 async def _validate_single(file_path: str, svc, finalize) -> str:
     """Original single-file validation path."""
+    # Access Guard: read verdict, checked before existence (R2 probe parity).
+    denial = access_guard.check(file_path, "read", svc.project_path)
+    if denial:
+        return finalize("c3_validate", {"file_path": file_path},
+                        access_guard.refusal(denial, file_path, "read"),
+                        "access-denied")
     full = Path(svc.project_path) / file_path
     if not full.exists():
         full = Path(file_path)

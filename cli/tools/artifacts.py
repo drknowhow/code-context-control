@@ -1,5 +1,7 @@
 """c3_artifacts — agent-config tracking: inventory, history, diff, restore."""
 
+from services import access_guard
+
 READ_ACTIONS = {"scan", "list", "history", "show", "diff", "status"}
 
 _ACTIONS = "scan, list, history, show, diff, restore, status"
@@ -137,7 +139,12 @@ def handle_artifacts(action, svc, finalize, *, artifact="", cls="", provider="",
         if not version:
             return done_resp("[artifacts:error] restore requires version.", "error")
         session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
-        res = store.restore(artifact, version, session_id=session.get("id", ""))
+        try:
+            res = store.restore(artifact, version, session_id=session.get("id", ""))
+        except access_guard.AccessDenied as exc:
+            # Service layer raises; the tool boundary converts to the S1/S2
+            # refusal string (docs/access-guard.md §3).
+            return done_resp(exc.message, "access-denied")
         if "error" in res:
             return done_resp(f"[artifacts:error] {res['error']}", "error")
         ledger = getattr(svc, "edit_ledger", None)

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import count_tokens
 from core.config import load_delegate_config, load_mcp_config, load_proxy_config
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
+from services import access_guard
 from services.protocol import CompressionProtocol
 from services.runtime import build_runtime, stop_runtime
 from services.session_manager import SessionManager
@@ -201,6 +202,7 @@ _UI_JS_FILES = [
     "ui/components/bitbucket.js",
     "ui/components/jira.js",
     "ui/components/credentials.js",
+    "ui/components/access.js",
     "ui/components/instructions.js",
     "ui/components/settings.js",
     "ui/components/chat.js",
@@ -1511,7 +1513,10 @@ def api_artifacts_restore():
     if not data.get("artifact") or not data.get("version"):
         return jsonify({"error": "artifact and version are required"}), 400
     store = _artifact_store()
-    res = store.restore(data["artifact"], int(data["version"]), session_id="ui")
+    try:
+        res = store.restore(data["artifact"], int(data["version"]), session_id="ui")
+    except access_guard.AccessDenied as exc:
+        return jsonify({"error": exc.message}), 403
     if "error" in res:
         return jsonify(res), 400
     ledger = getattr(runtime, "edit_ledger", None)
@@ -2782,6 +2787,107 @@ def api_credentials_check(name):
         "storage": entry.get("storage", "keyring"),
         "resolvable": cred_store.get_value(name, project_path=pp) is not None,
         "fingerprint": cred_store.fingerprint(name, project_path=pp),
+    })
+
+
+# ── Access Guard (v2.62.0) ──────────────────────────────
+# Human-only rule management: ALL mutations arrive from this UI (or the
+# `c3 access` CLI) and are ledger/activity-logged. No agent-facing mutation
+# surface exists — the agent's read view is c3_status; its runtime interface
+# is the refusal string (docs/access-guard.md §1).
+
+
+def _access_route_audit(action: str, glob: str, kind: str, scope: str) -> None:
+    """Rule identifiers only. Failure-safe."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(str(PROJECT_PATH)).log("access_action", {
+            "kind": "access", "action": action, "glob": glob,
+            "rule_kind": kind, "scope": scope, "via": "ui",
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(PROJECT_PATH)).log_edit(
+            file=f"access://{glob}", change_type=f"access_{action}",
+            summary=f"{action} {kind} rule '{glob}' ({scope}) via Access Guard UI",
+            tags=["access", action],
+            detail={"kind": "access", "action": action, "glob": glob,
+                    "rule_kind": kind, "scope": scope},
+        )
+    except Exception:
+        pass
+
+
+@app.route('/api/access', methods=['GET'])
+def api_access_list():
+    """Rule registry: builtin pseudo-scope + global + project, plus the §5
+    coverage matrix string and the list of corrupt (deny-all) scopes."""
+    from services import access_guard
+    scopes = access_guard.list_rules(str(PROJECT_PATH))
+    corrupt = [s for s in ("global", "project")
+               if (scopes.get(s) or {}).get("corrupt")]
+    return jsonify({"scopes": scopes, "corrupt": corrupt,
+                    "coverage": access_guard.COVERAGE_MATRIX})
+
+
+@app.route('/api/access', methods=['POST'])
+def api_access_add():
+    """Add a rule {glob, kind, scope}. Human surface — mutations audited."""
+    from services import access_guard
+    data = request.get_json() or {}
+    glob = str(data.get("glob") or "")
+    kind = str(data.get("kind") or "").strip()
+    scope = str(data.get("scope") or "project").strip()
+    try:
+        result = access_guard.set_rule(glob, kind, scope, str(PROJECT_PATH))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["added"]:
+        _access_route_audit("add", result["glob"], kind, scope)
+    return jsonify({"rule": result})
+
+
+@app.route('/api/access', methods=['DELETE'])
+def api_access_remove():
+    """Remove a rule (query args or JSON body: glob, kind, scope)."""
+    from services import access_guard
+    data = request.get_json(silent=True) or {}
+    glob = str(request.args.get("glob") or data.get("glob") or "")
+    kind = str(request.args.get("kind") or data.get("kind") or "").strip()
+    scope = str(request.args.get("scope") or data.get("scope") or "project").strip()
+    try:
+        result = access_guard.remove_rule(glob, kind, scope, str(PROJECT_PATH))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["removed"]:
+        _access_route_audit("remove", result["glob"], kind, scope)
+    return jsonify(result)
+
+
+@app.route('/api/access/check', methods=['GET', 'POST'])
+def api_access_check():
+    """Test-path probe: verdict + matched rule + scope + exact refusal string.
+    Read-only — never mutates rules; safe to call freely."""
+    from services import access_guard
+    data = request.get_json(silent=True) or {}
+    path = str(request.args.get("path") or data.get("path") or "").strip()
+    op = str(request.args.get("op") or data.get("op") or "read").strip()
+    if not path:
+        return jsonify({"error": "path required"}), 400
+    if op not in ("read", "write", "create", "delete"):
+        return jsonify({"error": f"unknown op '{op}' — expected "
+                        "read|write|create|delete"}), 400
+    denial = access_guard.check(path, op, str(PROJECT_PATH))
+    if denial is None:
+        return jsonify({"path": path, "op": op, "verdict": "allowed",
+                        "rule": "", "scope": "", "refusal": ""})
+    return jsonify({
+        "path": path, "op": op,
+        "verdict": "read_only" if denial.kind == "read_only" else "denied",
+        "rule": denial.rule, "scope": denial.scope, "reason": denial.reason,
+        "refusal": access_guard.refusal(denial, path, op),
     })
 
 

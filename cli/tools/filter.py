@@ -12,6 +12,7 @@ from pathlib import Path
 
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
+from services import access_guard
 
 
 def handle_filter(file_path: str, text: str, pattern: str, max_lines: int,
@@ -27,6 +28,13 @@ def handle_filter(file_path: str, text: str, pattern: str, max_lines: int,
         return _filter_text(text, depth, svc, finalize)
 
     # File mode
+    # Access Guard: read verdict (docs/access-guard.md §3), checked before
+    # existence so probes can't distinguish missing from denied (R2).
+    denial = access_guard.check(file_path, "read", svc.project_path)
+    if denial:
+        return finalize("c3_filter", {"file": file_path},
+                        access_guard.refusal(denial, file_path, "read"),
+                        "access-denied")
     full = Path(svc.project_path) / file_path
     if not full.exists():
         full = Path(file_path)

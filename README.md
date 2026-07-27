@@ -323,6 +323,45 @@ inbound-only, **no hub route ever returns a stored value** (there is no
 Full documentation: [`cli/guide/credentials.html`](cli/guide/credentials.html)
 — open it in the app at `/guide/credentials.html`.
 
+### Access Guard (v2.62.0)
+
+The Credential Vault protects *values*; **Access Guard** protects *files and
+folders*. Two glob lists in your config mark what an agent must never read
+(`deny`) or never write (`read_only`), and one shared evaluator enforces them
+at every C3 surface — the MCP tools (`c3_read`/`c3_edit`/`c3_search`/…, so
+any agent using C3 is covered), Claude Code's native tools via PreToolUse
+hooks (fail-closed: a broken guard denies writes instead of waving them
+through), and `c3_shell` via a best-effort command scan.
+
+```bash
+c3 access add "secrets/**" --kind deny        # never read, never write
+c3 access add "migrations/**" --kind read_only
+c3 access check secrets/key.txt               # probe: verdict + matched rule
+```
+
+- **Tighten-only.** No allow list exists; scopes (global `~/.c3` + project
+  `.c3`) merge as a union. A cloned repo's config can only add protection,
+  never grant itself access.
+- **`deny` means deny-create and deny-enumerate** too: alternate spellings
+  are canonicalized before matching, and denied paths never appear in search
+  results, maps, or the vector index.
+- **Refusals teach the agent to stop.** Every denial carries a stable
+  `[c3-access:*]` tag, the matched rule and scope, and explicit
+  do-not-retry guidance — no retry loops, no "file must not exist, let me
+  recreate it".
+- **All rule changes are human-only** (Access Guard UI tab or `c3 access`
+  CLI), ledger-logged; agents have no mutation surface.
+- **Built-ins always on:** `.env*` files, the credential vault's sidecars,
+  and write-denies on `.c3/`, `.claude/settings*.json`, `.git/`, and the
+  installed C3 package itself.
+- **Honest coverage:** this guards *cooperative* agents against mistakes and
+  prompt-injection. It is not a sandbox — raw shell or direct file access
+  outside C3's tools and hooks is not stopped. The guide states exactly
+  where each layer holds.
+
+Full documentation: [`cli/guide/access.html`](cli/guide/access.html)
+— open it in the app at `/guide/access.html`.
+
 ### Jira — Cloud + Data Center (v2.56.0)
 
 `c3_jira` connects to Jira Cloud (REST v3, email + API token) or self-hosted

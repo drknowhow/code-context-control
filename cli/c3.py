@@ -92,7 +92,17 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.61.2"
+__version__ = "2.62.0"
+
+
+def _compress_file_cli(compressor, path, mode="smart", **kw):
+    """compress_file for human-CLI paths: AccessDenied → error dict, not a
+    traceback. The refusal text names the rule so the operator can act."""
+    from services import access_guard as _ag
+    try:
+        return compressor.compress_file(path, mode, **kw)
+    except _ag.AccessDenied as exc:
+        return {"error": exc.message}
 
 
 def _command_deps() -> CommandDeps:
@@ -1338,7 +1348,7 @@ def _benchmark_extract_preview(full_path: Path, compressor: CodeCompressor, patt
     extracted = ""
 
     if ext in code_exts and not pattern:
-        result = compressor.compress_file(str(full_path), "smart")
+        result = _compress_file_cli(compressor, str(full_path), "smart")
         extracted = result.get("compressed", "") if "error" not in result else f"Error: {result['error']}"
 
     elif ext == ".jsonl" and not pattern:
@@ -1617,7 +1627,7 @@ def _benchmark_delegate_optional(project_path: Path, sample: list[tuple[Path, st
         "Focus on responsibilities, important functions/classes, and notable dependencies."
     )
 
-    compressed_result = compressor.compress_file(str(fpath), "smart")
+    compressed_result = _compress_file_cli(compressor, str(fpath), "smart")
     compressed_context = compressed_result.get("compressed", "") if isinstance(compressed_result, dict) else ""
     if not compressed_context:
         compressed_context = raw_content
@@ -3478,7 +3488,7 @@ def cmd_benchmark(args):
             raw_content = content
         comp_baseline_latencies.append((time.perf_counter() - t_read) * 1000)
         t0 = time.perf_counter()
-        result = compressor.compress_file(str(fpath), "smart")
+        result = _compress_file_cli(compressor, str(fpath), "smart")
         comp_c3_latencies.append((time.perf_counter() - t0) * 1000)
         raw_tokens = count_tokens(raw_content)
         comp_orig += raw_tokens
@@ -3544,7 +3554,7 @@ def cmd_benchmark(args):
                         tmp.write(raw_extracted)
                         tmp_path = tmp.name
                     try:
-                        comp_res = compressor.compress_file(tmp_path, mode="smart")
+                        comp_res = _compress_file_cli(compressor, tmp_path, mode="smart")
                         extracted_text += comp_res.get("compressed", raw_extracted)
                     finally:
                         if os.path.exists(tmp_path):
@@ -5203,6 +5213,9 @@ def cmd_install_mcp(args):
         ]
 
         # ── PreToolUse hooks (enforcement — blocks native tools without prior c3_*) ──
+        # Bash/run_shell_command joined in v2.62: the Access Guard sub-hook
+        # scans shell commands (best-effort); without these matchers PreToolUse
+        # simply never fires for shell — proven bypass, see docs/access-guard.md.
         _pre_matcher_names = [
             read_matcher,
             grep_matcher,
@@ -5210,6 +5223,8 @@ def cmd_install_mcp(args):
             edit_matcher,
             write_matcher,
             *extra_edit_matchers,
+            shell_matcher,
+            "run_shell_command",
         ]
         desired_pre_hooks = [
             {"matcher": m, "hooks": [{"type": "command", "command": hook_pretool_cmd}]}
@@ -5897,6 +5912,120 @@ def _creds_cmd_import(args, project_path: str) -> None:
     if result["skipped"]:
         print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
               "(use --overwrite to replace)")
+
+
+def cmd_access(args):
+    """Access Guard rule management — human-only mutation surface (spec §1)."""
+    sub = getattr(args, "access_cmd", None)
+    if not sub:
+        print("Usage: c3 access {list,add,remove,check} [args]")
+        return
+
+    project_path = getattr(args, "project_path", ".") or "."
+
+    if sub == "list":
+        _access_cmd_list(args, project_path)
+    elif sub == "add":
+        _access_cmd_add(args, project_path)
+    elif sub == "remove":
+        _access_cmd_remove(args, project_path)
+    elif sub == "check":
+        _access_cmd_check(args, project_path)
+    else:
+        print(f"Unknown access subcommand: {sub}")
+
+
+def _access_scope(args) -> str:
+    return "global" if getattr(args, "use_global", False) else "project"
+
+
+def _access_audit(action: str, glob: str, kind: str, scope: str,
+                  project_path: str) -> None:
+    """Ledger + activity log for CLI rule mutations. Identifiers only; failure-safe."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(project_path).log("access_action", {
+            "kind": "access", "action": action, "glob": glob,
+            "rule_kind": kind, "scope": scope, "via": "cli",
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(project_path).log_edit(
+            file=f"access://{glob}", change_type=f"access_{action}",
+            summary=f"{action} {kind} rule '{glob}' ({scope}) via `c3 access`",
+            tags=["access", action],
+            detail={"kind": "access", "action": action, "glob": glob,
+                    "rule_kind": kind, "scope": scope},
+        )
+    except Exception:
+        pass
+
+
+def _access_cmd_list(args, project_path: str) -> None:
+    from services import access_guard
+
+    scopes = access_guard.list_rules(project_path)
+    notes = {"builtin": "built-in, always on",
+             "global": "~/.c3/config.json",
+             "project": ".c3/config.json"}
+    for scope in ("builtin", "global", "project"):
+        sec = scopes.get(scope) or {}
+        rules = [(k, g) for k in ("deny", "read_only") for g in sec.get(k, [])]
+        print(f"[{scope}] ({notes[scope]}) — {len(rules)} rule(s)")
+        for kind, glob in rules:
+            print(f"  {kind:<10} {glob}")
+        if sec.get("corrupt"):
+            print("  [warn] access section invalid — scope fails closed "
+                  "(deny-all); fix config.json 'access' by hand")
+    print()
+    print(access_guard.COVERAGE_MATRIX)
+
+
+def _access_cmd_add(args, project_path: str) -> None:
+    from services import access_guard
+
+    scope = _access_scope(args)
+    try:
+        result = access_guard.set_rule(args.glob, args.kind, scope, project_path)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+    if result["added"]:
+        _access_audit("add", result["glob"], args.kind, scope, project_path)
+        print(f"[OK] Added {args.kind} rule '{result['glob']}' (scope={scope})")
+    else:
+        print(f"[=] Rule already present: '{result['glob']}' "
+              f"({args.kind}, {scope})")
+
+
+def _access_cmd_remove(args, project_path: str) -> None:
+    from services import access_guard
+
+    scope = _access_scope(args)
+    try:
+        result = access_guard.remove_rule(args.glob, args.kind, scope, project_path)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+    if result["removed"]:
+        _access_audit("remove", result["glob"], args.kind, scope, project_path)
+        print(f"[OK] Removed {args.kind} rule '{result['glob']}' (scope={scope})")
+    else:
+        print(f"[error] no {args.kind} rule matching '{result['glob']}' "
+              f"in {scope} scope")
+
+
+def _access_cmd_check(args, project_path: str) -> None:
+    from services import access_guard
+
+    op = getattr(args, "op", "read") or "read"
+    denial = access_guard.check(args.target, op, project_path)
+    if denial is None:
+        print(f"[OK] {op} allowed: {args.target}")
+    else:
+        print(access_guard.refusal(denial, args.target, op))
 
 
 def cmd_jira(args):
@@ -7199,6 +7328,7 @@ def main():
         "bitbucket": cmd_bitbucket,
         "jira": cmd_jira,
         "creds": cmd_creds,
+        "access": cmd_access,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,
     }

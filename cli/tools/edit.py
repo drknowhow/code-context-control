@@ -13,6 +13,7 @@ import json
 import threading
 from pathlib import Path
 
+from services import access_guard
 from services import credential_store as _cs
 
 # Per-file locks — keyed by resolved absolute path string.
@@ -250,6 +251,16 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
         rel = str(path.relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
     except ValueError:
         rel = file_path
+
+    # Access Guard: write verdict right after path resolution — covers the
+    # create/edit/batch modes alike (docs/access-guard.md §3). Sits alongside
+    # (never replaces) any dedicated vault-file guard.
+    op = "write" if path.exists() else "create"
+    denial = access_guard.check(str(path), op, svc.project_path)
+    if denial:
+        return finalize("c3_edit", {"file": file_path},
+                        access_guard.refusal(denial, file_path, op),
+                        "access-denied")
 
     # ── Create mode ───────────────────────────────────────────────────────────
     # File doesn't exist + single-edit mode + empty old_string → create file.

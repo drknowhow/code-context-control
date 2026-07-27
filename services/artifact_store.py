@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from services import access_guard
 from services.artifact_defs import (
     ArtifactUnit,
     _norm,
@@ -530,6 +531,24 @@ class ArtifactStore:
 
             warnings, written, removed = [], [], []
             target_paths = {m["path"] for m in ver["members"]}
+
+            # Access Guard: write verdict per member path BEFORE any write —
+            # one denied member aborts the whole restore, naming that member
+            # (docs/access-guard.md §3). Builtin write-deny (scope=builtin,
+            # kind=read_only) is exempt here: restore is the audited,
+            # versioned surface for exactly those files (settings/instruction
+            # docs) and would otherwise be structurally impossible. Builtin
+            # hard denies and every user rule still enforce.
+            pending = [("write", m["path"]) for m in ver["members"]]
+            pending += [("delete", m["path"]) for m in entry.get("members", [])
+                        if m["path"] not in target_paths]
+            for op, rel_p in pending:
+                denial = access_guard.check(str(self.project_path / rel_p), op,
+                                            str(self.project_path))
+                if denial and not (denial.scope == "builtin"
+                                   and denial.kind == "read_only"):
+                    raise access_guard.AccessDenied(
+                        denial, access_guard.refusal(denial, rel_p, op))
 
             for m in ver["members"]:
                 if not m.get("blob"):

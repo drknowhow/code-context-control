@@ -610,7 +610,7 @@ async def c3_filter(file_path: str = "", text: str = "", pattern: str = "",
 async def c3_status(view: str = "budget", detailed: bool = False,
               ctx: Context = None) -> str:
     """PROJECT health and budget — run at session start or when context feels stale (read-only, plan-mode safe).
-    views: budget (tokens/ratio), health (memory/index/notifications), notifications (actionable only), sessions, ghost_files."""
+    views: budget (tokens/ratio), health (memory/index/notifications), notifications (actionable only), sessions, ghost_files, access (Access Guard rules — read-only)."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -622,9 +622,11 @@ async def c3_status(view: str = "budget", detailed: bool = False,
 @mcp.tool()
 async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
                 file_path: str = "", backend: str = "ollama",
+                allow_write_delegation: bool = False,
                 ctx: Context = None) -> str:
     """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
-    backend: ollama|codex|gemini|claude|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, codex_resume."""
+    backend: ollama|codex|gemini|claude|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, codex_resume.
+    allow_write_delegation: explicit user opt-in for write-capable backends (gemini/claude/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -649,7 +651,9 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
             pass
     svc._agent_progress_cb = _progress_cb
     try:
-        return await asyncio.to_thread(handle_delegate, task, task_type, context, file_path, svc, finalize, backend)
+        return await asyncio.to_thread(handle_delegate, task, task_type, context,
+                                       file_path, svc, finalize, backend,
+                                       allow_write_delegation)
     finally:
         svc._agent_progress_cb = None
 

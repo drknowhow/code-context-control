@@ -81,6 +81,9 @@ def _routes(event: str, raw_tool: str, norm_tool: str):
     """Yield sub-hook module names applicable to this event + tool, in the
     same relative order the separate hook commands used to run."""
     if event == "pretool":
+        # Access Guard runs FIRST: merge_outputs keeps the first deny, so a
+        # policy denial here cannot be readmitted by sticky-unlock allows.
+        yield "hook_access_guard"
         # hook_pretool_enforce self-filters via its _PREREQS table.
         yield "hook_pretool_enforce"
     elif event == "posttool":
@@ -108,6 +111,28 @@ def _routes(event: str, raw_tool: str, norm_tool: str):
 
 
 _RUN_CACHE: dict = {}
+
+# Modules whose failure must DENY rather than fall through (fail closed).
+# Scoped to write-class tools + shell: a broken guard must not let mutations
+# sail through, but read-class fail-open avoids bricking whole sessions.
+_FAIL_CLOSED = {"hook_access_guard"}
+_FAIL_CLOSED_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
+
+
+def _fail_closed_deny(module_name: str, err: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"[c3-access:error] {module_name} failed to run ({err}). "
+                "Native write tools stay blocked until it loads — this is "
+                "fail-closed by design. C3 MCP tools still work; see "
+                ".c3/hook_errors.log and rerun `c3 install-mcp` if it "
+                "persists."
+            ),
+        }
+    }
 
 
 def _load_run(module_name: str):
@@ -217,16 +242,23 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
             warnings.append(
                 f"[c3:hook-error] {module_name}: {err}; see .c3/hook_errors.log"
             )
+            if (module_name in _FAIL_CLOSED and event == "pretool"
+                    and norm_tool in _FAIL_CLOSED_TOOLS):
+                outputs.append(_fail_closed_deny(module_name, err))
             continue
         try:
             out = run_fn(payload, project_path)
             if out:
                 outputs.append(out)
         except Exception as exc:
-            # Non-critical: parity with the old behavior where each hook
-            # swallowed and logged its own exceptions. Other sub-hooks
-            # continue to run.
+            # Non-critical for most hooks: parity with the old behavior where
+            # each hook swallowed and logged its own exceptions. Access Guard
+            # is the exception — its failure denies write-class tools.
             log_hook_error(module_name, exc)
+            if (module_name in _FAIL_CLOSED and event == "pretool"
+                    and norm_tool in _FAIL_CLOSED_TOOLS):
+                outputs.append(_fail_closed_deny(
+                    module_name, f"{type(exc).__name__}: {exc}"))
         # Critical state-layer warnings (corrupt enforcement_state.json)
         # become visible instead of silently disabling enforcement.
         warnings.extend(_hook_utils.drain_state_warnings())

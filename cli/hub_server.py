@@ -30,6 +30,7 @@ from flask import Flask, jsonify, request, send_from_directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
+from services import access_guard
 from services.activity_log import ActivityLog
 from services.project_manager import ProjectManager
 from services.tool_classifier import CATEGORIES
@@ -2513,8 +2514,11 @@ def api_projects_artifacts_restore():
         return err
     if not data.get("artifact") or not data.get("version"):
         return jsonify({"error": "artifact and version are required"}), 400
-    res = _artifact_store_for(resolved).restore(
-        data["artifact"], int(data["version"]), session_id="hub")
+    try:
+        res = _artifact_store_for(resolved).restore(
+            data["artifact"], int(data["version"]), session_id="hub")
+    except access_guard.AccessDenied as exc:
+        return jsonify({"error": exc.message}), 403
     if "error" in res:
         return jsonify(res), 400
     _artifact_audit(resolved, "restore", f"{res['id']}@v{data['version']}")
