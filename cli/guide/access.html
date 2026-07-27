@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Guard — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-amber  { color: var(--amber); border-color: var(--amber); }
+    .pill-red    { color: var(--red); border-color: var(--red); }
+
+    .callout {
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-2);
+      padding: 12px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+    }
+    .callout-warn   { border-color: var(--amber); }
+    .callout-danger { border-color: var(--red);   }
+    .callout-good   { border-color: var(--green); }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout strong { color: var(--text); }
+
+    .rule-table th, .rule-table td { padding: 8px 12px; }
+    .rule-table tr:hover { background: var(--bg-3); }
+    .rule-table .k-deny { color: var(--red); font-family: var(--mono); }
+    .rule-table .k-ro   { color: var(--amber); font-family: var(--mono); }
+    .rule-table .k-tag  { font-family: var(--mono); font-size: 12px; }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html" class="active">Access</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.62.0</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🛡️</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#rules"           class="sidebar-link"><span class="icon">📐</span> Rules &amp; semantics</a>
+      <a href="#builtins"        class="sidebar-link"><span class="icon">🔒</span> Built-in protections</a>
+      <a href="#refusals"        class="sidebar-link"><span class="icon">✋</span> Refusal messages</a>
+      <a href="#coverage"        class="sidebar-link"><span class="icon">🗺️</span> Coverage — honest limits</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
+      <a href="#ui"              class="sidebar-link"><span class="icon">🖥️</span> UI tab &amp; probe</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="credentials.html"     class="sidebar-link">Credential Vault</a>
+      <a href="workflow.html"        class="sidebar-link">Standard workflow</a>
+      <a href="getting-started.html" class="sidebar-link">First-time setup</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <h1 id="overview">Access Guard</h1>
+    <p class="lead">
+      Mark the paths an AI agent must never read, or never write — and have
+      every C3 surface enforce it. Two glob lists in your project (or global)
+      config, one evaluator, refusals that tell the agent exactly why and
+      what to do instead.
+    </p>
+
+    <div class="pill-row">
+      <span class="pill pill-red">deny — no read, no write</span>
+      <span class="pill pill-amber">read_only — no write</span>
+      <span class="pill pill-green">tighten-only</span>
+      <span class="pill pill-accent">v2.62.0+</span>
+    </div>
+
+    <div class="callout callout-warn">
+      <p><strong>What this is — and is not.</strong> Access Guard protects a
+      <em>cooperative</em> agent against mistakes and prompt-injection: an
+      agent that names a protected path gets a firm, reasoned refusal at
+      every C3 surface. It is <strong>not a sandbox</strong> — it governs
+      file actions invoked through C3's tools and hooks, but does not
+      isolate raw OS processes or external editors. See
+      <a href="#coverage">Coverage</a> for exactly where each layer
+      holds.</p>
+    </div>
+
+    <h2 id="quick-start">Quick start</h2>
+    <div class="step-grid">
+      <div class="step-card">
+        <span class="step-num">1</span><h4>Add a rule</h4>
+        <p>UI → project → <strong>Access Guard</strong> tab → Add rule, or:</p>
+        <pre><code>c3 access add "secrets/**" --kind deny</code></pre>
+      </div>
+      <div class="step-card">
+        <span class="step-num">2</span><h4>Test a path</h4>
+        <p>Use the tab's <strong>Test path</strong> probe, or:</p>
+        <pre><code>c3 access check secrets/key.txt</code></pre>
+      </div>
+      <div class="step-card">
+        <span class="step-num">3</span><h4>Let it work</h4>
+        <p>Agent attempts on protected paths return
+        <code>[c3-access:denied]</code> refusals that name the rule and tell
+        the agent not to retry.</p>
+      </div>
+    </div>
+
+    <h2 id="rules">Rules &amp; semantics</h2>
+    <p>Rules live in the <code>access</code> section of
+    <code>.c3/config.json</code> (project scope) and
+    <code>~/.c3/config.json</code> (global scope):</p>
+    <pre><code>{
+  "access": {
+    "deny":      ["secrets/**", "*.pem"],
+    "read_only": ["docs/legal/**", "migrations/**"]
+  }
+}</code></pre>
+    <table class="rule-table">
+      <tr><th>Rule kind</th><th>Read</th><th>Write / create / delete</th><th>Appears in search?</th></tr>
+      <tr><td class="k-deny">deny</td><td>✗</td><td>✗</td><td>✗ (never listed or hinted)</td></tr>
+      <tr><td class="k-ro">read_only</td><td>✓ (unless another rule denies)</td><td>✗</td><td>✓</td></tr>
+    </table>
+    <ul>
+      <li><strong>Tighten-only.</strong> There is no <code>allow</code> list.
+        Scopes merge as a union — a rule anywhere applies everywhere. A
+        project config can only add protection, never grant access; an
+        unknown key in the section is a hard config error.</li>
+      <li><strong>Globs are POSIX-style</strong>, case-insensitive.
+        <code>**</code> crosses directories, <code>*</code> does not; a
+        pattern without <code>/</code> matches the file name at any depth
+        (<code>*.pem</code> matches <code>a/b/server.pem</code>).</li>
+      <li><strong>deny also means deny-create.</strong> Path manipulation
+        and OS aliases (short names, trailing dots/spaces, stream syntax)
+        are normalized before matching, so alternate spellings of a
+        protected name cannot slip past the rule.</li>
+      <li><strong>deny also means deny-enumerate.</strong> Search, maps, and
+        listings never reveal a denied file's existence. When any rules are
+        active, search output carries a <code>[c3-access:limited]</code>
+        footer so the agent doesn't conclude "missing" means "doesn't
+        exist".</li>
+      <li><strong>Rule text is not secret.</strong> Refusals and
+        <code>c3_status</code> show the matched glob — the guard protects
+        file contents and existence, not the rule list. Name globs
+        accordingly.</li>
+      <li><strong>All rule changes are human-only</strong> — UI or CLI, and
+        every mutation is logged to the project's edit ledger. Agents have
+        no tool that can add, remove, or loosen rules.</li>
+      <li><strong>Local-only in v1.</strong> <code>.c3/</code> is gitignored:
+        rules do not travel with a cloned repo.</li>
+    </ul>
+
+    <h2 id="builtins">Built-in protections (always on)</h2>
+    <p>These apply in every C3 project, with no configuration, and cannot be
+    overridden. If the access config is corrupt or unparseable, that scope
+    fails <em>closed</em> — everything in it is denied until fixed.</p>
+    <table class="rule-table">
+      <tr><th>Paths</th><th>Protection</th><th>Why</th></tr>
+      <tr><td class="k-tag">**/.env*</td><td class="k-deny">deny</td><td>Secrets never enter agent context</td></tr>
+      <tr><td class="k-tag">.c3/secrets.enc · .c3/cred_state.json</td><td class="k-deny">deny</td><td>Credential vault sidecars</td></tr>
+      <tr><td class="k-tag">.c3/** · ~/.c3/**</td><td class="k-ro">write-deny</td><td>Config self-tampering (incl. access rules + credential registry)</td></tr>
+      <tr><td class="k-tag">.claude/settings*.json</td><td class="k-ro">write-deny</td><td>Hook/permission self-modification</td></tr>
+      <tr><td class="k-tag">.git/**</td><td class="k-ro">write-deny</td><td>git hooks are a code-execution vector (reads stay open)</td></tr>
+      <tr><td class="k-tag">C3 install directory</td><td class="k-ro">write-deny</td><td>Agent self-modification (installed layouts only)</td></tr>
+      <tr><td class="k-tag">*.pem · id_rsa* · *.key</td><td class="k-deny">default rule</td><td>Seeded in global scope — visible and removable, unlike builtins</td></tr>
+    </table>
+
+    <h2 id="refusals">Refusal messages</h2>
+    <p>Every denial carries a stable machine tag, the matched rule and scope,
+    and explicit no-retry guidance — so the agent pivots instead of
+    retry-looping or silently recreating "missing" files.</p>
+    <table class="rule-table">
+      <tr><th>Tag</th><th>Meaning</th></tr>
+      <tr><td class="k-tag">[c3-access:denied]</td><td>Operation refused by a deny rule (or a write refused where read_only applies via hooks). Policy, not an error — the agent is told not to retry or route around it.</td></tr>
+      <tr><td class="k-tag">[c3-access:read_only]</td><td>Write refused; reads remain separately evaluated.</td></tr>
+      <tr><td class="k-tag">[c3-access:limited]</td><td>Search/listing footer: results may omit protected paths — a file that doesn't appear may still exist.</td></tr>
+      <tr><td class="k-tag">[c3-access:error]</td><td>The enforcement hook itself failed — native write tools are denied until it loads (fail-closed). See <a href="#troubleshooting">Troubleshooting</a>.</td></tr>
+    </table>
+
+    <h2 id="coverage">Coverage — honest limits</h2>
+    <div class="callout callout-good">
+      <p><strong>Enforced:</strong> C3 MCP tools (any agent that uses C3 —
+      Claude Code, Codex, Gemini, Oracle-connected models) · Claude Code
+      native tools (PreToolUse hooks, fail-closed) · <code>c3_shell</code>
+      (best-effort command scan, advisory).</p>
+    </div>
+    <div class="callout callout-danger">
+      <p><strong>Not enforced:</strong> a non-Claude agent's raw shell or
+      direct file APIs — including native file tools in non-Claude CLI
+      environments unless they route through C3 tools — external editors,
+      and OS-level access. Renames/moves via shell commands are a known
+      v1 gap. Access Guard is a guardrail
+      for cooperative agents — pair it with OS permissions when you need a
+      real boundary.</p>
+    </div>
+
+    <h2 id="cli">CLI commands</h2>
+    <pre><code>c3 access list                        # rules by scope, builtins included
+c3 access add "secrets/**" --kind deny            # project scope
+c3 access add "*.pem" --kind deny --global        # global scope
+c3 access remove "secrets/**" --kind deny
+c3 access check secrets/key.txt                   # probe: verdict + matched rule
+c3 access check docs/x.md --op write</code></pre>
+
+    <h2 id="ui">UI tab &amp; probe</h2>
+    <p>Each project's UI gains an <strong>Access Guard</strong> tab: rules
+    grouped by scope (builtins shown locked), an add-rule form, delete with
+    typed confirmation for deny rules, and a <strong>Test path</strong>
+    probe that shows the verdict, matched rule, and the exact refusal the
+    agent would see. The coverage matrix above is pinned at the bottom of
+    the tab.</p>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+    <table class="kv-table rule-table">
+      <tr><td class="k-tag">[c3-access:error] on every write</td>
+          <td>The access hook failed to load — this is fail-closed by design.
+          Check <code>.c3/hook_errors.log</code>, rerun
+          <code>c3 install-mcp</code>. C3 MCP tools keep working
+          meanwhile.</td></tr>
+      <tr><td class="k-tag">Everything in a scope denied</td>
+          <td>That scope's <code>access</code> section is corrupt or has an
+          unknown key. Fix the JSON; <code>c3 access list</code> names the
+          scope.</td></tr>
+      <tr><td class="k-tag">Expected file "missing" in search</td>
+          <td>Check <code>c3 access check &lt;path&gt;</code> — deny rules
+          remove files from search entirely (deny-enumerate).</td></tr>
+      <tr><td class="k-tag">Rule not matching</td>
+          <td>Globs are POSIX-style: use forward slashes; remember
+          <code>*</code> does not cross directories — use <code>**</code>.
+          Probe with <code>c3 access check</code>.</td></tr>
+    </table>
+
+    <div class="callout">
+      <p><strong>Relationship to the Credential Vault.</strong> Credentials
+      protect <em>values</em> (never in agent context, injected at the
+      subprocess boundary); Access Guard protects <em>files and folders</em>.
+      The vault's registry and sidecars are covered by Access Guard builtins,
+      and both systems log every mutation to the same edit ledger.</p>
+    </div>
+  </main>
+</div>
+</body>
+</html>
