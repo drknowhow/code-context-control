@@ -130,6 +130,14 @@ def _act_reveal(name: str, svc, project_path: str) -> str:
             "or ask the user to enable agent_readable in the Credentials UI / "
             f"`c3 creds set {name} --agent-readable`."
         )
+    if not cs.verify_agent_readable(name, scope=entry["scope"], project_path=project_path):
+        return (
+            f"[creds:integrity] {name!r} is marked agent_readable in the registry, "
+            "but the flag's keyring attestation is missing or disagrees — the "
+            "registry may have been modified outside the credentials API. Ask the "
+            "user to re-confirm the flag (toggle it in the Credentials UI or "
+            "`c3 creds`); re-saving it restores the attestation."
+        )
     value = cs.get_value(name, project_path=project_path, scope=entry["scope"])
     if value is None:
         return (

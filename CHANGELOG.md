@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.61.2] - 2026-07-27
+
+### Security — vault write-guard: closes an `agent_readable` escalation
+
+An adversarial design review of the upcoming Access Guard feature surfaced a
+live escalation in the credential vault: the registry that stores each
+credential's `agent_readable` flag lives in `.c3/config.json`, and that file
+was freely agent-writable. A prompt-injected (or simply misbehaving) agent
+could `c3_edit` the registry, flip `agent_readable: true` on an
+injection-only secret, then call `c3_credentials(action='reveal')` and read
+a value the user never marked readable. Three independent guards close this:
+
+- **`c3_edit` refuses vault files.** `.c3/config.json`, `.c3/secrets.enc`,
+  and `.c3/cred_state.json` (project or global scope, any mode — edit,
+  create, batch) return `[c3:vault-protected]` with a pointer to the
+  Credentials UI / `c3 creds` CLI. The `c3_project` edit proxy shares the
+  same handler, so cross-project edits are covered too.
+- **The PreToolUse hook denies native `Edit`/`Write`/`MultiEdit`** on the
+  same files *before* any unlock logic runs — a warm c3 signal or sticky
+  unlock no longer readmits them. The vault file set is mirrored in the hook
+  (hooks stay import-light) with a parity test pinning the two sets together.
+- **`reveal` now requires a keyring attestation.** `set_credential` /
+  `update_metadata` — the only legitimate writers of `agent_readable`
+  (tool, CLI, REST, both UIs all route through them) — store a copy of the
+  flag in the OS keyring. `reveal` fails closed with `[creds:integrity]`
+  when the registry flag and the attestation disagree or the attestation is
+  missing, so a registry edited by *any* out-of-API route (shell
+  redirection, a non-Claude agent, a text editor) no longer leaks the value.
+  Refused reveals are recorded in the audit log as tamper signals.
+
+Migration note: entries marked `agent_readable` before this release have no
+attestation yet and `reveal` will refuse them with a remediation message —
+toggling the flag off/on in the Credentials UI (or re-running
+`c3 creds set <name> --agent-readable`) writes the attestation. Injection
+(`env_creds` / `{{cred:NAME}}`) is unaffected. Known residual until the full
+Access Guard ships (v2.62): `c3_shell` command strings and non-Claude agents
+are not yet path-scanned — the reveal attestation is the backstop there.
+
 ## [2.61.1] - 2026-07-27
 
 ### Fixed — Hub Start-UI placeholder tab could hang forever on "Starting …"

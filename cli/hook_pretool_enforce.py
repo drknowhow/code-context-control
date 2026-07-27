@@ -78,6 +78,11 @@ _PREREQS = {
 _ADVISORY_TOOLS = {"Read", "Grep", "Glob", "FindFiles", "SearchText"}
 _BLOCKED_TOOLS = {"Edit", "Write", "MultiEdit"}
 
+# Vault files no native write may touch, regardless of unlock state.
+# Mirrors services.credential_store.VAULT_PROTECTED_FILES (parity-tested);
+# duplicated because hooks must stay import-light.
+_VAULT_FILES = frozenset({"config.json", "secrets.enc", "cred_state.json"})
+
 # Redirect messages per native tool
 _REDIRECTS = {
     "Read": (
@@ -282,6 +287,23 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     tool_input = payload.get("tool_input", {}) or {}
     session_id = str(payload.get("session_id") or "")
     base = project_path if project_path is not None else Path.cwd()
+
+    # Vault write-guard: the credential registry/state may never be modified
+    # by the agent — even with a warm c3 signal or sticky unlock (v2.61.2).
+    if tool_name in _BLOCKED_TOOLS:
+        target = Path(str(tool_input.get("file_path") or ""))
+        if target.name.lower() in _VAULT_FILES and target.parent.name.lower() == ".c3":
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"[c3:vault-protected] {target.name} belongs to the "
+                        "credential vault and cannot be modified by the agent. "
+                        "Ask the user to use the Credentials UI or `c3 creds` CLI."
+                    ),
+                }
+            }
 
     # Session-scoped load: state written by a different session comes back
     # empty, so stale unlocks degrade to the advisory path below.
