@@ -110,7 +110,7 @@ class TestSignal(EnforceBase):
         self._write_state(tool="c3_search", read_unlocked=True)
         self._run("Read", {"file_path": str(self.tmp / "foo.py")})
         state = _hook_utils.load_enforcement_state(self.tmp)
-        normalized = str((self.tmp / "foo.py").resolve())
+        normalized = _hook_utils.canonical_key(self.tmp / "foo.py")
         self.assertIn("read", state["unlocked_files"].get(normalized, []))
 
     def test_read_signal_does_not_unlock_edit(self):

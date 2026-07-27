@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _hook_utils import (
+    canonical_key,
     load_enforcement_state,
     log_hook_error,
     normalize_tool_name,
@@ -153,7 +154,10 @@ def _is_file_unlocked(state: dict, file_path: str, category: str) -> bool:
     """Check if a file is unlocked for the given operation category."""
     if not file_path:
         return False
-    normalized = str(Path(file_path).resolve()) if file_path else ""
+    try:
+        normalized = canonical_key(file_path)
+    except OSError:
+        return False
     cats = state.get("unlocked_files", {}).get(normalized, [])
     return category in cats or "both" in cats
 
@@ -242,12 +246,19 @@ def _check_c3_used(
     if not log_file.exists():
         return False, ""
 
+    # The evidence window counts TOOL_CALL entries, not raw lines: foreign
+    # event types (denial audits, session events) appended after a c3 call
+    # must not evict it. Tail a larger raw window, examine at most LOOKBACK
+    # tool_call entries.
     try:
-        lines = _tail_lines(log_file, LOOKBACK)
+        lines = _tail_lines(log_file, LOOKBACK * 10)
     except Exception:
         return False, ""
 
+    examined = 0
     for line in reversed(lines):
+        if examined >= LOOKBACK:
+            break
         try:
             entry = json.loads(line)
         except (json.JSONDecodeError, ValueError):
@@ -255,6 +266,7 @@ def _check_c3_used(
 
         if entry.get("type") != "tool_call":
             continue
+        examined += 1
 
         tool = entry.get("tool", "")
         if tool not in allowed:

@@ -58,14 +58,14 @@ class TestWriters(StateBase):
         record_unlocked_files([fp], {"read"}, project_path=self.tmp)
         record_unlocked_files([fp], {"edit"}, project_path=self.tmp)
         state = load_enforcement_state(self.tmp)
-        normalized = str(Path(fp).resolve())
+        normalized = _hook_utils.canonical_key(fp)
         self.assertEqual(state["unlocked_files"][normalized], ["edit", "read"])
 
     def test_record_json_unlocks_compat_wrapper(self):
         fp = str(self.tmp / "foo.py")
         record_json_unlocks([fp], project_path=self.tmp)
         state = load_enforcement_state(self.tmp)
-        normalized = str(Path(fp).resolve())
+        normalized = _hook_utils.canonical_key(fp)
         self.assertEqual(state["unlocked_files"][normalized], ["edit", "read"])
 
     def test_signal_preserves_existing_unlocks(self):
@@ -123,7 +123,8 @@ class TestLegacyFallback(StateBase):
         (self.tmp / ".c3" / "unlocked_files.json").write_text(
             json.dumps({"X:/proj/foo.py": ["read", "edit"]}), encoding="utf-8")
         state = load_enforcement_state(self.tmp)
-        self.assertEqual(state["unlocked_files"]["X:/proj/foo.py"], ["read", "edit"])
+        key = _hook_utils.canonical_key("X:/proj/foo.py")
+        self.assertEqual(state["unlocked_files"][key], ["edit", "read"])
 
     def test_corrupt_legacy_files_are_not_critical(self):
         (self.tmp / ".c3" / "last_c3_call.json").write_text("junk", encoding="utf-8")

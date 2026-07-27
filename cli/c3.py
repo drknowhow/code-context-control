@@ -5203,6 +5203,9 @@ def cmd_install_mcp(args):
         ]
 
         # ── PreToolUse hooks (enforcement — blocks native tools without prior c3_*) ──
+        # Bash/run_shell_command joined in v2.62: the Access Guard sub-hook
+        # scans shell commands (best-effort); without these matchers PreToolUse
+        # simply never fires for shell — proven bypass, see docs/access-guard.md.
         _pre_matcher_names = [
             read_matcher,
             grep_matcher,
@@ -5210,6 +5213,8 @@ def cmd_install_mcp(args):
             edit_matcher,
             write_matcher,
             *extra_edit_matchers,
+            shell_matcher,
+            "run_shell_command",
         ]
         desired_pre_hooks = [
             {"matcher": m, "hooks": [{"type": "command", "command": hook_pretool_cmd}]}
