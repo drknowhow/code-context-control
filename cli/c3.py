@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.63.0"
+__version__ = "2.63.1"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):

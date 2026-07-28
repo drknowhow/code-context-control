@@ -4,6 +4,47 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.63.1] - 2026-07-28
+
+### Changed — README rebuilt, screenshots regenerated, docs split out
+
+Documentation-only release. No behaviour changes outside two UI text fixes.
+
+The v2.63.0 PyPI page never mentioned Mask Guard: the tag landed on the release
+commit and the README section landed one commit later, and `long_description`
+is baked into the wheel at build time. This release republishes the page.
+
+- **Screenshots regenerated.** The previous set was captured 2026-04-27 — 34
+  releases earlier. It showed an 8-tab sidebar (live: 12), a Hub generation
+  retired in v2.44.0 and since moved to `/legacy`, and an IDE picker offering
+  the Gemini CLI profile removed in v2.52. New captures live in
+  `docs/screenshots/2026-07/`; the old files are retained because previously
+  published PyPI pages reference them by URL.
+- **`scripts/screenshots/`** — a re-runnable capture rig
+  (`python -m scripts.screenshots.run`). Builds a synthetic demo project so no
+  real project name, path, fact, transcript, or credential name can reach a
+  published image; swaps the Hub registry and restores it in a `finally`
+  block; and fail-closed asserts the *served* bundle contains a symbol from
+  the newest component before capturing, since `cli/server.py` caches the built
+  UI for the process lifetime and would otherwise serve pre-feature markup.
+- **README restructured**, 595 → 281 lines. Reference material moved to
+  `docs/upgrading.md`, `docs/sub-projects.md`, and `docs/integrations.md`.
+- **Corrections.** The tool table said 18 tools (there are 20); `c3_agent`
+  advertised a `refactor` workflow that does not exist; the Bitbucket action
+  list had drifted under the `### Jira` heading; `c3_status` was missing its
+  `sessions` and `access` views; the Oracle section still taught
+  `python oracle/oracle_server.py` instead of `c3 oracle serve`; and 14
+  repo-relative links resolved on GitHub but 404'd on PyPI — all now absolute.
+- **`pyproject.toml` description** shortened 284 → 166 chars and reworded to
+  name the access/masking guards.
+
+### Fixed
+
+- **`cli/ui/components/dashboard.js`** — two `\u00b7` escapes sat in JSX
+  text rather than inside a string literal. JSX does not interpret escapes in
+  text nodes, so the Dashboard rendered the six literal characters `\u00b7`
+  instead of `·` in the Current Session line and the source-tokens badge.
+
 ## [2.63.0] - 2026-07-28
 
 ### Added — Mask Guard: expose a path, control what the agent sees

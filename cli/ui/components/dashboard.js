@@ -365,7 +365,7 @@ const Dashboard = ({ stats, loading, notifications = [], ackNotification, ackAll
                 ))}
               </div>
               <div className="mono" style={{ fontSize: 10, color: T.textDim }}>
-                ID: {(session.id || "-").slice(0, 16)} \u00b7 started {localTime(session.started)}
+                ID: {(session.id || "-").slice(0, 16)} {"\u00b7"} started {localTime(session.started)}
               </div>
 
               {/* Live Claude Code token ticker — updates each exchange */}
@@ -494,7 +494,7 @@ const Dashboard = ({ stats, loading, notifications = [], ackNotification, ackAll
           color={T.purple}
           open={showUsage}
           onToggle={() => setShowUsage(!showUsage)}
-          badge={<Badge color={T.purple}>{fmtK(totalSourceTokens)} total \u00b7 {sourceEntries.length} sources</Badge>}
+          badge={<Badge color={T.purple}>{fmtK(totalSourceTokens)} total {"\u00b7"} {sourceEntries.length} sources</Badge>}
         >
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {sourceEntries.map(([name, data]) => {
