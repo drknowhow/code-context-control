@@ -2824,12 +2824,16 @@ def _access_route_audit(action: str, glob: str, kind: str, scope: str) -> None:
 def api_access_list():
     """Rule registry: builtin pseudo-scope + global + project, plus the §5
     coverage matrix string and the list of corrupt (deny-all) scopes."""
-    from services import access_guard
+    from services import access_guard, mask_activation
     scopes = access_guard.list_rules(str(PROJECT_PATH))
     corrupt = [s for s in ("global", "project")
                if (scopes.get(s) or {}).get("corrupt")]
     return jsonify({"scopes": scopes, "corrupt": corrupt,
-                    "coverage": access_guard.COVERAGE_MATRIX})
+                    "coverage": access_guard.COVERAGE_MATRIX,
+                    "presets": access_guard.preset_catalog(),
+                    "mask": mask_activation.status(str(PROJECT_PATH)),
+                    "mask_summary": mask_activation.summary_line(
+                        str(PROJECT_PATH))})
 
 
 @app.route('/api/access', methods=['POST'])
@@ -2889,6 +2893,112 @@ def api_access_check():
         "rule": denial.rule, "scope": denial.scope, "reason": denial.reason,
         "refusal": access_guard.refusal(denial, path, op),
     })
+
+
+@app.route('/api/access/mask', methods=['POST'])
+def api_access_mask_add():
+    """Add/replace a mask rule {glob, preset, params, scope}. Human surface.
+
+    The rule lands on disk immediately but protection is not real until the
+    activation transaction has purged derived artifacts, so the response
+    carries the resulting (stale) status for the UI to surface.
+    """
+    from services import access_guard, mask_activation
+    data = request.get_json() or {}
+    try:
+        result = access_guard.set_mask_rule(
+            str(data.get("glob") or ""), str(data.get("preset") or ""),
+            data.get("params") or {},
+            str(data.get("scope") or "project").strip(), str(PROJECT_PATH))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["added"] or result["replaced"]:
+        _access_route_audit("mask-add", result["glob"], result["preset"],
+                            result["scope"])
+    return jsonify({"rule": result,
+                    "mask": mask_activation.status(str(PROJECT_PATH))})
+
+
+@app.route('/api/access/mask', methods=['DELETE'])
+def api_access_mask_remove():
+    """Remove a mask rule (query args or JSON body: glob, scope)."""
+    from services import access_guard, mask_activation
+    data = request.get_json(silent=True) or {}
+    glob = str(request.args.get("glob") or data.get("glob") or "")
+    scope = str(request.args.get("scope") or data.get("scope")
+                or "project").strip()
+    try:
+        result = access_guard.remove_mask_rule(glob, scope, str(PROJECT_PATH))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["removed"]:
+        _access_route_audit("mask-remove", result["glob"], "mask", scope)
+    return jsonify({**result,
+                    "mask": mask_activation.status(str(PROJECT_PATH))})
+
+
+@app.route('/api/access/mask/activate', methods=['POST'])
+def api_access_mask_activate():
+    """Run the activation transaction (purge -> build -> rebuild)."""
+    from services import mask_activation
+    data = request.get_json(silent=True) or {}
+    report = mask_activation.activate(
+        str(PROJECT_PATH), rebuild_index=bool(data.get("rebuild_index")))
+    _access_route_audit("mask-activate",
+                        f"{report['files']} file(s)", "mask", "project")
+    return jsonify({"report": report,
+                    "mask": mask_activation.status(str(PROJECT_PATH)),
+                    "summary": mask_activation.summary_line(str(PROJECT_PATH))})
+
+
+@app.route('/api/access/preview', methods=['POST'])
+def api_access_preview():
+    """Before/after preview for one path — the UI's headline affordance.
+
+    This is a HUMAN surface: ``before`` is the real file content and must
+    never be routed to an agent. It is what lets the user see exactly what
+    the AI will see before committing a rule.
+    """
+    from services import access_guard, mask_mirror
+    data = request.get_json(silent=True) or {}
+    path = str(data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path required"}), 400
+
+    full = (PROJECT_PATH / path) if not os.path.isabs(path) else Path(path)
+    v = access_guard.verdict(str(full), "read", str(PROJECT_PATH))
+    out = {"path": path, "verdict": v.kind}
+    if v.denial:
+        out["rule"] = v.denial.rule
+        out["scope"] = v.denial.scope
+        out["reason"] = v.denial.reason
+        return jsonify(out)
+    if not full.is_file():
+        return jsonify({**out, "error": "file not found"}), 404
+
+    try:
+        out["before"] = full.read_text(encoding="utf-8")[:200_000]
+    except Exception as exc:
+        return jsonify({**out, "error": f"cannot read: {exc}"}), 400
+
+    if not v.masked:
+        out["after"] = out["before"]
+        return jsonify(out)
+
+    rule = v.mask_rule
+    out.update({"rule": rule.glob, "scope": rule.scope,
+                "preset": rule.preset, "params": rule.params_dict})
+    try:
+        view = mask_mirror.render_for_path(full, str(PROJECT_PATH))
+        out["after"] = view.text
+        out["header"] = access_guard.mask_header(rule, path)
+        out["stats"] = view.stats
+        out["view_hash"] = view.view_hash
+    except mask_mirror.MaskUnavailable as exc:
+        out["after"] = ""
+        out["error"] = exc.message
+        out["error_reason"] = exc.reason
+    return jsonify(out)
 
 
 @app.route('/api/delegate', methods=['POST'])

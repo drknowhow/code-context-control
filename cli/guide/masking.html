@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mask Guard — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-amber  { color: var(--amber); border-color: var(--amber); }
+    .pill-red    { color: var(--red); border-color: var(--red); }
+
+    .callout {
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-2);
+      padding: 12px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+    }
+    .callout-warn   { border-color: var(--amber); }
+    .callout-danger { border-color: var(--red);   }
+    .callout-good   { border-color: var(--green); }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout strong { color: var(--text); }
+
+    .rule-table th, .rule-table td { padding: 8px 12px; vertical-align: top; }
+    .rule-table tr:hover { background: var(--bg-3); }
+    .rule-table .k-tag { font-family: var(--mono); font-size: 12px; }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px; background: var(--bg-2);
+      border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px; line-height: 22px;
+      text-align: center; border-radius: 50%; background: var(--cyan);
+      color: var(--bg-1); font-size: 12px; font-weight: 700; margin-bottom: 8px;
+    }
+    .step-card h4 { margin: 4px 0 6px; }
+    .step-card p  { font-size: 13px; color: var(--text-dim); }
+
+    .ba-grid {
+      display: grid; gap: 12px; margin: 16px 0;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    }
+    .ba-col h5 {
+      margin: 0 0 6px; font-size: 12px; font-family: var(--mono);
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .ba-before h5 { color: var(--text-dim); }
+    .ba-after  h5 { color: var(--cyan); }
+    .ba-col pre { margin: 0; }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html">Access</a>
+      <a href="masking.html" class="active">Masking</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.63.0</span>
+  </header>
+
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🎭</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#presets"         class="sidebar-link"><span class="icon">🧩</span> Presets</a>
+      <a href="#activation"      class="sidebar-link"><span class="icon">⚡</span> Activation</a>
+      <a href="#readonly"        class="sidebar-link"><span class="icon">🔏</span> Why masked = read-only</a>
+      <a href="#surfaces"        class="sidebar-link"><span class="icon">🔌</span> What each tool does</a>
+      <a href="#honesty"         class="sidebar-link"><span class="icon">📣</span> What the agent is told</a>
+      <a href="#limits"          class="sidebar-link"><span class="icon">🗺️</span> Honest limits</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="access.html"      class="sidebar-link">Access Guard</a>
+      <a href="credentials.html" class="sidebar-link">Credential Vault</a>
+      <a href="workflow.html"    class="sidebar-link">Standard workflow</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <h1 id="overview">Mask Guard</h1>
+    <p class="lead">
+      Expose a file or folder to the agent, but control what it actually sees.
+      Redact secrets, pseudonymise columns, keep 20 rows of a million-row CSV,
+      or serve a vendor tree as signatures only — deterministically, on every
+      read, through every C3 surface.
+    </p>
+
+    <div class="pill-row">
+      <span class="pill pill-accent">mask — visible, transformed, read-only</span>
+      <span class="pill pill-green">deterministic — no LLM in the read path</span>
+      <span class="pill pill-amber">fail-closed</span>
+      <span class="pill pill-accent">v2.63.0+</span>
+    </div>
+
+    <p>
+      Access Guard answers a yes/no question: may the agent touch this path?
+      Mask Guard answers a different one: <em>what should the agent see when
+      it does?</em> A <code>deny</code> rule hides a file. A <code>mask</code>
+      rule keeps it discoverable and searchable, but every byte the agent
+      receives comes from a <strong>materialized view</strong> — a transformed
+      copy built once, validated, and stored under
+      <code>~/.c3/masked/</code>. Your real file is never modified.
+    </p>
+
+    <div class="callout callout-warn">
+      <p><strong>Context hygiene, not containment.</strong> The real bytes stay
+      on disk. Your editor, a raw shell, a non-Claude agent, and
+      <code>git</code> all still see them. Mask Guard governs what reaches the
+      model <em>through C3</em>. If a file must never be readable at all, use
+      <code>deny</code> — see <a href="access.html">Access Guard</a>.</p>
+    </div>
+
+    <h2 id="quick-start">Quick start</h2>
+    <div class="step-grid">
+      <div class="step-card">
+        <span class="step-num">1</span><h4>Add a mask rule</h4>
+        <p>UI → project → <strong>Access Guard</strong> tab → <em>+ Add mask</em>, or:</p>
+        <pre><code>c3 access mask add "data/**" \
+  --preset sample_rows \
+  --params "count=20,strategy=first"</code></pre>
+      </div>
+      <div class="step-card">
+        <span class="step-num">2</span><h4>Preview it</h4>
+        <p>See exactly what the agent will see, on your real file, before you trust the rule:</p>
+        <pre><code>c3 access mask preview data/customers.csv</code></pre>
+      </div>
+      <div class="step-card">
+        <span class="step-num">3</span><h4>Activate</h4>
+        <p>Purges pre-mask caches, index, file memory and facts, then builds and validates every view:</p>
+        <pre><code>c3 access mask activate</code></pre>
+      </div>
+    </div>
+
+    <p>What the agent sees afterwards:</p>
+    <div class="ba-grid">
+      <div class="ba-col ba-before">
+        <h5>Your file</h5>
+<pre><code>id,name,email,plan
+1,Ann Chen,ann@acme.io,pro
+2,Bo Diaz,bo@acme.io,free
+… 412,908 more rows</code></pre>
+      </div>
+      <div class="ba-col ba-after">
+        <h5>What the agent sees</h5>
+<pre><code>[c3-mask:transformed] view=sampled data/customers.csv
+— this is a policy-transformed view, not the
+original file…
+
+id,name,email,plan
+1,Ann Chen,ann@acme.io,pro
+2,Bo Diaz,bo@acme.io,free
+# «c3:redacted:rows» 412,906 of 412,908 data rows
+withheld by mask policy (sample_rows:first:2)</code></pre>
+      </div>
+    </div>
+
+    <h2 id="presets">Presets</h2>
+    <p>
+      Every transform is a named, versioned preset. There is deliberately no
+      free-form recipe language and no classifier in the read path: the same
+      file must render <em>identically</em> on every read and through every
+      tool, or an agent could recover the original by comparing surfaces.
+    </p>
+
+    <table class="rule-table">
+      <thead>
+        <tr><th>Preset</th><th>Params</th><th>What it does</th><th>Good for</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="k-tag">redact_secrets</td>
+          <td>—</td>
+          <td>Replaces detected secrets — AWS keys, GitHub/OpenAI/Slack tokens,
+              JWTs, PEM blocks, connection strings, <code>*_PASSWORD=</code>
+              assignments — plus a high-entropy sweep, with inert placeholders.
+              Surrounding code stays readable.</td>
+          <td>Config files, <code>.tfvars</code>, logs, fixtures</td>
+        </tr>
+        <tr>
+          <td class="k-tag">redact_columns</td>
+          <td><code>columns</code></td>
+          <td>Replaces the named CSV/TSV columns with stable salted
+              pseudonyms. The <em>same</em> real value always maps to the same
+              pseudonym, so joins, uniqueness and cardinality survive — but
+              there is no reverse map anywhere to steal.</td>
+          <td>Customer data, exports, PII-bearing tables</td>
+        </tr>
+        <tr>
+          <td class="k-tag">sample_rows</td>
+          <td><code>count</code>, <code>strategy</code> (<code>first</code>|<code>last</code>)</td>
+          <td>Keeps the header plus N data rows and states how many were
+              withheld, so the agent cannot mistake the sample for the whole.</td>
+          <td>Huge CSVs, log tails</td>
+        </tr>
+        <tr>
+          <td class="k-tag">signatures_only</td>
+          <td>—</td>
+          <td>Structure only — declarations and signatures, no bodies. Reuses
+              C3's compressor, so it is also a large token saving.</td>
+          <td>Vendored SDKs, generated clients, huge modules</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout callout-good">
+      <p><strong>Protected Mode.</strong> After rendering, C3 re-scans the
+      <em>output</em> for secret material. If anything survived, the read is
+      <strong>refused</strong> rather than served. A detector that quietly
+      missed something becomes a loud error instead of a silent leak.</p>
+    </div>
+
+    <p>
+      Two rules matching the same path with different presets is a
+      <strong>configuration error</strong>, not a precedence puzzle — that
+      path fails closed until you remove the conflict. Rule order never
+      affects output.
+    </p>
+
+    <h2 id="activation">Activation — why a rule isn't enough</h2>
+    <p>
+      Before you masked that file, C3 had already read it: its content is in
+      the compression cache, the search index, file memory, the repo map, and
+      possibly in auto-memory facts. A new rule does not retroactively clean
+      any of that. So adding a mask rule starts a <strong>transaction</strong>:
+    </p>
+    <pre><code>pending → purge derived artifacts → build + validate views
+        → rebuild indexes → active</code></pre>
+    <p>
+      Until it completes, the UI banner and <code>c3 access mask status</code>
+      both say so in plain terms. C3 will not claim a protection it has not
+      actually established.
+    </p>
+
+    <div class="callout callout-warn">
+      <p><strong>First activation clears unknown-provenance facts.</strong>
+      From v2.63.0 every auto-memory fact records which files it came from.
+      Facts written by older versions have no provenance — they cannot be
+      proven clean, so the first activation in a project deletes them
+      wholesale. Facts you wrote by hand with <code>c3_memory</code> are
+      unaffected.</p>
+      <p><strong>Masking is forward-only within a session.</strong> A rule
+      added mid-session cannot unread what the agent already has in its
+      context. Start a fresh session for full effect.</p>
+    </div>
+
+    <h2 id="readonly">Why masked always means read-only</h2>
+    <p>
+      A masked path refuses every write, with no override. This is not
+      conservatism — it is the only sound option. The agent read a
+      <em>transformed</em> file, so any edit it proposes is expressed in
+      transformed coordinates:
+    </p>
+    <ul>
+      <li>Cropped rows have no inverse — <code>sample_rows</code> discarded
+          them, so there is nothing to map back to.</li>
+      <li>The agent may invent an identifier that has no real counterpart.</li>
+      <li>A half-copied placeholder would be written to your file verbatim —
+          silently corrupting the one file you cared enough to protect.</li>
+      <li>An edit can be perfectly correct against 20 sampled rows and wrong
+          for the other 412,906.</li>
+    </ul>
+    <p>
+      Placeholders are deliberately spelled <code>«c3:redacted:kind»</code> —
+      not valid in any language — so that even in the impossible case where
+      one reached a real file, the compiler or linter trips immediately
+      instead of the value being silently committed.
+    </p>
+
+    <h2 id="surfaces">What each tool does with a masked path</h2>
+    <table class="rule-table">
+      <thead><tr><th>Surface</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td class="k-tag">c3_read</td><td>Serves the view with its banner. Line/symbol selection is ignored — positions in a view don't map to the original.</td></tr>
+        <tr><td class="k-tag">c3_compress</td><td>Compresses the view. Cache keys include the view hash, so a rule change can never be answered from a pre-mask cache entry.</td></tr>
+        <tr><td class="k-tag">c3_search</td><td>Masked files stay discoverable; snippets and the index come from the view. Results carry a <code>[c3-mask:limited]</code> footer.</td></tr>
+        <tr><td class="k-tag">c3_edit</td><td>Refuses — masked is read-only.</td></tr>
+        <tr><td class="k-tag">c3_shell</td><td>Refuses content reads over masked paths. Post-filtering stdout is not offered: it could strip a secret but could never reconstruct a crop, so it would be a guarantee C3 cannot make.</td></tr>
+        <tr><td class="k-tag">c3_validate</td><td>Refuses — type checkers quote source lines verbatim.</td></tr>
+        <tr><td class="k-tag">c3_impact, c3_filter</td><td>Refuse — they depend on real line numbers and raw content.</td></tr>
+        <tr><td class="k-tag">c3_delegate</td><td>Refuses — subprocess backends open the real file themselves.</td></tr>
+        <tr><td class="k-tag">Native Read/Grep/Glob</td><td>Denied by the PreToolUse hooks — they cannot render a view.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="honesty">What the agent is told</h2>
+    <p>
+      Loud about evidence quality, quiet about your policy. Every transformed
+      payload starts with a banner naming the rule and a coarse view class
+      (<code>redacted</code>, <code>sampled</code>, <code>structure_only</code>),
+      because <em>how</em> a view is incomplete changes what conclusions are
+      safe. The agent is never told what was removed or where the real value is.
+    </p>
+    <p>
+      The alternative — masking silently — is worse: an agent that
+      confidently reasons over synthetic data and ships code built on it, with
+      neither of you aware. Stable machine tags:
+      <code>[c3-mask:transformed]</code>, <code>[c3-mask:limited]</code>,
+      <code>[c3-mask:unsupported]</code>.
+    </p>
+
+    <h2 id="limits">Honest limits</h2>
+    <ul>
+      <li>Real bytes remain on disk — editors, raw shells, non-Claude agents and git see them.</li>
+      <li>Git history is not masked.</li>
+      <li>Masking is forward-only within a live session.</li>
+      <li>Secret detection is pattern-based and has false negatives; Protected Mode converts most of those into refusals, not all.</li>
+      <li>Binary and non-UTF-8 files cannot be rendered — they refuse rather than fall back to raw.</li>
+      <li>Pseudonyms are one-way and salted per project; the salt lives in <code>~/.c3/masked/&lt;project&gt;/salt</code> and never enters model context.</li>
+    </ul>
+
+    <h2 id="cli">CLI commands</h2>
+<pre><code># add / replace a rule (--global for all projects)
+c3 access mask add "data/**"    --preset sample_rows --params "count=20,strategy=first"
+c3 access mask add "*.env.txt"  --preset redact_secrets
+c3 access mask add "people.csv" --preset redact_columns --params "columns=email,full_name"
+c3 access mask add "vendor/**"  --preset signatures_only
+
+# inspect
+c3 access list                          # all rules, all scopes, + coverage
+c3 access mask status                   # activation state, failures
+c3 access mask preview data/people.csv  # exactly what the agent sees
+c3 access check data/people.csv         # verdict for one path
+
+# apply / remove
+c3 access mask activate [--reindex]
+c3 access mask rm "data/**"</code></pre>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+    <table class="rule-table">
+      <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Banner says <em>configured but not activated</em></td>
+          <td>The rule is on disk but derived artifacts still hold pre-mask content. Run <code>c3 access mask activate</code>.</td>
+        </tr>
+        <tr>
+          <td>Status <em>INCOMPLETE</em></td>
+          <td>At least one file could not be rendered, so it now refuses reads. <code>c3 access mask status</code> lists each failure. Usually a <code>redact_columns</code> column name that doesn't exist in the header, or a binary file caught by a broad glob.</td>
+        </tr>
+        <tr>
+          <td>Agent reports <code>[c3-mask:unsupported]</code></td>
+          <td>Working as designed — that surface (shell, validate, impact, delegate) cannot render a view. Use <code>c3_read</code>, or narrow the glob if the file doesn't need masking.</td>
+        </tr>
+        <tr>
+          <td><code>signatures_only</code> refuses</td>
+          <td>Unsupported language or unparseable syntax. It fails closed rather than emit the original. Use <code>redact_secrets</code> instead.</td>
+        </tr>
+        <tr>
+          <td>Scope shows <em>corrupt</em></td>
+          <td>An invalid mask entry — unknown preset or bad params. That scope evaluates deny-all until you fix <code>config.json</code>. <code>c3 access mask add</code> validates before writing, so this usually means a hand edit.</td>
+        </tr>
+        <tr>
+          <td>Pseudonyms changed after a rebuild</td>
+          <td>The salt file was deleted. It lives in <code>~/.c3/masked/&lt;project&gt;/salt</code> and is preserved across mirror clears.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="margin-top:32px; color:var(--text-dim); font-size:13px;">
+      Design rationale, leak-channel analysis and residual risks:
+      <code>docs/mask-guard.md</code> in the repository.
+    </p>
+  </main>
+</div>
+
+</body>
+</html>

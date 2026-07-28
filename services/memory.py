@@ -17,6 +17,27 @@ from services.text_index import TextIndex
 _RECALL_FLUSH_THRESHOLD = 10
 
 
+def normalize_source_paths(paths):
+    """Canonical repo-relative POSIX form for fact provenance, or ``None``.
+
+    ``None`` in, ``None`` out — the unknown-provenance state must survive the
+    round trip (see ``MemoryStore.remember``). A string is accepted as a
+    one-element list. Order is preserved; duplicates and blanks dropped.
+    """
+    if paths is None:
+        return None
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
+    out = []
+    for raw in paths:
+        if not raw:
+            continue
+        norm = str(raw).replace("\\", "/").strip().lstrip("./")
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
 class MemoryStore:
     """Persistent fact store with incremental lexical indexing."""
 
@@ -43,7 +64,21 @@ class MemoryStore:
         self.retrieval_broker = broker
 
     def remember(self, fact: str, category: str = "general", source_session: str = "",
-                 *, confidence: float = 1.0, source_quality: str = "user") -> dict:
+                 *, confidence: float = 1.0, source_quality: str = "user",
+                 source_paths=None) -> dict:
+        """Store a fact.
+
+        ``source_paths`` is the file provenance: which project files this fact
+        was derived from. It is what makes Mask Guard activation honest — on
+        activation the transactional purge must be able to find and delete
+        every fact derived from a now-masked file (docs/mask-guard.md §9).
+
+        Three-state by design:
+          ``None``  — provenance unknown (legacy facts, and any caller that
+                      cannot say). Purged wholesale on first mask activation.
+          ``[]``    — known to have no file source (e.g. a session summary).
+          ``[...]`` — derived from exactly these repo-relative paths.
+        """
         fact_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
         entry = {
@@ -51,6 +86,7 @@ class MemoryStore:
             "fact": fact,
             "category": category,
             "source_session": source_session,
+            "source_paths": normalize_source_paths(source_paths),
             "timestamp": now,
             "last_accessed_at": None,
             "relevance_count": 0,
@@ -257,6 +293,36 @@ class MemoryStore:
         self._save_facts()
         return {"deleted": True, "id": fact_id, "vector_deleted": vector_deleted}
 
+    def purge_by_source(self, paths, *, include_unknown: bool = False) -> dict:
+        """Delete every fact derived from *paths*. Mask-activation primitive.
+
+        ``include_unknown=True`` additionally deletes facts whose provenance is
+        ``None`` (pre-v2.63.0). Mask activation MUST pass it the first time a
+        project activates a rule: a fact with unknown provenance cannot be
+        proven safe, and Mask Guard does not claim completion it cannot back
+        (docs/mask-guard.md §9). Facts with ``[]`` are never touched — that
+        state means "known to have no file source".
+        """
+        wanted = set(normalize_source_paths(paths) or [])
+        doomed, unknown_purged = [], 0
+        for fact in self.facts:
+            provenance = fact.get("source_paths")
+            if provenance is None:
+                if include_unknown:
+                    doomed.append(fact["id"])
+                    unknown_purged += 1
+                continue
+            if wanted and wanted.intersection(provenance):
+                doomed.append(fact["id"])
+        for fact_id in doomed:
+            self.delete_fact(fact_id)
+        return {"purged": len(doomed), "unknown_purged": unknown_purged,
+                "paths": sorted(wanted), "remaining": len(self.facts)}
+
+    def unknown_provenance_count(self) -> int:
+        """Facts that predate provenance tracking — what a purge would sweep."""
+        return sum(1 for f in self.facts if f.get("source_paths") is None)
+
     def _index_fact(self, fact: dict):
         doc = " ".join(
             str(part)
@@ -304,6 +370,10 @@ class MemoryStore:
                 "fact": fact.get("fact", ""),
                 "category": fact.get("category", "general"),
                 "source_session": fact.get("source_session", ""),
+                # Absent key => None => unknown provenance (pre-v2.63.0 facts).
+                # Deliberately NOT defaulted to [] — see remember().
+                "source_paths": normalize_source_paths(fact.get("source_paths"))
+                if "source_paths" in fact else None,
                 "timestamp": fact.get("timestamp", ""),
                 "last_accessed_at": fact.get("last_accessed_at"),
                 "relevance_count": int(fact.get("relevance_count", 0)),

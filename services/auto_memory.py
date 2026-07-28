@@ -186,10 +186,15 @@ class AutoMemory:
         extractor = _EXTRACTORS.get(tool_name)
         if not extractor:
             return
-        for fact_text, category in extractor(args, summary, result_text):
-            self._save_or_merge(fact_text, category)
+        for item in extractor(args, summary, result_text):
+            # Extractors yield (fact, category, source_paths). The 2-tuple form
+            # is still accepted, but it lands as unknown provenance — which
+            # mask activation purges wholesale. Prefer the 3-tuple.
+            fact_text, category = item[0], item[1]
+            source_paths = item[2] if len(item) > 2 else None
+            self._save_or_merge(fact_text, category, source_paths)
 
-    def _save_or_merge(self, fact_text: str, category: str):
+    def _save_or_merge(self, fact_text: str, category: str, source_paths=None):
         """Save a new fact or merge with the most similar existing one."""
         fact_text = _strip_private(fact_text)
         if len(fact_text) < 25:
@@ -227,7 +232,8 @@ class AutoMemory:
                 return  # Already covered by existing fact.
 
         try:
-            self.memory.remember(fact_text, category, session_id)
+            self.memory.remember(fact_text, category, session_id,
+                                 source_paths=source_paths)
         except Exception:
             pass
 
@@ -265,7 +271,10 @@ class AutoMemory:
 
         sid = session.get("id", "unknown")[:8]
         summary = f"Session summary ({sid}): " + " | ".join(parts)
-        self._save_or_merge(summary, "auto:session")
+        # The summary names every file it touched, so its provenance is the
+        # full touched set — a mask on ANY of them must purge this fact.
+        self._save_or_merge(summary, "auto:session",
+                            [f.get("file", "") for f in files if f.get("file")])
 
 
 # ── Extraction functions (pure, no side effects) ───────────────────
@@ -283,6 +292,7 @@ def _extract_validate(
             learnings.append((
                 f"[validate] {fp} has syntax errors: {'; '.join(error_lines)}",
                 "auto:validate",
+                [fp],
             ))
     return learnings
 
@@ -305,6 +315,7 @@ def _extract_search(
             learnings.append((
                 f"[search] Key files for '{query}': {', '.join(unique)}",
                 "auto:structure",
+                unique,
             ))
     return learnings
 
@@ -327,6 +338,7 @@ def _extract_compress(
             learnings.append((
                 f"[structure] {fp} exports: {', '.join(unique)}",
                 "auto:structure",
+                [fp],
             ))
     return learnings
 
@@ -342,6 +354,7 @@ def _extract_edit(
         learnings.append((
             f"[edit] {fp}: {edit_summary}",
             "auto:edit",
+            [fp],
         ))
     return learnings
 
@@ -349,7 +362,12 @@ def _extract_edit(
 def _extract_agent(
     args: dict, summary: str, result: str
 ) -> List[Tuple[str, str]]:
-    """Extract workflow outcomes from c3_agent calls."""
+    """Extract workflow outcomes from c3_agent calls.
+
+    Deliberately yields 2-tuples => unknown provenance. A workflow can read
+    anything, so we cannot honestly name its source files; mask activation
+    therefore purges these wholesale rather than pretending they are clean.
+    """
     learnings: list = []
     workflow = args.get("workflow", "")
     scope = args.get("scope", "")

@@ -67,6 +67,29 @@ class FileMemoryStore:
         except Exception:
             return None
 
+    def drop(self, rel_path: str) -> bool:
+        """Delete a file's memory record and any cached map.
+
+        Mask-activation primitive: a record extracted from the raw file is
+        raw-derived content, so it must not survive the rule that masks that
+        file (docs/mask-guard.md §6, row 7).
+        """
+        store_file = self._store_path(rel_path)
+        removed = False
+        if store_file.exists():
+            try:
+                store_file.unlink()
+                removed = True
+            except Exception:
+                return False
+        with self._search_lock:
+            self._map_cache.pop(rel_path, None)
+            try:
+                self._search_index.remove(rel_path)
+            except Exception:
+                self._search_dirty = True
+        return removed
+
     def update(self, rel_path: str, ai_summary: str = None) -> Optional[dict]:
         """Re-extract sections from file and persist the record.
 

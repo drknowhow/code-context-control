@@ -164,6 +164,30 @@ class CodeCompressor:
         return sorted(self._protected_files)
 
     def compress_file(self, filepath: str, mode: str = "structure") -> dict:
+        """Compress a file, attaching the Mask Guard banner when masked.
+
+        The banner is applied HERE rather than inside the implementation so it
+        survives every return path — including cache hits, which would
+        otherwise serve transformed content with no disclosure at all
+        (docs/mask-guard.md §5). It is deliberately not stored in the cache
+        entry: it names the path, and cache entries are content-addressed.
+        """
+        result = self._compress_file_impl(filepath, mode)
+        if result.get("compressed"):
+            try:
+                v = access_guard.verdict(str(filepath), "read",
+                                         str(self.project_root))
+            except Exception:
+                v = None
+            if v is not None and v.masked:
+                result["compressed"] = (
+                    access_guard.mask_header(v.mask_rule, str(filepath))
+                    + "\n\n" + result["compressed"])
+                result["masked"] = True
+                result["mask_preset"] = v.mask_rule.preset
+        return result
+
+    def _compress_file_impl(self, filepath: str, mode: str = "structure") -> dict:
         """
         Compress a source file.
 
@@ -179,7 +203,27 @@ class CodeCompressor:
         # paths raise AccessDenied (docs/access-guard.md §3). Callers that
         # need string returns catch it and surface exc.message. Checked
         # before exists() so probes can't distinguish missing from denied.
-        access_guard.enforce(str(filepath), "read", str(self.project_root))
+        #
+        # Mask Guard: a masked path is not denied — it is served from its
+        # materialized view (docs/mask-guard.md §2). We take the view's TEXT
+        # as the compression input, and fold the view hash into the cache key
+        # so a rule change can never be answered from a pre-mask cache entry
+        # (§6, row 1).
+        _verdict = access_guard.verdict(str(filepath), "read",
+                                        str(self.project_root))
+        if _verdict.denial:
+            raise access_guard.AccessDenied(
+                _verdict.denial,
+                access_guard.refusal(_verdict.denial, filepath, "read"))
+        mask_view = None
+        if _verdict.masked:
+            from services import mask_mirror
+            try:
+                mask_view = mask_mirror.render_for_path(
+                    filepath, self.project_root, compressor=self)
+            except mask_mirror.MaskUnavailable as exc:
+                return {"error": f"{access_guard.TAG_MASK_UNSUPPORTED} "
+                                 f"{exc.message}", "compressed": ""}
         filepath = Path(filepath).resolve()
         if not filepath.exists():
             return {"error": f"File not found: {filepath}", "compressed": ""}
@@ -190,13 +234,18 @@ class CodeCompressor:
                 "protected_files": self.get_protected_files(),
             }
 
-        content = filepath.read_text(encoding="utf-8", errors='replace')
+        if mask_view is not None:
+            content = mask_view.text
+        else:
+            content = filepath.read_text(encoding="utf-8", errors='replace')
         content_hash = hashlib.md5(content.encode()).hexdigest()
         ext = filepath.suffix.lower()
 
         # Check persistent cache (except for diff/summary which have their own logic)
         if mode not in ("diff", "summary"):
             cache_key = f"{content_hash}_{mode}{ext}.json"
+            if mask_view is not None:
+                cache_key = f"mask-{mask_view.view_hash}_{cache_key}"
             # Fast path: in-memory cache (no JSON parse / disk I/O)
             if cache_key in self._mem_cache:
                 hit = dict(self._mem_cache[cache_key])

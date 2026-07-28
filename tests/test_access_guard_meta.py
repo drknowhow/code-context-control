@@ -65,7 +65,9 @@ _RESOLVE_BAN = {
     "cli/_hook_utils.py": {"canonical_key"},
     # canonicalize + module-level root computations own resolution.
     "services/access_guard.py": {"canonicalize", "_install_dir_rule",
-                                 "load_rules", "check",
+                                 # load_all owns scope-base resolution for
+                                 # both load_rules and load_mask_rules.
+                                 "load_all", "load_rules", "check",
                                  # config-store plumbing (scope dirs), not
                                  # user-path evaluation:
                                  "_scope_config_path"},

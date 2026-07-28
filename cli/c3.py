@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.62.0"
+__version__ = "2.63.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -4670,6 +4670,7 @@ back to native tools as the task progresses.
 - **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
+- **Masked paths** (v2.63.0+): content prefixed `[c3-mask:transformed]` is a policy-transformed VIEW, not the file. Values may be synthetic, rows withheld, bodies stripped — don't copy literals out of it or infer completeness from it. Masked paths are read-only and refuse shell/git/validate/impact/filter/delegate (`[c3-mask:unsupported]`). That's policy, not a transient error — report the block instead of routing around it.
 
 ## Self-Check
 If you haven't called a c3_* tool in several turns during active development, re-engage
@@ -5918,7 +5919,8 @@ def cmd_access(args):
     """Access Guard rule management — human-only mutation surface (spec §1)."""
     sub = getattr(args, "access_cmd", None)
     if not sub:
-        print("Usage: c3 access {list,add,remove,check} [args]")
+        print("Usage: c3 access {list,add,remove,check,mask} [args]")
+        print("       c3 access mask {add,rm,status,activate,preview} [args]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -5931,6 +5933,8 @@ def cmd_access(args):
         _access_cmd_remove(args, project_path)
     elif sub == "check":
         _access_cmd_check(args, project_path)
+    elif sub == "mask":
+        _access_cmd_mask(args, project_path)
     else:
         print(f"Unknown access subcommand: {sub}")
 
@@ -5973,13 +5977,24 @@ def _access_cmd_list(args, project_path: str) -> None:
     for scope in ("builtin", "global", "project"):
         sec = scopes.get(scope) or {}
         rules = [(k, g) for k in ("deny", "read_only") for g in sec.get(k, [])]
-        print(f"[{scope}] ({notes[scope]}) — {len(rules)} rule(s)")
+        masks = sec.get("mask") or []
+        print(f"[{scope}] ({notes[scope]}) — {len(rules) + len(masks)} rule(s)")
         for kind, glob in rules:
             print(f"  {kind:<10} {glob}")
+        for entry in masks:
+            params = entry.get("params") or {}
+            detail = ", ".join(f"{k}={v}" for k, v in sorted(params.items()))
+            print(f"  {'mask':<10} {entry.get('glob')}  -> "
+                  f"{entry.get('preset')}" + (f"({detail})" if detail else ""))
         if sec.get("corrupt"):
             print("  [warn] access section invalid — scope fails closed "
                   "(deny-all); fix config.json 'access' by hand")
     print()
+    from services import mask_activation
+    summary = mask_activation.summary_line(project_path)
+    if summary:
+        print(summary)
+        print()
     print(access_guard.COVERAGE_MATRIX)
 
 
@@ -6021,11 +6036,174 @@ def _access_cmd_check(args, project_path: str) -> None:
     from services import access_guard
 
     op = getattr(args, "op", "read") or "read"
-    denial = access_guard.check(args.target, op, project_path)
-    if denial is None:
+    v = access_guard.verdict(args.target, op, project_path)
+    if v.masked:
+        rule = v.mask_rule
+        print(f"[MASKED] {op} served as a transformed view: {args.target}")
+        print(f"  rule '{rule.glob}' ({rule.scope} scope) -> {rule.preset}")
+        print("  Preview what the agent sees: "
+              f"c3 access mask preview {args.target}")
+    elif v.denial is None:
         print(f"[OK] {op} allowed: {args.target}")
     else:
-        print(access_guard.refusal(denial, args.target, op))
+        print(access_guard.refusal(v.denial, args.target, op))
+
+
+# ── mask subcommands ────────────────────────────────────────────────────────
+
+def _parse_mask_params(raw: str, preset: str) -> dict:
+    """`count=20,strategy=first` / `columns=email,name` -> typed params."""
+    from services import access_guard
+
+    schema = (access_guard.MASK_PRESETS.get(preset) or {}).get("params", {})
+    params: dict = {}
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            # bare value continues the previous list param (columns=a,b,c)
+            last = next((k for k in reversed(list(params))
+                         if schema.get(k) is list), None)
+            if last:
+                params[last].append(chunk)
+                continue
+            raise ValueError(f"cannot parse param '{chunk}' — use key=value")
+        key, value = (part.strip() for part in chunk.split("=", 1))
+        expected = schema.get(key)
+        if expected is int:
+            params[key] = int(value)
+        elif expected is list:
+            params[key] = [value]
+        else:
+            params[key] = value
+    return params
+
+
+def _access_cmd_mask_add(args, project_path: str) -> None:
+    from services import access_guard, mask_activation
+
+    scope = _access_scope(args)
+    try:
+        params = _parse_mask_params(getattr(args, "params", "") or "",
+                                    args.preset)
+        result = access_guard.set_mask_rule(args.glob, args.preset, params,
+                                            scope, project_path)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+    _access_audit("mask-add", result["glob"], args.preset, scope, project_path)
+    verb = "Replaced" if result["replaced"] else "Added"
+    print(f"[OK] {verb} mask rule '{result['glob']}' -> {args.preset} "
+          f"(scope={scope})")
+    print()
+    print(mask_activation.summary_line(project_path))
+    print("Run `c3 access mask activate` to purge pre-mask derived artifacts.")
+
+
+def _access_cmd_mask_remove(args, project_path: str) -> None:
+    from services import access_guard
+
+    scope = _access_scope(args)
+    try:
+        result = access_guard.remove_mask_rule(args.glob, scope, project_path)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+    if result["removed"]:
+        _access_audit("mask-remove", result["glob"], "mask", scope,
+                      project_path)
+        print(f"[OK] Removed mask rule '{result['glob']}' (scope={scope})")
+    else:
+        print(f"[error] no mask rule matching '{result['glob']}' "
+              f"in {scope} scope")
+
+
+def _access_cmd_mask_status(args, project_path: str) -> None:
+    from services import mask_activation
+
+    st = mask_activation.status(project_path)
+    print(f"rules      : {st['rule_count']}")
+    print(f"status     : {st['status']}")
+    print(f"stale      : {st['stale']}")
+    if st["corrupt_scopes"]:
+        print(f"corrupt    : {', '.join(st['corrupt_scopes'])}")
+    report = st.get("last_report") or {}
+    if report:
+        print(f"last run   : {report.get('views_built', 0)} view(s) built, "
+              f"{len(report.get('failures') or [])} failure(s)")
+        for failure in (report.get("failures") or [])[:10]:
+            print(f"  [fail] {failure['path']}: {failure['detail']}")
+    print()
+    print(mask_activation.summary_line(project_path) or "no mask rules")
+
+
+def _access_cmd_mask_activate(args, project_path: str) -> None:
+    from services import mask_activation
+
+    print("Activating mask rules (purge -> build -> validate)...")
+    report = mask_activation.activate(
+        project_path, rebuild_index=bool(getattr(args, "reindex", False)))
+    print(f"  files matched      : {report['files']}")
+    print(f"  views built        : {report['views_built']}")
+    print(f"  cache entries wiped: {report['cache_entries_removed']}")
+    print(f"  index dropped      : {report['index_dropped']}")
+    print(f"  file memory dropped: {report['file_memory_dropped']}")
+    facts = report.get("facts") or {}
+    print(f"  facts purged       : {facts.get('purged', 0)} "
+          f"(+{facts.get('unknown_purged', 0)} unknown-provenance)")
+    for failure in report.get("failures") or []:
+        print(f"  [fail] {failure['path']}: {failure['detail']}")
+    _access_audit("mask-activate", f"{report['files']} file(s)", "mask",
+                  "project", project_path)
+    print()
+    print(mask_activation.summary_line(project_path))
+
+
+def _access_cmd_mask_preview(args, project_path: str) -> None:
+    """Show exactly what the agent will see. Human surface only."""
+    from pathlib import Path as _Path
+
+    from services import access_guard, mask_mirror
+
+    target = _Path(args.target)
+    if not target.is_absolute():
+        target = _Path(project_path) / args.target
+    v = access_guard.verdict(str(target), "read", project_path)
+    if v.denial:
+        print(access_guard.refusal(v.denial, str(target), "read"))
+        return
+    if not v.masked:
+        print(f"[=] Not masked: {args.target} — the agent sees the real file.")
+        return
+    try:
+        view = mask_mirror.render_for_path(target, project_path)
+    except mask_mirror.MaskUnavailable as exc:
+        print(f"[error] {exc.message}")
+        return
+    print(f"rule    : '{v.mask_rule.glob}' ({v.mask_rule.scope} scope)")
+    print(f"preset  : {v.mask_rule.preset}  {v.mask_rule.params_dict or ''}")
+    print(f"stats   : {view.stats}")
+    print("-" * 70)
+    print(view.with_header(args.target))
+
+
+def _access_cmd_mask(args, project_path: str) -> None:
+    sub = getattr(args, "mask_cmd", None) or "status"
+    handlers = {
+        "add": _access_cmd_mask_add,
+        "rm": _access_cmd_mask_remove,
+        "remove": _access_cmd_mask_remove,
+        "status": _access_cmd_mask_status,
+        "activate": _access_cmd_mask_activate,
+        "preview": _access_cmd_mask_preview,
+    }
+    handler = handlers.get(sub)
+    if handler is None:
+        print(f"[error] unknown mask subcommand '{sub}' — expected one of: "
+              f"{', '.join(sorted(handlers))}")
+        return
+    handler(args, project_path)
 
 
 def cmd_jira(args):

@@ -24,7 +24,20 @@ from pathlib import Path
 
 _KIND_DENY = "deny"
 _KIND_READ_ONLY = "read_only"
-_VALID_KEYS = {_KIND_DENY, _KIND_READ_ONLY}
+_KIND_MASK = "mask"
+_VALID_KEYS = {_KIND_DENY, _KIND_READ_ONLY, _KIND_MASK}
+
+# Mask presets (docs/mask-guard.md §4). Names + param schema live here so the
+# hook subprocess can validate config without importing the transform engines;
+# the engines themselves are in services/mask_presets.py.
+# Bumping a preset's version invalidates every materialized view built with it.
+MASK_PRESETS = {
+    "redact_secrets":  {"version": 1, "params": {}},
+    "redact_columns":  {"version": 1, "params": {"columns": list}},
+    "sample_rows":     {"version": 1, "params": {"count": int, "strategy": str}},
+    "signatures_only": {"version": 1, "params": {}},
+}
+_SAMPLE_STRATEGIES = ("first", "last")
 
 # Builtins: product integrity only (docs/access-guard.md §1). Non-overridable.
 BUILTIN_DENY = ("**/.env*", "**/.c3/secrets.enc", "**/.c3/cred_state.json")
@@ -33,10 +46,15 @@ BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
 # Seeded into GLOBAL scope by install/CLI (user-removable); not enforced here.
 DEFAULT_GLOBAL_RULES = ("*.pem", "id_rsa*", "*.key")
 
-# Stable machine tags — API, do not change (docs/access-guard.md §4).
+# Stable machine tags — API, do not change (docs/access-guard.md §4,
+# docs/mask-guard.md §5).
 TAG_DENIED = "[c3-access:denied]"
 TAG_READ_ONLY = "[c3-access:read_only]"
 TAG_LIMITED = "[c3-access:limited]"
+TAG_MASKED = "[c3-mask:transformed]"
+TAG_MASK_LIMITED = "[c3-mask:limited]"
+TAG_MASK_STALE = "[c3-mask:stale]"
+TAG_MASK_UNSUPPORTED = "[c3-mask:unsupported]"
 
 _PATH_CAP = 200  # interpolation length cap for refusal strings
 
@@ -53,6 +71,48 @@ class Rule:
         if self._basename:
             return bool(self._re.match(name))
         return bool(self._re.match(rel)) or bool(self._re.match(canon))
+
+
+@dataclass(frozen=True)
+class MaskRule:
+    """A ``mask`` rule: which paths, rendered by which versioned preset."""
+    glob: str          # POSIX-canonical, casefolded
+    preset: str        # key of MASK_PRESETS
+    params: tuple      # sorted ((key, value), ...) — hashable + deterministic
+    scope: str         # global | project
+    _rule: Rule
+
+    def matches(self, canon: str, rel: str, name: str) -> bool:
+        return self._rule.matches(canon, rel, name)
+
+    @property
+    def params_dict(self) -> dict:
+        return dict(self.params)
+
+    def identity(self) -> tuple:
+        """(preset, params) — two rules with the same identity may overlap."""
+        return (self.preset, self.params)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """Full policy answer. ``kind`` ∈ allowed | masked | read_only | denied.
+
+    Mask-aware content surfaces call ``verdict()`` and serve ``mask_rule``'s
+    materialized view. Everything else calls ``check()``, which fails closed
+    on a masked path — an un-migrated call site refuses rather than leaks.
+    """
+    kind: str
+    denial: "Denial | None" = None
+    mask_rule: MaskRule | None = None
+
+    @property
+    def masked(self) -> bool:
+        return self.kind == "masked"
+
+    @property
+    def allowed(self) -> bool:
+        return self.kind == "allowed"
 
 
 @dataclass(frozen=True)
@@ -134,6 +194,99 @@ _BUILTIN_RULES = tuple(
 )
 
 
+# ── Mask rules ──────────────────────────────────────────────────────────────
+
+def validate_mask_entry(entry) -> str:
+    """'' when *entry* is a well-formed mask rule; else a human reason.
+
+    Strict by construction: an unknown preset or a mistyped param must be a
+    loud config error, never a silently-skipped rule that leaves a path
+    unmasked while the UI claims otherwise.
+    """
+    if not isinstance(entry, dict):
+        return f"mask entry must be an object, got {type(entry).__name__}"
+    unknown = set(entry) - {"glob", "preset", "params"}
+    if unknown:
+        return f"unknown mask key(s): {', '.join(sorted(unknown))}"
+    glob = entry.get("glob")
+    if not isinstance(glob, str) or not glob.strip():
+        return f"mask 'glob' must be a non-empty string, got {glob!r}"
+    if validate_globs([glob]):
+        return f"mask glob does not compile: {glob!r}"
+    preset = entry.get("preset")
+    if preset not in MASK_PRESETS:
+        return (f"unknown mask preset {preset!r} — expected one of "
+                f"{', '.join(sorted(MASK_PRESETS))}")
+    schema = MASK_PRESETS[preset]["params"]
+    params = entry.get("params") or {}
+    if not isinstance(params, dict):
+        return f"mask 'params' must be an object, got {type(params).__name__}"
+    extra = set(params) - set(schema)
+    if extra:
+        return (f"preset {preset!r} takes no param(s): "
+                f"{', '.join(sorted(extra))}")
+    for key, expected in schema.items():
+        if key not in params:
+            return f"preset {preset!r} requires param {key!r}"
+        value = params[key]
+        if expected is int and (isinstance(value, bool)
+                                or not isinstance(value, int)):
+            return f"param {key!r} must be an integer, got {value!r}"
+        if expected is int and value < 1:
+            return f"param {key!r} must be >= 1, got {value!r}"
+        if expected is str and not (isinstance(value, str) and value.strip()):
+            return f"param {key!r} must be a non-empty string, got {value!r}"
+        if expected is list and not (isinstance(value, list) and value
+                                     and all(isinstance(v, str) and v.strip()
+                                             for v in value)):
+            return f"param {key!r} must be a non-empty list of strings"
+    if preset == "sample_rows" and params["strategy"] not in _SAMPLE_STRATEGIES:
+        return (f"param 'strategy' must be one of "
+                f"{', '.join(_SAMPLE_STRATEGIES)}, got {params['strategy']!r}")
+    return ""
+
+
+_PARAM_TYPE_NAMES = {int: "int", str: "str", list: "list[str]"}
+
+
+def preset_catalog() -> dict:
+    """JSON-safe description of MASK_PRESETS for REST/UI consumers.
+
+    MASK_PRESETS stores Python types for validation; those cannot cross a
+    JSON boundary, so the wire format names them instead.
+    """
+    return {
+        name: {
+            "version": spec["version"],
+            "params": {key: _PARAM_TYPE_NAMES.get(kind, str(kind))
+                       for key, kind in spec["params"].items()},
+            "choices": ({"strategy": list(_SAMPLE_STRATEGIES)}
+                        if name == "sample_rows" else {}),
+        }
+        for name, spec in MASK_PRESETS.items()
+    }
+
+
+def _freeze_params(params: dict) -> tuple:
+    """Deterministic hashable params — the view hash depends on this order."""
+    out = []
+    for key in sorted(params):
+        value = params[key]
+        out.append((key, tuple(value) if isinstance(value, list) else value))
+    return tuple(out)
+
+
+def _compile_mask(entry: dict, scope: str) -> MaskRule:
+    glob = entry["glob"]
+    return MaskRule(
+        glob=glob.replace("\\", "/").casefold().strip(),
+        preset=entry["preset"],
+        params=_freeze_params(entry.get("params") or {}),
+        scope=scope,
+        _rule=_compile(glob, _KIND_MASK, scope),
+    )
+
+
 def _install_dir_rule() -> Rule | None:
     """Write-deny on the installed C3 package (agent self-modification).
 
@@ -159,17 +312,18 @@ _CORRUPT = object()  # sentinel: scope config invalid → deny-all for the scope
 
 
 def _read_scope_rules(base: Path, scope: str):
-    """List of Rule for one scope, [] when absent, _CORRUPT when invalid."""
+    """``(rules, mask_rules)`` for one scope, ``([], [])`` when absent,
+    ``_CORRUPT`` when invalid."""
     cfg = base / ".c3" / "config.json"
     if not cfg.is_file():
-        return []
+        return [], []
     try:
         section = (json.loads(cfg.read_text(encoding="utf-8"))
                    or {}).get("access")
     except Exception:
         return _CORRUPT
     if section is None:
-        return []
+        return [], []
     if not isinstance(section, dict):
         return _CORRUPT
     unknown = set(section) - _VALID_KEYS
@@ -181,7 +335,15 @@ def _read_scope_rules(base: Path, scope: str):
         if not isinstance(globs, list) or validate_globs(globs):
             return _CORRUPT
         rules.extend(_compile(g, kind, scope) for g in globs)
-    return rules
+    entries = section.get(_KIND_MASK, [])
+    if not isinstance(entries, list):
+        return _CORRUPT
+    mask_rules = []
+    for entry in entries:
+        if validate_mask_entry(entry):
+            return _CORRUPT
+        mask_rules.append(_compile_mask(entry, scope))
+    return rules, mask_rules
 
 
 def _global_base() -> Path | None:
@@ -192,13 +354,13 @@ def _global_base() -> Path | None:
         return None
 
 
-def load_rules(project_path: str = ".") -> tuple:
-    """(rules, corrupt_scopes) — union of builtin + global + project scopes."""
+def load_all(project_path: str = ".") -> tuple:
+    """(rules, mask_rules, corrupt_scopes) — one read per scope."""
     rules = list(_BUILTIN_RULES)
     inst = _install_dir_rule()
     if inst:
         rules.append(inst)
-    corrupt = []
+    mask_rules, corrupt = [], []
     gbase = _global_base()
     proj = Path(project_path).resolve()
     for scope, base in (("global", gbase), ("project", proj)):
@@ -208,18 +370,37 @@ def load_rules(project_path: str = ".") -> tuple:
         if scoped is _CORRUPT:
             corrupt.append(scope)
         else:
-            rules.extend(scoped)
+            rules.extend(scoped[0])
+            mask_rules.extend(scoped[1])
+    return rules, mask_rules, corrupt
+
+
+def load_rules(project_path: str = ".") -> tuple:
+    """(rules, corrupt_scopes) — union of builtin + global + project scopes."""
+    rules, _mask, corrupt = load_all(project_path)
     return rules, corrupt
+
+
+def load_mask_rules(project_path: str = ".") -> tuple:
+    """(mask_rules, corrupt_scopes) — the ``access.mask`` registry."""
+    _rules, mask_rules, corrupt = load_all(project_path)
+    return mask_rules, corrupt
+
+
+def has_mask_rules(project_path: str = ".") -> bool:
+    """True when any mask rule is active — drives the mask search footer."""
+    mask_rules, corrupt = load_mask_rules(project_path)
+    return bool(mask_rules or corrupt)
 
 
 def has_active_rules(project_path: str = ".") -> bool:
     """True when any user rules (or corrupt scopes) exist — drives S4."""
-    rules, corrupt = load_rules(project_path)
+    rules, mask_rules, corrupt = load_all(project_path)
     # Count the install-dir rule only when it actually loaded: in a dev
     # checkout it is absent, and a fixed "+1" made a single user rule
     # invisible to S4 (footer suppressed while filtering was active).
     n_baseline = len(_BUILTIN_RULES) + (1 if _install_dir_rule() else 0)
-    return bool(corrupt) or len(rules) > n_baseline
+    return bool(corrupt) or bool(mask_rules) or len(rules) > n_baseline
 
 
 # ── Canonicalization (docs/access-guard.md §2 — the ONE implementation) ─────
@@ -295,33 +476,80 @@ def canonicalize(path, project_root=".") -> tuple:
 
 # ── Evaluation ──────────────────────────────────────────────────────────────
 
-def check(path, operation: str, project_path: str = ".") -> Denial | None:
-    """None when allowed; a Denial otherwise. operation: read|write|create|delete.
+def verdict(path, operation: str, project_path: str = ".") -> Verdict:
+    """Full policy answer, including the ``masked`` outcome.
 
-    create/delete evaluate as write. Builtin write-denies apply only to
-    write-class operations; ``deny`` rules apply to everything (R1+R2).
+    Precedence: ``deny`` > ``mask`` > ``read_only`` (docs/mask-guard.md §4).
+    A mask rule denies every write-class operation — masked content is
+    read-only, always, with no override (§3).
+
+    Overlapping mask rules that disagree on (preset, params) are a config
+    error, not a precedence puzzle: rendering would depend on rule order and
+    stop being diffable, so the path fails closed until the user fixes it.
     """
     op_write = operation in ("write", "create", "delete")
     canon, rel, denial = canonicalize(path, project_path)
     if denial:
-        return denial
-    rules, corrupt = load_rules(project_path)
+        return Verdict("denied", denial)
+    rules, mask_rules, corrupt = load_all(project_path)
     if corrupt:
-        return Denial("<corrupt-config>", _KIND_DENY, ",".join(corrupt),
-                      "access section invalid or unparseable — scope fails "
-                      "closed (fix .c3/config.json 'access')")
+        return Verdict("denied", Denial(
+            "<corrupt-config>", _KIND_DENY, ",".join(corrupt),
+            "access section invalid or unparseable — scope fails closed "
+            "(fix .c3/config.json 'access')"))
     name = canon.rsplit("/", 1)[-1]
     hit_ro = None
     for rule in rules:
         if not rule.matches(canon, rel, name):
             continue
         if rule.kind == _KIND_DENY:
-            return Denial(rule.glob, _KIND_DENY, rule.scope, "deny rule")
+            return Verdict("denied", Denial(rule.glob, _KIND_DENY, rule.scope,
+                                            "deny rule"))
         if hit_ro is None:
             hit_ro = rule
+
+    hits = [m for m in mask_rules if m.matches(canon, rel, name)]
+    if hits:
+        identities = {m.identity() for m in hits}
+        if len(identities) > 1:
+            globs = ", ".join(sorted(f"'{m.glob}'->{m.preset}" for m in hits))
+            return Verdict("denied", Denial(
+                globs, _KIND_MASK, hits[0].scope,
+                "overlapping mask rules disagree on preset/params — "
+                "rendering would depend on rule order; remove the conflict "
+                "in .c3/config.json 'access.mask'"))
+        hit = hits[0]
+        if op_write:
+            return Verdict("denied", Denial(hit.glob, _KIND_MASK, hit.scope,
+                                            "mask rule (masked = read-only)"),
+                           hit)
+        return Verdict("masked", None, hit)
+
     if hit_ro is not None and op_write:
-        return Denial(hit_ro.glob, _KIND_READ_ONLY, hit_ro.scope,
-                      "read-only rule")
+        return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
+                                           hit_ro.scope, "read-only rule"))
+    return Verdict("allowed")
+
+
+def check(path, operation: str, project_path: str = ".") -> Denial | None:
+    """None when allowed; a Denial otherwise. operation: read|write|create|delete.
+
+    create/delete evaluate as write. Builtin write-denies apply only to
+    write-class operations; ``deny`` rules apply to everything (R1+R2).
+
+    **Masked paths deny here, including for reads.** This is the fail-closed
+    contract for un-migrated call sites: a surface that has not been taught to
+    serve the materialized view refuses rather than leaking raw bytes. Content
+    surfaces that CAN serve a masked view call ``verdict()`` instead.
+    """
+    v = verdict(path, operation, project_path)
+    if v.denial:
+        return v.denial
+    if v.masked:
+        rule = v.mask_rule
+        return Denial(rule.glob, _KIND_MASK, rule.scope,
+                      "mask rule — raw read denied on a non-mask-aware "
+                      "surface")
     return None
 
 
@@ -336,8 +564,33 @@ def _cap(s: str) -> str:
 
 def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
             tool: str = "", project: str = "") -> str:
-    """The exact S1/S2/S3/S5 string for a denial (see frozen spec)."""
+    """The exact S1/S2/S3/S5 string for a denial (see frozen spec).
+
+    Mask denials use S6 (raw access on a surface that cannot render) and S7
+    (write to a masked path) — docs/mask-guard.md §5.
+    """
     p, glob, scope = _cap(path), denial.rule, denial.scope
+    if denial.kind == _KIND_MASK:
+        if operation in ("write", "create", "delete"):
+            return (
+                f"{TAG_MASKED} {operation} denied for {p} by Mask Guard rule "
+                f"'{glob}' ({scope} scope). Masked paths are read-only: what "
+                "you read was a policy-transformed view, so an edit expressed "
+                "against it cannot be applied to the real file. This is a "
+                "policy decision, not a transient error — do not retry or "
+                "route around it. Mark the affected step blocked, continue "
+                "with unaffected files, and report the skip to the user. "
+                "Rules: `c3 access list` or the Access tab."
+            )
+        return (
+            f"{TAG_MASK_UNSUPPORTED} raw {operation} denied for {p} by Mask "
+            f"Guard rule '{glob}' ({scope} scope). This surface cannot render "
+            "the transformed view, so it refuses rather than serve the "
+            "original. Use `c3_read` or `c3_compress`, which serve the masked "
+            "view. Do not attempt the shell, git, or another tool to obtain "
+            "the raw content — that is the same policy decision. Rules: "
+            "`c3 access list` or the Access tab."
+        )
     if denial.kind == _KIND_READ_ONLY:
         return (
             f"{TAG_READ_ONLY} write denied for {p} by Access Guard rule "
@@ -383,6 +636,46 @@ def search_footer(project_path: str = ".") -> str:
     )
 
 
+_VIEW_CLASS = {
+    "redact_secrets": "redacted",
+    "redact_columns": "redacted",
+    "sample_rows": "sampled",
+    "signatures_only": "structure_only",
+}
+
+
+def mask_header(rule: MaskRule, path="") -> str:
+    """The banner prepended to every transformed payload (§5).
+
+    Loud about evidence quality at the point of use; quiet about the policy
+    inventory. The coarse view class is included because the agent's
+    conclusions depend on it — 'sampled' and 'redacted' fail differently.
+    """
+    view = _VIEW_CLASS.get(rule.preset, "transformed")
+    where = f" {_cap(path)}" if path else ""
+    return (
+        f"{TAG_MASKED} view={view}{where} — this is a policy-transformed view, "
+        "not the original file. Content may be redacted, substituted, or "
+        "truncated. Do not treat literals here as real values, do not copy "
+        "them into other files, and do not draw conclusions about data "
+        "volume or completeness from it. This path is read-only: `c3_edit` "
+        "will refuse."
+    )
+
+
+def mask_footer(project_path: str = ".") -> str:
+    """Appended to search output whenever any mask rule is active."""
+    if not has_mask_rules(project_path):
+        return ""
+    return (
+        f"{TAG_MASK_LIMITED} some searchable content is represented by "
+        "policy-transformed views; matches and absence may both differ from "
+        "the originals. Check `c3 access list` before concluding that "
+        "something is missing, and report the limitation if it affects the "
+        "work."
+    )
+
+
 def enforce(path, operation: str, project_path: str = ".", *,
             surface: str = "mcp", tool: str = "", project: str = "") -> None:
     """Raise AccessDenied when ``operation`` on ``path`` is not permitted."""
@@ -404,7 +697,12 @@ def enforce(path, operation: str, project_path: str = ".", *,
 COVERAGE_MATRIX = (
     "Enforced: C3 MCP tools (all agents using C3) · Claude Code native tools "
     "(hooks) · c3_shell (best-effort scan, advisory). NOT enforced: "
-    "non-Claude agents' raw shell, direct file APIs, editors."
+    "non-Claude agents' raw shell, direct file APIs, editors. "
+    "Masking: c3_read/c3_compress/c3_search serve a transformed view; "
+    "c3_shell content reads, git content commands, c3_validate and "
+    "c3_delegate REFUSE over masked paths rather than sanitize their output. "
+    "The real bytes stay on disk — your editor and any non-C3 reader see them "
+    "unmasked. Mask Guard is context hygiene, not containment."
 )
 
 _VALID_SCOPES = ("global", "project")
@@ -446,12 +744,25 @@ def _raw_scope_section(cfg: Path) -> tuple:
     if not isinstance(section, dict):
         return {}, True
     corrupt = bool(set(section) - _VALID_KEYS)
-    for kind in _VALID_KEYS:
+    for kind in (_KIND_DENY, _KIND_READ_ONLY):
         globs = section.get(kind, [])
         if not isinstance(globs, list) or validate_globs(_str_list(globs)) \
                 or len(_str_list(globs)) != len(globs):
             corrupt = True
+    entries = section.get(_KIND_MASK, [])
+    if not isinstance(entries, list) or any(validate_mask_entry(e)
+                                            for e in entries):
+        corrupt = True
     return section, corrupt
+
+
+def _mask_list(value) -> list:
+    """Recoverable mask entries for display; malformed ones are dropped."""
+    if not isinstance(value, list):
+        return []
+    return [{"glob": _norm_glob(e.get("glob")), "preset": e.get("preset"),
+             "params": e.get("params") or {}}
+            for e in value if isinstance(e, dict) and not validate_mask_entry(e)]
 
 
 def list_rules(project_path: str = ".") -> dict:
@@ -471,17 +782,19 @@ def list_rules(project_path: str = ".") -> dict:
     if inst:
         builtin_ro.append(inst.glob)
     out = {"builtin": {"deny": list(BUILTIN_DENY), "read_only": builtin_ro,
-                       "corrupt": False}}
+                       "mask": [], "corrupt": False}}
     for scope in _VALID_SCOPES:
         try:
             cfg = _scope_config_path(scope, project_path)
         except ValueError:
-            out[scope] = {"deny": [], "read_only": [], "corrupt": False}
+            out[scope] = {"deny": [], "read_only": [], "mask": [],
+                          "corrupt": False}
             continue
         section, corrupt = _raw_scope_section(cfg)
         out[scope] = {
             _KIND_DENY: _str_list(section.get(_KIND_DENY)),
             _KIND_READ_ONLY: _str_list(section.get(_KIND_READ_ONLY)),
+            _KIND_MASK: _mask_list(section.get(_KIND_MASK)),
             "corrupt": corrupt,
         }
     return out
@@ -510,12 +823,23 @@ def _load_config_for_write(cfg: Path) -> tuple:
         raise ValueError(
             "access section is invalid (unknown keys or wrong shape) — the "
             "scope fails closed; fix config.json 'access' by hand")
-    for kind in _VALID_KEYS:
+    for kind in (_KIND_DENY, _KIND_READ_ONLY):
         globs = section.get(kind, [])
         if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
             raise ValueError(
                 f"access.{kind} must be a list of glob strings — the scope "
                 "fails closed; fix config.json 'access' by hand")
+    entries = section.get(_KIND_MASK, [])
+    if not isinstance(entries, list):
+        raise ValueError(
+            "access.mask must be a list of {glob, preset, params} objects — "
+            "the scope fails closed; fix config.json 'access' by hand")
+    for entry in entries:
+        bad = validate_mask_entry(entry)
+        if bad:
+            raise ValueError(
+                f"access.mask has an invalid entry ({bad}) — the scope fails "
+                "closed; fix config.json 'access' by hand")
     return data, section
 
 
@@ -534,6 +858,9 @@ def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     equivalent (casefolded) glob is already present. Raises ValueError on an
     unknown kind/scope, an invalid glob, or a corrupt config.
     """
+    if kind == _KIND_MASK:
+        raise ValueError("mask rules carry a preset and params — use "
+                         "set_mask_rule()/remove_mask_rule()")
     if kind not in _VALID_KEYS:
         raise ValueError(f"unknown kind '{kind}' — expected one of: "
                          f"{_KIND_DENY}, {_KIND_READ_ONLY}")
@@ -558,6 +885,9 @@ def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     unknown kind/scope or a corrupt config (a corrupt section is repaired by
     hand, never rewritten here).
     """
+    if kind == _KIND_MASK:
+        raise ValueError("mask rules carry a preset and params — use "
+                         "set_mask_rule()/remove_mask_rule()")
     if kind not in _VALID_KEYS:
         raise ValueError(f"unknown kind '{kind}' — expected one of: "
                          f"{_KIND_DENY}, {_KIND_READ_ONLY}")
@@ -571,3 +901,62 @@ def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
         section[kind] = keep
         _write_scope_config(cfg, data)
     return {"glob": canon, "kind": kind, "scope": scope, "removed": removed}
+
+
+def set_mask_rule(glob, preset: str, params: dict | None = None,
+                  scope: str = "project", project_path: str = ".") -> dict:
+    """Add one mask rule to *scope*'s config. Human surfaces only.
+
+    Returns {"glob", "preset", "params", "scope", "added", "replaced"}.
+    A same-glob rule is REPLACED rather than duplicated: two rules on one glob
+    with different presets is exactly the overlap that fails closed at
+    evaluation time, so the write surface must not be able to create it.
+
+    Callers are responsible for running the activation transaction
+    (services/mask_activation.py) after this returns — the rule is not safe to
+    rely on until derived artifacts have been purged.
+    """
+    canon = _norm_glob(glob)
+    entry = {"glob": canon, "preset": preset, "params": dict(params or {})}
+    bad = validate_mask_entry(entry)
+    if bad:
+        raise ValueError(bad)
+    cfg = _scope_config_path(scope, project_path)
+    data, section = _load_config_for_write(cfg)
+    target = section.setdefault(_KIND_MASK, [])
+    replaced = False
+    for i, existing in enumerate(list(target)):
+        if _norm_glob(existing.get("glob")).casefold() == canon.casefold():
+            if existing == entry:
+                return {**entry, "scope": scope, "added": False,
+                        "replaced": False}
+            target[i] = entry
+            replaced = True
+            break
+    if not replaced:
+        target.append(entry)
+    _write_scope_config(cfg, data)
+    return {**entry, "scope": scope, "added": not replaced,
+            "replaced": replaced}
+
+
+def remove_mask_rule(glob, scope: str = "project",
+                     project_path: str = ".") -> dict:
+    """Remove the mask rule for *glob* from *scope*. Human surfaces only."""
+    canon = _norm_glob(glob)
+    cfg = _scope_config_path(scope, project_path)
+    data, section = _load_config_for_write(cfg)
+    target = section.get(_KIND_MASK, [])
+    keep = [e for e in target
+            if _norm_glob(e.get("glob")).casefold() != canon.casefold()]
+    removed = len(keep) != len(target)
+    if removed:
+        section[_KIND_MASK] = keep
+        _write_scope_config(cfg, data)
+    return {"glob": canon, "scope": scope, "removed": removed}
+
+
+def masked_globs(project_path: str = ".") -> list:
+    """Every active mask glob — the activation purge's work list."""
+    mask_rules, _corrupt = load_mask_rules(project_path)
+    return sorted({m.glob for m in mask_rules})
