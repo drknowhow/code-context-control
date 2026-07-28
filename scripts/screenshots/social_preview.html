@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>C3 social preview</title>
+<style>
+  /* Palette is C3's own DARK theme, verbatim from cli/ui/theme.js:2-11, so
+     the card reads as the product rather than as generic marketing art. */
+  :root {
+    --bg: #0a0e14; --surface: #0f1319; --surface-alt: #141a22;
+    --border: #1e2733; --text: #c5cdd8; --muted: #5c6a7a; --dim: #3a4555;
+    --accent: #00e5a0; --warn: #ffb224; --error: #ff6b6b;
+    --blue: #4da6ff; --purple: #b38aff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { width: 1280px; height: 640px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr 452px;
+    align-items: center;
+    gap: 54px;
+    padding: 0 68px 62px;
+  }
+
+  /* Depth: a soft accent bloom off the top-left, and a faint grid. Both are
+     pure CSS so the card stays self-contained and reproducible. */
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(680px 420px at 12% -12%, #00e5a014, transparent 70%),
+      radial-gradient(520px 360px at 92% 108%, #b38aff0e, transparent 70%);
+    pointer-events: none;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 64px 64px;
+    opacity: 0.28;
+    mask-image: radial-gradient(circle at 30% 40%, #000 0%, transparent 78%);
+    -webkit-mask-image: radial-gradient(circle at 30% 40%, #000 0%, transparent 78%);
+    pointer-events: none;
+  }
+
+  .inner { position: relative; z-index: 1; }
+
+  /* ── Wordmark ── */
+  .brand { display: flex; align-items: center; gap: 18px; margin-bottom: 30px; }
+  .glyph {
+    width: 60px; height: 60px; border-radius: 14px;
+    background: var(--surface-alt);
+    border: 1px solid #2a3544;
+    display: flex; align-items: center; justify-content: center;
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    font-size: 27px; font-weight: 700; color: var(--accent);
+    box-shadow: 0 0 44px #00e5a022;
+  }
+  .name {
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    font-size: 34px; font-weight: 700; letter-spacing: -0.5px; color: #e8edf3;
+  }
+  .name span { color: var(--accent); }
+  .kicker {
+    font-size: 12.5px; letter-spacing: 2.6px; text-transform: uppercase;
+    color: var(--muted); margin-top: 5px;
+  }
+
+  /* ── Headline ── */
+  h1 {
+    font-size: 50px; line-height: 1.08; font-weight: 700;
+    letter-spacing: -1.5px; color: #f2f6fa; margin-bottom: 18px;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+
+  .sub {
+    font-size: 18.5px; line-height: 1.5; color: var(--muted);
+    max-width: 600px; margin-bottom: 30px;
+  }
+  .sub b { color: #9aa8b8; font-weight: 600; }
+
+  /* ── Capability chips ── */
+  .chips { display: flex; gap: 9px; flex-wrap: wrap; max-width: 620px; }
+  .chip {
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    font-size: 13.5px; padding: 7px 13px; border-radius: 7px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); display: flex; align-items: center; gap: 8px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* ── Right: a terminal showing what the product actually does ──
+     Kept to a few large-ish lines: social cards are often rendered ~500px
+     wide, so anything smaller degrades into unreadable texture. */
+  .term {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+    box-shadow: 0 26px 60px #00000066;
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 11px 15px; background: var(--surface-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-title { margin-left: 8px; font-size: 12.5px; color: var(--muted); }
+  .term-body { padding: 17px 19px; font-size: 15px; line-height: 1.85; }
+  .cmd { color: var(--text); }
+  .cmd .p { color: var(--accent); }
+  .del { color: var(--error); }
+  .add { color: var(--accent); }
+  .cm  { color: var(--dim); }
+  .rule { height: 1px; background: var(--border); margin: 13px 0; }
+  .stat { display: flex; align-items: baseline; gap: 10px; font-size: 15px; }
+  .stat b { color: var(--accent); font-size: 21px; font-weight: 700; }
+  .stat span { color: var(--muted); }
+
+  /* ── Footer ── */
+  .foot {
+    position: absolute; left: 74px; right: 74px; bottom: 42px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    font-size: 14px; color: var(--dim);
+    border-top: 1px solid var(--border); padding-top: 20px;
+  }
+  .foot .right { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+  .live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+          box-shadow: 0 0 11px var(--accent); }
+</style>
+
+<div class="inner">
+  <div class="brand">
+    <div class="glyph">&gt;_</div>
+    <div>
+      <div class="name">Code Context <span>Control</span></div>
+      <div class="kicker">Local code-intelligence for AI coding tools</div>
+    </div>
+  </div>
+
+  <h1>Retrieve less. Read less.<br><em>Edit safer.</em></h1>
+
+  <p class="sub">
+    An MCP layer that shrinks what your agent reads &mdash; and controls
+    <b>what it may read, write, or see</b> in the first place.<br>One local hub across every project.
+  </p>
+
+  <div class="chips">
+    <div class="chip"><span class="dot" style="background:var(--accent)"></span>20 MCP tools</div>
+    <div class="chip"><span class="dot" style="background:var(--blue)"></span>Access&nbsp;Guard</div>
+    <div class="chip"><span class="dot" style="background:var(--purple)"></span>Mask&nbsp;Guard</div>
+    <div class="chip"><span class="dot" style="background:var(--warn)"></span>Edit&nbsp;Ledger</div>
+  </div>
+</div>
+
+<div class="term">
+  <div class="term-bar">
+    <span class="tdot" style="background:#ff5f57"></span>
+    <span class="tdot" style="background:#febc2e"></span>
+    <span class="tdot" style="background:#28c840"></span>
+    <span class="term-title">c3 access mask preview</span>
+  </div>
+  <div class="term-body">
+    <div class="cmd"><span class="p">$</span> c3_read config/prod.env</div>
+    <div class="del">- AWS_KEY = "AKIAIOSFODNN7..."</div>
+    <div class="add">+ AWS_KEY = "&laquo;c3:redacted&raquo;"</div>
+    <div class="cm">&nbsp;&nbsp;your file is never modified</div>
+    <div class="rule"></div>
+    <!-- Attributed, not asserted: 51.8% was one measured run (v2.43.0, this
+         repo). Naming the harness keeps it a reproducible claim. -->
+    <div class="stat"><b>51.8%</b><span>fewer tokens &mdash; <span style="color:var(--dim)">c3 bench session</span></span></div>
+  </div>
+</div>
+
+<div class="foot">
+  <div>pipx install code-context-control</div>
+  <div class="right"><span class="live"></span>Claude Code &middot; Codex &middot; Copilot &middot; Cursor &middot; Antigravity</div>
+</div>
