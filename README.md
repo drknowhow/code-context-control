@@ -247,7 +247,7 @@ c3 bench aider                    # Aider Polyglot suite (external; burns real A
 c3 bench swe                      # SWE-bench Lite (external)
 ```
 
-The session benchmark's baseline models a *competent* agent working without C3 — one targeted search, each file read once — and scores answer quality alongside tokens. A run against C3's own repository (v2.43.0, 2026-07-02) measured **51.8% token savings (2.07×)** at quality parity. Your numbers will differ with your project's shape; that's why the harness ships with the tool.
+The session benchmark's baseline models a *competent* agent working without C3 — one targeted search, each file read once — and scores answer quality alongside tokens. Runs against C3's own repository land around **~50% token savings (2×)** at quality parity — 51.8% at v2.43.0, 49.9% at v2.63.2, with C3 scoring 98.8% on answer quality against the baseline's 96.5% in both. File sampling is deterministic (largest files first, no RNG), so a given commit reproduces the same figure. Your numbers will differ with your project's shape; that's why the harness ships with the tool.
 
 C3 also records real per-tool usage to `.c3/tool_telemetry.jsonl`, so estimates can be checked against what actually happened.
 

@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.63.2] - 2026-07-28
+
+### Changed — benchmarks re-measured, headline claim restated as a band
+
+Documentation-only release. No behaviour changes.
+
+The published token-savings figure was measured at v2.43.0 (2026-07-02) and had
+not been re-run across the 20 releases since. Both no-cost benchmark tiers were
+re-run against this repository at v2.63.2:
+
+| Tier | v2.43.0 | v2.63.2 |
+| --- | --- | --- |
+| `c3 bench session` (sample-size 15) | 51.8% savings, 2.07× | 49.9% savings, 2.0× |
+| `c3 bench quick` (sample-size 25) | 85.3% savings, 6.79× | 86.0% savings, 7.13× |
+
+Session quality was unchanged in both runs — 98.8% for C3 against a 96.5%
+baseline. The session drift is real signal, not variance: `_select_sample()`
+takes the largest files by token count with no RNG, so a given commit
+reproduces its figure exactly. Eligible files grew 256 → 409, which changed
+which files land in the top 15.
+
+- **README now states a band, not a point** — "~50% token savings (2×)", with
+  both measured runs cited and the determinism of the sampler noted. A point
+  estimate needed a re-stamp every few releases; a band survives normal drift.
+- **Social preview card** (`docs/social-preview.png`) re-rendered to match.
+- Republished so the PyPI `long_description`, which is baked into the wheel at
+  build time, carries the corrected claim.
+
+Not re-run this cycle: `c3 bench e2e` (last measured 2026-03-12) and the
+external Aider Polyglot / SWE-bench Lite suites (never run here). Both make
+real, billed API calls, and neither is cited in any published claim.
+
 ## [2.63.1] - 2026-07-28
 
 ### Changed — README rebuilt, screenshots regenerated, docs split out
