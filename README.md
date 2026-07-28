@@ -362,6 +362,60 @@ c3 access check secrets/key.txt               # probe: verdict + matched rule
 Full documentation: [`cli/guide/access.html`](cli/guide/access.html)
 — open it in the app at `/guide/access.html`.
 
+### Mask Guard (v2.63.0)
+
+Access Guard answers *may the agent touch this path?* **Mask Guard** answers a
+different question — *what should it see when it does?* A third verdict,
+`mask`, sits between `deny` and `read_only`: matching files stay visible and
+searchable, but every byte the agent receives comes from a deterministic,
+materialized, **read-only** view. Your file is never modified.
+
+```bash
+c3 access mask add "conf/**"     --preset redact_secrets
+c3 access mask add "data/*.csv"  --preset sample_rows --params "count=20,strategy=first"
+c3 access mask add "people.csv"  --preset redact_columns --params "columns=email,name"
+c3 access mask add "vendor/**"   --preset signatures_only
+
+c3 access mask preview data/people.csv   # exactly what the agent sees
+c3 access mask activate                  # purge pre-mask artifacts, build views
+```
+
+```diff
+- AWS_KEY = "AKIAIOSFODNN7EXAMPLE"          # your file
++ AWS_KEY = "«c3:redacted:aws_access_key»"  # what the agent sees
+```
+
+- **Four deterministic presets, no LLM in the read path.**
+  `redact_secrets`, `redact_columns` (salted one-way pseudonyms — the same
+  value always maps to the same pseudonym, so joins and cardinality survive
+  with no reverse dictionary to steal), `sample_rows`, and `signatures_only`
+  (which doubles as context compression). The same file renders *identically*
+  on every read and through every tool, so an agent can't reconstruct the
+  original by differencing surfaces.
+- **Masked means read-only, always.** An edit written against a transformed
+  file is expressed in transformed coordinates — cropped rows have no inverse,
+  and a half-copied placeholder would corrupt the one file you protected.
+  Placeholders are spelled `«c3:redacted:kind»`: invalid in every supported
+  language, so one reaching a real file trips a linter instead of shipping.
+- **Adding a rule starts a transaction.** Caches, the search index, file
+  memory and auto-memory facts still hold pre-mask content, so activation
+  purges them, then builds and validates every view. Until it completes, every
+  surface says masking is *not* in effect.
+- **Protected Mode.** The rendered output is re-scanned for secrets; anything
+  that survived turns the read into a loud refusal instead of a quiet partial
+  leak.
+- **Block, don't post-sanitize.** `c3_shell`, `c3_validate`, `c3_impact`,
+  `c3_filter` and `c3_delegate` refuse over masked paths. Filtering shell
+  output could strip a secret but could never reconstruct a crop — it would be
+  a guarantee C3 can't make.
+- **Honest coverage:** the real bytes stay on disk, so editors, raw shells,
+  non-Claude agents and git still see them. Mask Guard is context hygiene,
+  not containment.
+
+Full documentation: [`cli/guide/masking.html`](cli/guide/masking.html)
+— open it in the app at `/guide/masking.html`. Visual explainer:
+[`artifacts/mask-guard-explainer.html`](artifacts/mask-guard-explainer.html).
+
 ### Jira — Cloud + Data Center (v2.56.0)
 
 `c3_jira` connects to Jira Cloud (REST v3, email + API token) or self-hosted

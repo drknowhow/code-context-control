@@ -1,0 +1,470 @@
+<title>Mask Guard — what it does</title>
+
+<style>
+  :root {
+    --paper:      #f6f7f9;
+    --surface:    #ffffff;
+    --surface-2:  #eef1f5;
+    --ink:        #12161c;
+    --ink-soft:   #4a5361;
+    --ink-faint:  #7c8797;
+    --rule:       #dde2e9;
+    --mask:       #1a6fc4;
+    --mask-soft:  #1a6fc41f;
+    --withheld:   #6b7684;
+    --refuse:     #a8452c;
+    --refuse-soft:#a8452c17;
+    --keep:       #2f7051;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 66ch;
+    --step: clamp(1rem, 0.6rem + 0.9vw, 1.5rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #0d1117;
+      --surface:    #141a22;
+      --surface-2:  #1b232d;
+      --ink:        #e8edf4;
+      --ink-soft:   #a3aebd;
+      --ink-faint:  #6f7b8b;
+      --rule:       #253040;
+      --mask:       #4da6ff;
+      --mask-soft:  #4da6ff1f;
+      --withheld:   #8b95a4;
+      --refuse:     #e08265;
+      --refuse-soft:#e0826518;
+      --keep:       #6cc294;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0d1117;
+    --surface:    #141a22;
+    --surface-2:  #1b232d;
+    --ink:        #e8edf4;
+    --ink-soft:   #a3aebd;
+    --ink-faint:  #6f7b8b;
+    --rule:       #253040;
+    --mask:       #4da6ff;
+    --mask-soft:  #4da6ff1f;
+    --withheld:   #8b95a4;
+    --refuse:     #e08265;
+    --refuse-soft:#e0826518;
+    --keep:       #6cc294;
+  }
+  :root[data-theme="light"] {
+    --paper:      #f6f7f9;
+    --surface:    #ffffff;
+    --surface-2:  #eef1f5;
+    --ink:        #12161c;
+    --ink-soft:   #4a5361;
+    --ink-faint:  #7c8797;
+    --rule:       #dde2e9;
+    --mask:       #1a6fc4;
+    --mask-soft:  #1a6fc41f;
+    --withheld:   #6b7684;
+    --refuse:     #a8452c;
+    --refuse-soft:#a8452c17;
+    --keep:       #2f7051;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2rem) 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--step) * 2.4);
+  }
+
+  .prose { max-width: var(--measure); display: flex; flex-direction: column; gap: 0.9em; }
+  .prose p { margin: 0; }
+
+  h1, h2, h3 { margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
+  h1 { font-size: clamp(2rem, 1.3rem + 2.6vw, 3rem); font-weight: 720; line-height: 1.08; }
+  h2 { font-size: clamp(1.25rem, 1.05rem + 0.7vw, 1.6rem); font-weight: 660; }
+  h3 { font-size: 1rem; font-weight: 640; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ink-faint);
+  }
+
+  .lede { font-size: clamp(1.05rem, 0.98rem + 0.35vw, 1.2rem); color: var(--ink-soft); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.875em; }
+  .prose code, li code {
+    background: var(--surface-2);
+    padding: 0.12em 0.38em;
+    border-radius: 4px;
+  }
+
+  strong { font-weight: 640; color: var(--ink); }
+
+  section { display: flex; flex-direction: column; gap: var(--step); }
+
+  /* ── the before/after pair: the page's central device ── */
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  @media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
+
+  .pane { background: var(--surface); display: flex; flex-direction: column; min-width: 0; }
+  .pane-head {
+    display: flex; align-items: baseline; gap: 0.6rem;
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.13em;
+    color: var(--ink-faint);
+  }
+  .pane-after .pane-head { color: var(--mask); background: var(--mask-soft); }
+  .pane pre {
+    margin: 0;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.75;
+    tab-size: 2;
+  }
+  .tok-real     { color: var(--refuse); }
+  .tok-fake     { color: var(--mask); }
+  .tok-withheld { color: var(--withheld); font-style: italic; }
+  .tok-keep     { color: var(--keep); }
+  .tok-dim      { color: var(--ink-faint); }
+
+  .caption {
+    font-size: 0.86rem;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+  }
+  .caption b { color: var(--ink); font-weight: 620; }
+
+  /* ── preset cards ── */
+  .presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); gap: 1px;
+             background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .preset { background: var(--surface); padding: 1.05rem 1.1rem; display: flex; flex-direction: column; gap: 0.45rem; }
+  .preset .name { font-family: var(--mono); font-size: 0.84rem; color: var(--mask); font-weight: 600; }
+  .preset .what { font-size: 0.88rem; color: var(--ink-soft); line-height: 1.5; }
+  .preset .args { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-faint); margin-top: auto; padding-top: 0.3rem; }
+
+  /* ── verdict ladder ── */
+  .ladder { display: flex; flex-direction: column; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .rung { display: grid; grid-template-columns: 128px 1fr; gap: 1rem; padding: 0.85rem 1.1rem; background: var(--surface); align-items: baseline; }
+  .rung + .rung { border-top: 1px solid var(--rule); }
+  .rung .v { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; }
+  .rung .d { font-size: 0.9rem; color: var(--ink-soft); }
+  .v-deny { color: var(--refuse); }
+  .v-mask { color: var(--mask); }
+  .v-ro   { color: var(--ink-soft); }
+  @media (max-width: 560px) { .rung { grid-template-columns: 1fr; gap: 0.2rem; } }
+
+  /* ── callout ── */
+  .note {
+    border-left: 3px solid var(--mask);
+    background: var(--mask-soft);
+    padding: 0.95rem 1.15rem;
+    border-radius: 0 8px 8px 0;
+    max-width: var(--measure);
+    display: flex; flex-direction: column; gap: 0.6em;
+  }
+  .note p { margin: 0; font-size: 0.93rem; }
+  .note-warn { border-left-color: var(--refuse); background: var(--refuse-soft); }
+
+  .cmds {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    overflow-x: auto;
+  }
+  .cmds pre { margin: 0; font-family: var(--mono); font-size: 0.8rem; line-height: 1.95; }
+  .cmt { color: var(--ink-faint); }
+
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.5em; }
+  li { padding-left: 0.15rem; }
+
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+  footer { font-size: 0.85rem; color: var(--ink-faint); max-width: var(--measure); }
+  footer code { font-family: var(--mono); }
+
+  a { color: var(--mask); }
+  a:focus-visible, .pane:focus-visible { outline: 2px solid var(--mask); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+  <header class="prose">
+    <span class="eyebrow">C3 v2.63.0 · Mask Guard</span>
+    <h1>Show the file. Control what it says.</h1>
+    <p class="lede">
+      Access Guard answers <em>may the agent touch this path?</em>
+      Mask Guard answers a different question — <strong>what should it see when it does?</strong>
+    </p>
+    <p>
+      A masked file stays visible, searchable, and useful. But every byte the AI receives comes
+      from a transformed copy built once and stored outside your repo. Your actual file is never
+      touched, never moved, never rewritten.
+    </p>
+  </header>
+
+  <hr>
+
+  <!-- The hero: masking demonstrated, not described. All three panes are real
+       output from the v2.63.0 verification run. -->
+  <section>
+    <div class="prose">
+      <span class="eyebrow">What it actually looks like</span>
+      <h2>Three files, three kinds of protection</h2>
+    </div>
+
+    <div class="pair">
+      <div class="pane">
+        <div class="pane-head">your file — customers.csv</div>
+<pre>id,name,email,plan
+1,<span class="tok-real">Ann Chen,ann@acme.io</span>,pro
+2,<span class="tok-real">Bo Diaz,bo@acme.io</span>,free
+3,<span class="tok-real">Ann Chen,ann@acme.io</span>,pro</pre>
+      </div>
+      <div class="pane pane-after">
+        <div class="pane-head">what the AI sees</div>
+<pre>id,name,email,plan
+1,<span class="tok-fake">name_ed4835db4d,email_8a3b58ddf6</span>,pro
+2,<span class="tok-fake">name_198f140406,email_35eb9269cd</span>,free
+3,<span class="tok-fake">name_ed4835db4d,email_8a3b58ddf6</span>,pro</pre>
+      </div>
+    </div>
+    <p class="caption">
+      <b>Look at rows 1 and 3.</b> Both are Ann Chen, and both get the same pseudonym — so joins,
+      duplicates and cardinality all still work. The AI can reason about the data's shape without
+      ever holding a real name. The mapping is one-way and salted per project; there is no reverse
+      dictionary anywhere for someone to steal.
+    </p>
+
+    <div class="pair">
+      <div class="pane">
+        <div class="pane-head">your file — settings.py</div>
+<pre>AWS_KEY = "<span class="tok-real">AKIAIOSFODNN7EXAMPLE</span>"
+DB_PASSWORD = "<span class="tok-real">hunter2-long-secret</span>"
+DEBUG = True</pre>
+      </div>
+      <div class="pane pane-after">
+        <div class="pane-head">what the AI sees</div>
+<pre>AWS_KEY = "<span class="tok-withheld">«c3:redacted:aws_access_key»</span>"
+DB_PASSWORD = <span class="tok-withheld">«c3:redacted:secret»</span>
+<span class="tok-keep">DEBUG = True</span></pre>
+      </div>
+    </div>
+    <p class="caption">
+      The secrets are gone but the <em>structure</em> survives — the agent still knows those settings
+      exist and that <code>DEBUG</code> is on. Those placeholders are spelled with guillemets on
+      purpose: <b>they're not valid syntax in any language</b>, so if one ever ended up in a real
+      file, your linter trips instead of the value getting quietly committed.
+    </p>
+
+    <div class="pair">
+      <div class="pane">
+        <div class="pane-head">your file — vendor/sdk.py</div>
+<pre>def connect(host, port=443):
+    <span class="tok-real">secret_sauce = compute(host)</span>
+    <span class="tok-real">return secret_sauce * 2</span>
+class Client:
+    def send(self, payload):
+        <span class="tok-real">return payload</span></pre>
+      </div>
+      <div class="pane pane-after">
+        <div class="pane-head">what the AI sees</div>
+<pre>def connect(host, port=443)
+
+class Client
+  def send(self, payload)</pre>
+      </div>
+    </div>
+    <p class="caption">
+      Not everything you mask is a secret. A vendored SDK served as signatures only is <b>also a
+      large token saving</b> — the agent gets the API surface it needs to call things correctly,
+      and none of the body text it was going to waste context on.
+    </p>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="prose">
+      <span class="eyebrow">The four transforms</span>
+      <h2>Pick a preset, point it at a glob</h2>
+      <p>
+        There's no scripting language and no AI in the read path. Every transform is a named,
+        versioned function, so the same file renders <em>identically</em> on every read and through
+        every tool — which is what stops an agent from reconstructing the original by comparing
+        one tool's output against another's.
+      </p>
+    </div>
+
+    <div class="presets">
+      <div class="preset">
+        <span class="name">redact_secrets</span>
+        <span class="what">Finds AWS / GitHub / OpenAI / Slack keys, JWTs, private keys, connection
+          strings and password assignments — plus a high-entropy sweep — and replaces the values.
+          Surrounding code stays readable.</span>
+        <span class="args">no arguments</span>
+      </div>
+      <div class="preset">
+        <span class="name">redact_columns</span>
+        <span class="what">Swaps named CSV/TSV columns for stable pseudonyms. Same value always maps
+          to the same pseudonym, so relationships in the data survive intact.</span>
+        <span class="args">columns=email,full_name</span>
+      </div>
+      <div class="preset">
+        <span class="name">sample_rows</span>
+        <span class="what">Keeps the header plus N rows, and states how many were withheld — so the
+          agent can't mistake a sample for the whole dataset.</span>
+        <span class="args">count=20 · strategy=first|last</span>
+      </div>
+      <div class="preset">
+        <span class="name">signatures_only</span>
+        <span class="what">Declarations and signatures, no bodies. Reuses C3's existing compressor,
+          so it doubles as context compression.</span>
+        <span class="args">no arguments</span>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="prose">
+      <span class="eyebrow">Where it sits</span>
+      <h2>One more rung on the ladder you already had</h2>
+    </div>
+    <div class="ladder">
+      <div class="rung">
+        <span class="v v-deny">deny</span>
+        <span class="d">Invisible. No read, no write, not even listed in search results.</span>
+      </div>
+      <div class="rung">
+        <span class="v v-mask">mask</span>
+        <span class="d">Visible and searchable, but transformed — and always read-only. <em>New.</em></span>
+      </div>
+      <div class="rung">
+        <span class="v v-ro">read_only</span>
+        <span class="d">Fully readable, but the agent can't change it.</span>
+      </div>
+    </div>
+    <p class="caption">
+      When more than one applies, the strictest wins: <code>deny</code> beats <code>mask</code>
+      beats <code>read_only</code>.
+    </p>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="prose">
+      <span class="eyebrow">Three things worth knowing</span>
+      <h2>The parts that might surprise you</h2>
+    </div>
+
+    <div class="note">
+      <h3>Masked always means read-only. There's no override.</h3>
+      <p>
+        The agent read a <em>transformed</em> file, so any edit it proposes is written in transformed
+        coordinates. Cropped rows have no way back. It might invent an identifier that doesn't exist
+        in your file. A half-copied placeholder would get written verbatim — silently corrupting the
+        one file you cared enough to protect. Translating those edits back "usually works", and that
+        is precisely what makes it dangerous.
+      </p>
+    </div>
+
+    <div class="note">
+      <h3>Adding a rule isn't enough — you have to activate it.</h3>
+      <p>
+        Before you masked that file, C3 had already read it. Its content sits in the compression
+        cache, the search index, file memory, and possibly in auto-memory facts. A new rule doesn't
+        retroactively clean any of that, so activation purges all of it, then builds and validates
+        every view. Until that finishes, the UI banner and <code>c3 access mask status</code> both
+        tell you masking is <em>not</em> in effect yet.
+      </p>
+      <p>
+        One-time cost: facts written before v2.63.0 have no record of which file they came from, so
+        they can't be proven clean. Your first activation in a project clears them. Anything you
+        stored by hand is untouched.
+      </p>
+    </div>
+
+    <div class="note note-warn">
+      <h3>This is context hygiene, not containment.</h3>
+      <p>
+        The real bytes never leave your disk. Your editor sees them, a raw shell sees them, git sees
+        them, and any non-C3 agent sees them. Mask Guard governs what reaches the model
+        <em>through C3</em> — and it says so plainly in the coverage matrix rather than implying
+        more. If a file must never be readable at all, that's still <code>deny</code>.
+      </p>
+    </div>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="prose">
+      <span class="eyebrow">Using it</span>
+      <h2>Five commands</h2>
+      <p>
+        Everything here is also in the UI: <strong>Access Guard</strong> tab → <em>+ Add mask</em>,
+        with a live before/after preview on the path probe so you can see exactly what the agent
+        will see before you commit the rule.
+      </p>
+    </div>
+
+    <div class="cmds">
+<pre><span class="cmt"># add a rule (--global applies it to every project)</span>
+c3 access mask add "data/**" --preset sample_rows --params "count=20,strategy=first"
+
+<span class="cmt"># see what the agent will see, on your real file</span>
+c3 access mask preview data/customers.csv
+
+<span class="cmt"># purge pre-mask caches and build the views — required</span>
+c3 access mask activate
+
+<span class="cmt"># is masking actually in effect right now?</span>
+c3 access mask status
+
+<span class="cmt"># stop masking (the agent gets the real contents back)</span>
+c3 access mask rm "data/**"</pre>
+    </div>
+  </section>
+
+  <hr>
+
+  <footer>
+    Full guide in the app at <code>/guide/masking.html</code> — per-tool behaviour, troubleshooting,
+    and the complete list of honest limits. Design rationale, the leak-channel analysis, and the
+    sibling-review reconciliation are in <code>docs/mask-guard.md</code>.
+  </footer>
+
+</div>
