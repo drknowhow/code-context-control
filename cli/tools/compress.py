@@ -117,11 +117,27 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
     """Compress a single file."""
     # Access Guard: read verdict up front — covers the map/dense_map paths
     # that never reach compressor.compress_file (docs/access-guard.md §3).
-    denial = access_guard.check(file_path, "read", svc.project_path)
-    if denial:
+    _verdict = access_guard.verdict(file_path, "read", svc.project_path)
+    if _verdict.denial:
         return finalize("c3_compress", {"file_path": file_path, "mode": mode},
-                        access_guard.refusal(denial, file_path, "read"),
+                        access_guard.refusal(_verdict.denial, file_path, "read"),
                         "access-denied")
+    # Mask Guard: the map/dense_map modes build their output through
+    # file_memory, which reads the RAW file — so a masked path must never
+    # reach them. Other modes fall through to compressor.compress_file, which
+    # compresses the materialized view (docs/mask-guard.md §6, row 7).
+    if _verdict.masked and mode in ("map", "dense_map"):
+        from services import mask_mirror
+        try:
+            view = mask_mirror.render_for_path(file_path, svc.project_path)
+        except mask_mirror.MaskUnavailable as exc:
+            return finalize("c3_compress",
+                            {"file_path": file_path, "mode": mode},
+                            f"{access_guard.TAG_MASK_UNSUPPORTED} {exc.message}",
+                            "mask-unavailable")
+        return finalize("c3_compress", {"file_path": file_path, "mode": mode},
+                        view.with_header(file_path), f"masked:{view.preset}")
+
     full = Path(svc.project_path) / file_path
     if not full.exists():
         full = Path(file_path)
@@ -192,9 +208,21 @@ def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
         try:
             # Access Guard: per-member read verdict — the S1 refusal becomes
             # this member's batch line; other members are still served.
-            denial = access_guard.check(fp, "read", svc.project_path)
-            if denial:
-                return fp, None, None, None, access_guard.refusal(denial, fp, "read")
+            _v = access_guard.verdict(fp, "read", svc.project_path)
+            if _v.denial:
+                return fp, None, None, None, access_guard.refusal(_v.denial, fp,
+                                                                  "read")
+            if _v.masked:
+                # Serve this member from its view; map modes would otherwise
+                # build from raw bytes via file_memory.
+                from services import mask_mirror
+                try:
+                    view = mask_mirror.render_for_path(fp, svc.project_path)
+                except mask_mirror.MaskUnavailable as exc:
+                    return fp, None, None, None, \
+                        f"{access_guard.TAG_MASK_UNSUPPORTED} {exc.message}"
+                text = view.with_header(fp)
+                return fp, text, None, count_tokens(text), None
             full = Path(svc.project_path) / fp
             if not full.exists():
                 full = Path(fp)

@@ -21,20 +21,26 @@ def _read_denied(path, svc) -> bool:
     search output (R2 deny-ENUMERATE) and never consume result slots.
     """
     try:
-        return access_guard.check(path, "read", svc.project_path) is not None
+        # Masked paths are NOT dropped: masking exposes a file in transformed
+        # form, so it stays discoverable. Its indexed content is the view
+        # (services/indexer._masked_content), so snippets are already safe.
+        v = access_guard.verdict(path, "read", svc.project_path)
+        return v.denial is not None
     except Exception:
         return True
 
 
 def _with_access_footer(resp: str, svc) -> str:
-    """Append the S4 limitation notice exactly once (self-gates on rules)."""
-    try:
-        footer = access_guard.search_footer(svc.project_path)
-    except Exception:
-        footer = ""
-    if footer and resp and footer not in resp:
-        return resp + "\n" + footer
-    return resp
+    """Append the S4/mask limitation notices exactly once (self-gating)."""
+    footers = []
+    for fn in (access_guard.search_footer, access_guard.mask_footer):
+        try:
+            footer = fn(svc.project_path)
+        except Exception:
+            footer = ""
+        if footer and resp and footer not in resp:
+            footers.append(footer)
+    return resp + "\n" + "\n".join(footers) if footers else resp
 
 
 def _approx_tokens(text: str) -> int:
@@ -113,8 +119,15 @@ def _exact_search(query, top_k, max_tokens, svc, finalize):
         full = Path(svc.project_path) / rel
         if not full.exists():
             return None
+        # Mask Guard: regex-scan the VIEW, never the raw bytes. An exact
+        # search that matched real content and printed it verbatim would be a
+        # complete bypass of the mask (docs/mask-guard.md §6).
         try:
-            lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
+            from services.indexer import _masked_content
+            text = _masked_content(full, svc.project_path)
+            if text is None:
+                return None
+            lines = text.splitlines()
         except Exception:
             return None
         file_matches = []

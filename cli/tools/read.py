@@ -123,12 +123,37 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     # before existence so probes get the same refusal whether or not the
     # target exists (R2). Batch members hit this via the per-file dispatch,
     # so allowed members are served and denied ones carry the S1 line inline.
-    denial = access_guard.check(file_path, "read", svc.project_path)
-    if denial:
-        resp = access_guard.refusal(denial, file_path, "read")
+    _verdict = access_guard.verdict(file_path, "read", svc.project_path)
+    if _verdict.denial:
+        resp = access_guard.refusal(_verdict.denial, file_path, "read")
         if finalize is None:
             return resp
         return finalize("c3_read", {"file": file_path}, resp, "access-denied")
+
+    # Mask Guard: serve the materialized view instead of the file's bytes
+    # (docs/mask-guard.md §2). Line/symbol slicing is deliberately NOT applied
+    # to a masked view — line numbers in a transformed file do not correspond
+    # to the original, and handing the agent coordinates that look real is
+    # exactly the class of quiet wrongness masking exists to prevent.
+    if _verdict.masked:
+        from services import mask_mirror
+        try:
+            view = mask_mirror.render_for_path(file_path, svc.project_path)
+        except mask_mirror.MaskUnavailable as exc:
+            resp = f"{access_guard.TAG_MASK_UNSUPPORTED} {exc.message}"
+            if finalize is None:
+                return resp
+            return finalize("c3_read", {"file": file_path}, resp,
+                            "mask-unavailable")
+        resp = view.with_header(file_path)
+        if lines is not None or symbols:
+            resp += ("\n\n[c3-mask:note] line and symbol selection was "
+                     "ignored: positions in a transformed view do not map to "
+                     "the original file. The whole view is shown.")
+        if finalize is None:
+            return resp
+        return finalize("c3_read", {"file": file_path}, resp,
+                        f"masked:{view.preset}")
 
     full = Path(svc.project_path) / file_path
     if not full.exists():

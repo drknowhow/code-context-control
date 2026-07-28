@@ -16,6 +16,27 @@ from core import count_tokens
 from services.scanner import SKIP_DIRS, iter_files
 
 
+def _masked_content(fpath, project_path):
+    """Index-time content for one file: the masked view when masked, else raw.
+
+    Returns ``None`` when the path is masked but its view cannot be produced —
+    the caller must skip the file rather than fall back to raw bytes.
+    """
+    from services import access_guard, mask_mirror
+    try:
+        v = access_guard.verdict(str(fpath), "read", str(project_path))
+    except Exception:
+        return None
+    if v.denial:
+        return None
+    if not v.masked:
+        return fpath.read_text(errors="replace")
+    try:
+        return mask_mirror.render_for_path(fpath, project_path).text
+    except Exception:
+        return None
+
+
 class CodeIndex:
     """TF-IDF based code search index with structural awareness."""
 
@@ -137,6 +158,16 @@ class CodeIndex:
                               _p=self.exclude_prefixes):
                 return _c(parts, _p)
 
+        # Mask Guard: gate the per-file verdict on a single cheap check, so a
+        # project with no mask rules pays nothing for this (docs/mask-guard.md
+        # §2). When rules exist, masked files are indexed FROM THE VIEW — the
+        # index must never hold content the agent is not allowed to read.
+        try:
+            from services import access_guard as _ag
+            _mask_active = _ag.has_mask_rules(str(self.project_path))
+        except Exception:
+            _mask_active = False
+
         for fpath in iter_files(self.project_path, exts=self.code_exts,
                                 skip_dirs=self.skip_dirs,
                                 exclude_parts=exclude_parts,
@@ -148,7 +179,15 @@ class CodeIndex:
                 continue
 
             try:
-                content = fpath.read_text(errors='replace')
+                if _mask_active:
+                    content = _masked_content(fpath, self.project_path)
+                    if content is None:
+                        # Masked but unrenderable — indexing the raw bytes
+                        # would put pre-mask content into search snippets
+                        # (docs/mask-guard.md §6, row 2). Skip it instead.
+                        continue
+                else:
+                    content = fpath.read_text(errors='replace')
             except Exception:
                 continue
 

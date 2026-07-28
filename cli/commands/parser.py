@@ -483,6 +483,48 @@ def build_parser(version: str, parse_cli_ide_arg):
                           help="Operation to evaluate (default: read)")
     ac_check.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
+    # ── Mask Guard (v2.63.0, docs/mask-guard.md) ────────────────────────
+    # Masking exposes a path but transforms what the agent sees. Rules are
+    # human-only, like the rest of Access Guard.
+    ac_mask = access_subs.add_parser(
+        "mask", help="Mask Guard — expose a path but transform what the agent sees")
+    mask_subs = ac_mask.add_subparsers(dest="mask_cmd")
+
+    am_add = mask_subs.add_parser("add", help="Add or replace a mask rule")
+    am_add.add_argument("glob", help="POSIX glob, e.g. 'data/**' or '*.csv'")
+    am_add.add_argument("--preset", required=True,
+                        choices=["redact_secrets", "redact_columns",
+                                 "sample_rows", "signatures_only"],
+                        help="Deterministic transform applied to matching files")
+    am_add.add_argument("--params", default="",
+                        help="Preset params, e.g. 'count=20,strategy=first' "
+                             "or 'columns=email,name'")
+    am_add.add_argument("--global", dest="use_global", action="store_true",
+                        help="Store in the global scope (~/.c3)")
+    am_add.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    am_rm = mask_subs.add_parser("rm", help="Remove a mask rule")
+    am_rm.add_argument("glob", help="The stored glob to remove")
+    am_rm.add_argument("--global", dest="use_global", action="store_true",
+                       help="Remove from the global scope (~/.c3)")
+    am_rm.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    am_status = mask_subs.add_parser(
+        "status", help="Activation state — whether masking is actually in effect")
+    am_status.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    am_act = mask_subs.add_parser(
+        "activate",
+        help="Purge pre-mask derived artifacts, then build + validate views")
+    am_act.add_argument("--reindex", action="store_true",
+                        help="Also rebuild the code index in the same pass")
+    am_act.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    am_prev = mask_subs.add_parser(
+        "preview", help="Show exactly what the agent sees for one path")
+    am_prev.add_argument("target", help="Path to preview (absolute or project-relative)")
+    am_prev.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
     # ── Oracle Discovery API (v2.32.0) ──────────────────────────────────
     p_oracle = subparsers.add_parser(
         "oracle",

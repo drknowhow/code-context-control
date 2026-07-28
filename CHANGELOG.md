@@ -4,6 +4,105 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.63.0] - 2026-07-28
+
+### Added — Mask Guard: expose a path, control what the agent sees
+
+Access Guard answers *may the agent touch this path?* Mask Guard answers
+*what should it see when it does?* A third verdict, `mask`, sits between
+`deny` and `read_only`: matching files stay visible and searchable, but every
+byte the agent receives comes from a deterministic, materialized,
+**read-only** view. The real file is never modified. Designed from two prior
+local systems (SafeMirror's classify→policy→transform→validate pipeline and
+Table Parser's reversible column masking) and reviewed by both federation
+siblings; Cod's review overturned the original transform-on-read architecture
+in favour of materialized artifacts. Full rationale, leak-channel analysis and
+residual risks: `docs/mask-guard.md`.
+
+The governing distinction: `deny` is a **predicate** — cheap to evaluate
+anywhere, and its failure mode is no output. `mask` is a **function** — it
+must run exactly once per byte-to-text boundary, must be deterministic, and
+its failure mode is *wrong output that looks right*. Everything below follows
+from that.
+
+- **`services/access_guard.py`** — `access.mask` schema
+  (`[{glob, preset, params}]`), precedence `deny > mask > read_only`, and a
+  new `verdict()` returning `allowed | masked | read_only | denied`.
+  `check()` **fails closed on masked reads**, so any surface not taught to
+  render a view refuses rather than leaking raw bytes. Overlapping mask rules
+  that disagree on preset/params are a config error, not a precedence puzzle —
+  rule order can never affect output. Preset names and param schemas are
+  validated in the evaluator so the hook subprocess can reject bad config
+  without importing the transform engines.
+- **`services/mask_presets.py`** — four deterministic, versioned transforms,
+  no LLM anywhere in the read path: `redact_secrets` (pattern library for AWS
+  / GitHub / OpenAI / Slack / Google keys, JWTs, PEM blocks, connection
+  strings and `*_PASSWORD=` assignments, plus a Shannon-entropy sweep),
+  `redact_columns` (salted one-way pseudonyms — same value maps to the same
+  pseudonym so joins, uniqueness and cardinality survive, with no reverse map
+  to protect), `sample_rows`, and `signatures_only` (reuses the compressor).
+  Placeholders are spelled `«c3:redacted:kind»` — deliberately invalid in
+  every supported language, so one that ever reached a real file trips a
+  linter instead of being silently committed.
+- **Protected Mode** — after rendering, the *output* is re-scanned for secret
+  material. Anything that survived turns the read into a loud refusal instead
+  of a quiet partial leak.
+- **`services/mask_mirror.py`** — content-addressed views under
+  `~/.c3/masked/<project>/views/<view-hash>` with a manifest, where
+  `view-hash = hash(source + preset + params + transformer_version)`. A stale
+  view is regenerated or the read refuses; a stale twin is never served.
+  Atomic same-directory `os.replace` for Windows, byte-faithful artifact I/O
+  (universal-newline translation would have made a CRLF view differ between a
+  fresh render and a cache hit — a differencing oracle), and GC.
+- **`services/mask_activation.py`** — adding a rule is a transaction, not a
+  config edit: `pending → purge derived artifacts → build + validate views →
+  rebuild indexes → active`. Purges the compression cache, search index, repo
+  map, file memory and provenance-matched facts. Until it completes, the UI,
+  CLI and status line all say masking is **not** in effect.
+- **Fact provenance (`services/memory.py`, `services/auto_memory.py`)** —
+  `remember()` now records `source_paths`, three-state by design: `None`
+  (unknown), `[]` (known to have no file source), or the derived paths. The
+  auto-memory extractors thread it through. Facts written before this release
+  have unknown provenance and cannot be proven clean, so the first activation
+  in a project purges them wholesale. This was the ship-blind failure Cod
+  named, and it was live in the codebase: facts derived from file content
+  carried session provenance only.
+- **Surface behaviour** — `c3_read` / `c3_compress` / `c3_search` serve the
+  view (masked files are indexed *from* the view, so they stay searchable);
+  `c3_edit`, `c3_shell` content reads, `c3_validate`, `c3_impact`,
+  `c3_filter`, `c3_delegate` and native Read/Grep/Glob **refuse**. Post-
+  filtering shell stdout is deliberately not offered: it could strip a secret
+  but could never reconstruct a crop, so it would read as a guarantee C3
+  cannot make.
+- **Honesty contract** — loud about evidence quality, quiet about policy.
+  Every transformed payload carries `[c3-mask:transformed] view=<class>` with
+  a coarse class (`redacted` / `sampled` / `structure_only`), because *how* a
+  view is incomplete changes which conclusions are safe. Search gains
+  `[c3-mask:limited]`. New stable tags: `[c3-mask:transformed]`,
+  `[c3-mask:limited]`, `[c3-mask:unsupported]`.
+- **Human surfaces** — Access tab gains a Masking section, an activation
+  banner that refuses to imply protection it hasn't established, and a
+  **live before/after preview** on the path probe: see exactly what the agent
+  will see, on your real file, before committing the rule. New
+  `POST /api/access/mask`, `DELETE /api/access/mask`,
+  `POST /api/access/mask/activate`, `POST /api/access/preview`; new
+  `c3 access mask add|rm|status|activate|preview`. All mutations remain
+  human-only and ledger-logged.
+- **Docs** — new `cli/guide/masking.html` (presets, activation, why masked
+  means read-only, per-tool behaviour, honest limits, troubleshooting) linked
+  from every guide page; `docs/mask-guard.md` frozen with the sibling-review
+  reconciliation recorded.
+- **Tests** — 81 new across `test_mask_guard.py`, `test_mask_surfaces.py` and
+  `test_mask_routes.py`, including a wiring meta-test that fails CI if a
+  content surface stops consulting Mask Guard. Suite: 1627 passing.
+
+### Changed
+
+- `c3 access list` and `c3 access check` now report mask rules and the
+  `masked` verdict; the coverage matrix states the masking residual plainly —
+  the real bytes stay on disk, so editors, raw shells, non-Claude agents and
+  git still see them. Mask Guard is context hygiene, not containment.
+
 ## [2.62.0] - 2026-07-27
 
 ### Added — Access Guard: path-level read/write prevention for agents
