@@ -24,7 +24,7 @@ from pathlib import Path
 from core import count_tokens
 from services.e2e_evaluator import EvalScore, Evaluator
 from services.e2e_tasks import DIFFICULTY_WEIGHTS, E2ETask, build_prompt
-from services.win_subprocess import harden_win_argv
+from services.win_subprocess import harden_win_argv, is_batch_shim
 
 
 def _unicode_safe() -> bool:
@@ -235,10 +235,16 @@ class CLIProvider:
 
         t0 = time.perf_counter()
         try:
+            # Batch-shim providers get the prompt on stdin; a multi-line argument
+            # would be truncated at the first newline by cmd.exe (see
+            # prompt_via_stdin). Everything else keeps stdin closed so a CLI that
+            # waits on input fails fast instead of hanging to the timeout.
+            stdin_kwargs = ({"input": prompt} if self.prompt_via_stdin()
+                            else {"stdin": subprocess.DEVNULL})
             result = subprocess.run(
                 harden_win_argv(cmd), capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 env=env, encoding="utf-8", errors="replace",
-                stdin=subprocess.DEVNULL,
+                **stdin_kwargs,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
             response.latency_ms = (time.perf_counter() - t0) * 1000
@@ -262,9 +268,35 @@ class CLIProvider:
 
         return response
 
+    def prompt_via_stdin(self) -> bool:
+        """True when the prompt must be piped rather than passed as an argument.
+
+        On Windows, ``claude`` is a real ``.EXE`` but ``gemini``/``codex`` resolve
+        to ``.CMD`` shims, so Windows launches them through an implicit
+        ``cmd.exe /c <command-line>``. A batch command line **terminates at the
+        first newline**, and unlike the quote desync that :func:`harden_win_argv`
+        solves, no amount of quoting can protect a newline — cmd.exe reads it as
+        an end-of-command before any argv parser sees it.
+
+        Benchmark prompts are multi-line ("...cite file paths.\\n\\nQuestion: ..."),
+        so every codex/gemini call silently received only the leading instruction
+        paragraph and never the actual question. The models dutifully replied
+        "Understood. What should I inspect?" and scored ~0 against a baseline that
+        was truncated identically — a measurement of nothing, reported as a result.
+
+        Piping keeps the prompt off the command line entirely, which is immune to
+        both failure modes.
+        """
+        return is_batch_shim(self.executable or self.name)
+
     def _build_command(self, prompt: str, with_c3: bool) -> list[str]:
-        """Build CLI command for non-interactive execution."""
+        """Build CLI command for non-interactive execution.
+
+        When :meth:`prompt_via_stdin` is True the prompt is omitted here and fed
+        to the process's stdin by :meth:`run` instead.
+        """
         exe = self.executable or self.name
+        piped = self.prompt_via_stdin()
 
         if self.name == "claude":
             cmd = [exe, "-p", prompt, "--output-format", "json",
@@ -279,8 +311,9 @@ class CLIProvider:
             # --approval-mode yolo: auto-approve all tool calls (required for
             # non-interactive benchmark runs; "plan" falls back to "default"
             # which prompts interactively and causes timeout).
-            cmd = [exe, "-p", prompt, "--output-format", "json",
-                   "--approval-mode", "yolo"]
+            # Piped mode: gemini reads the prompt from stdin when -p is absent.
+            cmd = [exe] if piped else [exe, "-p", prompt]
+            cmd += ["--output-format", "json", "--approval-mode", "yolo"]
             if self.model:
                 cmd += ["-m", self.model]
             if not with_c3:
@@ -289,7 +322,8 @@ class CLIProvider:
             return cmd
 
         elif self.name == "codex":
-            cmd = [exe, "exec", prompt, "--json"]
+            # `codex exec -` reads the prompt from stdin (see `codex exec --help`).
+            cmd = [exe, "exec", "-" if piped else prompt, "--json"]
             if self.model:
                 cmd += ["--model", self.model]
             if not with_c3:

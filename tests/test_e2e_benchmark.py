@@ -200,15 +200,59 @@ class TestCLIProvider(unittest.TestCase):
 
     def test_build_command_gemini(self):
         p = CLIProvider(name="gemini", executable="gemini", model="gemini-2.5-flash")
-        cmd = p._build_command("test", with_c3=True)
+        with patch("services.e2e_benchmark.is_batch_shim", return_value=False):
+            cmd = p._build_command("test", with_c3=True)
         self.assertIn("-p", cmd)
         self.assertIn("-m", cmd)
 
     def test_build_command_codex(self):
         p = CLIProvider(name="codex", executable="codex")
-        cmd = p._build_command("test", with_c3=False)
+        with patch("services.e2e_benchmark.is_batch_shim", return_value=False):
+            cmd = p._build_command("test", with_c3=False)
         self.assertIn("exec", cmd)
         self.assertIn("-c", cmd)
+
+    # ── Batch-shim (Windows .CMD) prompt delivery ──────────────────────────
+    # A batch command line terminates at the first newline, so a multi-line
+    # prompt passed as an argv element reaches the model truncated to its first
+    # paragraph — silently, with exit code 0. Quoting cannot fix this (that is a
+    # separate bug harden_win_argv handles), so the prompt must go via stdin.
+
+    def test_gemini_batch_shim_omits_prompt_argument(self):
+        p = CLIProvider(name="gemini", executable="gemini.CMD")
+        with patch("services.e2e_benchmark.is_batch_shim", return_value=True):
+            self.assertTrue(p.prompt_via_stdin())
+            cmd = p._build_command("line one\n\nQuestion: line two", with_c3=True)
+        self.assertNotIn("-p", cmd)
+
+    def test_codex_batch_shim_uses_stdin_sentinel(self):
+        p = CLIProvider(name="codex", executable="codex.CMD")
+        with patch("services.e2e_benchmark.is_batch_shim", return_value=True):
+            cmd = p._build_command("line one\n\nQuestion: line two", with_c3=True)
+        self.assertIn("exec", cmd)
+        self.assertIn("-", cmd)
+
+    def test_multiline_prompt_never_lands_in_argv_for_batch_shim(self):
+        """Regression: the truncation is silent, so assert on every provider."""
+        prompt = "Be concise, cite file paths.\n\nQuestion: what does foo() do?"
+        for name, exe in (("gemini", "gemini.CMD"), ("codex", "codex.CMD")):
+            with self.subTest(provider=name):
+                p = CLIProvider(name=name, executable=exe)
+                with patch("services.e2e_benchmark.is_batch_shim", return_value=True):
+                    self.assertTrue(p.prompt_via_stdin())
+                    cmd = p._build_command(prompt, with_c3=True)
+                self.assertFalse(
+                    any("\n" in arg for arg in cmd),
+                    f"{name}: newline reached argv and would be truncated by cmd.exe",
+                )
+
+    def test_native_exe_still_passes_prompt_as_argument(self):
+        """claude is a real .EXE — argv is safe there, so don't change it."""
+        p = CLIProvider(name="claude", executable="claude.EXE")
+        with patch("services.e2e_benchmark.is_batch_shim", return_value=False):
+            self.assertFalse(p.prompt_via_stdin())
+            cmd = p._build_command("multi\nline prompt", with_c3=True)
+        self.assertIn("multi\nline prompt", cmd)
 
     def test_parse_claude_json_full(self):
         """Test parsing of rich Claude JSON output."""

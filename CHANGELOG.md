@@ -4,6 +4,47 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — e2e benchmark silently truncated every prompt to `.CMD` providers
+
+Benchmark-harness only; no change to C3's runtime tools.
+
+On Windows `claude` resolves to a real `claude.EXE`, but `codex` and `gemini`
+resolve to npm `.CMD` shims, so Windows launches them through an implicit
+`cmd.exe /c <command-line>` — and **a batch command line terminates at the first
+newline**. Benchmark prompts are multi-line:
+
+```
+Use C3 MCP tools (not native Read/Grep/Glob). Be concise, cite file paths.
+
+Question: {query}
+```
+
+Everything from the blank line onward was discarded before the child process
+parsed argv. codex and gemini received only the instruction paragraph, replied
+"Understood. What should I inspect or change?", and scored ~0 — against a
+baseline truncated identically. Exit code was 0 and no error was raised, so the
+harness recorded the result as a valid measurement.
+
+This is adjacent to the ghost-file defect `services/win_subprocess.py` already
+guards, but distinct: `harden_win_argv` fixes cmd.exe *quote desync*, and no
+quoting can protect a newline. The prompt now goes over stdin whenever the
+resolved executable is a batch shim (`codex exec -`; gemini reads piped stdin
+when `-p` is absent), keeping it off the command line entirely. Native
+executables are unchanged and still receive the prompt as an argument.
+
+- `test_build_command_gemini` asserted `-p` unconditionally and passed only
+  because CI's Linux runners have no `.CMD`; it would have failed on the
+  `windows-latest` leg. It now pins the launcher mode explicitly instead of
+  inheriting it from the host PATH.
+- Added regression coverage asserting no newline ever reaches argv for a batch
+  shim, for every provider.
+
+**Historical data is affected.** Every codex/gemini e2e figure recorded on
+Windows before this fix is invalid, including the 2026-03-12 baseline, so the
+trend deltas in `.c3/e2e_benchmark/` are computed against corrupted history.
+
 ## [2.63.2] - 2026-07-28
 
 ### Changed — benchmarks re-measured, headline claim restated as a band
