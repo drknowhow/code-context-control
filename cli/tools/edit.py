@@ -22,8 +22,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from services import access_guard
-from services import agent_locks
+from services import access_guard, agent_locks
 from services import credential_store as _cs
 from services.task_store import _FileLock
 

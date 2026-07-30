@@ -438,6 +438,25 @@ producing the denial data that tells you whether Phase 3 is worth building.
      `sidebar.js`/`app.js` and REST endpoints, and it wants browser
      verification rather than being rushed into a security-adjacent PR.
 
+### A third correction, from CI
+
+`normalize_relpath` was ported from `fleetdeck/paths.py`, which assumes a
+Windows host: only drive-letter and `/mnt/` forms counted as absolute. C3 ships
+cross-platform, so on POSIX every absolute path fell through to the
+*repo-relative* branch — a lease taken as `services/router.py` was looked up as
+`tmp/xyz/services/router.py`, and the gate found nothing. Leases silently did
+not work on Linux or macOS.
+
+Same class as the Layer A sidecar bug two phases earlier: **a key computable
+two ways is not a key.** Both times the Windows dev box hid it, and both times
+CI on the other platforms caught it. The regression test asserts that the
+absolute and relative spellings of one file agree, using a real temp root —
+a literal `/tmp/x` assertion is meaningless on Windows, where `os.path.abspath`
+rewrites it to the current drive.
+
+A leading-slash path that is *not* under the root still reads as repo-relative,
+because `/src/api.py` is how agents write relpaths, not a failed absolute path.
+
 ### What was decided without evidence
 
 §14's open questions were live when Phase 3 was built. Recorded so they can be

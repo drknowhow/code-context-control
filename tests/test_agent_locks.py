@@ -65,6 +65,31 @@ class TestPathIdentity(unittest.TestCase):
             al.normalize_relpath("U:/repo", "U:/repo")
         self.assertEqual(c.exception.reason, "is_root")
 
+    def test_absolute_and_relative_spellings_of_one_file_agree(self):
+        """The bug CI caught, asserted the only way that works on every OS.
+
+        Only drive-letter and /mnt forms counted as absolute, so on POSIX an
+        absolute path fell into the repo-relative branch: a lease taken as
+        'services/router.py' was looked up as 'tmp/xyz/services/router.py' and
+        found nothing. A key computable two ways is not a key.
+
+        This must use a REAL temp root, not a literal '/tmp/x': canonical_root
+        calls os.path.abspath, which on Windows rewrites '/tmp/x' to the
+        current drive and makes a POSIX-literal assertion meaningless there.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(
+                al.normalize_relpath("services/router.py", root),
+                al.normalize_relpath(root / "services" / "router.py", root))
+
+    def test_leading_slash_outside_root_stays_repo_relative(self):
+        """The agent convention '/src/api.py' must keep working — it is not an
+        absolute path that happens to miss, it is how agents write relpaths."""
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(al.normalize_relpath("/src/api.py", td),
+                             "src/api.py")
+
     def test_nonexistent_path_still_normalizes(self):
         """Purely lexical: create-mode paths must key the same as real ones."""
         self.assertEqual(
@@ -213,8 +238,19 @@ class TestGate(_Base):
         # must too — a fake-clock lease reads as long expired to it.
         self.store = al.LockStore(self.root)
 
+    def test_store_and_gate_agree_on_the_key(self):
+        """Guard the whole class: leases are taken by relative path and looked
+        up by absolute path, so if those two spellings ever disagree every
+        gate test below passes vacuously (None == 'not held')."""
+        self.assertEqual(
+            self.store._rel("services/router.py"),
+            self.store._rel(self.root / "services" / "router.py"))
+
     def test_check_returns_none_for_the_holder(self):
         self.grab(["services/router.py"], session="s1")
+        # Assert the lease actually exists first — otherwise "None" below
+        # would prove nothing.
+        self.assertEqual(self.store.snapshot()["count"], 1)
         self.assertIsNone(al.check(self.root / "services" / "router.py",
                                    self.root, "s1"))
 

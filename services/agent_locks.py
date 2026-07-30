@@ -117,6 +117,20 @@ def normalize_relpath(filepath, root) -> str:
     win = _wsl_to_windows(fwd)
     if win is None and _DRIVE_RE.match(fwd):
         win = fwd
+    if win is None and fwd.startswith("/"):
+        # POSIX absolute. Genuinely ambiguous with the leading-slash
+        # repo-relative convention agents use ("/src/api.py"), so decide by
+        # whether it actually lives under the root: if it does it is absolute,
+        # otherwise fall through and read it as repo-relative.
+        #
+        # Without this, every POSIX absolute path fell into the relative
+        # branch and "/tmp/x/services/router.py" keyed as
+        # "tmp/x/services/router.py" — a different lock from the same file
+        # named relatively. A key computable two ways is not a key.
+        cand = _lexical_norm(fwd)
+        prefix = croot if croot.endswith("/") else croot + "/"
+        if cand == croot or cand.startswith(prefix):
+            win = fwd
     if win is not None:
         cand = _lexical_norm(win)
         prefix = croot if croot.endswith("/") else croot + "/"
