@@ -304,5 +304,83 @@ class TestActions(unittest.TestCase):
         self.assertEqual(added["type"], "doc")
 
 
+class TestDataCenterCreateMeta(unittest.TestCase):
+    """Jira DC 9.0 split createmeta in two; 11.x removed the original, which
+    404s as 'Issue Does Not Exist' on every project."""
+
+    _TYPES = {"values": [{"id": "10004", "name": "Task"},
+                         {"id": "10005", "name": "Bug"}]}
+    _FIELDS = {"isLast": True, "total": 2, "values": [
+        {"fieldId": "summary", "name": "Summary", "required": True,
+         "schema": {"type": "string"}},
+        {"fieldId": "customfield_1", "name": "Squad", "required": False,
+         "schema": {"type": "option"}},
+    ]}
+
+    def test_uses_split_endpoints_first(self):
+        with mock.patch(_URLOPEN, side_effect=[_ok(self._TYPES),
+                                               _ok(self._FIELDS)]) as m:
+            meta = _dc().get_create_metadata("RNDA", "Task")
+        urls = [c[0][0].get_full_url() for c in m.call_args_list]
+        self.assertIn("/issue/createmeta/RNDA/issuetypes", urls[0])
+        self.assertIn("/issue/createmeta/RNDA/issuetypes/10004", urls[1])
+        self.assertEqual([f["id"] for f in meta["required_fields"]], ["summary"])
+        self.assertEqual(meta["optional_fields"], ["Squad"])
+
+    def test_falls_back_to_legacy_on_404(self):
+        legacy = {"projects": [{"issuetypes": [{"fields": {
+            "summary": {"name": "Summary", "required": True,
+                        "schema": {"type": "string"}},
+            "labels": {"name": "Labels", "required": False,
+                       "schema": {"type": "array"}},
+        }}]}]}
+        with mock.patch(_URLOPEN, side_effect=[_http_error(404),
+                                               _ok(legacy)]) as m:
+            meta = _dc().get_create_metadata("RNDA", "Task")
+        self.assertIn("projectKeys=RNDA", m.call_args_list[1][0][0].get_full_url())
+        self.assertEqual([f["id"] for f in meta["required_fields"]], ["summary"])
+
+    def test_both_endpoints_404_raises_explanatory_error(self):
+        with mock.patch(_URLOPEN, side_effect=[_http_error(404),
+                                               _http_error(404)]):
+            with self.assertRaises(JiraError) as ctx:
+                _dc().get_create_metadata("NOPE", "Task")
+        self.assertEqual(ctx.exception.status, 404)
+        self.assertIn("removed on Jira 9.0+", str(ctx.exception))
+
+    def test_non_404_is_not_masked_by_fallback(self):
+        with mock.patch(_URLOPEN, side_effect=[_http_error(401)]):
+            with self.assertRaises(JiraError) as ctx:
+                _dc().get_create_metadata("RNDA", "Task")
+        self.assertEqual(ctx.exception.status, 401)
+
+    def test_unknown_issue_type_lists_known_ones(self):
+        with mock.patch(_URLOPEN, return_value=_ok(self._TYPES)):
+            meta = _dc().get_create_metadata("RNDA", "Epic")
+        self.assertIn("Task, Bug", meta["error"])
+
+    def test_fields_pagination_is_drained(self):
+        page1 = {"total": 3, "values": [
+            {"fieldId": "a", "name": "A", "required": True},
+            {"fieldId": "b", "name": "B", "required": True},
+        ]}
+        page2 = {"total": 3, "isLast": True, "values": [
+            {"fieldId": "c", "name": "C", "required": True},
+        ]}
+        with mock.patch(_URLOPEN, side_effect=[_ok(self._TYPES), _ok(page1),
+                                               _ok(page2)]) as m:
+            meta = _dc().get_create_metadata("RNDA", "Task")
+        self.assertEqual([f["id"] for f in meta["required_fields"]],
+                         ["a", "b", "c"])
+        self.assertIn("startAt=2", m.call_args_list[2][0][0].get_full_url())
+
+    def test_dict_keyed_fields_on_split_route_still_parse(self):
+        odd = {"fields": {"summary": {"name": "Summary", "required": True,
+                                      "schema": {"type": "string"}}}}
+        with mock.patch(_URLOPEN, side_effect=[_ok(self._TYPES), _ok(odd)]):
+            meta = _dc().get_create_metadata("RNDA", "Task")
+        self.assertEqual([f["id"] for f in meta["required_fields"]], ["summary"])
+
+
 if __name__ == "__main__":
     unittest.main()
