@@ -5989,6 +5989,10 @@ def _access_cmd_list(args, project_path: str) -> None:
         if sec.get("corrupt"):
             print("  [warn] access section invalid — scope fails closed "
                   "(deny-all); fix config.json 'access' by hand")
+        if scope == "builtin":
+            print("  spelling rules (deny by how a path is written, no glob):")
+            for name, why in access_guard.SYNTHETIC_RULES:
+                print(f"    {name:<18} {why}")
     print()
     from services import mask_activation
     summary = mask_activation.summary_line(project_path)
