@@ -9,12 +9,15 @@ unlock map and the evaluator.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+WIN = os.name == "nt"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -193,6 +196,7 @@ class TestShellScanNetworkTokens(HookGuardBase):
                 denial, tok = hag._scan_shell(cmd, str(self.proj))
                 self.assertIsNone(denial, f"{cmd!r} denied on token {tok!r}")
 
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
     def test_real_ads_spelling_still_denies(self):
         for tok in ("./notes.txt:$DATA", "./a/b.txt:hidden"):
             with self.subTest(tok=tok):
