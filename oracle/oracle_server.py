@@ -6,6 +6,7 @@ import logging
 import socket
 import sys
 import threading
+import time
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -143,6 +144,42 @@ _install_web_guard(
 )
 
 
+# ── Discovery API rate limit + audit (#33) ────────────────
+from oracle.services import discovery_audit  # noqa: E402
+
+# Only tool-executing routes are throttled; /tools, /openapi.json and
+# /mcp-info are cheap reads.
+_RATE_LIMITED_PATHS = {"/api/discovery/call", "/api/discovery/call/stream"}
+
+_limiter: discovery_audit.RateLimiter | None = None
+_limiter_key: tuple[int, int] | None = None
+
+
+def _rate_limiter() -> discovery_audit.RateLimiter:
+    """Rebuild the bucket only when the configured budget actually changes,
+    so a config reload does not silently reset every caller's usage."""
+    global _limiter, _limiter_key
+    key = (int(_cfg.get("api_rate_limit_per_min", 60) or 0),
+           int(_cfg.get("api_rate_burst", 0) or 0))
+    if _limiter is None or key != _limiter_key:
+        _limiter = discovery_audit.RateLimiter(per_minute=key[0], burst=key[1])
+        _limiter_key = key
+    return _limiter
+
+
+def _audit_call(name: str, args: dict, started: float, status: str) -> None:
+    if not _cfg.get("api_audit_enabled", True):
+        return
+    token = extract_bearer(request.headers.get("Authorization"))
+    discovery_audit.record(
+        name,
+        caller=discovery_audit.caller_id(token, request.remote_addr),
+        args=args,
+        duration_ms=(time.monotonic() - started) * 1000.0,
+        status=status,
+    )
+
+
 # ── Discovery API auth guard ──────────────────────────────
 @app.before_request
 def _discovery_auth_guard():
@@ -154,10 +191,28 @@ def _discovery_auth_guard():
         return None  # allow CORS preflight
     if not _cfg.get("api_enabled", True):
         return jsonify({"error": "discovery API disabled"}), 404
+    token = extract_bearer(request.headers.get("Authorization"))
     if _cfg.get("api_require_auth", True):
-        token = extract_bearer(request.headers.get("Authorization"))
         if not verify_api_key(token):
             return jsonify({"error": "unauthorized"}), 401
+
+    # Throttle the endpoints that actually execute tools. Listing tools, the
+    # OpenAPI doc, and mcp-info are cheap and read-only, so they stay open —
+    # a limiter that blocks discovery of the API is just a worse error message.
+    if request.path.rstrip("/") in _RATE_LIMITED_PATHS or \
+            request.path.startswith("/api/discovery/tools/"):
+        limiter = _rate_limiter()
+        allowed, retry_after = limiter.check(
+            discovery_audit.caller_id(token, request.remote_addr)
+        )
+        if not allowed:
+            resp = jsonify({
+                "error": "rate limited",
+                "detail": f"exceeded {limiter.per_minute} tool calls/min",
+                "retry_after": round(retry_after, 2),
+            })
+            resp.headers["Retry-After"] = str(max(1, int(retry_after + 0.999)))
+            return resp, 429
     return None
 
 
@@ -778,7 +833,15 @@ def api_discovery_call():
     args = data.get("args") or {}
     if not isinstance(args, dict):
         return jsonify({"error": "'args' must be an object"}), 400
-    return jsonify(_tool_registry.call_tool(name, args))
+    started = time.monotonic()
+    try:
+        result = _tool_registry.call_tool(name, args)
+    except Exception:
+        _audit_call(name, args, started, "error")
+        raise
+    _audit_call(name, args, started,
+                "error" if isinstance(result, dict) and result.get("error") else "ok")
+    return jsonify(result)
 
 
 @app.route("/api/discovery/tools/<name>", methods=["POST"])
@@ -789,7 +852,25 @@ def api_discovery_call_named(name):
     args = request.get_json(silent=True) or {}
     if not isinstance(args, dict):
         return jsonify({"error": "request body must be a JSON object of arguments"}), 400
-    return jsonify(_tool_registry.call_tool(name, args))
+    started = time.monotonic()
+    try:
+        result = _tool_registry.call_tool(name, args)
+    except Exception:
+        _audit_call(name, args, started, "error")
+        raise
+    _audit_call(name, args, started,
+                "error" if isinstance(result, dict) and result.get("error") else "ok")
+    return jsonify(result)
+
+
+@app.route("/api/activity/discovery", methods=["GET"])
+def api_activity_discovery():
+    """Recent Discovery tool calls for the Activity tab (args are hashed)."""
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 100))))
+    except (TypeError, ValueError):
+        limit = 100
+    return jsonify({"calls": discovery_audit.read_recent(limit)})
 
 
 @app.route("/api/discovery/call/stream", methods=["POST"])

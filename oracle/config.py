@@ -14,6 +14,9 @@ DEFAULTS = {
     "api_enabled": True,            # expose /api/discovery/* REST surface
     "api_require_auth": True,       # require Bearer token on /api/discovery/*
     "api_max_tier": "action",       # cap exposed tools: "read" | "action"
+    "api_rate_limit_per_min": 60,   # per-caller tool-call budget; 0 disables
+    "api_rate_burst": 0,            # bucket size; 0 = quarter-minute of budget
+    "api_audit_enabled": True,      # JSONL audit line per discovery tool call
     "mcp_enabled": True,            # start FastMCP HTTP/SSE discovery server
     "mcp_port": 3332,               # discovery MCP transport port (loopback)
     "ollama_base_url": "https://ollama.com",
