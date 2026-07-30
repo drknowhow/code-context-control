@@ -1,5 +1,6 @@
 """Tests for the Agent Locks lease engine (docs/agent-locks.md Layer B)."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,61 @@ class TestPathIdentity(unittest.TestCase):
             self.assertEqual(
                 al.normalize_relpath("services/router.py", root),
                 al.normalize_relpath(root / "services" / "router.py", root))
+
+    def test_resolved_path_and_unresolved_root_agree(self):
+        """The CI-Windows case. handle_edit calls Path.resolve() before locking
+        (expanding RUNNER~1 → runneradmin) while project_path stays as given,
+        so the file looked OUTSIDE its own repo, normalize_relpath raised
+        outside_repo, and the lease was silently never taken.
+
+        Trivially true on a dev box whose paths need no resolving — which is
+        exactly why it was missed — but it is the real assertion on CI."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "services" / "router.py"
+            self.assertEqual(
+                al.normalize_relpath(target.resolve(), root),
+                al.normalize_relpath("services/router.py", root))
+
+    def test_short_name_root_agrees(self):
+        """Reproduces the CI-Windows failure directly rather than by analogy.
+
+        The runner's home is the 8.3 alias RUNNER~1; handle_edit resolves it to
+        runneradmin while project_path keeps the alias, so the file read as
+        outside_repo and the lease was silently never taken. Verified both ways
+        before shipping: with the pre-fix logic the two spellings do not agree.
+
+        Skips where 8.3 generation is disabled — there the condition genuinely
+        cannot occur, and a silent pass would be the same trap again."""
+        if os.name != "nt":
+            self.skipTest("8.3 aliases are a Windows filesystem feature")
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        with tempfile.TemporaryDirectory(prefix="averylongdirectoryname_") as td:
+            root = Path(td)
+            (root / "services").mkdir()
+            got = ctypes.windll.kernel32.GetShortPathNameW(str(root), buf, 1024)
+            short = buf.value if got else str(root)
+            if short.casefold() == str(root).casefold():
+                self.skipTest("8.3 generation is off on this volume")
+            self.assertEqual(
+                al.normalize_relpath((root / "services" / "router.py").resolve(),
+                                     short),
+                al.normalize_relpath("services/router.py", root))
+
+    def test_symlinked_root_agrees(self):
+        """macOS /var → /private/var in one assertion. Skipped on Windows,
+        where creating a symlink needs privilege."""
+        if os.name == "nt":
+            self.skipTest("symlink creation requires privilege on Windows")
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            (real / "services").mkdir(parents=True)
+            link = Path(td) / "link"
+            os.symlink(real, link)
+            self.assertEqual(
+                al.normalize_relpath(real / "services" / "router.py", link),
+                al.normalize_relpath("services/router.py", real))
 
     def test_leading_slash_outside_root_stays_repo_relative(self):
         """The agent convention '/src/api.py' must keep working — it is not an

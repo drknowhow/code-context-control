@@ -86,6 +86,25 @@ def _lexical_norm(win_path: str) -> str:
     return norm
 
 
+def _real(path: str) -> str:
+    """Resolve 8.3 aliases and symlinks so both sides of a comparison agree.
+
+    FleetDeck normalizes purely lexically, which is right for a Windows-only
+    daemon that never sees a resolved path. C3 does see one: handle_edit calls
+    Path.resolve() before locking, while project_path stays as given. On
+    Windows CI that meant the path said ``runneradmin`` while the root said
+    ``RUNNER~1``, so a file looked OUTSIDE its own repo and the lease was
+    silently never taken. macOS shows the same split as /var vs /private/var.
+
+    realpath is non-strict, so a file that does not exist yet still resolves —
+    the property the lexical rule existed to protect is kept.
+    """
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return path
+
+
 def canonical_root(root) -> str:
     raw = str(root).strip()
     if not raw:
@@ -96,7 +115,7 @@ def canonical_root(root) -> str:
     win = _wsl_to_windows(fwd)
     if win is None:
         win = fwd if _DRIVE_RE.match(fwd) else os.path.abspath(raw).replace("\\", "/")
-    norm = _lexical_norm(win)
+    norm = _lexical_norm(_real(win))
     return norm if norm.endswith(":/") else norm.rstrip("/")
 
 
@@ -127,12 +146,14 @@ def normalize_relpath(filepath, root) -> str:
         # branch and "/tmp/x/services/router.py" keyed as
         # "tmp/x/services/router.py" — a different lock from the same file
         # named relatively. A key computable two ways is not a key.
-        cand = _lexical_norm(fwd)
+        cand = _lexical_norm(_real(fwd))
         prefix = croot if croot.endswith("/") else croot + "/"
         if cand == croot or cand.startswith(prefix):
             win = fwd
     if win is not None:
-        cand = _lexical_norm(win)
+        # Same basis as croot — resolved on both sides, or the comparison is
+        # between two different spellings of one path and silently fails.
+        cand = _lexical_norm(_real(win))
         prefix = croot if croot.endswith("/") else croot + "/"
         if cand == croot:
             raise UnsupportedPathError(filepath, "is_root")
