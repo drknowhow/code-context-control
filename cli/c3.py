@@ -4045,11 +4045,9 @@ def cmd_pipe(args):
     return common_cmd_pipe(args, _command_deps())
 
 
-from services.claude_md import (
-    C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW,
-    VSCODE_SESSION_INIT as _VSCODE_SESSION_INIT,
-    adapt_workflow_for_ide as _adapt_workflow_for_ide,
-)
+from services.claude_md import C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW
+from services.claude_md import VSCODE_SESSION_INIT as _VSCODE_SESSION_INIT
+from services.claude_md import adapt_workflow_for_ide as _adapt_workflow_for_ide
 
 _C3_COMPACT_WORKFLOW = _SHARED_C3_COMPACT_WORKFLOW
 
