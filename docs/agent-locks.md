@@ -430,13 +430,22 @@ producing the denial data that tells you whether Phase 3 is worth building.
    Dimitri chose to override that gate, so §14's open questions were answered
    by judgement rather than evidence. Flagged here so a later reader knows
    which choices are unvalidated.
-4. **Hub tab + FleetDeck read integration.** Half done.
-   - **DONE:** `fleetdeck/c3_locks.py` — a strictly read-only reader over
+4. ~~**Hub tab + FleetDeck read integration.**~~ **DONE.**
+   - `fleetdeck/c3_locks.py` — a strictly read-only reader over
      `.c3/locks.json`, with a test asserting the module contains no write
      calls at all. FleetDeck renders C3's leases; it never owns them.
-   - **NOT DONE:** the Hub UI tab. It needs a component plus wiring in
-     `sidebar.js`/`app.js` and REST endpoints, and it wants browser
-     verification rather than being rushed into a security-adjacent PR.
+   - `cli/hub_ui/components/hub_locks.js` plus
+     `GET /api/hub/locks/overview` and
+     `POST /api/projects/locks/force-release`. Verified in a real browser,
+     not just by unit test: the tab renders live leases with holder, intent
+     and a draining TTL bar, and a force-release round trip removed the lease,
+     bumped fencing 2 → 3, and wrote a ledger entry naming the previous owner.
+
+   Two honesty rules the view keeps, both from §4.4 and §9: a project whose
+   lock state could not be READ is badged `UNREADABLE` rather than shown with
+   zero leases — "all clear" is a different claim from "we don't know" — and
+   the coverage caveat stays on screen, because a lease gates C3 tool surfaces
+   only.
 
 ### A third correction, from CI
 
