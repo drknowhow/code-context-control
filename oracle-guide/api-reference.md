@@ -5,10 +5,16 @@ Base URL: `http://localhost:3331` (configurable via `port` in config)
 All endpoints return JSON. POST endpoints accept JSON bodies with `Content-Type: application/json`.
 
 > **Auth (v2.47.0)**: ALL mutating (POST/PUT/DELETE) endpoints outside `/api/discovery/*`
-> require either the dashboard session cookie (a per-boot `HttpOnly` cookie issued on
-> `GET /` to loopback browsers) or the Discovery Bearer token
+> require either the dashboard session cookie or the Discovery Bearer token
 > (`Authorization: Bearer <token>`). Unauthenticated mutations get `401`. `GET` reads
 > are open to allowed local origins; `/api/discovery/*` is Bearer-only (see below).
+>
+> **Obtaining the session cookie (#31)**: a plain `GET /` does **not** issue it — that
+> would hand a session to any local process, including one running as a different OS
+> user. Run `c3 oracle open`, which redeems a single-use, 120s bootstrap code at
+> `GET /?bootstrap=<code>`. `c3 oracle serve` auto-opens an already-signed-in URL.
+> `POST /api/session/bootstrap` mints the code and is exempt from the write gate, since
+> it is how a browser acquires the cookie in the first place.
 
 ---
 

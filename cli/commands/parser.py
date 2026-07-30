@@ -540,6 +540,14 @@ def build_parser(version: str, parse_cli_ide_arg):
                           help="Server port (default: config 'port', 3331)")
     or_serve.add_argument("--no-browser", action="store_true",
                           help="Don't open the browser")
+    or_open = or_subs.add_parser(
+        "open",
+        help="Sign in to a running dashboard via a single-use URL",
+    )
+    or_open.add_argument("--port", type=int, default=None,
+                         help="Server port (default: config 'port', 3331)")
+    or_open.add_argument("--no-browser", action="store_true",
+                         help="Print the URL without opening a browser")
     or_api = or_subs.add_parser(
         "api",
         help="Show connection info / manage the Discovery API key",

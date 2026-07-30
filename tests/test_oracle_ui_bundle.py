@@ -62,14 +62,16 @@ class TestBundleRoutes(unittest.TestCase):
         srv._oracle_html_cache = None  # rebuild fresh for this run
         cls.client = srv.app.test_client()
 
-    def test_root_serves_bundle_with_cookie(self):
+    def test_root_serves_bundle_without_cookie(self):
+        # #31: the bundle is served to any local caller, but the session
+        # cookie now requires a single-use bootstrap code.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
         self.assertIn("═══ ui/app.js ═══", body)
         self.assertNotIn("__C3_ORACLE_SCRIPTS__", body)
         cookies = r.headers.getlist("Set-Cookie")
-        self.assertTrue(any(c.startswith("c3_oracle_session=") for c in cookies))
+        self.assertFalse(any(c.startswith("c3_oracle_session=") for c in cookies))
 
     def test_legacy_route_removed(self):
         self.assertEqual(self.client.get("/legacy").status_code, 404)
