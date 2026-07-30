@@ -4,7 +4,7 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.64.0] - 2026-07-30
 
 ### Changed (BREAKING) — the Oracle dashboard no longer signs you in on page load (#31)
 
@@ -30,6 +30,34 @@ single-use with a 120-second TTL, so one leaked through shell history or scrollb
 not a durable credential. `/api/session/bootstrap` is deliberately exempt from the local
 write gate — it is how a browser *acquires* the cookie, so it cannot require one — and
 runs its own loopback + key/Bearer check instead.
+
+### Fixed — generated instruction docs claimed hook enforcement in IDEs that have none
+
+`AGENTS.md` and `.github/copilot-instructions.md` are generated from the same
+workflow text as `CLAUDE.md`, which opens with "native tools are **blocked by
+PreToolUse hooks**". Only Claude Code installs those hooks. In VS Code Copilot,
+Codex, Cursor and Antigravity the first native call an agent makes disproves that
+sentence — and one disprovable line invites the agent to discount the rest of the
+document.
+
+Docs generated for a hookless IDE now restate the same mandate as a workflow rule
+("no hooks in this IDE — following the order below is a project requirement
+regardless") rather than a technical block, via `adapt_workflow_for_ide()` in
+`services/claude_md.py`. Claude Code's `CLAUDE.md` is unchanged: there the hooks
+are real.
+
+Two related fixes ride along:
+
+- **A trimmed step no longer takes its number with it.** Removing `/clear`
+  guidance for IDEs that lack it dropped the entire `8. LOG` line, so the
+  generated workflow ran `7.` → `9.` and lost `c3_session(action='log')`
+  altogether. Trimming is now sentence-level: the step survives, only the
+  snapshot clause goes.
+- **VS Code's tool-load step is back.** `.github/copilot-instructions.md` again
+  opens with the `tool_search_tool_regex` / `^mcp_c3_` bootstrap. A regeneration
+  had replaced it with the Claude Code text, which left Copilot instructed to
+  call tools it had not yet loaded — and, because the generator embedded live
+  project facts, leaked absolute local paths into a committed file.
 
 ### Fixed — Jira Data Center `get_create_metadata` 404'd on Jira 9.0+ (#—)
 

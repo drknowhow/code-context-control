@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.63.2"
+__version__ = "2.64.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -4045,15 +4045,25 @@ def cmd_pipe(args):
     return common_cmd_pipe(args, _command_deps())
 
 
-from services.claude_md import C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW
+from services.claude_md import (
+    C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW,
+    VSCODE_SESSION_INIT as _VSCODE_SESSION_INIT,
+    adapt_workflow_for_ide as _adapt_workflow_for_ide,
+)
 
 _C3_COMPACT_WORKFLOW = _SHARED_C3_COMPACT_WORKFLOW
 
 _CLAUDE_MD_CONTENT = _C3_COMPACT_WORKFLOW
 
-_COPILOT_INSTRUCTIONS_CONTENT = _C3_COMPACT_WORKFLOW
+# Copilot and Codex run without PreToolUse hooks and without /clear, so both
+# docs get the hookless restatement of the mandate (see PROFILES in core/ide.py).
+_C3_HOOKLESS_WORKFLOW = _adapt_workflow_for_ide(
+    _C3_COMPACT_WORKFLOW, supports_hooks=False, supports_clear=False
+)
 
-_AGENTS_MD_CONTENT = _C3_COMPACT_WORKFLOW + """
+_COPILOT_INSTRUCTIONS_CONTENT = _VSCODE_SESSION_INIT + "\n\n" + _C3_HOOKLESS_WORKFLOW
+
+_AGENTS_MD_CONTENT = _C3_HOOKLESS_WORKFLOW + """
 
 ## IDE Configuration (Codex)
 This project uses project-scoped MCP servers. Ensure your `.codex/config.toml` includes:

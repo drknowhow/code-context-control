@@ -80,6 +80,88 @@ Plan mode: all c3_* read tools work normally — skip edit/delegate steps.
 DO NOT: start with native Read/Grep/Glob/Edit, skip c3_validate, read full files without c3_compress."""
 
 
+# --- Per-IDE workflow adaptation ----------------------------------------------
+# The workflows above are written for Claude Code, which enforces the c3-first
+# rule with PreToolUse hooks. Every other IDE (VS Code Copilot, Cursor, Codex,
+# Antigravity) has no hooks, so telling its agent that native tools are
+# "blocked" is a claim the agent disproves the first time it calls one — and a
+# document with one disprovable line invites the agent to discount the rest.
+# Same mandate, honest mechanism.
+HOOK_HEADER = "## C3 Tools — MANDATORY (enforced by hooks)"
+NANO_HEADER = "## C3 Tools — MANDATORY"
+NO_HOOK_HEADER = "## C3 Tools — MANDATORY (workflow rule — no hooks in this IDE)"
+NO_HOOK_LEDE = (
+    "Native tools (read, search, grep, glob, edit, write) must NOT be used before a c3_* "
+    "tool. This IDE has no PreToolUse hooks, so nothing blocks them technically — "
+    "following the order below is a project requirement regardless."
+)
+NO_HOOK_LEDE_NANO = (
+    "Native tools must NOT precede a c3_* call. No hooks here — this is a workflow rule, "
+    "not a technical block. State reason when falling back."
+)
+
+# VS Code defers MCP tools until the agent searches for them, so a Copilot
+# session that follows the workflow verbatim calls tools it has not loaded.
+VSCODE_INSTRUCTIONS_FILE = ".github/copilot-instructions.md"
+VSCODE_SESSION_INIT = """\
+## Session Initialization (VS Code ONLY)
+C3 tools are deferred in VS Code — load them before anything below is callable.
+1. **LOAD TOOLS**: call `tool_search_tool_regex` with pattern `^mcp_c3_` as the VERY FIRST action of every session.
+2. **VERIFY**: confirm tools such as `mcp_c3_c3_search` and `mcp_c3_c3_read` are available before proceeding."""
+
+
+def _strip_unsupported_clauses(line: str, needles: tuple) -> str:
+    """Drop only the sentences of ``line`` that mention ``needles``.
+
+    Dropping the whole line loses the step along with its number, which leaves
+    a visible hole in the numbered workflow (``7.`` followed by ``9.``).
+    Sentence-level trimming keeps the step and drops just the unsupported part.
+    Returns "" when nothing but the list marker survives.
+    """
+    sentences = re.split(r"(?<=\.)\s+", line)
+    kept = [s for s in sentences if not any(n in s.lower() for n in needles)]
+    rebuilt = " ".join(kept).strip()
+    return "" if re.fullmatch(r"[\d.\s]*", rebuilt) else rebuilt
+
+
+def adapt_workflow_for_ide(workflow: str, *, supports_hooks: bool = True,
+                           supports_clear: bool = True, nano: bool = False) -> str:
+    """Tailor a C3 workflow block to one IDE's capabilities.
+
+    ``supports_clear=False`` removes ``/clear`` and snapshot guidance;
+    ``supports_hooks=False`` restates the mandate as a workflow rule instead of
+    hook enforcement and drops hook-specific lines.
+    """
+    if not supports_clear:
+        adapted = []
+        for line in workflow.splitlines():
+            if not line.strip():
+                adapted.append(line)
+                continue
+            kept = _strip_unsupported_clauses(line, ("snapshot", "/clear"))
+            if kept:
+                adapted.append(kept)
+        workflow = "\n".join(adapted)
+
+    if not supports_hooks:
+        workflow = workflow.replace(NANO_HEADER if nano else HOOK_HEADER,
+                                    NO_HOOK_HEADER, 1)
+        lede = NO_HOOK_LEDE_NANO if nano else NO_HOOK_LEDE
+        adapted = []
+        lede_done = False
+        for line in workflow.splitlines():
+            if not lede_done and line.startswith("Native tools"):
+                adapted.append(lede)
+                lede_done = True
+                continue
+            if "PostToolUse" in line or "AfterTool" in line:
+                continue
+            adapted.append(line)
+        workflow = "\n".join(adapted)
+
+    return workflow
+
+
 # --- C3-managed instruction block ---------------------------------------------
 # C3-generated content for project instruction docs (CLAUDE.md / AGENTS.md /
 # GEMINI.md / copilot-instructions.md) is wrapped in these sentinels so that
@@ -222,22 +304,21 @@ class ClaudeMdManager:
         nano=True: ~250 tokens (vs ~800 full). Use for IDEs where instructions space is limited.
         Filters out hooks/snapshot/transcript lines for IDEs that don't support them.
         """
-        if nano:
-            workflow = C3_NANO_WORKFLOW
-        else:
-            workflow = C3_COMPACT_WORKFLOW
+        workflow = C3_NANO_WORKFLOW if nano else C3_COMPACT_WORKFLOW
 
-        # Strip features unsupported by this IDE to reduce irrelevant instruction tokens
-        if not self.supports_clear:
-            # Remove /clear and snapshot/restore references
-            lines = workflow.splitlines()
-            lines = [l for l in lines if '/clear' not in l and 'snapshot' not in l.lower()]
-            workflow = '\n'.join(lines)
-        if not self.supports_hooks:
-            # Remove hook-specific log lines (hooks are Claude Code / Gemini only)
-            lines = workflow.splitlines()
-            lines = [l for l in lines if 'PostToolUse' not in l and 'AfterTool' not in l]
-            workflow = '\n'.join(lines)
+        # Strip features unsupported by this IDE to reduce irrelevant instruction
+        # tokens and avoid claiming enforcement the IDE does not have.
+        workflow = adapt_workflow_for_ide(
+            workflow,
+            supports_hooks=self.supports_hooks,
+            supports_clear=self.supports_clear,
+            nano=nano,
+        )
+
+        # VS Code hides MCP tools until they are searched for, so the generated
+        # doc must open with the load step or it describes uncallable tools.
+        if self.instructions_file == VSCODE_INSTRUCTIONS_FILE:
+            workflow = VSCODE_SESSION_INIT + "\n\n" + workflow
 
         return workflow
 
