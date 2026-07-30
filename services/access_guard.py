@@ -27,6 +27,17 @@ _KIND_READ_ONLY = "read_only"
 _KIND_MASK = "mask"
 _VALID_KEYS = {_KIND_DENY, _KIND_READ_ONLY, _KIND_MASK}
 
+# `access` keys that are not rule kinds. Kept separate from _VALID_KEYS so the
+# "unknown key ⇒ corrupt" rule (which exists so `allow` can never silently
+# no-op) still applies to everything else.
+_KEY_DISABLE_BUILTIN = "disable_builtin"
+_VALID_SECTION_KEYS = _VALID_KEYS | {_KEY_DISABLE_BUILTIN}
+
+# Keyring namespace for builtin opt-out attestations. Distinct from c3-creds /
+# c3-bitbucket / c3-jira so a vault wipe cannot silently re-enable a builtin
+# (or, worse, silently disable one).
+_ACCESS_KEYRING_SERVICE = "c3-access"
+
 # Mask presets (docs/mask-guard.md §4). Names + param schema live here so the
 # hook subprocess can validate config without importing the transform engines;
 # the engines themselves are in services/mask_presets.py.
@@ -39,9 +50,21 @@ MASK_PRESETS = {
 }
 _SAMPLE_STRATEGIES = ("first", "last")
 
-# Builtins: product integrity only (docs/access-guard.md §1). Non-overridable.
-BUILTIN_DENY = ("**/.env*", "**/.c3/secrets.enc", "**/.c3/cred_state.json")
+# Builtins: product integrity only (docs/access-guard.md §1), in two tiers.
+#
+# Tier 0 — ABSOLUTE. The credential vault. Never disableable, because these
+# paths already carry a dedicated guard (credential_store.vault_guard_reason)
+# AND their own human-only escalation (agent_readable). An opt-out here would
+# add nothing but a shorter route to the same secrets.
+BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json")
+
+# Tier 1 — a human may switch these off, but only through the two-key opt-out
+# below: a config entry AND a keyring attestation. Default is all enforced.
+BUILTIN_DENY = ("**/.env*",)
 BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
+
+#: Globs `c3 access disable-builtin` accepts. Order is display order.
+DISABLEABLE_BUILTINS = BUILTIN_DENY + BUILTIN_WRITE_DENY
 
 # Spelling rules — they deny how a path is WRITTEN, not where it points, so
 # they have no glob to list. A refusal cites one of these by name, so they
@@ -199,10 +222,106 @@ def validate_globs(globs) -> str:
     return ""
 
 
+_ABSOLUTE_RULES = tuple(
+    _compile(g, _KIND_DENY, "builtin") for g in BUILTIN_ABSOLUTE_DENY
+)
 _BUILTIN_RULES = tuple(
     [_compile(g, _KIND_DENY, "builtin") for g in BUILTIN_DENY]
     + [_compile(g, _KIND_READ_ONLY, "builtin") for g in BUILTIN_WRITE_DENY]
 )
+
+
+# ── Builtin opt-out (two-key) ───────────────────────────────────────────────
+#
+# Turning a builtin off requires BOTH of:
+#   1. `access.disable_builtin: ["<glob>"]` in the GLOBAL config, and
+#   2. a keyring attestation written only by `c3 access disable-builtin`
+#      (CLI) or the Access tab.
+#
+# The point of the second key is that an agent which manages to write
+# config.json — the exact move a prompt-injected agent would make to grant
+# itself write access to ~/.claude/settings.json — still cannot produce the
+# attestation, so the builtin stays on. Same construction as the credential
+# vault's agent_readable flag (credential_store.verify_agent_readable).
+#
+# GLOBAL scope only, deliberately: project scopes may only ever TIGHTEN
+# (spec §1). A per-project opt-out would let a cloned repo loosen the guard.
+#
+# Every failure path here leaves the builtin ENFORCED.
+
+
+def _norm_builtin(glob) -> str:
+    """Same canonical form _compile() stores on Rule.glob, so they compare."""
+    return str(glob or "").replace("\\", "/").casefold().strip()
+
+
+def _builtin_attest_account(glob: str) -> str:
+    return f"builtin_disabled|{_norm_builtin(glob)}"
+
+
+def _attest_builtin_disabled(glob: str, disabled: bool) -> bool:
+    """Write the keyring half of the opt-out. False when it did not stick.
+
+    A caller that ignores False would leave the config saying "disabled" while
+    evaluation keeps enforcing — so set_builtin_disabled() surfaces it.
+    """
+    try:
+        import keyring  # noqa: PLC0415 — lazy: access_guard is stdlib-only on
+        keyring.set_password(  # the hot path (hooks import it per tool call)
+            _ACCESS_KEYRING_SERVICE, _builtin_attest_account(glob),
+            "1" if disabled else "0")
+        return True
+    except Exception:
+        return False
+
+
+def _verify_builtin_disabled(glob: str) -> bool:
+    """True only when the keyring agrees. Fails closed on any error."""
+    try:
+        import keyring  # noqa: PLC0415 — see above
+        return keyring.get_password(
+            _ACCESS_KEYRING_SERVICE, _builtin_attest_account(glob)) == "1"
+    except Exception:
+        return False
+
+
+def _configured_disable_list() -> list:
+    """Raw `access.disable_builtin` from the global config. [] on any problem."""
+    base = _global_base()
+    if base is None:
+        return []
+    cfg = base / ".c3" / "config.json"
+    if not cfg.is_file():
+        return []
+    try:
+        section = (json.loads(cfg.read_text(encoding="utf-8")) or {}).get("access")
+    except Exception:
+        return []
+    if not isinstance(section, dict):
+        return []
+    raw = section.get(_KEY_DISABLE_BUILTIN, [])
+    return [g for g in raw if isinstance(g, str)] if isinstance(raw, list) else []
+
+
+def disabled_builtins() -> frozenset:
+    """Canonical globs of builtins that are genuinely off right now.
+
+    A glob counts only when it is a Tier-1 builtin, listed in the global
+    config, AND attested in the keyring. Anything else — a Tier-0 vault glob,
+    an unknown glob, a config edited outside the API — is silently NOT
+    disabled, which is the safe direction.
+
+    Costs nothing when nobody has opted out: the keyring is only touched once
+    the config list is non-empty.
+    """
+    listed = _configured_disable_list()
+    if not listed:
+        return frozenset()
+    allowed = {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}
+    return frozenset(
+        c for c in (_norm_builtin(g) for g in listed)
+        if c in allowed and _verify_builtin_disabled(c)
+    )
 
 
 # ── Mask rules ──────────────────────────────────────────────────────────────
@@ -337,9 +456,14 @@ def _read_scope_rules(base: Path, scope: str):
         return [], []
     if not isinstance(section, dict):
         return _CORRUPT
-    unknown = set(section) - _VALID_KEYS
+    unknown = set(section) - _VALID_SECTION_KEYS
     if unknown:
         return _CORRUPT  # hard error — 'allow' must never silently no-op
+    # Builtin opt-out is global-only, because a project scope may only ever
+    # TIGHTEN. A project-scope entry is a loud error, not a silent no-op: the
+    # UI must never claim a builtin is off while evaluation still enforces it.
+    if scope == "project" and section.get(_KEY_DISABLE_BUILTIN):
+        return _CORRUPT
     rules = []
     for kind in (_KIND_DENY, _KIND_READ_ONLY):
         globs = section.get(kind, [])
@@ -367,7 +491,9 @@ def _global_base() -> Path | None:
 
 def load_all(project_path: str = ".") -> tuple:
     """(rules, mask_rules, corrupt_scopes) — one read per scope."""
-    rules = list(_BUILTIN_RULES)
+    disabled = disabled_builtins()
+    rules = list(_ABSOLUTE_RULES)
+    rules.extend(r for r in _BUILTIN_RULES if r.glob not in disabled)
     inst = _install_dir_rule()
     if inst:
         rules.append(inst)
@@ -410,7 +536,9 @@ def has_active_rules(project_path: str = ".") -> bool:
     # Count the install-dir rule only when it actually loaded: in a dev
     # checkout it is absent, and a fixed "+1" made a single user rule
     # invisible to S4 (footer suppressed while filtering was active).
-    n_baseline = len(_BUILTIN_RULES) + (1 if _install_dir_rule() else 0)
+    n_baseline = (len(_ABSOLUTE_RULES)
+                  + len(_BUILTIN_RULES) - len(disabled_builtins())
+                  + (1 if _install_dir_rule() else 0))
     return bool(corrupt) or bool(mask_rules) or len(rules) > n_baseline
 
 
@@ -754,7 +882,7 @@ def _raw_scope_section(cfg: Path) -> tuple:
         return {}, False
     if not isinstance(section, dict):
         return {}, True
-    corrupt = bool(set(section) - _VALID_KEYS)
+    corrupt = bool(set(section) - _VALID_SECTION_KEYS)
     for kind in (_KIND_DENY, _KIND_READ_ONLY):
         globs = section.get(kind, [])
         if not isinstance(globs, list) or validate_globs(_str_list(globs)) \
@@ -788,12 +916,25 @@ def list_rules(project_path: str = ".") -> dict:
     string globs are recoverable, flagged ``corrupt`` — that scope evaluates
     deny-all until the human repairs config.json by hand.
     """
-    builtin_ro = list(BUILTIN_WRITE_DENY)
+    disabled = disabled_builtins()
+    builtin_deny = list(BUILTIN_ABSOLUTE_DENY) + [
+        g for g in BUILTIN_DENY if _norm_builtin(g) not in disabled]
+    builtin_ro = [g for g in BUILTIN_WRITE_DENY
+                  if _norm_builtin(g) not in disabled]
     inst = _install_dir_rule()
     if inst:
         builtin_ro.append(inst.glob)
-    out = {"builtin": {"deny": list(BUILTIN_DENY), "read_only": builtin_ro,
-                       "mask": [], "corrupt": False}}
+    out = {"builtin": {
+        # deny/read_only list what is ENFORCED right now, so a caller that
+        # only reads these two keys is never told a disabled builtin is on.
+        "deny": builtin_deny,
+        "read_only": builtin_ro,
+        "mask": [], "corrupt": False,
+        # Opt-out surface for `c3 access list` and the Access tab.
+        "absolute": list(BUILTIN_ABSOLUTE_DENY),
+        "disableable": list(DISABLEABLE_BUILTINS),
+        "disabled": sorted(disabled),
+    }}
     for scope in _VALID_SCOPES:
         try:
             cfg = _scope_config_path(scope, project_path)
@@ -830,7 +971,7 @@ def _load_config_for_write(cfg: Path) -> tuple:
     if not isinstance(data, dict):
         raise ValueError(f"{cfg} root is not a JSON object — fix it by hand")
     section = data.setdefault("access", {})
-    if not isinstance(section, dict) or set(section) - _VALID_KEYS:
+    if not isinstance(section, dict) or set(section) - _VALID_SECTION_KEYS:
         raise ValueError(
             "access section is invalid (unknown keys or wrong shape) — the "
             "scope fails closed; fix config.json 'access' by hand")
@@ -887,6 +1028,62 @@ def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     target.append(canon)
     _write_scope_config(cfg, data)
     return {"glob": canon, "kind": kind, "scope": scope, "added": True}
+
+
+def set_builtin_disabled(glob, disabled: bool) -> dict:
+    """Switch a Tier-1 builtin off (or back on). GLOBAL scope, human surfaces
+    only (`c3 access disable-builtin` / Access tab); callers log to the ledger.
+
+    Writes BOTH keys — the config entry and the keyring attestation — because
+    either alone is inert: config without attestation fails closed (the
+    builtin keeps enforcing), and attestation without config is never read.
+
+    Returns {"glob", "disabled", "changed", "attested"}. Raises ValueError for
+    a Tier-0 vault glob, an unrecognized glob, an unavailable global scope, or
+    a keyring that will not hold the attestation.
+    """
+    canon = _norm_builtin(glob)
+    if canon in {_norm_builtin(g) for g in BUILTIN_ABSOLUTE_DENY}:
+        raise ValueError(
+            f"'{_norm_glob(glob)}' guards the credential vault and cannot be "
+            "disabled. Secrets are reached through `c3 creds` with the "
+            "per-entry agent_readable flag, not by widening the guard.")
+    if canon not in {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}:
+        raise ValueError(
+            f"'{_norm_glob(glob)}' is not a disableable builtin — expected one "
+            f"of: {', '.join(DISABLEABLE_BUILTINS)}")
+
+    cfg = _scope_config_path("global")  # raises when there is no home
+    data, section = _load_config_for_write(cfg)
+    listed = section.setdefault(_KEY_DISABLE_BUILTIN, [])
+    if not isinstance(listed, list) or not all(isinstance(g, str) for g in listed):
+        raise ValueError(
+            "access.disable_builtin must be a list of glob strings — the scope "
+            "fails closed; fix config.json 'access' by hand")
+    present = any(_norm_builtin(g) == canon for g in listed)
+
+    if disabled:
+        # Attestation FIRST. If the keyring will not take it, leave config
+        # untouched rather than persist a claim that evaluation ignores.
+        if not _attest_builtin_disabled(canon, True):
+            raise ValueError(
+                "keyring unavailable, so the opt-out cannot be attested and "
+                "would not take effect. The builtin stays enforced.")
+        if not present:
+            listed.append(_norm_glob(glob))
+            _write_scope_config(cfg, data)
+        return {"glob": canon, "disabled": True,
+                "changed": not present, "attested": True}
+
+    # Re-enabling: drop the config entry first (that alone restores
+    # enforcement), then clear the attestation best-effort.
+    if present:
+        section[_KEY_DISABLE_BUILTIN] = [
+            g for g in listed if _norm_builtin(g) != canon]
+        _write_scope_config(cfg, data)
+    attested = _attest_builtin_disabled(canon, False)
+    return {"glob": canon, "disabled": False,
+            "changed": present, "attested": attested}
 
 
 def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:

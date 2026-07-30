@@ -23,8 +23,25 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from services import access_guard
+from services import agent_locks
 from services import credential_store as _cs
 from services.task_store import _FileLock
+
+
+def _session_id(svc) -> str:
+    """This agent's lease identity.
+
+    Falls back to the process id, never to "". Two agents that both resolved
+    to "" would count as ONE session and stop blocking each other — the exact
+    opposite of what a lock is for. Each Claude Code session runs its own
+    c3-mcp process, so the pid is a faithful stand-in.
+
+    It is also the right identity for c3_project: that proxy builds a runtime
+    for the TARGET project but runs inside the CALLER's process, so the pid
+    keeps the edit attributed to the agent that actually asked for it.
+    """
+    session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+    return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
 
 # ── Same-file serialization ───────────────────────────────────────────────
 # In-process locks, keyed by resolved absolute path string.
@@ -313,6 +330,18 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
         return finalize("c3_edit", {"file": file_path},
                         access_guard.refusal(denial, file_path, op),
                         "access-denied")
+
+    # Agent Locks (Layer B). Checked AFTER the policy guards on purpose: an
+    # agent must never be told a file is busy when it was never allowed to
+    # write it in the first place (docs/agent-locks.md §5).
+    session_id = _session_id(svc)
+    holder = agent_locks.check(str(path), svc.project_path, session_id)
+    if holder:
+        return finalize("c3_edit", {"file": file_path},
+                        agent_locks.refusal(holder, rel), "lock held")
+    # Take our own lease before doing the work, not after: a second agent
+    # should be blocked for the duration of the edit, not only once it lands.
+    agent_locks.lease(str(path), svc.project_path, session_id, intent=summary)
 
     # Everything that reads or writes the file runs under one lock, held for
     # the whole read → modify → write cycle. Create mode is inside it too:
