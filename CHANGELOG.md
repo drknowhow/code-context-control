@@ -6,6 +6,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Jira Data Center `get_create_metadata` 404'd on Jira 9.0+ (#—)
+
+`c3_jira(action='get_create_metadata')` called the monolithic
+`GET /rest/api/2/issue/createmeta?projectKeys=…`. Jira DC 9.0 split that into
+a paginated pair and **11.x removed the original**, which now answers
+`404 "Issue Does Not Exist"` for *any* valid project — so the failure read as a
+bad project key rather than a dead endpoint. Issue types and required fields
+could not be enumerated on a modern DC instance at all.
+
+The DC backend now tries the split endpoints first
+(`createmeta/{project}/issuetypes` → `…/issuetypes/{id}`) and falls back to the
+legacy shape only on 404, so pre-9.0 servers keep working. The two responses
+disagree on shape — the split route returns a *list* of field objects carrying
+`fieldId`, the legacy route a *dict* keyed by field id — and both are now
+parsed. Field pages are drained rather than trusted at one call, since a
+truncated page would silently under-report required fields.
+
+`create_issue` was never blocked by this: it already treats a createmeta
+failure as non-authoritative and lets Jira's own 400 decide.
+
+### Changed — Oracle ChatStore is append-only JSONL (#30)
+
+`ChatStore` re-serialized the entire transcript on every append — twice per
+chat turn (user message, then the round batch) — so per-turn write cost grew
+with conversation length. Conversations are now `<id>.jsonl`, one message per
+line, appended with a single `write`.
+
+Legacy `<id>.json` arrays migrate lazily on first access; there is no migration
+script and no startup scan. The migration is crash-safe by ordering — temp
+file, atomic replace, *then* unlink the legacy file — and readers concatenate
+legacy + JSONL, so every partial state (mid-migration crash, appends that
+landed before migration ran) reads back complete and in order rather than
+losing or duplicating messages. The index stays a whole-file write, since it
+holds one entry per conversation rather than per message, but it is now cached
+in memory and re-read only when the file changes underneath.
+
+### Added — rate limiting + audit logging on the Discovery API (#33)
+
+`/api/discovery/*` and the MCP transport were Bearer-gated but unthrottled, so
+a leaked token allowed unbounded tool calls — and `c3_search_cross` fans out a
+full runtime per project, so one call's cost is not bounded by its request
+size.
+
+Tool-executing routes (`/call`, `/call/stream`, `/tools/<name>`) are now behind
+a per-caller token bucket, default 60 calls/min with a quarter-minute burst
+(`api_rate_limit_per_min`, `api_rate_burst`; `0` disables). Listing tools, the
+OpenAPI document, and `mcp-info` stay open — throttling API discovery itself
+only produces a worse error message. Exhaustion returns `429` with
+`Retry-After`.
+
+Every tool call also appends one JSONL line to `~/.c3/oracle/discovery_audit.jsonl`
+(`api_audit_enabled`), readable via `GET /api/activity/discovery`. **The log
+stores a hash of the arguments, never the arguments**, and identifies the
+caller by token fingerprint rather than token: discovery args routinely carry
+file paths, queries, and project names, and an audit trail that leaks them
+would be a worse liability than the missing throttle. Auditing fails open — a
+broken log never breaks a call.
+
+The Activity *tab* does not yet render this feed; the endpoint is live and the
+UI wiring is still outstanding.
+
+### Removed — overdue `/legacy` hub route + `cli/hub.html` (#35)
+
+The frozen pre-v2.44 Hub UI was slated for deletion in v2.45/v2.46 under the
+one-release escape-hatch convention; the Oracle's equivalent went in v2.49.1.
+`GET /legacy` now 404s, `cli/hub.html` is gone, and the Settings-modal link to
+it is removed. The per-project `/legacy` route (`cli/server.py`, serving
+`ui_legacy.html`) is deliberately untouched — it is on its own retirement
+clock and was only flagged for review.
+
+### Fixed — Access Guard denied any shell command mentioning a URL or IPv6 (#50)
+
+Windows only. The best-effort Bash token scan fed whitespace-split tokens into
+the path evaluator, where a residual colon means NTFS alternate-data-stream
+syntax — so `https://example.com` and `fc00::/7` matched the `<ads>` rule and
+hard-denied the command. Because synthetic `<…>` rules are exempt from the
+scanner's existence gate, a token naming nothing on disk still refused, and the
+200-token scan cap made it position-dependent enough to look flaky. Practical
+effect: `git commit` messages about networking, `curl`, and `gh pr create` were
+blocked, citing a rule that `c3 access list` did not print.
+
+`_scan_shell` now skips scheme-prefixed and IPv6 literal/CIDR tokens before
+evaluating them. The ADS check is unchanged for real path arguments
+(`file_path`/`notebook_path`), where a colon is unambiguous. Separately, the
+spelling rules (`<unc>`, `<unresolvable>`, `<empty-component>`, `<8.3-alias>`,
+`<ads>`) are now listed by `c3 access list` and in `docs/access-guard.md`, so a
+cited rule is always one the user can look up.
+
 ### Fixed — e2e benchmark silently truncated every prompt to `.CMD` providers
 
 Benchmark-harness only; no change to C3's runtime tools.
