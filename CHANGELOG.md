@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING) — the Oracle dashboard no longer signs you in on page load (#31)
+
+**What changes for you:** opening `http://localhost:3331` by hand — a bookmark, a typed
+URL — now shows the dashboard but leaves it read-only. Settings changes, key rotation,
+and every other mutating action return `401` until you sign in. Run **`c3 oracle open`**,
+which opens an already-authorized tab. `c3 oracle serve` auto-opens a signed-in tab as
+before, so if you always start the server and use the tab it opens, nothing changes.
+
+**Why:** `GET /` issued the dashboard session cookie to any caller on the loopback
+interface. A process running as a *different* OS user on the same machine could
+therefore fetch the page and obtain a working session. That was previously accepted and
+documented on the grounds that same-user processes can already read the keyring token —
+true, but it does not cover the multi-user case, which is the one this closes.
+
+**How it works:** on boot the server writes a bootstrap key to
+`~/.c3/oracle/bootstrap.key` with owner-only permissions (home-directory ACLs are the
+gate — the same assumption `~/.c3/secrets.enc` already makes). `c3 oracle open` reads it,
+mints a single-use code via `POST /api/session/bootstrap`, and redeems it at
+`GET /?bootstrap=<code>`; redemption sets the cookie and redirects to a clean `/`, so the
+code never lingers in the address bar, browser history, or a `Referer` header. Codes are
+single-use with a 120-second TTL, so one leaked through shell history or scrollback is
+not a durable credential. `/api/session/bootstrap` is deliberately exempt from the local
+write gate — it is how a browser *acquires* the cookie, so it cannot require one — and
+runs its own loopback + key/Bearer check instead.
+
 ### Fixed — Jira Data Center `get_create_metadata` 404'd on Jira 9.0+ (#—)
 
 `c3_jira(action='get_create_metadata')` called the monolithic
