@@ -31,6 +31,23 @@ _SHELL_TOOLS = {"Bash"}  # normalize_tool_name folds run_shell_command in
 _TOKEN_SPLIT = re.compile(r"\s+")
 _MAX_TOKENS = 200
 
+# A colon in a shell token overwhelmingly means "URL scheme" or "IPv6", not
+# "NTFS alternate data stream". The ADS check stays strict for real path
+# arguments (_WRITE_TOOLS/_READ_TOOLS); here it only produced false denies on
+# commit messages, curl, and gh (#50).
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+# IPv6 literal or CIDR: >=2 colons, hex groups only, optional [] and /prefix.
+# 'C:/x/f.txt:stream' has one colon and non-hex parts, so it never matches.
+_IPV6_RE = re.compile(
+    r"^\[?[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}\]?(?:/\d{1,3})?$",
+    re.IGNORECASE,
+)
+
+
+def _is_network_token(tok: str) -> bool:
+    """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling."""
+    return bool(_SCHEME_RE.match(tok) or _IPV6_RE.match(tok))
+
 
 def _deny(reason: str) -> dict:
     return {
@@ -57,12 +74,18 @@ def _scan_shell(cmd: str, base: str):
     Confident = the token resolves to an EXISTING path that a ``deny`` rule
     covers (existence-gating keeps regex/pattern arguments like '\\.env'
     from false-denying), or the evaluator flags the spelling itself.
+
+    URLs and IPv6 literals are skipped outright: they trip the ADS spelling
+    check, which is exempt from existence-gating, so a token naming nothing
+    on disk would otherwise hard-deny (#50).
     """
     for raw in _TOKEN_SPLIT.split(cmd)[:_MAX_TOKENS]:
         tok = raw.strip("\"'`;,()")
         if not tok or tok.startswith("-"):
             continue
         if "/" not in tok and "\\" not in tok and not tok.startswith("."):
+            continue
+        if _is_network_token(tok):
             continue
         if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
             tok = f"{tok[1]}:{tok[2:]}"

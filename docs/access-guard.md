@@ -62,6 +62,15 @@ section `access`:
   (`Path(cli.__file__).parent`), `**/.git/**` (reads stay open)
 - Removable DEFAULT rules seeded in global scope on first run (user may
   delete them): `*.pem`, `id_rsa*`, `*.key`
+- Spelling rules (`<name>`) deny how a path is WRITTEN rather than where it
+  points, so they have no glob. A refusal cites them by name, so they are
+  listed by `c3 access list` alongside the globs — the canonical set lives in
+  `access_guard.SYNTHETIC_RULES`:
+  `<unc>`, `<unresolvable>`, `<empty-component>`, `<8.3-alias>`,
+  `<ads>` (Windows only). Because these flag a spelling, they are exempt
+  from the shell scanner's existence gate; the scanner therefore skips URL
+  and IPv6 tokens outright, since a colon there means "scheme" or "IPv6",
+  not "alternate data stream" (#50).
 - Corrupt/unparseable access section ⇒ that scope evaluates deny-all with a
   loud warning. Builtins apply even with no config at all.
 - Internal service writes (credential_store, the guard's own state, ledger,

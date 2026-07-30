@@ -43,6 +43,17 @@ _SAMPLE_STRATEGIES = ("first", "last")
 BUILTIN_DENY = ("**/.env*", "**/.c3/secrets.enc", "**/.c3/cred_state.json")
 BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
 
+# Spelling rules — they deny how a path is WRITTEN, not where it points, so
+# they have no glob to list. A refusal cites one of these by name, so they
+# must be discoverable via `c3 access list` (#50).
+SYNTHETIC_RULES = (
+    ("<unc>", "UNC / network path outside the project"),
+    ("<unresolvable>", "path could not be resolved"),
+    ("<empty-component>", "path component empties after normalization"),
+    ("<8.3-alias>", "8.3 short-name component on a non-existing target"),
+    ("<ads>", "NTFS alternate data stream syntax (Windows only)"),
+)
+
 # Seeded into GLOBAL scope by install/CLI (user-removable); not enforced here.
 DEFAULT_GLOBAL_RULES = ("*.pem", "id_rsa*", "*.key")
 

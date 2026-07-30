@@ -105,10 +105,13 @@ class TestHubServerSmoke(unittest.TestCase):
                    if not (cli_dir / rel).exists()]
         self.assertEqual(missing, [], f"_HUB_JS_FILES entries missing on disk: {missing}")
 
-    def test_legacy_route_serves_old_hub(self):
-        resp = self.client.get("/legacy")
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("C3 Project Hub", resp.get_data(as_text=True))
+    def test_legacy_route_is_gone(self):
+        # The one-release /legacy escape hatch expired with v2.46 (#35).
+        self.assertEqual(self.client.get("/legacy").status_code, 404)
+
+    def test_legacy_hub_html_not_shipped(self):
+        cli_dir = Path(self.mod.__file__).parent
+        self.assertFalse((cli_dir / "hub.html").exists())
 
     def test_pm_bundle_entries_present(self):
         for rel in ("ui/pm_shared.js", "hub_ui/components/drill_tasks.js",

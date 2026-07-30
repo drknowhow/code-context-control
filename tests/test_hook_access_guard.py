@@ -9,11 +9,15 @@ unlock map and the evaluator.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+WIN = os.name == "nt"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -170,6 +174,68 @@ class TestCanonicalParity(unittest.TestCase):
             f.write_text("x", encoding="utf-8")
             self.assertEqual(_hook_utils.canonical_key(f),
                              ag.canonicalize(str(f), tmp)[0])
+
+
+class TestShellScanNetworkTokens(HookGuardBase):
+    """#50 — the ADS spelling check is exempt from existence-gating, so a URL
+    or IPv6 literal in a command's TEXT used to hard-deny on Windows."""
+
+    _ALLOWED = (
+        'git commit -m "block the fc00::/7 range"',
+        "echo see https://example.com",
+        "curl https://api.github.com/rate_limit",
+        'gh pr create --body "docs at http://x.io/a"',
+        "ping 2001:db8::1",
+        "curl http://[::1]:8080/health",
+        "pip install git+https://github.com/o/r.git",
+    )
+
+    def test_urls_and_ipv6_do_not_deny(self):
+        for cmd in self._ALLOWED:
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNone(denial, f"{cmd!r} denied on token {tok!r}")
+
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
+    def test_real_ads_spelling_still_denies(self):
+        for tok in ("./notes.txt:$DATA", "./a/b.txt:hidden"):
+            with self.subTest(tok=tok):
+                denial, _ = hag._scan_shell(f"type {tok}", str(self.proj))
+                self.assertIsNotNone(denial)
+                self.assertEqual(denial.rule, "<ads>")
+
+    def test_denied_path_still_caught_alongside_a_url(self):
+        denial, tok = hag._scan_shell(
+            "curl https://example.com -o ./secrets/key.txt", str(self.proj)
+        )
+        self.assertIsNotNone(denial)
+        self.assertEqual(tok, "./secrets/key.txt")
+
+    def test_classifier_rejects_ads_and_plain_paths(self):
+        for tok in ("C:/x/f.txt:stream", "./f.txt:$DATA", "c:/temp", "./a/b"):
+            self.assertFalse(hag._is_network_token(tok), tok)
+        for tok in ("https://x.com", "fc00::/7", "2001:db8::1", "[::1]"):
+            self.assertTrue(hag._is_network_token(tok), tok)
+
+
+class TestSyntheticRulesDiscoverable(unittest.TestCase):
+    """#50 — a refusal cites a rule name; `c3 access list` must show it."""
+
+    def test_ads_is_listed(self):
+        names = [n for n, _ in ag.SYNTHETIC_RULES]
+        self.assertIn("<ads>", names)
+
+    def test_every_synthetic_denial_is_documented(self):
+        source = (REPO_ROOT / "services" / "access_guard.py").read_text(
+            encoding="utf-8"
+        )
+        raised = set(re.findall(r'Denial\("(<[a-z0-9.\-]+>)"', source))
+        self.assertTrue(raised)
+        self.assertEqual(raised - {n for n, _ in ag.SYNTHETIC_RULES}, set())
+
+    def test_access_list_prints_them(self):
+        source = (REPO_ROOT / "cli" / "c3.py").read_text(encoding="utf-8")
+        self.assertIn("SYNTHETIC_RULES", source)
 
 
 class TestInstallMatchers(unittest.TestCase):
