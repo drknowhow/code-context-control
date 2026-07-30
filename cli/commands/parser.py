@@ -447,6 +447,30 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
     cr_import.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
+    # ── Agent Locks (docs/agent-locks.md) ───────────────────────────────
+    # force-release is human-only: it bumps the fencing counter so a holder
+    # that comes back is stale by construction. Agents get c3_locks instead,
+    # which deliberately has no force action.
+    p_locks = subparsers.add_parser(
+        "locks", help="Agent leases — see who holds which file, release a stuck one")
+    locks_subs = p_locks.add_subparsers(dest="locks_cmd")
+
+    lk_list = locks_subs.add_parser("list", help="Show active leases")
+    lk_list.add_argument("--path", dest="project_path", default=".")
+
+    lk_rel = locks_subs.add_parser("release", help="Release leases held by a session")
+    lk_rel.add_argument("--session", required=True, help="session_id to release")
+    lk_rel.add_argument("--path", dest="project_path", default=".")
+
+    lk_force = locks_subs.add_parser(
+        "force-release", help="Break one lease regardless of holder (audited)")
+    lk_force.add_argument("file", help="Project-relative path to unlock")
+    lk_force.add_argument("--note", default="", help="Why — recorded in the ledger")
+    lk_force.add_argument("--path", dest="project_path", default=".")
+
+    lk_sweep = locks_subs.add_parser("sweep", help="Drop expired leases now")
+    lk_sweep.add_argument("--path", dest="project_path", default=".")
+
     # ── Access Guard (v2.62.0) ──────────────────────────────────────────
     # Human-only mutation surface (frozen spec docs/access-guard.md §1):
     # rule changes happen here or in the UI tab, never via an agent tool.
@@ -482,6 +506,24 @@ def build_parser(version: str, parse_cli_ide_arg):
     ac_check.add_argument("--op", choices=["read", "write"], default="read",
                           help="Operation to evaluate (default: read)")
     ac_check.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    # ── Builtin opt-out (two-key) ───────────────────────────────────────
+    # Builtins are on by default. Switching one off needs a config entry AND
+    # a keyring attestation, so an agent that writes config.json alone still
+    # cannot loosen the guard. Global scope only — project scopes may only
+    # ever tighten. The credential-vault builtins are never disableable.
+    ac_builtin = access_subs.add_parser(
+        "builtin", help="Disable or re-enable a built-in guard (global, needs confirmation)")
+    builtin_subs = ac_builtin.add_subparsers(dest="builtin_cmd")
+    for _name, _help in (("disable", "Stop enforcing a built-in guard"),
+                         ("enable", "Re-enforce a built-in guard")):
+        _p = builtin_subs.add_parser(_name, help=_help)
+        _p.add_argument("glob", help="One of: **/.env*, **/.c3/**, **/.claude/settings*.json, **/.git/**")
+        _p.add_argument("--path", dest="project_path", default=".",
+                        help="Project directory used for the audit log (default: current)")
+        if _name == "disable":
+            _p.add_argument("--yes", action="store_true",
+                            help="Skip the typed confirmation (scripts/CI)")
 
     # ── Mask Guard (v2.63.0, docs/mask-guard.md) ────────────────────────
     # Masking exposes a path but transforms what the agent sees. Rules are

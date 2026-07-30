@@ -217,6 +217,23 @@ duration of one read → replace → write, it gives genuine mutual exclusion fo
 Sidecars are never deleted. They are empty files, one per distinct path ever
 edited; unlinking on release would race a waiter that already opened the fd.
 
+**Two more corrections, from building Layer B:**
+
+5. **The `c3_project` row above was wrong.** It claimed the proxy runs with the
+   caller's `svc`, so the target project's lock file might not be used.
+   Untrue: `cli/tools/project.py` builds a *foreign runtime* for the resolved
+   target (`_runtime_for(resolved["path"])`), so `svc.project_path` is already
+   the target. Nothing needed fixing there.
+6. **But it exposed a worse bug than the one it claimed.** Lease identity came
+   from `session_mgr.current_session["id"]`, which is empty in plenty of real
+   contexts — including that foreign runtime. Two *different* agents both
+   resolving to `""` counted as **one session**, so they stopped blocking each
+   other: silent under-blocking, the exact failure a lock exists to prevent.
+   Identity now falls back to `pid-<os.getpid()>` and never to `""`. Each
+   Claude Code session runs its own `c3-mcp` process, so the pid is a faithful
+   stand-in — and it is also the *right* identity for `c3_project`, whose
+   foreign runtime still executes inside the calling agent's process.
+
 ---
 
 ## 6. Refusal contract
@@ -405,13 +422,56 @@ producing the denial data that tells you whether Phase 3 is worth building.
    existed in the first place. **Live activation is manual:** the installer's
    idempotency check keys off `"fleetdeck hook" in command`, so it will not
    rewrite an existing `~/.claude/settings.json`.
-3. **Lease service + `c3_locks` + gates + refusal strings.** ~400 LOC. Local
-   backend only. **Gated on P2 denial data** — with the daemon now running and
-   the matcher live, that data starts accruing.
-4. **Hub tab + FleetDeck read integration.** ~200 LOC.
+3. ~~**Lease service + `c3_locks` + gates + refusal strings.**~~ **DONE.**
+   `services/agent_locks.py` (per-project `.c3/locks.json`, all-or-nothing
+   acquire, TTL, fencing, sweep, force-release), the `c3_locks` tool,
+   `c3 locks` for the human-only force-release, and the gate in `c3_edit`.
+   Local backend only. Built **without** the denial data it was gated on —
+   Dimitri chose to override that gate, so §14's open questions were answered
+   by judgement rather than evidence. Flagged here so a later reader knows
+   which choices are unvalidated.
+4. **Hub tab + FleetDeck read integration.** Half done.
+   - **DONE:** `fleetdeck/c3_locks.py` — a strictly read-only reader over
+     `.c3/locks.json`, with a test asserting the module contains no write
+     calls at all. FleetDeck renders C3's leases; it never owns them.
+   - **NOT DONE:** the Hub UI tab. It needs a component plus wiring in
+     `sidebar.js`/`app.js` and REST endpoints, and it wants browser
+     verification rather than being rushed into a security-adjacent PR.
 
-Read the denial log before starting 3. If Claude sessions rarely collide in
-practice, 3 and 4 are ~600 LOC solving a problem you do not have.
+### A third correction, from CI
+
+`normalize_relpath` was ported from `fleetdeck/paths.py`, which assumes a
+Windows host: only drive-letter and `/mnt/` forms counted as absolute. C3 ships
+cross-platform, so on POSIX every absolute path fell through to the
+*repo-relative* branch — a lease taken as `services/router.py` was looked up as
+`tmp/xyz/services/router.py`, and the gate found nothing. Leases silently did
+not work on Linux or macOS.
+
+Same class as the Layer A sidecar bug two phases earlier: **a key computable
+two ways is not a key.** Both times the Windows dev box hid it, and both times
+CI on the other platforms caught it. The regression test asserts that the
+absolute and relative spellings of one file agree, using a real temp root —
+a literal `/tmp/x` assertion is meaningless on Windows, where `os.path.abspath`
+rewrites it to the current drive.
+
+A leading-slash path that is *not* under the root still reads as repo-relative,
+because `/src/api.py` is how agents write relpaths, not a failed absolute path.
+
+### What was decided without evidence
+
+§14's open questions were live when Phase 3 was built. Recorded so they can be
+revisited once real denial data exists:
+
+- **Implicit acquisition won.** `c3_edit` takes a lease on the file it edits,
+  intent derived from the edit summary. Explicit `c3_locks(acquire)` remains
+  for declaring a multi-file refactor up front. Reasoning: an explicit-only
+  design produces better intent strings, but agents forget explicit steps, and
+  a lease nobody takes protects nobody.
+- **Leases do not block reads.** A read-side *warning* may still be worth more
+  than the lock, and is not built.
+- **`c3_impact` is not wired into acquisition.** Locking a symbol's callers
+  would turn one edit into a twenty-file lease that wedges everyone.
+- **File-level granularity only.**
 
 ---
 

@@ -257,7 +257,8 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_session", "mcp__c3__c3_status", "mcp__c3__c3_filter",
     "mcp__c3__c3_memory", "mcp__c3__c3_validate", "mcp__c3__c3_edit",
     "mcp__c3__c3_agent", "mcp__c3__c3_delegate", "mcp__c3__c3_edits",
-    "mcp__c3__c3_impact", "mcp__c3__c3_shell", "mcp__c3__c3_bitbucket",
+    "mcp__c3__c3_impact", "mcp__c3__c3_locks", "mcp__c3__c3_shell",
+    "mcp__c3__c3_bitbucket",
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
 ]
@@ -5208,6 +5209,7 @@ def cmd_install_mcp(args):
             "mcp__c3__c3_edit",
             "mcp__c3__c3_edits",
             "mcp__c3__c3_impact",
+            "mcp__c3__c3_locks",
             "mcp__c3__c3_status",
             "mcp__c3__c3_delegate",
             "mcp__c3__c3_session",
@@ -5923,12 +5925,90 @@ def _creds_cmd_import(args, project_path: str) -> None:
               "(use --overwrite to replace)")
 
 
+def cmd_locks(args):
+    """Agent Locks — human surface. force-release lives here, never in c3_locks."""
+    from services import agent_locks as al
+
+    sub = getattr(args, "locks_cmd", None) or "list"
+    project_path = getattr(args, "project_path", ".") or "."
+    store = al.store_for(project_path)
+    cfg = al.config(project_path)
+
+    if sub == "list":
+        snap = store.snapshot()
+        print(f"{snap['count']} active lease(s) — mode={cfg['mode']}, "
+              f"enabled={cfg['enabled']}, fencing={snap['fencing']}")
+        if not snap["locks"]:
+            return
+        print(f"  {'file':<44} {'holder':<24} {'left':<8} intent")
+        for row in snap["locks"]:
+            left = int(max(0, row.get("expires_in_s", 0)))
+            print(f"  {row['relpath']:<44} {row['agent_id']:<24} "
+                  f"{left//60}m{left % 60:02d}s   {row.get('intent', '')}")
+        return
+
+    if sub == "release":
+        res = store.release(session_id=args.session)
+        print(f"Released {res['count']} lease(s)"
+              + (f": {', '.join(res['released'])}" if res["released"] else ""))
+        return
+
+    if sub == "force-release":
+        res = store.force_release(args.file, by="cli", note=args.note)
+        if not res.get("forced"):
+            print(f"[error] {res.get('error')}: {res.get('reason', '')}")
+            return
+        _locks_audit(args.file, res, project_path, args.note)
+        if res["was_locked"]:
+            print(f"[OK] Broke the lease on {res['relpath']} "
+                  f"(was held by {res['previous_owner']}).")
+            print("     The fencing token moved, so the old holder is stale "
+                  "even if it thinks it still holds it.")
+        else:
+            print(f"[=] {res['relpath']} was not locked; fencing bumped anyway.")
+        return
+
+    if sub == "sweep":
+        res = store.sweep()
+        print(f"Swept {res['count']} expired lease(s)"
+              + (f": {', '.join(res['expired'])}" if res["expired"] else ""))
+        return
+
+    print("Usage: c3 locks {list,release,force-release,sweep}")
+
+
+def _locks_audit(target: str, res: dict, project_path: str, note: str) -> None:
+    """Ledger + activity log for a human lease override. Failure-safe."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(project_path).log("lock_force_release", {
+            "kind": "locks", "relpath": res.get("relpath"),
+            "previous_owner": res.get("previous_owner"), "via": "cli",
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(project_path).log_edit(
+            file=f"lock://{res.get('relpath', target)}",
+            change_type="lock_force_release",
+            summary=f"force-released lease on {res.get('relpath', target)}"
+                    + (f" — {note}" if note else ""),
+            tags=["locks", "force_release"],
+            detail={"kind": "locks", "previous_owner": res.get("previous_owner"),
+                    "was_locked": res.get("was_locked"), "note": note},
+        )
+    except Exception:
+        pass
+
+
 def cmd_access(args):
     """Access Guard rule management — human-only mutation surface (spec §1)."""
     sub = getattr(args, "access_cmd", None)
     if not sub:
-        print("Usage: c3 access {list,add,remove,check,mask} [args]")
+        print("Usage: c3 access {list,add,remove,check,mask,builtin} [args]")
         print("       c3 access mask {add,rm,status,activate,preview} [args]")
+        print("       c3 access builtin {disable,enable} <glob>")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -5943,6 +6023,8 @@ def cmd_access(args):
         _access_cmd_check(args, project_path)
     elif sub == "mask":
         _access_cmd_mask(args, project_path)
+    elif sub == "builtin":
+        _access_cmd_builtin(args, project_path)
     else:
         print(f"Unknown access subcommand: {sub}")
 
@@ -5998,6 +6080,21 @@ def _access_cmd_list(args, project_path: str) -> None:
             print("  [warn] access section invalid — scope fails closed "
                   "(deny-all); fix config.json 'access' by hand")
         if scope == "builtin":
+            off = sec.get("disabled") or []
+            if off:
+                print("  DISABLED by you (not enforced):")
+                for glob in off:
+                    print(f"    {'off':<10} {glob}")
+                print("    re-enable: c3 access builtin enable <glob>")
+            can = [g for g in (sec.get("disableable") or [])
+                   if access_guard._norm_builtin(g) not in set(off)]
+            if can:
+                print("  disableable (currently on): "
+                      + ", ".join(can))
+                print("    disable: c3 access builtin disable <glob>")
+            if sec.get("absolute"):
+                print("  absolute (credential vault, cannot be disabled): "
+                      + ", ".join(sec["absolute"]))
             print("  spelling rules (deny by how a path is written, no glob):")
             for name, why in access_guard.SYNTHETIC_RULES:
                 print(f"    {name:<18} {why}")
@@ -6008,6 +6105,58 @@ def _access_cmd_list(args, project_path: str) -> None:
         print(summary)
         print()
     print(access_guard.COVERAGE_MATRIX)
+
+
+def _access_cmd_builtin(args, project_path: str) -> None:
+    """Switch a Tier-1 builtin off or back on. Human-only; always global scope.
+
+    Disabling asks for typed confirmation unless --yes: these guards are what
+    stop an agent rewriting its own hooks, settings or git history, and the
+    consequence deserves a beat of friction.
+    """
+    from services import access_guard
+
+    action = getattr(args, "builtin_cmd", None)
+    glob = getattr(args, "glob", None)
+    if action not in ("disable", "enable") or not glob:
+        print("Usage: c3 access builtin {disable,enable} <glob>")
+        print("       disableable: "
+              + ", ".join(access_guard.DISABLEABLE_BUILTINS))
+        return
+
+    disabling = action == "disable"
+    if disabling and not getattr(args, "yes", False):
+        print(f"About to STOP enforcing the builtin guard on: {glob}")
+        print("  While off, any agent with C3 tools can write those paths.")
+        if glob.endswith("settings*.json") or ".claude" in glob:
+            print("  This is the file that configures the agent itself — hooks,")
+            print("  permissions, model. An agent could rewrite its own rules.")
+        reply = input("Type the glob again to confirm: ").strip()
+        if reply != glob:
+            print("[abort] Not confirmed; nothing changed.")
+            return
+
+    try:
+        result = access_guard.set_builtin_disabled(glob, disabling)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+
+    _access_audit(f"builtin_{action}", result["glob"], "builtin", "global",
+                  project_path)
+    if not result["changed"]:
+        state = "already disabled" if disabling else "already enforced"
+        print(f"[=] {result['glob']} — {state}")
+        return
+    if disabling:
+        print(f"[OK] Builtin '{result['glob']}' DISABLED (global scope).")
+        print("     Re-enable with: c3 access builtin enable "
+              f"{result['glob']}")
+    else:
+        print(f"[OK] Builtin '{result['glob']}' re-enforced.")
+        if not result["attested"]:
+            print("     [warn] keyring attestation could not be cleared; the "
+                  "builtin is enforced anyway (config entry removed).")
 
 
 def _access_cmd_add(args, project_path: str) -> None:
@@ -7583,6 +7732,7 @@ def main():
         "jira": cmd_jira,
         "creds": cmd_creds,
         "access": cmd_access,
+        "locks": cmd_locks,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,
     }

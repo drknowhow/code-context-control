@@ -741,6 +741,24 @@ async def c3_edits(action: str, file: str = "", change_type: str = "modified",
 
 
 @mcp.tool()
+async def c3_locks(action: str = "list", paths: str = "", intent: str = "",
+                   ttl_s: int = 0, ctx: Context = None) -> str:
+    """AGENT LEASES — who is working on which file, so two agents don't collide.
+    actions: list (default), acquire, release, renew, sweep.
+    paths: comma-separated, project-relative. Acquisition is ALL-OR-NOTHING.
+    intent: short note other agents see when they are blocked ("refactor retry backoff").
+    c3_edit already leases what it edits; use acquire to claim a multi-file refactor up front."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.locks import handle_locks
+    return await asyncio.to_thread(handle_locks, action, paths, intent, ttl_s,
+                                   svc, finalize)
+
+
+@mcp.tool()
 async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
                     ctx: Context = None) -> str:
     """BLAST RADIUS before editing a shared symbol — all call sites, imports, references.
