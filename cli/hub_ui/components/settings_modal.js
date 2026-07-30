@@ -187,12 +187,6 @@ function SettingsModal({ onClose, onChanged }) {
         </div>
       )}
 
-      <div style={{ marginTop: 18, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
-        <a href="/legacy" style={{ fontSize: 11, color: T.textMuted, textDecoration: 'none' }}>
-          Legacy UI (pre-2.44)
-        </a>
-      </div>
-
       {confirmAction === 'stop' && (
         <ConfirmDialog title="Stop Hub"
           message="The page will become unreachable until the hub is restarted (c3 hub)."

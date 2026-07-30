@@ -379,12 +379,6 @@ def index():
     return Response(_hub_html_cache, mimetype="text/html")
 
 
-@app.route("/legacy")
-def index_legacy():
-    """Frozen pre-2.44 hub UI — escape hatch for one release, then removed."""
-    return send_from_directory(str(Path(__file__).parent), "hub.html")
-
-
 @app.route("/guide/")
 @app.route("/guide/<path:filename>")
 def serve_guide(filename="index.html"):
