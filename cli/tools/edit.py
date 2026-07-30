@@ -5,20 +5,38 @@ so c3_read → c3_edit works without an intermediate redundant native read.
 
 Parallel safety:
 - Different files: safe to call concurrently (no shared state).
-- Same file: serialized via per-file threading.Lock (_file_locks).
+- Same file: serialized by _edit_lock — a threading.Lock (other threads in this
+  process) plus a cross-process file lock (other c3-mcp processes). Every Claude
+  Code session runs its own c3-mcp server, so the second layer is the one that
+  actually stops two sessions clobbering each other. Covers create, single-edit
+  and batch modes alike.
 - Same file, multiple hunks: use the `edits` batch parameter — one read/write cycle.
+
+See docs/agent-locks.md §5 (Layer A).
 """
 import difflib
+import hashlib
 import json
+import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from services import access_guard
 from services import credential_store as _cs
+from services.task_store import _FileLock
 
-# Per-file locks — keyed by resolved absolute path string.
+# ── Same-file serialization ───────────────────────────────────────────────
+# In-process locks, keyed by resolved absolute path string.
 _file_locks: dict[str, threading.Lock] = {}
 _locks_lock = threading.Lock()
+
+# Cross-process lock sidecars. Machine-global and keyed by a hash of the
+# RESOLVED TARGET path — deliberately not under svc.project_path, because
+# c3_project(action='edit') proxies into handle_edit with the *caller's* svc.
+# A project-scoped sidecar would hand two agents editing the same file two
+# different locks, i.e. no mutual exclusion at all.
+_EDIT_LOCK_DIR = Path.home() / ".c3" / "edit_locks"
 
 
 def _get_file_lock(path: Path) -> threading.Lock:
@@ -27,6 +45,40 @@ def _get_file_lock(path: Path) -> threading.Lock:
         if key not in _file_locks:
             _file_locks[key] = threading.Lock()
         return _file_locks[key]
+
+
+def _lock_sidecar(path: Path) -> Path:
+    """Sidecar for `path`. Two spellings of one file MUST return one sidecar.
+
+    resolve() here even though handle_edit already resolves: mutual exclusion
+    silently evaporates if any caller hashes an unresolved path, and "silently"
+    is the whole problem — you get a green badge and a lost edit. macOS
+    /var → /private/var and Windows 8.3 names (RUNNER~1 → runneradmin) are the
+    two spellings that actually bite. Non-strict, so a not-yet-created file
+    still resolves.
+
+    normcase, not casefold: Windows paths are case-insensitive (so two
+    spellings must collide), POSIX paths are not (so they must not).
+    """
+    try:
+        path = path.resolve()
+    except OSError:
+        pass  # unresolvable: hash what we were given rather than lock nothing
+    digest = hashlib.sha1(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+    return _EDIT_LOCK_DIR / f"{digest}.lock"
+
+
+@contextmanager
+def _edit_lock(path: Path):
+    """Serialize edits to `path` across threads AND processes.
+
+    Mirrors the `with self._lock, _FileLock(...)` guard in
+    services/task_store.py. Raises TimeoutError when another process holds the
+    file past _FileLock's bounded wait — surfaced as a refusal rather than
+    blocking a session indefinitely behind a wedged holder.
+    """
+    with _get_file_lock(path), _FileLock(_lock_sidecar(path)):
+        yield
 
 
 def _read_preserving_newlines(path: Path) -> tuple[str, str]:
@@ -262,6 +314,28 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                         access_guard.refusal(denial, file_path, op),
                         "access-denied")
 
+    # Everything that reads or writes the file runs under one lock, held for
+    # the whole read → modify → write cycle. Create mode is inside it too:
+    # without that, two agents creating the same path both "succeed" and the
+    # loser's content is silently gone.
+    try:
+        with _edit_lock(path):
+            return _edit_locked(path, rel, file_path, old_string, new_string,
+                                summary, tags, replace_all, svc, finalize, edits)
+    except TimeoutError:
+        return finalize(
+            "c3_edit", {"file": file_path},
+            f"[c3-lock:busy] {rel} is held by another C3 process and did not free "
+            f"up in time.\n"
+            f"  This is contention, not an error — do not route around it via "
+            f"c3_shell or native Write. Retry, or edit a different file.",
+            "lock busy")
+
+
+def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
+                 new_string: str, summary: str, tags: str, replace_all: bool,
+                 svc, finalize, edits: str) -> str:
+    """Create / batch / single-edit bodies. Always called under _edit_lock."""
     # ── Create mode ───────────────────────────────────────────────────────────
     # File doesn't exist + single-edit mode + empty old_string → create file.
     # Batch mode always requires an existing file.
@@ -295,8 +369,6 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     # Parse tag list once
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
-    file_lock = _get_file_lock(path)
-
     # ── Batch mode ────────────────────────────────────────────────────────────
     if edits:
         try:
@@ -315,69 +387,68 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
                             "({old_string, new_string, ...}); a non-object element was found",
                             "bad edits param")
 
-        with file_lock:
+        try:
+            content, _newline = _read_preserving_newlines(path)
+        except Exception as e:
+            return finalize("c3_edit", {"file": file_path},
+                            f"Read error: {e}", "read error")
+
+        results = []
+        statuses = []   # parallel to results: 'ok' | 'miss' | 'ambiguous' | 'skipped'
+        any_normalized = False
+        any_applied = False
+        first_miss = ""
+        for i, patch in enumerate(edit_list):
+            old = patch.get("old_string", "")
+            new = patch.get("new_string", "")
+            patch_summary = patch.get("summary", "")
+            r_all = patch.get("replace_all", False)
+
+            if not old:
+                results.append(f"  patch[{i}]: skipped — empty old_string")
+                statuses.append("skipped")
+                continue
+
+            new_content, count, used_fallback = _apply_replacement(content, old, new, r_all)
+            if new_content is None and count == 0:
+                near = _closest_region(content, old)
+                loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
+                       if near else "")
+                results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}{loc}")
+                statuses.append("miss")
+                if near and not first_miss:
+                    first_miss = _not_found_payload(near, file_path)
+                continue
+            if new_content is None:
+                tag = " (unicode-normalized)" if used_fallback else ""
+                results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches){tag} — {old[:60]!r}")
+                statuses.append("ambiguous")
+                continue
+
+            content = new_content
+            any_applied = True
+            n = count if r_all else 1
+            if used_fallback:
+                any_normalized = True
+
+            n_old = old.count("\n") + 1
+            n_new = new.count("\n") + 1
+            desc = patch_summary or f"{old[:50]!r} → {new[:50]!r}"
+            results.append(f"  patch[{i}]: -{n_old}L +{n_new}L"
+                            + (f" ({n}x)" if n > 1 else "")
+                            + (" [norm]" if used_fallback else "")
+                            + f" | {desc}")
+            statuses.append("ok")
+
+        # Only touch the file when at least one patch actually changed it —
+        # avoids rewriting (and re-EOL-normalizing) an unchanged file and
+        # logging a phantom ledger entry when every patch missed.
+        if any_applied:
             try:
-                content, _newline = _read_preserving_newlines(path)
+                _write_preserving_newlines(path, content, _newline)
             except Exception as e:
                 return finalize("c3_edit", {"file": file_path},
-                                f"Read error: {e}", "read error")
-
-            results = []
-            statuses = []   # parallel to results: 'ok' | 'miss' | 'ambiguous' | 'skipped'
-            any_normalized = False
-            any_applied = False
-            first_miss = ""
-            for i, patch in enumerate(edit_list):
-                old = patch.get("old_string", "")
-                new = patch.get("new_string", "")
-                patch_summary = patch.get("summary", "")
-                r_all = patch.get("replace_all", False)
-
-                if not old:
-                    results.append(f"  patch[{i}]: skipped — empty old_string")
-                    statuses.append("skipped")
-                    continue
-
-                new_content, count, used_fallback = _apply_replacement(content, old, new, r_all)
-                if new_content is None and count == 0:
-                    near = _closest_region(content, old)
-                    loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
-                           if near else "")
-                    results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}{loc}")
-                    statuses.append("miss")
-                    if near and not first_miss:
-                        first_miss = _not_found_payload(near, file_path)
-                    continue
-                if new_content is None:
-                    tag = " (unicode-normalized)" if used_fallback else ""
-                    results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches){tag} — {old[:60]!r}")
-                    statuses.append("ambiguous")
-                    continue
-
-                content = new_content
-                any_applied = True
-                n = count if r_all else 1
-                if used_fallback:
-                    any_normalized = True
-
-                n_old = old.count("\n") + 1
-                n_new = new.count("\n") + 1
-                desc = patch_summary or f"{old[:50]!r} → {new[:50]!r}"
-                results.append(f"  patch[{i}]: -{n_old}L +{n_new}L"
-                                + (f" ({n}x)" if n > 1 else "")
-                                + (" [norm]" if used_fallback else "")
-                                + f" | {desc}")
-                statuses.append("ok")
-
-            # Only touch the file when at least one patch actually changed it —
-            # avoids rewriting (and re-EOL-normalizing) an unchanged file and
-            # logging a phantom ledger entry when every patch missed.
-            if any_applied:
-                try:
-                    _write_preserving_newlines(path, content, _newline)
-                except Exception as e:
-                    return finalize("c3_edit", {"file": file_path},
-                                    f"Write error: {e}", "write error")
+                                f"Write error: {e}", "write error")
 
         # Log batch to ledger as one entry (store each patch's old/new for diff view)
         if any_applied:
@@ -409,39 +480,38 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     if old_string is None:
         return finalize("c3_edit", {"file": file_path}, "old_string is required", "missing param")
 
-    with file_lock:
-        try:
-            content, _newline = _read_preserving_newlines(path)
-        except Exception as e:
-            return finalize("c3_edit", {"file": file_path},
-                            f"Read error: {e}", "read error")
+    try:
+        content, _newline = _read_preserving_newlines(path)
+    except Exception as e:
+        return finalize("c3_edit", {"file": file_path},
+                        f"Read error: {e}", "read error")
 
-        new_content, count, used_fallback = _apply_replacement(
-            content, old_string, new_string, replace_all)
+    new_content, count, used_fallback = _apply_replacement(
+        content, old_string, new_string, replace_all)
 
-        if new_content is None and count == 0:
-            hint = ""
-            if _norm(old_string) != old_string or _norm(content) != content:
-                hint = "\n  hint: unicode-lookalike normalization also failed to match."
-            hint += _not_found_payload(_closest_region(content, old_string), file_path)
-            return finalize("c3_edit", {"file": file_path},
-                            f"old_string not found in {file_path}\n"
-                            f"  searched for: {old_string[:120]!r}{hint}",
-                            "not found")
-        if new_content is None:
-            hint = " (after unicode-lookalike normalization)" if used_fallback else ""
-            return finalize("c3_edit", {"file": file_path},
-                            f"old_string matches {count} locations{hint} — add more context to make it unique, "
-                            f"or pass replace_all=true to replace all occurrences.",
-                            "ambiguous")
+    if new_content is None and count == 0:
+        hint = ""
+        if _norm(old_string) != old_string or _norm(content) != content:
+            hint = "\n  hint: unicode-lookalike normalization also failed to match."
+        hint += _not_found_payload(_closest_region(content, old_string), file_path)
+        return finalize("c3_edit", {"file": file_path},
+                        f"old_string not found in {file_path}\n"
+                        f"  searched for: {old_string[:120]!r}{hint}",
+                        "not found")
+    if new_content is None:
+        hint = " (after unicode-lookalike normalization)" if used_fallback else ""
+        return finalize("c3_edit", {"file": file_path},
+                        f"old_string matches {count} locations{hint} — add more context to make it unique, "
+                        f"or pass replace_all=true to replace all occurrences.",
+                        "ambiguous")
 
-        occurrences = count if replace_all else 1
+    occurrences = count if replace_all else 1
 
-        try:
-            _write_preserving_newlines(path, new_content, _newline)
-        except Exception as e:
-            return finalize("c3_edit", {"file": file_path},
-                            f"Write error: {e}", "write error")
+    try:
+        _write_preserving_newlines(path, new_content, _newline)
+    except Exception as e:
+        return finalize("c3_edit", {"file": file_path},
+                        f"Write error: {e}", "write error")
 
     auto_summary = (summary or
                     f"Replaced: {old_string[:60]!r} → {new_string[:60]!r}"

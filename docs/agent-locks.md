@@ -1,8 +1,13 @@
-# Agent Locks — Design Spec (DRAFT, pre-implementation)
+# Agent Locks — Design Spec (DRAFT, Phases 1–2 built)
 
 Status: **DRAFT.** Not frozen. Written 2026-07-30 after reading FleetDeck's
 lock engine (`U:\1. Projects\AgentSync\fleetdeck\locks.py`, `paths.py`,
-`hook.py`) and C3's existing concurrency surface. Nothing here is built yet.
+`hook.py`) and C3's existing concurrency surface.
+
+**Phase 1 (Layer A) and Phase 2 are built** — see §13. Building them corrected
+three things this spec had wrong; those corrections are recorded inline in §5
+rather than quietly patched over, because the errors are instructive. Phases 3
+and 4 (leases) remain unbuilt and are deliberately gated on evidence.
 Freeze this document before Phase 3 starts.
 
 Agent Locks let multiple agents work in one repo — or across several C3
@@ -172,10 +177,45 @@ Seams to gate:
 | `c3_project(action='edit')` | `cli/tools/project.py` | proxies to `handle_edit`, so inherited — verify the target project's lock file is used, not the caller's |
 | native `Edit`/`Write` | `cli/hook_pretool_enforce.py` | C3 already runs a PreToolUse hook here; a lock check is a natural addition. Needed because `hook_edit_unlock.py` legitimately unlocks native Edit after a `c3_read`. |
 
-**Layer A is separate and unconditional.** Replace the `threading.Lock` at
+**Layer A is separate and unconditional.** Compose the `threading.Lock` at
 `edit.py:20` with `_FileLock` regardless of whether leases ship. Held for the
 duration of one read → replace → write, it gives genuine mutual exclusion for
 `c3_edit`-vs-`c3_edit` with no daemon, no TTL, no recovery path.
+
+**Three corrections from building it** (this section originally called Layer A
+"~15 LOC"; it is closer to 40 plus an extract-method refactor):
+
+1. **Create mode was not locked at all.** `file_lock` was only obtained at
+   `edit.py:298`, *after* the create branch had already returned. Two agents
+   creating the same path both reported success and one file silently won —
+   a worse bug than the torn-write case, and not in the original draft. The
+   lock now wraps create, batch and single-edit alike, which is why
+   `handle_edit` splits into a guard/lock wrapper plus `_edit_locked`.
+2. **`_FileLock` raises `TimeoutError`; `threading.Lock` blocks forever.**
+   Swapping them introduces a failure path that did not previously exist.
+   Unbounded waiting is not an option — a wedged holder would hang the MCP
+   server — so contention surfaces as a refusal (§6).
+3. **The Layer A sidecar is machine-global, not project-scoped.** It lives in
+   `~/.c3/edit_locks/<sha1(normcase(resolved path))>.lock`. It must *not* live
+   under `svc.project_path`: `c3_project(action='edit')` proxies into
+   `handle_edit` with the **caller's** `svc`, so a project-scoped sidecar would
+   hand two agents editing one file two different locks. `os.path.normcase`,
+   not `casefold` — Windows paths must collide, POSIX paths must not.
+   This does not contradict §2: *lease* state is target-project-scoped; the
+   Layer A mutex is a machine-scoped primitive and has no project identity.
+4. **The sidecar must hash the RESOLVED path, and the helper must resolve it
+   itself.** Caught by CI, not by review. `handle_edit` already resolves before
+   locking, so the first version of the tests computed the sidecar from the
+   *unresolved* path — the holder locked one file, `c3_edit` locked another,
+   and the exclusion tests silently proved nothing. It passed on Linux (where
+   `/tmp` is a real directory) and on a dev box whose username is too short to
+   get an 8.3 alias; it failed on macOS (`/var` → `/private/var`) and on
+   Windows CI (`RUNNER~1` → `runneradmin`). The lesson generalises: a lock
+   whose key can be computed two ways is not a lock. `_lock_sidecar` now
+   resolves internally so no caller can get it wrong.
+
+Sidecars are never deleted. They are empty files, one per distinct path ever
+edited; unlinking on release would race a waiter that already opened the fd.
 
 ---
 
@@ -199,6 +239,20 @@ turns. This lesson is already banked from Mask Guard.
 
 Strict-mode backend failure is a distinct tag — `[c3-lock:unavailable]` —
 so an agent can tell contention from infrastructure.
+
+Layer A has its own tag, `[c3-lock:busy]` — shipped, and the wording follows
+the same rule:
+
+```
+[c3-lock:busy] services/router.py is held by another C3 process and did not
+free up in time.
+  This is contention, not an error — do not route around it via c3_shell or
+  native Write. Retry, or edit a different file.
+```
+
+`held` means a declared lease with a named owner and an intent; `busy` means
+raw contention on the read-modify-write cycle with no owner to name. Keep them
+distinct — an agent can wait out `busy`, but should not sit spinning on `held`.
 
 ---
 
@@ -242,6 +296,7 @@ Honest scope. Nothing here is containment.
 | A human in an editor | **No** | out of scope |
 | A repo with no `.c3/` | **No** | no lock file, no coordination |
 | Two machines on a shared drive | **No** | neither C3 nor FleetDeck handles this |
+| `API.py` vs `api.py` on a case-insensitive macOS volume | **No** | Layer A case-folds by `os.name`, so on macOS's default case-insensitive APFS one file gets two sidecars. Detecting per-volume case sensitivity at runtime costs more than the bug is worth; recorded here rather than papered over. |
 
 The Hub badge must reflect this matrix. A repo where agents mostly work
 through `c3_shell` is not meaningfully protected and should not look like it
@@ -339,18 +394,24 @@ producing the denial data that tells you whether Phase 3 is worth building.
 
 ## 13. Phasing
 
-1. **`_FileLock` in `edit.py`.** Cross-process torn-write safety. ~15 LOC +
-   tests. No new concepts, no daemon, ships standalone. Do this regardless of
-   everything below.
-2. **FleetDeck two-line matcher fix** (§11). Restores coverage today and
-   answers the empirical question: *do these agents actually collide, and
-   where?*
+1. ~~**`_FileLock` in `edit.py`.**~~ **DONE.** Cross-process torn-write safety,
+   plus the create-mode hole found while building it. ~40 LOC + 12 tests
+   (`tests/test_edit_locking.py`, real second process — an in-process thread
+   would prove nothing). No daemon, ships standalone.
+2. ~~**FleetDeck matcher fix** (§11).~~ **DONE in source.** `mcp__c3__c3_edit`
+   added to `hook.EDIT_TOOLS`, and the PreToolUse matcher is now *derived* from
+   that same tuple (`hook.EDIT_TOOL_MATCHER`, used by `cli._hook_blocks`) so the
+   gate and the matcher cannot drift apart again — which is how this bug
+   existed in the first place. **Live activation is manual:** the installer's
+   idempotency check keys off `"fleetdeck hook" in command`, so it will not
+   rewrite an existing `~/.claude/settings.json`.
 3. **Lease service + `c3_locks` + gates + refusal strings.** ~400 LOC. Local
-   backend only.
+   backend only. **Gated on P2 denial data** — with the daemon now running and
+   the matcher live, that data starts accruing.
 4. **Hub tab + FleetDeck read integration.** ~200 LOC.
 
-Phases 1–2 are an afternoon. Run them, read the denial log, and let that
-decide whether 3 and 4 are worth building.
+Read the denial log before starting 3. If Claude sessions rarely collide in
+practice, 3 and 4 are ~600 LOC solving a problem you do not have.
 
 ---
 
