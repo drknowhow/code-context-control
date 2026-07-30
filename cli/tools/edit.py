@@ -48,8 +48,22 @@ def _get_file_lock(path: Path) -> threading.Lock:
 
 
 def _lock_sidecar(path: Path) -> Path:
-    # normcase, not casefold: Windows paths are case-insensitive (so two
-    # spellings must collide), POSIX paths are not (so they must not).
+    """Sidecar for `path`. Two spellings of one file MUST return one sidecar.
+
+    resolve() here even though handle_edit already resolves: mutual exclusion
+    silently evaporates if any caller hashes an unresolved path, and "silently"
+    is the whole problem — you get a green badge and a lost edit. macOS
+    /var → /private/var and Windows 8.3 names (RUNNER~1 → runneradmin) are the
+    two spellings that actually bite. Non-strict, so a not-yet-created file
+    still resolves.
+
+    normcase, not casefold: Windows paths are case-insensitive (so two
+    spellings must collide), POSIX paths are not (so they must not).
+    """
+    try:
+        path = path.resolve()
+    except OSError:
+        pass  # unresolvable: hash what we were given rather than lock nothing
     digest = hashlib.sha1(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
     return _EDIT_LOCK_DIR / f"{digest}.lock"
 

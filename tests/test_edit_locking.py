@@ -74,10 +74,50 @@ class TestSidecarIdentity(unittest.TestCase):
 
     def test_case_follows_platform(self):
         """Windows paths are case-insensitive, so two spellings of one file must
-        collide. POSIX paths are case-sensitive, so they must not."""
+        collide. POSIX paths are case-sensitive, so they must not.
+
+        Known residual: macOS ships a case-INsensitive filesystem by default, so
+        there API.py and api.py are one file but get two sidecars. Documented in
+        docs/agent-locks.md §9 rather than papered over — detecting per-volume
+        case sensitivity at runtime costs more than the bug is worth."""
         base = Path(tempfile.gettempdir()) / "c3lock"
         same = _lock_sidecar(base / "API.py") == _lock_sidecar(base / "api.py")
         self.assertEqual(same, os.name == "nt")
+
+    def test_sidecar_is_spelling_independent(self):
+        """The invariant CI caught: exclusion evaporates unless every spelling of
+        one file hashes to one sidecar. handle_edit resolves before locking, so
+        anything computing a sidecar from an UNRESOLVED path locks a different
+        file and blocks nothing — silently, which is the dangerous part."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pkg").mkdir()
+            target = root / "pkg" / "mod.py"
+            target.write_text("x\n", encoding="utf-8")
+
+            spellings = [
+                target,
+                root / "pkg" / "." / "mod.py",
+                root / "pkg" / ".." / "pkg" / "mod.py",
+            ]
+            sidecars = {str(_lock_sidecar(p)) for p in spellings}
+            self.assertEqual(len(sidecars), 1, f"spellings diverged: {sidecars}")
+
+    def test_sidecar_follows_symlinked_parent(self):
+        """macOS /var -> /private/var is exactly this case, and it is what made
+        the first version of these tests pass on Linux while proving nothing on
+        macOS: the holder locked one path, c3_edit locked another."""
+        if os.name == "nt":
+            self.skipTest("symlink creation requires privilege on Windows")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            real = root / "real"
+            real.mkdir()
+            (real / "m.py").write_text("x\n", encoding="utf-8")
+            link = root / "link"
+            os.symlink(real, link)
+            self.assertEqual(_lock_sidecar(real / "m.py"),
+                             _lock_sidecar(link / "m.py"))
 
     def test_sidecar_ignores_calling_project(self):
         """c3_project(action='edit') proxies into handle_edit with the CALLER's
@@ -114,6 +154,11 @@ class TestCrossProcessExclusion(unittest.TestCase):
     def _hold(self, target: Path):
         """Start a second process holding `target`'s sidecar lock."""
         sidecar = _lock_sidecar(target)
+        # If the holder's sidecar ever diverges from the one c3_edit computes,
+        # every exclusion test below silently proves nothing — it locks a file
+        # nobody contends for. Assert here so the failure names its own cause.
+        self.assertEqual(sidecar, _lock_sidecar(target.resolve()),
+                         "sidecar must not depend on how the path is spelled")
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         ready = self.root / "held.flag"
         repo = str(Path(__file__).resolve().parents[1])

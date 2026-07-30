@@ -203,6 +203,16 @@ duration of one read → replace → write, it gives genuine mutual exclusion fo
    not `casefold` — Windows paths must collide, POSIX paths must not.
    This does not contradict §2: *lease* state is target-project-scoped; the
    Layer A mutex is a machine-scoped primitive and has no project identity.
+4. **The sidecar must hash the RESOLVED path, and the helper must resolve it
+   itself.** Caught by CI, not by review. `handle_edit` already resolves before
+   locking, so the first version of the tests computed the sidecar from the
+   *unresolved* path — the holder locked one file, `c3_edit` locked another,
+   and the exclusion tests silently proved nothing. It passed on Linux (where
+   `/tmp` is a real directory) and on a dev box whose username is too short to
+   get an 8.3 alias; it failed on macOS (`/var` → `/private/var`) and on
+   Windows CI (`RUNNER~1` → `runneradmin`). The lesson generalises: a lock
+   whose key can be computed two ways is not a lock. `_lock_sidecar` now
+   resolves internally so no caller can get it wrong.
 
 Sidecars are never deleted. They are empty files, one per distinct path ever
 edited; unlinking on release would race a waiter that already opened the fd.
@@ -286,6 +296,7 @@ Honest scope. Nothing here is containment.
 | A human in an editor | **No** | out of scope |
 | A repo with no `.c3/` | **No** | no lock file, no coordination |
 | Two machines on a shared drive | **No** | neither C3 nor FleetDeck handles this |
+| `API.py` vs `api.py` on a case-insensitive macOS volume | **No** | Layer A case-folds by `os.name`, so on macOS's default case-insensitive APFS one file gets two sidecars. Detecting per-volume case sensitivity at runtime costs more than the bug is worth; recorded here rather than papered over. |
 
 The Hub badge must reflect this matrix. A repo where agents mostly work
 through `c3_shell` is not meaningfully protected and should not look like it
