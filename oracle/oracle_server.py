@@ -16,7 +16,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from flask import Flask, Response, jsonify, request  # noqa: E402
+from flask import Flask, Response, jsonify, redirect, request, url_for  # noqa: E402
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
@@ -233,6 +233,10 @@ def _local_write_guard():
         return None
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
+    # The bootstrap mint is how a browser ACQUIRES the cookie, so it cannot
+    # require one. It runs its own loopback + bootstrap-key/Bearer check.
+    if path == "/api/session/bootstrap":
+        return None
     if verify_api_key(extract_bearer(request.headers.get("Authorization"))):
         return None
     if local_session.verify(request.cookies.get(local_session.COOKIE_NAME)):
@@ -292,14 +296,48 @@ _oracle_html_cache: str | None = None
 @app.route("/")
 def index():
     global _oracle_html_cache
+    # A single-use bootstrap code is the ONLY way to obtain the session
+    # cookie (#31). Redeeming it redirects to a clean "/" so the code does
+    # not linger in the address bar, browser history, or a Referer header.
+    code = request.args.get(local_session.BOOTSTRAP_PARAM)
+    if code:
+        if local_session.is_loopback(request.remote_addr) and \
+                local_session.consume_code(code):
+            resp = redirect(url_for("index"))
+            local_session.attach_cookie(resp)
+            return resp
+        return redirect(url_for("index", stale="1"))
+
     if _oracle_html_cache is None:
         _oracle_html_cache = _build_oracle_html()
-    resp = Response(_oracle_html_cache, mimetype="text/html")
-    # Issue the dashboard session cookie only to loopback browsers; remote
-    # viewers (LAN bind) can read GET dashboards but cannot mutate.
-    if local_session.is_loopback(request.remote_addr):
-        local_session.attach_cookie(resp)
-    return resp
+    # No cookie here by design: plain GET / is readable by any local process,
+    # including one running as a different OS user.
+    return Response(_oracle_html_cache, mimetype="text/html")
+
+
+@app.route("/api/session/bootstrap", methods=["POST"])
+def api_session_bootstrap():
+    """Mint a single-use bootstrap URL. Used by ``c3 oracle open``.
+
+    Authorized by the on-disk bootstrap key (owner-only) or the Discovery
+    Bearer token — both prove same-OS-user access, which is the boundary
+    this feature enforces.
+    """
+    if not local_session.is_loopback(request.remote_addr):
+        return jsonify({"error": "loopback only"}), 403
+    data = request.get_json(silent=True) or {}
+    presented = (data.get("key") or "").strip() or \
+        request.headers.get("X-C3-Bootstrap-Key", "")
+    authorized = local_session.verify_bootstrap_key(presented) or \
+        verify_api_key(extract_bearer(request.headers.get("Authorization")))
+    if not authorized:
+        return jsonify({"error": "unauthorized"}), 401
+    code = local_session.mint_code()
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "url": f"{base}/?{local_session.BOOTSTRAP_PARAM}={code}",
+        "expires_in": local_session.CODE_TTL_SECONDS,
+    })
 
 
 # ── Health ────────────────────────────────────────────────
@@ -1100,6 +1138,12 @@ def run_oracle(port: int = None, open_browser: bool = None):
     url = f"http://localhost:{actual_port}"
     print(f"Oracle Memory Agent  →  {url}  (model: {cfg.get('model', 'gemma4:31b-cloud')})")
 
+    # Publish the bootstrap key so a same-user `c3 oracle open` can mint a
+    # sign-in link. Loading the URL above shows the dashboard read-only (#31).
+    local_session.write_bootstrap_key(ORACLE_DIR)
+    print(f"Sign in with:  c3 oracle open"
+          f"{'' if actual_port == 3331 else f' --port {actual_port}'}")
+
     # Start review agent if enabled
     if cfg.get("review_enabled", True) and _agent:
         _agent.start()
@@ -1126,7 +1170,12 @@ def run_oracle(port: int = None, open_browser: bool = None):
             logging.getLogger("oracle").warning("MCP server not started: %s", e)
 
     if open_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        # Auto-open lands signed in: the server mints its own code rather
+        # than making the common case require a second command. This grants
+        # nothing extra — the server already holds the secret, and it opens
+        # the default browser as the same OS user that launched it.
+        signed_in = f"{url}/?{local_session.BOOTSTRAP_PARAM}={local_session.mint_code()}"
+        threading.Timer(0.8, lambda: webbrowser.open(signed_in)).start()
 
     app.run(host=cfg.get("bind_host", "127.0.0.1"), port=actual_port, debug=False, use_reloader=False)
 

@@ -238,9 +238,12 @@ class TestFederatedGraphAPI(unittest.TestCase):
 
         srv.app.config["TESTING"] = True
         self.client = srv.app.test_client()
-        # Mutating endpoints (rebuild) sit behind the local write gate;
-        # GET / issues the dashboard session cookie into the client's jar.
-        self.client.get("/")
+        # Mutating endpoints (rebuild) sit behind the local write gate.
+        # Since #31 the cookie comes from redeeming a single-use bootstrap
+        # code, not from GET / alone.
+        from oracle.services import local_session
+        self.client.get(f"/?{local_session.BOOTSTRAP_PARAM}="
+                        f"{local_session.mint_code()}")
 
     def tearDown(self):
         for p in self._srv_patches:

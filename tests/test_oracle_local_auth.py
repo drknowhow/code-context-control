@@ -104,30 +104,50 @@ class _GateTestBase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _login(self):
-        """Prime the dashboard session cookie via GET / (loopback client)."""
-        r = self.client.get("/")
-        self.assertEqual(r.status_code, 200)
+        """Prime the dashboard session cookie by redeeming a bootstrap code.
+
+        Plain GET / stopped issuing the cookie in #31 — a different-OS-user
+        process could fetch the page and obtain one.
+        """
+        code = local_session.mint_code()
+        r = self.client.get(f"/?{local_session.BOOTSTRAP_PARAM}={code}")
+        self.assertEqual(r.status_code, 302)
 
 
 # ── Cookie issuance ───────────────────────────────────────────────────
 
 
 class TestSessionCookieIssuance(_GateTestBase):
-    def test_root_sets_httponly_strict_cookie_for_loopback(self):
-        r = self.client.get("/")
-        self.assertEqual(r.status_code, 200)
-        set_cookie = r.headers.getlist("Set-Cookie")
-        ours = [c for c in set_cookie if c.startswith(local_session.COOKIE_NAME + "=")]
+    def _ours(self, resp):
+        return [c for c in resp.headers.getlist("Set-Cookie")
+                if c.startswith(local_session.COOKIE_NAME + "=")]
+
+    def test_bootstrap_sets_httponly_strict_cookie_for_loopback(self):
+        code = local_session.mint_code()
+        r = self.client.get(f"/?{local_session.BOOTSTRAP_PARAM}={code}")
+        self.assertEqual(r.status_code, 302)
+        ours = self._ours(r)
         self.assertEqual(len(ours), 1)
         self.assertIn("HttpOnly", ours[0])
         self.assertIn("SameSite=Strict", ours[0])
 
+    def test_plain_root_issues_no_cookie(self):
+        # #31: a different-OS-user process can reach GET /, so the page alone
+        # must not confer a session.
+        r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._ours(r), [])
+
+    def test_bootstrap_no_cookie_for_non_loopback(self):
+        code = local_session.mint_code()
+        r = self.client.get(f"/?{local_session.BOOTSTRAP_PARAM}={code}",
+                            environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
+        self.assertEqual(self._ours(r), [])
+
     def test_root_no_cookie_for_non_loopback(self):
         r = self.client.get("/", environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
         self.assertEqual(r.status_code, 200)
-        set_cookie = r.headers.getlist("Set-Cookie")
-        ours = [c for c in set_cookie if c.startswith(local_session.COOKIE_NAME + "=")]
-        self.assertEqual(ours, [])
+        self.assertEqual(self._ours(r), [])
 
 
 # ── The write gate: default-deny without credentials ─────────────────

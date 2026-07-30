@@ -6408,6 +6408,66 @@ def _jira_cmd_set_default(args, project_path: str) -> None:
     print(f"[OK] Default Jira project: {args.project}")
 
 
+def _oracle_open(args):
+    """Mint a single-use sign-in URL for a running Oracle dashboard (#31).
+
+    Plain ``GET /`` no longer issues the session cookie, so a dashboard opened
+    by hand is read-only until a bootstrap code is redeemed. Reading the
+    owner-only key file is what proves we are the same OS user as the server.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+    import webbrowser
+
+    from oracle.config import ORACLE_DIR, load_config
+    from oracle.services import local_session
+
+    cfg = load_config()
+    host = cfg.get("bind_host", "127.0.0.1")
+    disp_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    port = getattr(args, "port", None) or cfg.get("port", 3331)
+    base = f"http://{disp_host}:{port}"
+
+    key = local_session.read_bootstrap_key(ORACLE_DIR)
+    if not key:
+        print(f"[oracle:open] no bootstrap key at "
+              f"{ORACLE_DIR / local_session.BOOTSTRAP_KEY_FILENAME}")
+        print("  The key is written when the server starts. Is Oracle running?")
+        print("  Start it with: c3 oracle serve")
+        return
+
+    req = urllib.request.Request(
+        f"{base}/api/session/bootstrap",
+        data=_json.dumps({"key": key}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:200]
+        print(f"[oracle:open] server refused the request ({e.code}): {detail}")
+        if e.code == 401:
+            print("  The key on disk is stale — restart the server to rewrite it.")
+        return
+    except OSError as e:
+        print(f"[oracle:open] could not reach {base}: {e}")
+        print("  Start it with: c3 oracle serve")
+        return
+
+    url = payload.get("url", "")
+    if not url:
+        print("[oracle:open] server returned no URL")
+        return
+    ttl = payload.get("expires_in", local_session.CODE_TTL_SECONDS)
+    print(f"[oracle:open] single-use sign-in link (valid {ttl}s, one use):")
+    print(f"  {url}")
+    if not getattr(args, "no_browser", False):
+        webbrowser.open(url)
+
+
 def cmd_oracle(args):
     """Oracle dashboard server + Discovery API key management."""
     sub = getattr(args, "oracle_cmd", None)
@@ -6418,8 +6478,12 @@ def cmd_oracle(args):
         run_oracle(port=getattr(args, "port", None),
                    open_browser=not getattr(args, "no_browser", False))
         return
+    if sub == "open":
+        _oracle_open(args)
+        return
     if sub != "api":
-        print("Usage: c3 oracle {serve,api} — serve: launch the dashboard; "
+        print("Usage: c3 oracle {serve,open,api} — serve: launch the dashboard; "
+              "open: sign in to a running dashboard; "
               "api {info,key,rotate,clear}: manage the Discovery key")
         return
 
