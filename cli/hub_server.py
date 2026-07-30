@@ -335,6 +335,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/drill_panel.js",
     "hub_ui/components/drill_views.js",
     "hub_ui/components/hub_credentials.js",
+    "hub_ui/components/hub_locks.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
@@ -433,8 +434,9 @@ def api_hub_config_set():
         cfg["projects_view"] = projects_view
     if "main_view" in data:
         main_view = str(data["main_view"]).strip().lower()
-        if main_view not in {"projects", "board", "creds"}:
-            return jsonify({"error": "main_view must be 'projects', 'board' or 'creds'"}), 400
+        if main_view not in {"projects", "board", "creds", "locks"}:
+            return jsonify({"error": "main_view must be 'projects', 'board', "
+                                     "'creds' or 'locks'"}), 400
         cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
@@ -2037,6 +2039,96 @@ def api_hub_credentials_overview():
         for name, entry in global_entries.items()
     ]
     return jsonify({"global": {"entries": global_out}, "projects": projects_out})
+
+
+# ── Agent Locks (hub) ────────────────────────────────────────────────────────
+# Read + one human override. force-release is here and in `c3 locks`, never in
+# the c3_locks agent tool: it bumps the fencing counter so a holder that comes
+# back is stale by construction, which is a decision for a person.
+
+
+@app.route("/api/hub/locks/overview", methods=["GET"])
+def api_hub_locks_overview():
+    """Cross-project lease snapshot for the Locks tab.
+
+    Per-row isolation like /api/hub/credentials/overview: one unreadable
+    project must not blank the page. A project we cannot read reports
+    ``error``/``initialized`` rather than an empty lease list — "0 leases"
+    would claim the repo is clear when we simply do not know.
+    """
+    from services import agent_locks as al
+
+    rows, total = [], 0
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
+               "error": None, "enabled": True, "mode": "advisory",
+               "locks": [], "count": 0, "fencing": 0}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                cfg = al.config(ppath)
+                row["enabled"] = cfg["enabled"]
+                row["mode"] = cfg["mode"]
+                snap = al.store_for(ppath).snapshot()
+                row["locks"] = snap["locks"]
+                row["count"] = snap["count"]
+                row["fencing"] = snap["fencing"]
+                total += snap["count"]
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+    return jsonify({"projects": rows, "total": total,
+                    # Surfaced so the UI can state its own limits instead of
+                    # implying a lease covers everything (spec §9).
+                    "coverage_note": (
+                        "Leases gate C3 tool surfaces only. A raw shell "
+                        "redirect, a non-Claude agent, or a human in an editor "
+                        "is not covered.")})
+
+
+@app.route("/api/projects/locks/force-release", methods=["POST"])
+def api_projects_locks_force_release():
+    """Break one lease regardless of holder. Human-only, audited on the target."""
+    from services import agent_locks as al
+
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    relpath = (data.get("relpath") or "").strip()
+    note = (data.get("note") or "").strip()
+    if not path or not relpath:
+        return jsonify({"error": "path and relpath are required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+    res = al.store_for(resolved).force_release(relpath, by="hub", note=note)
+    if not res.get("forced"):
+        return jsonify({"error": res.get("error", "force-release failed"),
+                        "reason": res.get("reason", "")}), 400
+
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(resolved).log("lock_force_release", {
+            "kind": "locks", "relpath": res.get("relpath"),
+            "previous_owner": res.get("previous_owner"), "via": "hub"})
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(resolved).log_edit(
+            file=f"lock://{res.get('relpath', relpath)}",
+            change_type="lock_force_release",
+            summary=f"force-released lease on {res.get('relpath', relpath)}"
+                    + (f" — {note}" if note else ""),
+            tags=["locks", "force_release"],
+            detail={"kind": "locks", "previous_owner": res.get("previous_owner"),
+                    "was_locked": res.get("was_locked"), "note": note})
+    except Exception:
+        pass
+    return jsonify(res)
 
 
 @app.route("/api/projects/config", methods=["PUT"])
