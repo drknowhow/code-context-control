@@ -4,6 +4,81 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.65.0] - 2026-07-30
+
+### Added — Agent Locks: run several agents on one repo without them clobbering each other (#54, #55, #56, #57)
+
+**What changes for you:** nothing, unless two agents touch the same file. Then the
+second one is told who holds it and why, instead of quietly overwriting the first.
+
+Two separate problems, two mechanisms — conflating them is why this looks bigger
+than it is:
+
+- **Torn writes.** `c3_edit` guarded same-file edits with a `threading.Lock`, which
+  only holds *within one process*. Every Claude Code session spawns its own
+  `c3-mcp` server, so two sessions could interleave their read → replace → write
+  and lose an edit with no error on either side. Create mode was worse: it ran
+  entirely outside the lock, so two agents creating the same path both reported
+  success and one file silently won. Now serialized by a cross-process file lock
+  held across create, single-edit and batch alike. No daemon, no configuration.
+- **Overlapping work.** Two agents refactoring one module for ten minutes is not a
+  torn write, and no per-call lock helps. `c3_edit` now takes a *lease* on the file
+  it edits, carrying the intent from your edit summary. A second agent gets
+  `[c3-lock:held]` naming the holder, their intent, and the time remaining.
+
+Leases expire on a TTL (default 900s) because agents forget to release, so a
+crashed agent can never wedge a repo. Acquisition is all-or-nothing over a sorted
+path list, so two agents grabbing the same pair in opposite order cannot deadlock.
+
+New surfaces:
+
+- `c3_locks(action='list|acquire|release|renew|sweep')` — declare a multi-file
+  refactor up front, or see who holds what. Deliberately has no force action.
+- `c3 locks list | release | force-release | sweep` — the human override.
+  `force-release` bumps a fencing counter so a holder that comes back is stale by
+  construction, and it is ledger-logged.
+- **Hub → Locks tab** — every project's leases, with holder, intent and a draining
+  TTL bar. A project whose lock state cannot be *read* is badged `UNREADABLE`
+  rather than shown with zero leases: "all clear" is a different claim from "we
+  don't know".
+
+Coverage is stated honestly in `docs/agent-locks.md` §9 rather than implied. Leases
+gate C3's own tool surfaces. A raw `c3_shell` redirect, a non-Claude agent, or a
+human in an editor is **not** covered, and the UI says so on screen.
+
+`.c3/config.json` gains an optional `locks` section (`enabled`, `mode`,
+`default_ttl_s`). Defaults are on and advisory; set `enabled: false` to opt out.
+
+### Added — Access Guard: turn a built-in guard off when you actually need to
+
+Built-ins were absolute. If you wanted the agent to edit `.git/**` or your own
+`~/.claude/settings.json`, there was no supported answer.
+
+Now there are two tiers. `**/.env*`, `**/.c3/**`, `**/.claude/settings*.json` and
+`**/.git/**` can be switched off with `c3 access builtin disable <glob>`, which
+asks you to retype the glob first. The credential vault (`secrets.enc`,
+`cred_state.json`) stays absolute — it already has its own guard and its own
+human-only escalation, so an opt-out there would only be a shorter route to the
+same secrets.
+
+Disabling requires **two keys**: a `disable_builtin` entry in the global config
+*and* a keyring attestation. Either alone leaves the built-in enforcing. That is
+the point — an agent that manages to write `config.json`, which is exactly the move
+a prompt-injected one would make to grant itself write access to your settings,
+still cannot produce the attestation. Global scope only, because project scopes may
+only ever tighten; a project-scope entry is a loud config error rather than a
+silent no-op.
+
+### Fixed
+
+- `c3_edit` create mode ran outside the same-file lock entirely, so two agents
+  creating one path both succeeded (#55).
+- Lock keys were computable two ways and disagreed by platform, which made the
+  guard a no-op on the platforms it disagreed on: an unresolved sidecar path
+  (macOS `/var` → `/private/var`, Windows 8.3 `RUNNER~1`), POSIX absolute paths
+  falling into the repo-relative branch, and a resolved path compared against an
+  unresolved root. A key computable two ways is not a key (#55, #56).
+
 ## [2.64.0] - 2026-07-30
 
 ### Changed (BREAKING) — the Oracle dashboard no longer signs you in on page load (#31)
