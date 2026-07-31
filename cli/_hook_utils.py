@@ -96,12 +96,111 @@ def _empty_state(session_id: str = "") -> dict:
     return {"session_id": session_id or "", "last_c3_call": None, "unlocked_files": {}}
 
 
+#: os.replace retries for when Windows briefly holds a handle on the target —
+#: AV scanner, Search indexer, or a concurrent hook reading the same state.
+_REPLACE_ATTEMPTS = 4
+_REPLACE_BACKOFF_S = 0.02
+
+
 def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON atomically: temp file in the same directory + os.replace."""
+    """Write JSON durably: temp file in the same directory + os.replace.
+
+    Three failure modes this guards against, all observed in the wild
+    (10 orphaned .tmp<pid> files and a truncated enforcement_state.json on a
+    Windows box before v2.66):
+
+    1. **Torn write.** Without fsync, os.replace can publish a file whose
+       bytes are still in the OS cache. A crash or power loss then leaves a
+       zero-length or half-written JSON that every later read quarantines —
+       which silently drops all sticky unlocks and makes enforcement *more*
+       aggressive, not less.
+    2. **Orphaned temp files.** If os.replace raised, the temp file was
+       simply abandoned. They accumulate forever in .c3/ and are easy to
+       mistake for real state.
+    3. **Transient Windows sharing violations.** Another process holding a
+       read handle on the target makes os.replace raise PermissionError; a
+       single attempt turned that into a lost write.
+    """
+    import time
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+            fh.flush()
+            os.fsync(fh.fileno())  # durability before publish (fixes #1)
+
+        last_exc = None
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as exc:  # fixes #3
+                last_exc = exc
+                if attempt < _REPLACE_ATTEMPTS - 1:
+                    time.sleep(_REPLACE_BACKOFF_S * (2 ** attempt))
+        if last_exc is not None:
+            raise last_exc
+    finally:
+        # fixes #2 — a successful replace already consumed tmp, so this only
+        # fires on the failure paths.
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def sweep_stale_temps(project_path: Path | None = None) -> int:
+    """Remove orphaned *.tmp<pid> files left by older C3 builds.
+
+    Only touches temp files whose owning PID is gone, so a concurrent hook
+    mid-write is never disturbed. Returns how many were removed; never raises.
+    """
+    removed = 0
+    try:
+        base = project_path if project_path is not None else Path.cwd()
+        c3_dir = base / ".c3"
+        if not c3_dir.is_dir():
+            return 0
+        for tmp in c3_dir.glob("*.tmp*"):
+            suffix = tmp.name.rsplit(".tmp", 1)[-1]
+            if not suffix.isdigit():
+                continue
+            if _pid_alive(int(suffix)):
+                continue
+            try:
+                tmp.unlink()
+                removed += 1
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return removed
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check. On error assume ALIVE (don't delete)."""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            # PROCESS_QUERY_LIMITED_INFORMATION — works without elevation.
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but not ours
+    except Exception:
+        return True  # unknown → conservative
 
 
 def _read_legacy_state(base: Path) -> dict:
@@ -163,6 +262,10 @@ def load_enforcement_state(project_path: Path | None = None, session_id: str = "
                 state_path.replace(state_path.with_name(state_path.name + ".corrupt"))
             except Exception:
                 pass
+            # Corruption is the one reliable signal that a previous write went
+            # wrong, so it is also the moment to clear any temp files that
+            # write orphaned (pre-v2.66 _atomic_write_json had no cleanup).
+            sweep_stale_temps(base)
             STATE_WARNINGS.append(
                 "[c3:hook-error] enforcement_state: corrupted "
                 f"{ENFORCEMENT_STATE_FILE} quarantined ({type(exc).__name__}); "

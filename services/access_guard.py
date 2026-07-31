@@ -820,9 +820,34 @@ def enforce(path, operation: str, project_path: str = ".", *,
     """Raise AccessDenied when ``operation`` on ``path`` is not permitted."""
     denial = check(path, operation, project_path)
     if denial:
+        _record_denial(denial, path, operation, project_path, tool)
         raise AccessDenied(denial, refusal(
             denial, path, operation, surface=surface, tool=tool,
             project=project))
+
+
+def _record_denial(denial, path, operation: str, project_path: str,
+                   tool: str) -> None:
+    """Feed `c3 access stats` (docs/access-guard.md §3 denial logging).
+
+    Imported lazily and best-effort: this module is imported by hook
+    subprocesses on every native tool call, and telemetry must never be able
+    to turn a policy decision into a crash.
+    """
+    try:
+        from services import access_telemetry
+        access_telemetry.record(
+            layer=access_telemetry.LAYER_ACCESS,
+            rule=denial.rule, scope=denial.scope,
+            tool=tool or surface_default(), operation=operation,
+            path=str(path), project_path=project_path,
+        )
+    except Exception:
+        pass
+
+
+def surface_default() -> str:
+    return "c3_mcp"
 
 
 # ── Rule management (HUMAN surfaces only: UI / REST / `c3 access` CLI) ──────

@@ -336,6 +336,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/drill_views.js",
     "hub_ui/components/hub_credentials.js",
     "hub_ui/components/hub_locks.js",
+    "hub_ui/components/hub_enforcement.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
@@ -2129,6 +2130,148 @@ def api_projects_locks_force_release():
     except Exception:
         pass
     return jsonify(res)
+
+
+@app.route("/api/hub/enforcement/overview", methods=["GET"])
+def api_hub_enforcement_overview():
+    """Cross-project tool-discipline snapshot for the Enforcement tab.
+
+    Per-row isolation like the Locks/Credentials overviews: one unreadable
+    project must not blank the page, and a project we could not read reports
+    ``error`` rather than a mode — claiming 'strict' for a repo we failed to
+    read would be a guess presented as a fact.
+
+    Denial counts come from services.access_telemetry, split by layer so the
+    UI can point at the right lever: discipline blocks are cleared by changing
+    the mode here, path denials by editing Access Guard rules.
+    """
+    from services import access_telemetry as at
+    from services import enforcement_policy as ep
+
+    rows = []
+    totals = {"discipline": 0, "access": 0}
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
+               "error": None, "mode": None, "scope": "", "set_by": "",
+               "signal_ttl_s": ep.DEFAULT_SIGNAL_TTL_S, "warnings": [],
+               "tier": "", "tier_implies": "", "denials": {}, "denial_total": 0}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                policy = ep.resolve(ppath)
+                row["mode"] = policy.mode
+                row["scope"] = policy.scope
+                row["set_by"] = policy.set_by
+                row["signal_ttl_s"] = policy.signal_ttl_s
+                row["warnings"] = list(policy.warnings)
+
+                cfg_path = Path(ppath) / ".c3" / "config.json"
+                try:
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    tier = str(cfg.get("permission_tier") or "")
+                except Exception:
+                    tier = ""
+                row["tier"] = tier
+                row["tier_implies"] = ep.derive_from_tier(tier) if tier else ""
+
+                agg = at.aggregate(ppath)
+                row["denials"] = agg["by_layer"]
+                row["denial_total"] = agg["total"]
+                row["top_denials"] = [
+                    {**r, "fix": at.suggest(r)} for r in agg["rows"][:5]
+                ]
+                for layer, count in agg["by_layer"].items():
+                    totals[layer] = totals.get(layer, 0) + count
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+
+    return jsonify({
+        "projects": rows,
+        "modes": [{"id": m, "help": ep.MODE_HELP[m]} for m in ep.MODES],
+        "default_mode": ep.DEFAULT_MODE,
+        "tier_map": ep.TIER_TO_MODE,
+        "totals": totals,
+        # Stated so the tab can never imply that turning discipline down also
+        # turns the security boundaries down. Mirrors docs/enforcement.md.
+        "coverage_note": (
+            "Tool discipline only governs whether native Edit/Write are "
+            "pushed through c3_edit. At every mode — including off — Access "
+            "Guard path rules, the credential-vault write guard, and agent "
+            "locks still enforce. The edit ledger records native writes "
+            "either way; strict additionally gets c3_edit's pre-edit snapshot."
+        ),
+    })
+
+
+@app.route("/api/projects/enforcement", methods=["POST"])
+def api_projects_enforcement_set():
+    """Set one project's tool-discipline mode. Human-only, audited on target.
+
+    Always writes ``set_by='user'``: a change made deliberately in the Hub is
+    an explicit choice and must survive a later permission-tier change, the
+    same as `c3 enforce`.
+    """
+    from services import enforcement_policy as ep
+
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    mode = (data.get("mode") or "").strip().lower()
+    ttl = data.get("signal_ttl_s")
+    if not path or not mode:
+        return jsonify({"error": "path and mode are required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+    try:
+        result = ep.set_mode(mode, resolved, set_by=ep.SET_BY_USER,
+                             scope="project",
+                             signal_ttl_s=int(ttl) if ttl else None)
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(resolved).log("access_action", {
+            "kind": "enforcement", "action": "set_mode",
+            "mode": result["mode"], "previous": result.get("previous", ""),
+            "scope": result["scope"], "via": "hub"})
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(resolved).log_edit(
+            file=f"enforcement://{result['scope']}",
+            change_type="enforcement_set_mode",
+            summary=(f"tool discipline {result.get('previous') or 'default'} "
+                     f"-> {result['mode']} via the Hub"),
+            tags=["enforcement", "access"],
+            detail={"kind": "enforcement", "mode": result["mode"],
+                    "previous": result.get("previous", ""),
+                    "scope": result["scope"], "via": "hub"})
+    except Exception:
+        pass
+    return jsonify(result)
+
+
+@app.route("/api/projects/enforcement/denials", methods=["DELETE"])
+def api_projects_enforcement_denials_clear():
+    """Reset one project's denial counters (they are diagnostics, not audit)."""
+    from services import access_telemetry as at
+
+    data = request.get_json(silent=True) or {}
+    path = (request.args.get("path") or data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"cleared": at.clear(resolved)})
 
 
 @app.route("/api/projects/config", methods=["PUT"])

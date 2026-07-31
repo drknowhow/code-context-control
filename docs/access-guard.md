@@ -115,6 +115,19 @@ Denial logging: coalesced per (rule, tool, session) with a hit counter; the
 enforcement hook's tail scan counts only `type=='tool_call'` lines so a
 denial storm cannot evict its evidence window.
 
+> **Implementation note (v2.66.0).** Denial logging shipped in
+> `services/access_telemetry.py`, surfaced as `c3 access stats`. It covers this
+> guard *and* the tool-discipline hook, tagging each event with a `layer`
+> (`access` | `discipline`) so the user picks the right lever. Coalescing
+> happens at read time rather than write time — hooks are concurrent
+> short-lived subprocesses, so a shared counter file would race. This is an
+> implementation choice within §3, not a change to the spec.
+>
+> Tool discipline itself (the `hook_pretool_enforce` native-write block) is a
+> separate layer with its own user-facing knob; see `docs/enforcement.md`. It
+> is deliberately outside this spec: relaxing it does not relax any rule
+> defined here, and the guard's evaluation never consults it.
+
 ## 4. Refusal strings (VERBATIM — implementation copies these exactly)
 
 Interpolations `{path}`, `{project}`, `{tool}` are length-capped (200 chars,

@@ -13,6 +13,7 @@ const tabs = [
   { id: "jira", label: "Jira", icon: "check" },
   { id: "credentials", label: "Credentials", icon: "lock" },
   { id: "access", label: "Access Guard", icon: "alertTriangle" },
+  { id: "enforcement", label: "Discipline", icon: "shield" },
   { id: "instructions", label: "Instructions", icon: "fileText" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -134,6 +135,9 @@ function App() {
         </div>
         <div style={{ display: tab === "access" ? "block" : "none", height: "100%" }}>
           <AccessPanel />
+        </div>
+        <div style={{ display: tab === "enforcement" ? "block" : "none", height: "100%" }}>
+          <EnforcementPanel />
         </div>
         <div style={{ display: tab === "instructions" ? "block" : "none", height: "100%" }}>
           <Instructions />

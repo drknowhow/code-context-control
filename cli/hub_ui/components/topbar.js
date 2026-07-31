@@ -38,7 +38,7 @@ function TopBar({ version, activeCount, darkMode, hubConfig, mainView, setMainVi
           display: 'inline-flex', marginLeft: 10, border: `1px solid ${T.border}`,
           borderRadius: 6, overflow: 'hidden',
         }}>
-          {[['projects', 'Projects', 'layers'], ['board', 'Tasks', 'check'], ['creds', 'Credentials', 'lock'], ['locks', 'Locks', 'gitBranch']].map(([id, label, icon]) => (
+          {[['projects', 'Projects', 'layers'], ['board', 'Tasks', 'check'], ['creds', 'Credentials', 'lock'], ['locks', 'Locks', 'gitBranch'], ['enforce', 'Discipline', 'shield']].map(([id, label, icon]) => (
             <button key={id} onClick={() => setMainView(id)} style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, height: 28,
               padding: '0 12px', border: 'none', cursor: 'pointer', fontSize: 12,

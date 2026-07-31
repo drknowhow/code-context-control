@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.65.0"
+__version__ = "2.66.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -509,8 +509,15 @@ def _clean_stale_tools(settings_path) -> int:
 
 
 def _apply_permission_tier(project_path: str, tier: str,
-                           include_mcp_wildcard: bool = False) -> None:
-    """Write permission tier to .claude/settings.local.json, preserving existing keys."""
+                           include_mcp_wildcard: bool = False,
+                           enforcement: str | None = None) -> None:
+    """Write permission tier to .claude/settings.local.json, preserving existing keys.
+
+    Also derives the matching tool-discipline mode (v2.66+), so a tier means
+    what it says: `permissive` no longer leaves every native Edit hard-denied
+    by the PreToolUse hook. An explicit `c3 enforce` choice is never
+    overwritten here — enforcement_policy.set_mode defers to set_by='user'.
+    """
     tier = _TIER_ALIASES.get(tier, tier)
     settings_path = Path(project_path) / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,6 +542,29 @@ def _apply_permission_tier(project_path: str, tier: str,
         json.dump(settings, f, indent=2)
     suffix = " (+ mcp__* wildcard)" if include_mcp_wildcard else ""
     print(f"  Permissions: {tier}{suffix} — {PERMISSION_TIERS[tier]}")
+
+    _apply_enforcement_for_tier(project_path, tier, enforcement)
+
+
+def _apply_enforcement_for_tier(project_path: str, tier: str,
+                                explicit: str | None = None) -> None:
+    """Persist the tool-discipline mode implied by a tier (or an explicit one)."""
+    try:
+        from services import enforcement_policy as ep
+    except Exception:
+        return
+    mode = explicit or ep.derive_from_tier(tier)
+    set_by = ep.SET_BY_USER if explicit else ep.SET_BY_TIER
+    try:
+        result = ep.set_mode(mode, project_path, set_by=set_by, scope="project")
+    except ValueError as exc:
+        print(f"  [warn] Could not set tool discipline: {exc}")
+        return
+    if result.get("deferred"):
+        print(f"  Discipline : {result['mode']} (kept — set explicitly via "
+              f"`c3 enforce`; tier would have used '{mode}')")
+        return
+    print(f"  Discipline : {result['mode']} — {ep.MODE_HELP[result['mode']]}")
 
 
 def _check_c3_health(project_path: str) -> dict:
@@ -821,7 +851,7 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
 
     print()
     git_choice = _prompt_choice(
-        "Step 2/3 — Initialize a local Git repository for this project?",
+        "Step 2/5 — Initialize a local Git repository for this project?",
         [
             "Yes  — run local git init in this folder",
             "No   — leave version control untouched",
@@ -836,7 +866,7 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
 
     print()
     install_choice = _prompt_choice(
-        "Step 3/3 — Install MCP tooling for this project?",
+        "Step 3/5 — Install MCP tooling for this project?",
         [
             "Yes  — configure the IDE and wire up C3 MCP",
             "No   — skip MCP install for now",
@@ -855,13 +885,13 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
     )
     mcp_mode = "proxy" if mode_choice and mode_choice.startswith("Proxy") else default_mode
 
-    # Step 4/4 — Permissions (Claude Code only)
+    # Step 4/5 — Permissions (Claude Code only)
     chosen_tier = None
     include_wildcard = False
     if chosen_ide == "claude-code":
         print()
         tier_choice = _prompt_choice(
-            "Step 4/4 — Set a Claude Code permission tier for this project?",
+            "Step 4/5 — Set a Claude Code permission tier for this project?",
             [
                 "standard    — full editing + safe shell, block destructive ops (recommended)",
                 "c3-strict   — c3_* MCP tools only, deny native Read/Grep/Glob/Edit/Write",
@@ -885,9 +915,43 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
                 )
                 include_wildcard = bool(wildcard_choice and wildcard_choice.startswith("Yes"))
 
+    chosen_enforcement = _prompt_enforcement(chosen_tier)
+
     _run_install_mcp(project_path, chosen_ide, mcp_mode=mcp_mode,
-                     permissions=chosen_tier, include_mcp_wildcard=include_wildcard)
+                     permissions=chosen_tier, include_mcp_wildcard=include_wildcard,
+                     enforcement=chosen_enforcement)
     return chosen_ide, True
+
+
+def _prompt_enforcement(chosen_tier: str | None) -> str | None:
+    """Step 5/5 — tool discipline. Returns an explicit mode, or None to derive.
+
+    Asked separately from the permission tier because it answers a genuinely
+    different question: the tier controls what the IDE will let the agent call,
+    this controls how hard C3's own hook pushes it toward c3_* tools. Users hit
+    friction here, not in the tier, and previously had no way to change it.
+    """
+    try:
+        from services import enforcement_policy as ep
+    except Exception:
+        return None
+
+    default_mode = ep.derive_from_tier(chosen_tier) if chosen_tier else ep.MODE_ADVISORY
+    print()
+    print(f"  (Your permission tier suggests: {default_mode})")
+    choice = _prompt_choice(
+        "Step 5/5 — Tool discipline: how hard should C3 push toward c3_* tools?",
+        [
+            "advisory  — allow native Edit/Write with a nudge; ledger still logs (recommended)",
+            "strict    — block native Edit/Write until a c3_* call runs first",
+            "off       — no nudging (Access Guard + vault guard still enforce)",
+            f"Use tier default ({default_mode})",
+        ],
+    )
+    if not choice or choice.startswith("Use tier default"):
+        return None
+    mode = choice.split()[0]
+    return mode if mode in ep.MODES else None
 
 
 def _parse_cli_ide_arg(value: str) -> str:
@@ -1033,6 +1097,7 @@ def cmd_init(args):
                 mcp_mode=getattr(args, "mcp_mode", "direct"),
                 permissions=getattr(args, "permissions", None),
                 include_mcp_wildcard=bool(getattr(args, "include_mcp_wildcard", False)),
+                enforcement=getattr(args, "enforcement", None),
             )
         else:
             _prompt_init_steps(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"))
@@ -1109,6 +1174,35 @@ def cmd_init(args):
             if stale_count:
                 parts.append(f"{stale_count} stale — run 'c3 permissions clean'")
             print(f"  Perms : {', '.join(parts)}")
+    except Exception:
+        pass
+
+    # Tool discipline (Layer C) — the knob users actually feel day to day.
+    try:
+        from services import enforcement_policy as _ep
+        _pol = _ep.resolve(project_path)
+        _bits = [_pol.mode]
+        if _pol.scope == "default":
+            _bits.append("default — never set")
+        elif _pol.set_by:
+            _bits.append(f"set by {_pol.set_by}")
+        _stored_tier = _safe_read_json(
+            c3_dir / "config.json", "config").get("permission_tier")
+        if _stored_tier and _ep.derive_from_tier(_stored_tier) != _pol.mode:
+            _bits.append(f"tier '{_stored_tier}' implies "
+                         f"'{_ep.derive_from_tier(_stored_tier)}'")
+        print(f"  Disc  : {', '.join(_bits)}  (change: c3 enforce <mode>)")
+        for _w in _pol.warnings:
+            print(f"          [warn] {_w}")
+    except Exception:
+        pass
+
+    # Orphaned hook temp files (pre-v2.66 atomic-write bug).
+    try:
+        from cli._hook_utils import sweep_stale_temps as _sweep
+        _swept = _sweep(Path(project_path))
+        if _swept:
+            print(f"  Fixed : removed {_swept} orphaned .c3 temp file(s)")
     except Exception:
         pass
 
@@ -4935,6 +5029,7 @@ def _cmd_permissions_clean(settings_path: Path) -> None:
 def _run_install_mcp(project_path: str, ide_name: str, mcp_mode: str = "direct",
                      permissions: str | None = None,
                      include_mcp_wildcard: bool = False,
+                     enforcement: str | None = None,
                      banner: str = "Installing MCP tools...") -> None:
     """Run install-mcp programmatically with a consistent banner."""
     print(f"\n{banner}")
@@ -4942,6 +5037,7 @@ def _run_install_mcp(project_path: str, ide_name: str, mcp_mode: str = "direct",
     cmd_install_mcp(SimpleNamespace(
         project_path=project_path, ide=ide_name, mcp_mode=mcp_mode,
         permissions=permissions, include_mcp_wildcard=include_mcp_wildcard,
+        enforcement=enforcement,
     ))
 
 
@@ -5345,6 +5441,14 @@ def cmd_install_mcp(args):
                     del _c3cfg["permission_include_mcp_wildcard"]
                 with open(c3_config_path, "w", encoding="utf-8") as f:
                     json.dump(_c3cfg, f, indent=2)
+
+        # Tool discipline (Layer C) rides along with the tier so `permissive`
+        # actually means permissive at the hook layer too. An explicit
+        # --enforcement wins; otherwise the tier derives it.
+        _enf = getattr(args, "enforcement", None)
+        if (perm_tier and perm_tier in PERMISSION_TIERS) or _enf:
+            _apply_enforcement_for_tier(
+                str(target), perm_tier or "standard", _enf)
 
         with open(settings_path, 'w', encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
@@ -6002,13 +6106,117 @@ def _locks_audit(target: str, res: dict, project_path: str, note: str) -> None:
         pass
 
 
+def cmd_enforce(args):
+    """`c3 enforce [strict|advisory|off]` — the Layer C knob.
+
+    Deliberately a separate command from `c3 access`: that one governs which
+    PATHS the agent may touch (a security boundary), this one governs how hard
+    C3 pushes it toward c3_* tools (a workflow preference). Conflating them is
+    what made "the guard is slowing me down" unfixable without weakening
+    something that should not be weakened.
+    """
+    from services import enforcement_policy as ep
+
+    project_path = str(Path(getattr(args, "project_path", ".") or ".").resolve())
+    mode = getattr(args, "mode", None)
+    scope = "global" if getattr(args, "use_global", False) else "project"
+    ttl = getattr(args, "signal_ttl", None)
+
+    if not mode and ttl is None:
+        _enforce_show(project_path, ep)
+        return
+
+    current = ep.resolve(project_path)
+    try:
+        result = ep.set_mode(mode or current.mode, project_path,
+                             set_by=ep.SET_BY_USER, scope=scope,
+                             signal_ttl_s=ttl)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return
+
+    print_header("Tool discipline")
+    print(f"  Mode  : {result['mode']} — {ep.MODE_HELP[result['mode']]}")
+    print(f"  Scope : {result['scope']} ({result['path']})")
+    if ttl is not None:
+        print(f"  Signal TTL: {ttl}s")
+    if not result["changed"] and mode:
+        print("  (already set to this mode)")
+
+    if result["mode"] == ep.MODE_OFF:
+        print("\n  Still enforced regardless of this setting:")
+        print("    - Access Guard path rules  (c3 access list)")
+        print("    - Credential vault guard   (.c3/secrets.enc, cred_state.json)")
+        print("    - Agent locks              (c3 locks list)")
+    if result["mode"] != ep.MODE_STRICT:
+        print("\n  The edit ledger still records native writes (PostToolUse).")
+        print("  What you lose vs strict: the pre-edit snapshot c3_edit takes.")
+
+    _enforce_audit(result, project_path)
+
+
+def _enforce_show(project_path: str, ep) -> None:
+    """Print the effective policy plus the tier it would be derived from."""
+    policy = ep.resolve(project_path)
+    print_header("Tool discipline")
+    print(f"  Mode  : {policy.describe()}")
+    print(f"  Signal TTL: {policy.signal_ttl_s}s")
+    blocked = ", ".join(sorted(policy.blocked_tools)) or "(none)"
+    print(f"  Blocks: {blocked}" if policy.blocks_writes
+          else f"  Blocks: nothing (would be {blocked} under strict)")
+
+    cfg = _safe_read_json(Path(project_path) / ".c3" / "config.json", "config")
+    tier = cfg.get("permission_tier")
+    if tier:
+        derived = ep.derive_from_tier(tier)
+        note = "" if derived == policy.mode else "  <- differs from active mode"
+        print(f"  Tier  : {tier} would derive '{derived}'{note}")
+
+    for warn in policy.warnings:
+        print(f"  [warn] {warn}")
+
+    print("\n  Modes:")
+    for name in ep.MODES:
+        marker = "*" if name == policy.mode else " "
+        print(f"   {marker} {name:9s} {ep.MODE_HELP[name]}")
+    print("\n  Change: c3 enforce advisory   |   see cost: c3 access stats")
+
+
+def _enforce_audit(result: dict, project_path: str) -> None:
+    """Ledger + activity entry — enforcement changes are security-adjacent."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(project_path).log("access_action", {
+            "kind": "enforcement", "action": "set_mode",
+            "mode": result["mode"], "previous": result.get("previous", ""),
+            "scope": result["scope"], "set_by": result["set_by"],
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(project_path).log_edit(
+            file=f"enforcement://{result['scope']}",
+            change_type="enforcement_set_mode",
+            summary=(f"tool discipline {result.get('previous') or 'default'} "
+                     f"-> {result['mode']} ({result['scope']}) via `c3 enforce`"),
+            tags=["enforcement", "access"],
+            detail={"kind": "enforcement", "mode": result["mode"],
+                    "previous": result.get("previous", ""),
+                    "scope": result["scope"], "set_by": result["set_by"]},
+        )
+    except Exception:
+        pass
+
+
 def cmd_access(args):
     """Access Guard rule management — human-only mutation surface (spec §1)."""
     sub = getattr(args, "access_cmd", None)
     if not sub:
-        print("Usage: c3 access {list,add,remove,check,mask,builtin} [args]")
+        print("Usage: c3 access {list,add,remove,check,stats,mask,builtin} [args]")
         print("       c3 access mask {add,rm,status,activate,preview} [args]")
         print("       c3 access builtin {disable,enable} <glob>")
+        print("       c3 access stats [--session ID] [--clear] [--json]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -6021,12 +6229,65 @@ def cmd_access(args):
         _access_cmd_remove(args, project_path)
     elif sub == "check":
         _access_cmd_check(args, project_path)
+    elif sub == "stats":
+        _access_cmd_stats(args, project_path)
     elif sub == "mask":
         _access_cmd_mask(args, project_path)
     elif sub == "builtin":
         _access_cmd_builtin(args, project_path)
     else:
         print(f"Unknown access subcommand: {sub}")
+
+
+def _access_cmd_stats(args, project_path: str) -> None:
+    """`c3 access stats` — turn felt friction into a ranked, actionable list."""
+    from services import access_telemetry as at
+
+    if getattr(args, "clear", False):
+        removed = at.clear(project_path)
+        print(f"[OK] Cleared denial log ({removed} file(s)).")
+        return
+
+    agg = at.aggregate(project_path, session_id=getattr(args, "session", "") or "")
+
+    if getattr(args, "as_json", False):
+        print(json.dumps(agg, indent=2))
+        return
+
+    print_header("Denials")
+    if not agg["total"]:
+        print("  Nothing recorded. Either nothing was denied, or this C3 "
+              "predates denial\n  telemetry (v2.66.0) — it only logs from the "
+              "first denial after upgrade.")
+        return
+
+    by_layer = agg["by_layer"]
+    print(f"  {agg['total']} denial(s) across {agg['sessions']} session(s)")
+    print(f"    path policy      (Access Guard) : {by_layer.get('access', 0)}")
+    print(f"    tool discipline  (c3 enforce)   : {by_layer.get('discipline', 0)}")
+    print()
+
+    limit = max(1, int(getattr(args, "limit", 15) or 15))
+    rows = agg["rows"][:limit]
+    width = max((len(r["rule"]) for r in rows), default=8)
+    print(f"  {'HITS':>5}  {'RULE'.ljust(width)}  {'TOOL':<12} LAYER")
+    for row in rows:
+        print(f"  {row['hits']:>5}  {row['rule'].ljust(width)}  "
+              f"{row['tool']:<12} {row['layer']}")
+
+    print("\n  How to unblock the top offenders:")
+    seen: set = set()
+    for row in rows[:5]:
+        fix = at.suggest(row)
+        if fix in seen:
+            continue
+        seen.add(fix)
+        print(f"    - {row['rule']}: {fix}")
+
+    remaining = len(agg["rows"]) - len(rows)
+    if remaining > 0:
+        print(f"\n  ... {remaining} more (use --limit)")
+    print("\n  Reset counters: c3 access stats --clear")
 
 
 def _access_scope(args) -> str:
@@ -7732,6 +7993,7 @@ def main():
         "jira": cmd_jira,
         "creds": cmd_creds,
         "access": cmd_access,
+        "enforce": cmd_enforce,
         "locks": cmd_locks,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,

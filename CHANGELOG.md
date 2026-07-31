@@ -4,6 +4,82 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.66.0] - 2026-07-31
+
+### Added — Tool discipline is now a knob you can turn (`c3 enforce`)
+
+**What changes for you:** nothing on upgrade. Existing projects keep behaving
+exactly as before until you opt in.
+
+C3 had four independent gates, and only three of them were adjustable. The
+fourth — the PreToolUse hook that hard-denies native `Edit`/`Write` unless a
+`c3_*` call ran first — was hardcoded, read no config, and was registered
+regardless of your permission tier. That produced a contradiction users hit
+constantly: selecting the `permissive` tier, documented as "all tools and shell
+commands pre-approved", still had every native `Edit` refused by the hook. The
+one knob that looked like it should help didn't reach the layer doing the
+blocking.
+
+- **`c3 enforce [strict|advisory|off]`** — the missing knob. `advisory` allows
+  native writes with a nudge; `off` stops nudging entirely. Run with no argument
+  to see the active mode, where it came from, and what it blocks.
+- **Deliberately separate from `c3 access`.** Path policy is a security
+  boundary; tool discipline is a workflow preference. Splitting them is what
+  makes it safe to loosen the second without touching the first. At *every*
+  mode, including `off`, these still enforce: Access Guard path rules, the
+  credential-vault write guard, and agent locks. Asserted per-mode in
+  `tests/test_enforcement_policy.py`.
+- **Tiers now mean what they say.** Choosing a permission tier derives the
+  matching discipline (`standard`→`advisory`, `permissive`→`off`,
+  `c3-strict`/`read-only`→`strict`). An explicit `c3 enforce` choice is
+  recorded as `set_by: user` and a later tier change defers to it rather than
+  silently undoing it.
+- **`c3 init`** asks for discipline as Step 5/5, and accepts
+  `--enforcement <mode>` for scripted installs. Existing installs are untouched:
+  with no `enforcement` section the resolved mode is `strict`, and nothing is
+  derived at read time, so upgrading C3 cannot change how a project behaves.
+- Everything fails **closed** — unknown mode, malformed section, unparseable
+  JSON, or a `blocked_tools` entry naming an ungoverned tool all resolve to
+  `strict` with a visible `[c3:enforcement-config]` warning.
+
+- **Discipline tab, in both UIs.** `c3 ui` gets a per-project tab next to Access
+  Guard: three mode cards, the provenance of the active mode, what stays
+  enforced at every mode, and the ranked denial table with the fix for each row.
+  The Hub gets the cross-project version — every registered project, a picker
+  per row, and the denial breakdown inline. Switching to `off` confirms first
+  and states plainly what it does *not* switch off. In the Hub, projects that
+  are unreadable or have no `.c3` are listed under "Not reporting" rather than
+  shown as `strict` — "we don't know" and "running strict" are different claims.
+
+Full reference: `docs/enforcement.md`.
+
+### Added — Denial telemetry (`c3 access stats`)
+
+`docs/access-guard.md` §3 specified "denial logging: coalesced per (rule, tool,
+session) with a hit counter". It was never implemented, so "the guard is slowing
+me down" was a feeling with no evidence behind it.
+
+`c3 access stats` now ranks what actually got denied, labels each row with its
+layer (path policy vs tool discipline), and names the exact command that clears
+it — `c3 enforce advisory` for a discipline block, `c3 access remove <glob>` for
+a user rule, `c3 access builtin disable` for a builtin. Events land in
+`.c3/denials.jsonl` (local, gitignored, rotated at 512 KB) and are coalesced at
+read time, since concurrent hook subprocesses would race on a shared counter.
+
+### Fixed — Truncated enforcement state and orphaned temp files
+
+`_atomic_write_json` wrote enforcement state without `fsync` and abandoned its
+temp file if `os.replace` raised. Observed on Windows: a truncated
+`enforcement_state.json`, 10 orphaned `.c3/*.tmp<pid>` files, and 58 hook errors
+across two days. The failure is quietly self-worsening — corrupt state loads
+*empty*, which drops every sticky unlock and makes enforcement more aggressive,
+which reads as "the guard got worse".
+
+Now fsyncs before publishing, retries `os.replace` on Windows sharing violations
+(AV scanner, Search indexer, a concurrent hook), and removes the temp file on
+every failure path. `c3 init` sweeps orphaned temps whose owning PID is gone,
+and never touches one belonging to a live process.
+
 ## [2.65.0] - 2026-07-30
 
 ### Added — Agent Locks: run several agents on one repo without them clobbering each other (#54, #55, #56, #57)

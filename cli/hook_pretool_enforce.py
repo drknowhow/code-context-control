@@ -15,6 +15,16 @@ tools treats Claude adversarially and creates cliffs at every edge case
 (new tool variants, Windows quirks). Advisory read + blocked write keeps
 the ledger intact without strangling the model's own good judgment.
 
+User-tunable (v2.66+): the write-block above is the ``strict`` mode of
+services.enforcement_policy. ``advisory`` downgrades it to a nudge (the
+ledger still captures the write — hook_edit_ledger runs PostToolUse and is
+independent of this setting); ``off`` disables tool-discipline nudging
+entirely. This is LAYER C only. Two things are deliberately NOT affected by
+the mode, because they are security boundaries rather than workflow
+preferences: the credential-vault write guard below, and Access Guard path
+policy in hook_access_guard (which the dispatcher runs FIRST, and whose deny
+wins the merge regardless of what this module returns).
+
 State (v2.42+): reads/writes the consolidated .c3/enforcement_state.json via
 cli/_hook_utils (single writer module, atomic writes, session-scoped). The
 legacy last_c3_call.json / unlocked_files.json pair is still READ as a
@@ -29,7 +39,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _hook_utils import (
+# Same bootstrap hook_access_guard uses: `python hook_pretool_enforce.py`
+# invoked directly has no project root on sys.path, so `services` would not
+# import. Via hook_dispatch the root is already there and this is a no-op.
+_CLI_DIR = Path(__file__).resolve().parent
+for _p in (str(_CLI_DIR.parent), str(_CLI_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from _hook_utils import (  # noqa: E402
     canonical_key,
     load_enforcement_state,
     log_hook_error,
@@ -37,10 +55,17 @@ from _hook_utils import (
     record_unlocked_files,
 )
 
+try:
+    from services import access_telemetry, enforcement_policy
+except Exception:  # pragma: no cover — degrade to hardcoded strict behavior
+    access_telemetry = None
+    enforcement_policy = None
+
 # How many activity-log lines to scan backwards
 LOOKBACK = 20  # Fix 1: increased from 3 — activity log only has c3_* entries
 
-# Max age of the last_c3_call signal in the consolidated state
+# Fallback signal age when enforcement_policy cannot be imported. The live
+# value is policy.signal_ttl_s (config: enforcement.signal_ttl_s).
 _SIGNAL_MAX_AGE_SECS = 600  # 10 minutes
 
 # Which unlock category each native tool requires
@@ -78,6 +103,12 @@ _PREREQS = {
 # Write-class tools: blocked (ledger integrity).
 _ADVISORY_TOOLS = {"Read", "Grep", "Glob", "FindFiles", "SearchText"}
 _BLOCKED_TOOLS = {"Edit", "Write", "MultiEdit"}
+
+# Write-class tools as a FIXED fact about the tool, independent of policy.
+# The vault guard keys off this rather than `blocked_tools` so that neither an
+# enforcement mode nor a config override can open a native write path to the
+# credential vault. Keep in sync with _BLOCKED_TOOLS' default membership.
+_WRITE_CLASS_ALWAYS = frozenset({"Edit", "Write", "MultiEdit"})
 
 # Vault files no native write may touch, regardless of unlock state.
 # Mirrors services.credential_store.VAULT_PROTECTED_FILES (parity-tested);
@@ -167,11 +198,11 @@ def _is_file_unlocked(state: dict, file_path: str, category: str) -> bool:
     return category in cats or "both" in cats
 
 
-def _check_signal(state: dict) -> tuple[bool, bool, str]:
+def _check_signal(state: dict, ttl_s: int = _SIGNAL_MAX_AGE_SECS) -> tuple[bool, bool, str]:
     """Inspect the last_c3_call section of the consolidated state.
 
     Returns (recent, read_unlocked, c3_tool):
-      recent:        True if a c3_* tool completed within _SIGNAL_MAX_AGE_SECS
+      recent:        True if a c3_* tool completed within ttl_s
       read_unlocked: True if that tool was c3_search/c3_compress/c3_filter/…
       c3_tool:       short name of the c3 tool that wrote the signal (e.g.
                      "c3_edit"), or "" if recent is False / unparseable.
@@ -184,7 +215,7 @@ def _check_signal(state: dict) -> tuple[bool, bool, str]:
     try:
         ts = datetime.fromisoformat(last_call["ts"])
         age = (datetime.now(timezone.utc) - ts).total_seconds()
-        if age > _SIGNAL_MAX_AGE_SECS:
+        if age > ttl_s:
             return False, False, ""
         return True, bool(last_call.get("read_unlocked", False)), str(last_call.get("tool", ""))
     except Exception:
@@ -197,6 +228,8 @@ def _check_c3_used(
     tool_name: str,
     tool_input: dict,
     session_id: str = "",
+    ttl_s: int = _SIGNAL_MAX_AGE_SECS,
+    blocked_tools: frozenset | None = None,
 ) -> tuple[bool, str]:
     """Check if a qualifying c3 tool was recently used.
 
@@ -210,6 +243,8 @@ def _check_c3_used(
     if not allowed:
         return True, "signal"  # No prereqs defined → allow without reminder
 
+    write_class = _BLOCKED_TOOLS if blocked_tools is None else blocked_tools
+
     native_target = (
         tool_input.get("file_path", "")
         or tool_input.get("path", "")
@@ -220,13 +255,13 @@ def _check_c3_used(
     required_cat = _TOOL_CATEGORY.get(tool_name, "read")
 
     # ── Fix 4: signal — primary, fast, reliable ──────────────────────────────
-    signal_recent, signal_read_unlocked, signal_tool = _check_signal(state)
+    signal_recent, signal_read_unlocked, signal_tool = _check_signal(state, ttl_s)
     if signal_recent:
         # Bypass fix: for write-class tools (Edit/Write/MultiEdit), the signal
         # may only unlock them when the c3 tool that wrote it actually satisfies
         # this tool's prereqs (e.g. c3_edit/c3_edits/c3_agent). A read-class
         # signal (c3_status, c3_search, …) must NOT unlock a native write.
-        if tool_name in _BLOCKED_TOOLS:
+        if tool_name in write_class:
             if signal_tool in allowed:
                 if native_target:
                     _record_unlock(project_path, native_target, required_cat, session_id)
@@ -285,6 +320,46 @@ def _check_c3_used(
     return False, ""
 
 
+def _resolve_policy(base: Path):
+    """Effective tool-discipline policy, or None when unavailable.
+
+    None means "behave exactly as pre-v2.66" — a missing/broken policy module
+    must never be a way to end up with LESS enforcement than the default.
+    """
+    if enforcement_policy is None:
+        return None
+    try:
+        return enforcement_policy.resolve(str(base))
+    except Exception as exc:
+        log_hook_error("hook_pretool_enforce:policy", exc)
+        return None
+
+
+def _vault_denial(tool_name: str, tool_input: dict) -> dict | None:
+    """Credential-vault write guard — unconditional.
+
+    Deliberately gated on a FIXED write-tool set rather than the configurable
+    `blocked_tools`, so no enforcement mode (not even `off`) and no config
+    override can open a native write path to the vault.
+    """
+    if tool_name not in _WRITE_CLASS_ALWAYS:
+        return None
+    target = Path(str(tool_input.get("file_path") or ""))
+    if target.name.lower() in _VAULT_FILES and target.parent.name.lower() == ".c3":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"[c3:vault-protected] {target.name} belongs to the "
+                    "credential vault and cannot be modified by the agent. "
+                    "Ask the user to use the Credentials UI or `c3 creds` CLI."
+                ),
+            }
+        }
+    return None
+
+
 def run(payload: dict, project_path: Path | None = None) -> dict | None:
     """Core enforcement logic — importable by the dispatcher and tests.
 
@@ -300,65 +375,112 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     session_id = str(payload.get("session_id") or "")
     base = project_path if project_path is not None else Path.cwd()
 
-    # Vault write-guard: the credential registry/state may never be modified
-    # by the agent — even with a warm c3 signal or sticky unlock (v2.61.2).
-    if tool_name in _BLOCKED_TOOLS:
-        target = Path(str(tool_input.get("file_path") or ""))
-        if target.name.lower() in _VAULT_FILES and target.parent.name.lower() == ".c3":
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"[c3:vault-protected] {target.name} belongs to the "
-                        "credential vault and cannot be modified by the agent. "
-                        "Ask the user to use the Credentials UI or `c3 creds` CLI."
-                    ),
-                }
-            }
+    # Vault write-guard runs BEFORE the mode check: the credential registry
+    # may never be modified by the agent, at any discipline level (v2.61.2).
+    vault = _vault_denial(tool_name, tool_input)
+    if vault:
+        return vault
+
+    policy = _resolve_policy(base)
+    mode = getattr(policy, "mode", None) or "strict"
+    ttl_s = getattr(policy, "signal_ttl_s", _SIGNAL_MAX_AGE_SECS)
+    blocked_tools = getattr(policy, "blocked_tools", None) or _BLOCKED_TOOLS
+
+    # `off`: no tool-discipline nudging at all. Access Guard (hook_access_guard,
+    # already yielded ahead of this module) and the vault guard above are
+    # untouched — this switch governs workflow preference, not security.
+    if mode == "off":
+        return _policy_warnings(policy)
 
     # Session-scoped load: state written by a different session comes back
     # empty, so stale unlocks degrade to the advisory path below.
     state = load_enforcement_state(base, session_id=session_id)
 
-    allowed, via = _check_c3_used(base, state, tool_name, tool_input, session_id)
+    allowed, via = _check_c3_used(
+        base, state, tool_name, tool_input, session_id,
+        ttl_s=ttl_s, blocked_tools=blocked_tools,
+    )
 
     if allowed:
         # Sticky-unlock only: gentle drift-guard nudge, still allow.
         if via == "unlock":
-            return {
+            return _with_warnings({
                 "additionalContext": (
                     f"[c3:drift-guard] {tool_name} allowed via sticky unlock "
                     f"— no recent c3_* call detected. "
                     f"Prefer c3_search/c3_compress to keep the ledger warm."
                 )
-            }
-        return None  # satisfied prereq — allow
+            }, policy)
+        return _policy_warnings(policy)  # satisfied prereq — allow
 
     # No c3_* prereq met. Advisory vs blocked split.
     redirect = _REDIRECTS.get(tool_name, "Prefer a c3_* tool.")
 
-    if tool_name in _ADVISORY_TOOLS:
-        # Read-class: allow, but inject a selection-time hint.
+    # Write-class blocks only in `strict`. In `advisory` a native write is
+    # allowed with a nudge — hook_edit_ledger still records it PostToolUse, so
+    # the ledger stays complete either way; what is lost is the pre-edit
+    # snapshot c3_edit would have taken.
+    if tool_name in blocked_tools and mode == "strict":
+        _record_block(tool_name, tool_input, session_id, base)
+        reason = (
+            f"[c3:enforce] Native `{tool_name}` is blocked to preserve the edit "
+            f"ledger. {redirect} "
+            f"If this is getting in your way, the user can run "
+            f"`c3 enforce advisory`."
+        )
         return {
-            "additionalContext": (
-                f"[c3:hint] Native `{tool_name}` is running without a prior c3_* call. "
-                f"For better index awareness next time: {redirect}"
-            )
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
         }
 
-    # Write-class: hard block. Ledger integrity matters more than flexibility.
-    reason = (
-        f"[c3:enforce] Native `{tool_name}` is blocked to preserve the edit ledger. "
-        f"{redirect}"
-    )
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }
+    # Read-class (any mode) and write-class under `advisory`: allow + hint.
+    verb = "is running" if tool_name in _ADVISORY_TOOLS else "wrote"
+    return _with_warnings({
+        "additionalContext": (
+            f"[c3:hint] Native `{tool_name}` {verb} without a prior c3_* call. "
+            f"For better index awareness next time: {redirect}"
+        )
+    }, policy)
+
+
+def _record_block(tool_name: str, tool_input: dict, session_id: str,
+                  base: Path) -> None:
+    """Log a discipline block so `c3 access stats` can show what it costs."""
+    if access_telemetry is None:
+        return
+    try:
+        access_telemetry.record(
+            layer=access_telemetry.LAYER_DISCIPLINE,
+            rule="native-write-blocked",
+            scope="discipline",
+            tool=tool_name,
+            operation="write",
+            path=str(tool_input.get("file_path") or ""),
+            session_id=session_id,
+            project_path=str(base),
+        )
+    except Exception:
+        pass
+
+
+def _policy_warnings(policy) -> dict | None:
+    """Surface a malformed `enforcement` section instead of failing silently."""
+    warnings = getattr(policy, "warnings", ()) or ()
+    if not warnings:
+        return None
+    return {"additionalContext": "[c3:enforcement-config] " + "; ".join(warnings)}
+
+
+def _with_warnings(output: dict, policy) -> dict:
+    extra = _policy_warnings(policy)
+    if extra:
+        output["additionalContext"] = (
+            output.get("additionalContext", "") + "\n" + extra["additionalContext"]
+        ).strip()
+    return output
 
 
 def main():

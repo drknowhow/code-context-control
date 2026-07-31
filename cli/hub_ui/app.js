@@ -44,7 +44,7 @@ function App() {
       if (cfg.projects_view === 'grid') setView('grid');
       if (cfg.sidebar_collapsed != null) setSidebarCollapsed(!!cfg.sidebar_collapsed);
       if (cfg.sidebar_group) setFilter(cfg.sidebar_group);
-      if (['board', 'creds', 'locks'].includes(cfg.main_view)) setMainView(cfg.main_view);
+      if (['board', 'creds', 'locks', 'enforce'].includes(cfg.main_view)) setMainView(cfg.main_view);
     } catch { }
     try { const v = await api.get('/api/version'); setVersion(v.c3_version || ''); } catch { }
   }, []);
@@ -116,6 +116,8 @@ function App() {
             <HubCredentials projects={projects} onOpenDrill={openDrill} />
           ) : mainView === 'locks' ? (
             <HubLocks projects={projects} onOpenDrill={openDrill} />
+          ) : mainView === 'enforce' ? (
+            <HubEnforcement projects={projects} onOpenDrill={openDrill} />
           ) : (
             <React.Fragment>
               <SummaryBar projects={projects} search={search} setSearch={setSearch}

@@ -203,6 +203,7 @@ _UI_JS_FILES = [
     "ui/components/jira.js",
     "ui/components/credentials.js",
     "ui/components/access.js",
+    "ui/components/enforcement.js",
     "ui/components/instructions.js",
     "ui/components/settings.js",
     "ui/components/chat.js",
@@ -2999,6 +3000,102 @@ def api_access_preview():
         out["error"] = exc.message
         out["error_reason"] = exc.reason
     return jsonify(out)
+
+
+# ── Tool discipline (Layer C, docs/enforcement.md) ──────────────────────────
+# Kept on its own routes rather than folded into /api/access: path policy is a
+# security boundary, tool discipline is a workflow preference, and the API
+# should not blur what the CLI and UI deliberately keep apart.
+
+@app.route('/api/enforcement', methods=['GET'])
+def api_enforcement_get():
+    """Effective policy for this project, plus the denial evidence for it."""
+    from services import access_telemetry as at
+    from services import enforcement_policy as ep
+
+    policy = ep.resolve(str(PROJECT_PATH))
+    cfg = _safe_json_file(PROJECT_PATH / ".c3" / "config.json")
+    tier = str(cfg.get("permission_tier") or "")
+    agg = at.aggregate(str(PROJECT_PATH))
+
+    return jsonify({
+        "mode": policy.mode,
+        "scope": policy.scope,
+        "set_by": policy.set_by,
+        "signal_ttl_s": policy.signal_ttl_s,
+        "blocked_tools": sorted(policy.blocked_tools),
+        "warnings": list(policy.warnings),
+        "tier": tier,
+        "tier_implies": ep.derive_from_tier(tier) if tier else "",
+        "default_mode": ep.DEFAULT_MODE,
+        "modes": [{"id": m, "help": ep.MODE_HELP[m]} for m in ep.MODES],
+        "denials": {
+            "total": agg["total"],
+            "by_layer": agg["by_layer"],
+            "rows": [{**r, "fix": at.suggest(r)} for r in agg["rows"][:12]],
+        },
+        "coverage_note": (
+            "Tool discipline only governs whether native Edit/Write are pushed "
+            "through c3_edit. At every mode — including off — Access Guard path "
+            "rules, the credential-vault write guard, and agent locks still "
+            "enforce. The edit ledger records native writes either way; strict "
+            "additionally gets c3_edit's pre-edit snapshot."
+        ),
+    })
+
+
+@app.route('/api/enforcement', methods=['POST'])
+def api_enforcement_set():
+    """Set this project's discipline mode. Human surface — always set_by=user."""
+    from services import enforcement_policy as ep
+
+    data = request.get_json() or {}
+    mode = str(data.get("mode") or "").strip().lower()
+    ttl = data.get("signal_ttl_s")
+    try:
+        result = ep.set_mode(mode, str(PROJECT_PATH), set_by=ep.SET_BY_USER,
+                             scope="project",
+                             signal_ttl_s=int(ttl) if ttl else None)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(str(PROJECT_PATH)).log("access_action", {
+            "kind": "enforcement", "action": "set_mode",
+            "mode": result["mode"], "previous": result.get("previous", ""),
+            "scope": result["scope"], "via": "ui"})
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(PROJECT_PATH)).log_edit(
+            file=f"enforcement://{result['scope']}",
+            change_type="enforcement_set_mode",
+            summary=(f"tool discipline {result.get('previous') or 'default'} "
+                     f"-> {result['mode']} via the Discipline tab"),
+            tags=["enforcement", "access"],
+            detail={"kind": "enforcement", "mode": result["mode"],
+                    "previous": result.get("previous", ""),
+                    "scope": result["scope"], "via": "ui"})
+    except Exception:
+        pass
+    return jsonify(result)
+
+
+@app.route('/api/enforcement/denials', methods=['DELETE'])
+def api_enforcement_denials_clear():
+    """Reset denial counters — diagnostics, not the audit trail."""
+    from services import access_telemetry as at
+    return jsonify({"cleared": at.clear(str(PROJECT_PATH))})
+
+
+def _safe_json_file(path: Path) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 @app.route('/api/delegate', methods=['POST'])
