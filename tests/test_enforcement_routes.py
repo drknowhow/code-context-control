@@ -77,6 +77,25 @@ class TestEnforcementRoutes(unittest.TestCase):
         (self.proj / ".c3" / "config.json").unlink()
         self.assertEqual(self._get()["mode"], ep.DEFAULT_MODE)
 
+    # ── Denial event search (v2.67) ─────────────────────────────────────────
+
+    def test_denial_event_search_route(self):
+        at.record(layer=at.LAYER_DISCIPLINE, rule="native-write-blocked",
+                  tool="Edit", path="src/app.py", session_id="s1",
+                  project_path=str(self.proj))
+        at.record(layer=at.LAYER_ACCESS, rule="secrets/**", scope="project",
+                  tool="Read", path="secrets/k.txt", session_id="s2",
+                  project_path=str(self.proj))
+        d = self.client.get("/api/enforcement/denials/search").get_json()
+        self.assertEqual(d["matched"], 2)
+        self.assertEqual(d["events"][0]["path"], "secrets/k.txt",
+                         "newest event must come first")
+        self.assertIn("fix", d["events"][0])
+        d = self.client.get(
+            "/api/enforcement/denials/search?layer=discipline&q=src").get_json()
+        self.assertEqual(d["matched"], 1)
+        self.assertEqual(d["events"][0]["tool"], "Edit")
+
     def test_unparseable_config_does_not_500(self):
         (self.proj / ".c3" / "config.json").write_text("{ nope", encoding="utf-8")
         d = self._get()

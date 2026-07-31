@@ -297,6 +297,234 @@ class TestProvenance(unittest.TestCase):
             self.assertEqual(data["enforcement"]["mode"], "advisory")
 
 
+class _HomeSwap:
+    """Point C3_HOME at a temp dir for the duration of a test."""
+
+    def __init__(self, home: Path):
+        self.home = str(home)
+        self._old = None
+
+    def __enter__(self):
+        self._old = os.environ.get("C3_HOME")
+        os.environ["C3_HOME"] = self.home
+        return self
+
+    def __exit__(self, *exc):
+        if self._old is None:
+            os.environ.pop("C3_HOME", None)
+        else:
+            os.environ["C3_HOME"] = self._old
+
+
+class TestResolveGlobal(unittest.TestCase):
+    def test_unset_global_is_distinguishable_from_strict(self):
+        """mode='' when no section exists — 'not configured' is not 'strict'."""
+        with TemporaryDirectory() as tmp:
+            with _HomeSwap(Path(tmp)):
+                g = ep.resolve_global()
+                self.assertEqual(g.mode, "")
+                self.assertEqual(g.scope, "default")
+
+    def test_configured_global_round_trips(self):
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".c3").mkdir()
+            (home / ".c3" / "config.json").write_text(
+                json.dumps({"enforcement": {"mode": "advisory",
+                                            "set_by": "user"}}),
+                encoding="utf-8")
+            with _HomeSwap(home):
+                g = ep.resolve_global()
+                self.assertEqual(g.mode, "advisory")
+                self.assertEqual(g.scope, "global")
+                self.assertEqual(g.set_by, "user")
+
+    def test_corrupt_global_reports_warning_not_a_crash(self):
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".c3").mkdir()
+            (home / ".c3" / "config.json").write_text("{ nope",
+                                                      encoding="utf-8")
+            with _HomeSwap(home):
+                g = ep.resolve_global()
+                self.assertEqual(g.mode, "")
+                self.assertTrue(g.warnings)
+
+    def test_project_section_is_invisible_to_resolve_global(self):
+        tmp, root = _project({"mode": "off"})
+        with tmp:
+            with TemporaryDirectory() as fake_home:
+                with _HomeSwap(Path(fake_home)):
+                    self.assertEqual(ep.resolve_global().mode, "")
+
+
+class TestSetFields(unittest.TestCase):
+    """Mode-less partial updates must never create or reinterpret a mode."""
+
+    def test_refuses_to_create_an_enforcement_section(self):
+        """A ttl-only section would coerce to strict and shadow an inherited
+        mode — the fail-closed invariant this API must keep."""
+        tmp, root = _project(None)
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_fields(str(root), signal_ttl_s=900)
+            cfg = json.loads((root / ".c3" / "config.json").read_text(
+                encoding="utf-8"))
+            self.assertNotIn("enforcement", cfg)
+
+    def test_refuses_when_existing_mode_is_invalid(self):
+        tmp, root = _project({"mode": "yolo"})
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_fields(str(root), signal_ttl_s=900)
+
+    def test_preserves_mode_and_set_by(self):
+        """A ttl tweak must not flip a tier-derived choice to 'user' (or a
+        later tier change would stop deferring)."""
+        tmp, root = _project(None)
+        with tmp:
+            ep.set_mode("advisory", str(root), set_by=ep.SET_BY_TIER)
+            ep.set_fields(str(root), signal_ttl_s=1200)
+            section = json.loads((root / ".c3" / "config.json").read_text(
+                encoding="utf-8"))["enforcement"]
+            self.assertEqual(section["mode"], "advisory")
+            self.assertEqual(section["set_by"], ep.SET_BY_TIER)
+            self.assertEqual(section["signal_ttl_s"], 1200)
+
+    def test_writes_are_validated_not_clamped(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            for bad in (5, 10**9, "soon", -1):
+                with self.assertRaises(ValueError):
+                    ep.set_fields(str(root), signal_ttl_s=bad)
+
+    def test_rejects_ungovernable_blocked_tool(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_fields(str(root), blocked_tools=["Bash"])
+
+    def test_rejects_nothing_to_set(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_fields(str(root))
+
+    def test_rejects_unknown_scope(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_fields(str(root), scope="galaxy", signal_ttl_s=900)
+
+    def test_blocked_tools_round_trip_sorted_and_deduped(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            result = ep.set_fields(
+                str(root), blocked_tools=["Write", "Edit", "Write"])
+            self.assertEqual(result["blocked_tools"], ["Edit", "Write"])
+            self.assertEqual(ep.resolve(str(root)).blocked_tools,
+                             frozenset({"Edit", "Write"}))
+
+    def test_empty_blocked_tools_is_legal(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            ep.set_fields(str(root), blocked_tools=[])
+            self.assertEqual(ep.resolve(str(root)).blocked_tools, frozenset())
+
+
+class TestSetModeFieldValidation(unittest.TestCase):
+    def test_out_of_range_ttl_is_an_error_now(self):
+        tmp, root = _project(None)
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_mode("advisory", str(root), signal_ttl_s=10**9)
+
+    def test_blocked_tools_written_with_mode_in_one_atomic_write(self):
+        tmp, root = _project(None)
+        with tmp:
+            ep.set_mode("strict", str(root), blocked_tools=["Write"])
+            policy = ep.resolve(str(root))
+            self.assertEqual(policy.mode, "strict")
+            self.assertEqual(policy.blocked_tools, frozenset({"Write"}))
+
+    def test_set_mode_rejects_ungovernable_blocked_tool(self):
+        tmp, root = _project(None)
+        with tmp:
+            with self.assertRaises(ValueError):
+                ep.set_mode("strict", str(root), blocked_tools=["Bash"])
+
+    def test_tier_deferral_happens_before_any_field_write(self):
+        tmp, root = _project(None)
+        with tmp:
+            ep.set_mode("off", str(root), set_by=ep.SET_BY_USER)
+            result = ep.set_mode("strict", str(root), set_by=ep.SET_BY_TIER,
+                                 signal_ttl_s=1200, blocked_tools=["Write"])
+            self.assertTrue(result["deferred"])
+            section = json.loads((root / ".c3" / "config.json").read_text(
+                encoding="utf-8"))["enforcement"]
+            self.assertEqual(section["mode"], "off")
+            self.assertNotIn("signal_ttl_s", section)
+            self.assertNotIn("blocked_tools", section)
+
+
+class TestEventSearch(unittest.TestCase):
+    def test_filters_and_counts(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            hpe.run(_edit("src/app.py", session="s1"), root)
+            hpe.run(_edit("src/lib.py", tool="Write", session="s2"), root)
+            hpe.run(_edit("docs/x.md", session="s2"), root)
+
+            res = at.search_events(str(root))
+            self.assertEqual(res["matched"], 3)
+            self.assertEqual(res["scanned"], 3)
+            # Newest first.
+            self.assertEqual(res["events"][0]["path"], "docs/x.md")
+
+            self.assertEqual(at.search_events(str(root), q="src")["matched"], 2)
+            self.assertEqual(
+                at.search_events(str(root), tool="Write")["matched"], 1)
+            self.assertEqual(
+                at.search_events(str(root), session="s2")["matched"], 2)
+            self.assertEqual(
+                at.search_events(str(root), layer="access")["matched"], 0)
+
+    def test_session_prefix_matches_short_ids(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            hpe.run(_edit("a.py", session="abcdef1234567890"), root)
+            self.assertEqual(
+                at.search_events(str(root), session="abcdef12")["matched"], 1)
+
+    def test_limit_caps_events_but_not_matched(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            for i in range(7):
+                hpe.run(_edit(f"f{i}.py"), root)
+            res = at.search_events(str(root), limit=3)
+            self.assertEqual(len(res["events"]), 3)
+            self.assertEqual(res["matched"], 7)
+            self.assertTrue(res["truncated"])
+
+    def test_rotated_file_is_included(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            hpe.run(_edit("old.py"), root)
+            log = root / at.DENIAL_LOG
+            log.replace(log.with_name(log.name + ".1"))
+            hpe.run(_edit("new.py"), root)
+            res = at.search_events(str(root))
+            self.assertEqual(res["matched"], 2)
+            self.assertEqual(res["events"][0]["path"], "new.py")
+
+    def test_events_carry_a_fix(self):
+        tmp, root = _project({"mode": "strict"})
+        with tmp:
+            hpe.run(_edit("a.py"), root)
+            res = at.search_events(str(root))
+            self.assertIn("c3 enforce", res["events"][0]["fix"])
+
+
 class TestAtomicWriteDurability(unittest.TestCase):
     """Regression cover for the tmp-file leak + truncated-state bug."""
 
