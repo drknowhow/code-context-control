@@ -123,7 +123,7 @@ Twelve tabs. The dashboard above shows token savings, indexed files, the live se
 
 ## The MCP tool suite
 
-C3 exposes **20 tools** as a native MCP server. Your IDE calls them directly:
+C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 
 | Tool | What it does |
 |---|---|
@@ -138,6 +138,7 @@ C3 exposes **20 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_memory` | Fact store with categories, recall, graph queries, `index`→`fetch` two-step |
 | `c3_session` | Snapshot, restore, log decisions, compact history |
 | `c3_impact` | Blast-radius analysis before editing shared symbols |
+| `c3_locks` | Agent leases — who is working on which file, so two agents don't collide (v2.65.0) |
 | `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini |
 | `c3_agent` | Workflows: `review_changes`, `investigate`, `preflight`, `prepare_context`, `validate_compress` |
 | `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter |
@@ -148,7 +149,7 @@ C3 exposes **20 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_jira` | Jira Cloud + Data Center — JQL, issues, transitions (v2.56.0) |
 | `c3_project` | Cross-project discovery & operations; guarded writes (v2.31.0) |
 
-Every tool is **read-only safe in plan mode** except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, `c3_delegate` with write delegation enabled, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task`.
+Every tool is **read-only safe in plan mode** except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, `c3_delegate` with write delegation enabled, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task` / `c3_locks`.
 
 On Windows `c3_shell` uses Git Bash when available. Git Bash bundles no `jq`; use `python -m json.tool` for portable JSON formatting.
 
@@ -179,9 +180,58 @@ c3 access mask activate                         # purge pre-mask artifacts, buil
 - **Masked means read-only, always.** Cropped rows have no inverse, so an edit in transformed coordinates would corrupt the one file you protected.
 - **Four deterministic presets, no LLM in the read path:** `redact_secrets`, `redact_columns` (salted one-way pseudonyms — joins survive, no reverse dictionary), `sample_rows`, `signatures_only`.
 - **Rule changes are human-only** (UI tab or CLI) and ledger-logged. Agents have no mutation surface.
+- **Built-ins can be switched off when you need to** (v2.65.0). `**/.env*`, `**/.c3/**`, `**/.claude/settings*.json` and `**/.git/**` yield to `c3 access builtin disable <glob>`, which makes you retype the glob first. It takes **two keys** — a config entry *and* a keyring attestation — so an agent that manages to write `config.json` still cannot grant itself write access to your settings. The credential vault stays absolute.
 - **Honest coverage.** This guards *cooperative* agents against mistakes and prompt injection. It is not a sandbox — a raw shell outside C3's tools still sees the real bytes.
 
 → [Access Guard](https://github.com/drknowhow/code-context-control/blob/main/docs/access-guard.md) · [Mask Guard](https://github.com/drknowhow/code-context-control/blob/main/docs/mask-guard.md)
+
+---
+
+## Agent Locks — several agents, one repo (v2.65.0)
+
+Guards answer *may the agent touch this?* Locks answer *is someone already touching it?*
+
+Two agents editing one file used to be silent data loss. `c3_edit` serialized
+same-file edits with an in-process lock, but every session runs its own `c3-mcp`
+server — so two sessions could interleave read → replace → write and lose an edit
+with no error on either side. Create mode was worse: both agents "succeeded" and
+one file won.
+
+Now there are two mechanisms, because they solve different problems:
+
+- **Torn writes** — a cross-process file lock, held across create, single-edit and
+  batch alike. No daemon, no configuration, nothing to switch on.
+- **Overlapping work** — a *lease*. `c3_edit` takes one on the file it edits,
+  carrying the intent from your edit summary. A second agent gets told who holds
+  it and why:
+
+```text
+[c3-lock:held] services/router.py is held by claude-code:a3f19c2b.
+  intent: "refactor retry backoff"
+  lease expires in 6m12s.
+```
+
+```bash
+c3 locks list                              # who holds what, across the project
+c3 locks force-release services/router.py  # break a stuck lease (human-only, audited)
+```
+
+- **TTL is the real release mechanism.** Agents forget to release, so nothing
+  assumes they will — a crashed agent can never wedge a repo.
+- **Acquisition is all-or-nothing** over a sorted path list, so two agents grabbing
+  the same pair in opposite order cannot deadlock.
+- **`force-release` bumps a fencing counter**, so a holder that comes back is stale
+  by construction rather than by hope. It lives in the CLI and the Hub, never in
+  the agent-facing tool.
+- **The Hub's Locks tab badges a project it cannot read as `UNREADABLE`**, not as
+  zero leases — "all clear" is a different claim from "we don't know".
+- **Honest coverage, again.** Leases gate C3's own tool surfaces. A raw `c3_shell`
+  redirect, a non-Claude agent, or a human in an editor is *not* covered, and the
+  UI says so on screen.
+
+Set `locks.enabled: false` in `.c3/config.json` to opt out.
+
+→ [Agent Locks](https://github.com/drknowhow/code-context-control/blob/main/docs/agent-locks.md)
 
 ---
 
