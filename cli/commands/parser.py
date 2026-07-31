@@ -26,6 +26,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_init.add_argument("--git", action="store_true", help="Initialize a local Git repository during init/update")
     p_init.add_argument("--no-embed", action="store_true", help="Skip building the semantic embedding index during init")
     p_init.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only, used with --force)")
+    p_init.add_argument("--enforcement", choices=["strict", "advisory", "off"], default=None, help="Tool-discipline mode. Omit to derive from --permissions (standard->advisory, permissive->off, strict/read-only->strict)")
     p_init.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
 
     p_upgrade = subparsers.add_parser("upgrade", help="Upgrade C3 to the latest PyPI release")
@@ -471,6 +472,28 @@ def build_parser(version: str, parse_cli_ide_arg):
     lk_sweep = locks_subs.add_parser("sweep", help="Drop expired leases now")
     lk_sweep.add_argument("--path", dest="project_path", default=".")
 
+    # ── Tool discipline / enforcement mode (v2.66.0) ────────────────────
+    # LAYER C: how hard C3 pushes the agent toward c3_* tools. Distinct from
+    # `c3 access` (path policy — a security boundary) and from
+    # `c3 permissions` (the IDE's own allow/deny lists).
+    p_enforce = subparsers.add_parser(
+        "enforce",
+        help="Tool discipline — strict | advisory | off (show current if omitted)",
+    )
+    p_enforce.add_argument(
+        "mode", nargs="?", default=None,
+        choices=["strict", "advisory", "off"],
+        help="strict = block native Edit/Write until a c3_* call; "
+             "advisory = allow with a nudge (ledger still logs); "
+             "off = no nudging. Omit to show the current mode.",
+    )
+    p_enforce.add_argument("--global", dest="use_global", action="store_true",
+                           help="Write to the global scope (~/.c3) as the default for every project")
+    p_enforce.add_argument("--signal-ttl", type=int, default=None, dest="signal_ttl",
+                           help="Seconds a c3_* call keeps native tools unlocked (default 600)")
+    p_enforce.add_argument("--path", dest="project_path", default=".",
+                           help="Project directory (default: current)")
+
     # ── Access Guard (v2.62.0) ──────────────────────────────────────────
     # Human-only mutation surface (frozen spec docs/access-guard.md §1):
     # rule changes happen here or in the UI tab, never via an agent tool.
@@ -506,6 +529,22 @@ def build_parser(version: str, parse_cli_ide_arg):
     ac_check.add_argument("--op", choices=["read", "write"], default="read",
                           help="Operation to evaluate (default: read)")
     ac_check.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    # ── Denial telemetry (v2.66.0, docs/access-guard.md §3) ─────────────
+    # Answers "which rule is actually costing me time" with hit counts, and
+    # names the lever that would clear each one.
+    ac_stats = access_subs.add_parser(
+        "stats", help="What got denied, how often, and how to unblock it")
+    ac_stats.add_argument("--path", dest="project_path", default=".",
+                          help="Project directory (default: current)")
+    ac_stats.add_argument("--session", default="",
+                          help="Limit to one session id (default: all retained)")
+    ac_stats.add_argument("--limit", type=int, default=15,
+                          help="Max rows to show (default: 15)")
+    ac_stats.add_argument("--clear", action="store_true",
+                          help="Delete the retained denial log and exit")
+    ac_stats.add_argument("--json", dest="as_json", action="store_true",
+                          help="Emit the aggregate as JSON")
 
     # ── Builtin opt-out (two-key) ───────────────────────────────────────
     # Builtins are on by default. Switching one off needs a config entry AND

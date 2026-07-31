@@ -23,6 +23,11 @@ from _hook_utils import normalize_tool_name  # noqa: E402
 
 from services import access_guard as ag  # noqa: E402
 
+try:
+    from services import access_telemetry
+except Exception:  # pragma: no cover — telemetry is never load-bearing
+    access_telemetry = None
+
 _WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 _READ_TOOLS = {"Read", "SearchText"}
 _SEARCH_TOOLS = {"Grep", "Glob", "FindFiles"}
@@ -57,6 +62,23 @@ def _deny(reason: str) -> dict:
             "permissionDecisionReason": reason,
         }
     }
+
+
+def _record(denial, tool: str, operation: str, path: str,
+            base: str, session_id: str = "") -> None:
+    """Log a path-policy denial for `c3 access stats`. Best-effort."""
+    if access_telemetry is None or denial is None:
+        return
+    try:
+        access_telemetry.record(
+            layer=access_telemetry.LAYER_ACCESS,
+            rule=getattr(denial, "rule", ""),
+            scope=getattr(denial, "scope", ""),
+            tool=tool, operation=operation, path=path,
+            session_id=session_id, project_path=base,
+        )
+    except Exception:
+        pass
 
 
 def _target(tool_input: dict) -> str:
@@ -105,6 +127,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     tool = normalize_tool_name(payload.get("tool_name", ""))
     tool_input = payload.get("tool_input", {}) or {}
     base = str(project_path if project_path is not None else Path.cwd())
+    session_id = str(payload.get("session_id") or "")
 
     if tool in _WRITE_TOOLS or tool in _READ_TOOLS:
         fp = _target(tool_input)
@@ -113,6 +136,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         op = "write" if tool in _WRITE_TOOLS else "read"
         denial = ag.check(fp, op, base)
         if denial:
+            _record(denial, tool, op, fp, base, session_id)
             return _deny(ag.refusal(denial, fp, op, surface="hook", tool=tool))
         return None
 
@@ -123,6 +147,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         if root:
             denial = ag.check(root, "read", base)
             if denial and denial.kind == "deny":
+                _record(denial, tool, "read", root, base, session_id)
                 return _deny(ag.refusal(denial, root, "read",
                                         surface="hook", tool=tool))
         footer = ag.search_footer(base)
@@ -134,6 +159,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
             return None
         denial, tok = _scan_shell(cmd, base)
         if denial:
+            _record(denial, tool, "read", tok, base, session_id)
             return _deny(ag.refusal(denial, tok, "read",
                                     surface="hook", tool=tool)
                          + " (best-effort shell scan)")
