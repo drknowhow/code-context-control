@@ -4,6 +4,94 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.67.0] - 2026-07-31
+
+### Added — The Discipline tab grows search, evidence, and controls (Hub)
+
+v2.66 shipped the knob; this release ships the workbench around it. Most of
+what landed here was capability the backend already had and no surface
+exposed: the raw denial-event log had a public reader nothing called, the
+policy layer accepted `scope="global"` that no route passed, `signal_ttl_s`
+and `blocked_tools` were fully resolved and validated but had no write
+surface. The Hub tab now reaches all of it.
+
+- **Search, filter, sort.** A free-text filter over project name / path /
+  mode / tier (`/` focuses it), chips for `Strict` / `Advisory` / `Off` /
+  `Has denials` / `Attention` (warnings, unreadable policies, tier drift),
+  and sorting by name, denial count, or mode. The tab now polls every 5s
+  like Locks — and never mid-interaction: a refresh while you type, or with
+  a confirm open, would reorder cards under your cursor.
+- **Raw denial-event search.** Expand a project's denials and search the
+  actual events, not just the coalesced summary: AND'd substrings over
+  path/rule/tool, layer chips, click a session id to filter to that session,
+  `all events` to browse newest-first. Backed by
+  `access_telemetry.search_events` via
+  `GET /api/enforcement/denials/search` (project) and
+  `GET /api/projects/enforcement/denials/search` (Hub) — limit 200 (cap
+  500), `matched` keeps counting past the cap so truncation is visible, and
+  the rotated `.jsonl.1` is included. Aggregate rows now show last-hit
+  recency and session counts, which the server always sent and the UI
+  always dropped.
+- **Global default card.** The `~/.c3` fallback finally has a UI: its own
+  mode picker and TTL editor, `NOT SET` when no global section exists (which
+  is not the same claim as `strict`, and the card keeps them apart). The
+  POST routes accept `scope: "global"`; the CLI's `c3 enforce --global` is
+  no longer the only way.
+- **TTL and blocked-tools editors.** Per project and on the global card.
+  Both post mode-less bodies routed through a new
+  `enforcement_policy.set_fields`, which never touches `mode`/`set_by` — a
+  TTL tweak cannot turn a tier-derived choice into a `user` one — and
+  **refuses to create** an `enforcement` section, because a mode-less
+  section coerces to `strict` and would silently shadow an inherited
+  `advisory`. The editors are enabled only when the row's policy actually
+  comes from the project scope, and say why when it does not.
+- **Bulk apply.** `select` puts the list in checkbox mode; a sticky bar
+  applies one mode to every selected project after a single confirm that
+  spells out what `off` does and does not switch off. Writes are sequential
+  and audited per project; failures are named, not swallowed.
+- **Discipline in the drill panel.** Clicking a project name now opens the
+  drill on a new Discipline tab — the same controls scoped to one project,
+  the full 12-row aggregate with fixes, and the event search — instead of
+  dropping you on Overview and losing the thread.
+
+### Fixed
+
+- **The Discipline tab never persisted as the active view.** The Hub's
+  `main_view` whitelist was missing `enforce`, so selecting the tab 400'd
+  silently (the client swallows config-save errors) and every reload dropped
+  you back on Projects. Two-line fix, pinned by a test that mirrors the
+  Locks one.
+- Hub error banners in the Discipline tab now surface the server's actual
+  error (`apiErr`) instead of a bare `HTTP 500`.
+- The tab now consumes the server's authoritative mode list, help strings,
+  and tier map instead of a hardcoded client copy that could drift.
+
+### Changed
+
+- `signal_ttl_s` is now **validated on write** (30…86400 → HTTP 400 /
+  `ValueError`) instead of silently written and clamped at read time.
+  Read-time clamping stays, for hand-edited files.
+- `enforcement_policy.set_mode` accepts `blocked_tools`, validated against
+  `GOVERNABLE_TOOLS` and written in the same atomic write as the mode.
+- `POST /api/projects/enforcement` body is now
+  `{path?, scope?, mode?, signal_ttl_s?, blocked_tools?}`; project scope
+  (the default) keeps its old contract exactly. Global-scope writes are not
+  audited to a project ledger — there is no target project; the
+  `~/.c3/config.json` write is itself the record.
+- The `enforcement` config section remains deliberately excluded from the
+  generic Config editor's write whitelist — the dedicated route is the only
+  write path, so validation and provenance rules cannot be bypassed.
+- The aggregate endpoints accept `?session=` to narrow to one session
+  (`c3 access stats --session` had this; the routes now do too).
+
+Not in this release, evaluated and deferred: outcome telemetry (logging
+advisory nudges/allows for an effectiveness view — hot hook path, 10-100×
+event volume, needs its own perf-careful pass) and NotebookEdit governance
+(a file-writing tool the discipline hook currently does not govern at all —
+an enforcement-semantics change with its own tests).
+
+Full reference: `docs/enforcement.md`.
+
 ## [2.66.0] - 2026-07-31
 
 ### Added — Tool discipline is now a knob you can turn (`c3 enforce`)

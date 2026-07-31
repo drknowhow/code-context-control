@@ -3090,6 +3090,24 @@ def api_enforcement_denials_clear():
     return jsonify({"cleared": at.clear(str(PROJECT_PATH))})
 
 
+@app.route('/api/enforcement/denials/search', methods=['GET'])
+def api_enforcement_denials_search():
+    """Search this project's raw denial events. Read-only; newest first.
+
+    Params: q (AND'd substrings over path/rule/tool), layer, tool (exact),
+    session (prefix), since (ISO-8601), limit (default 200, cap 500).
+    """
+    from services import access_telemetry as at
+    return jsonify(at.search_events(
+        str(PROJECT_PATH),
+        q=request.args.get("q") or "",
+        layer=request.args.get("layer") or "",
+        tool=request.args.get("tool") or "",
+        session=request.args.get("session") or "",
+        since=request.args.get("since") or "",
+        limit=request.args.get("limit") or 200))
+
+
 def _safe_json_file(path: Path) -> dict:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

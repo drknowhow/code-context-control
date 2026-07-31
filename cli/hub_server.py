@@ -435,9 +435,9 @@ def api_hub_config_set():
         cfg["projects_view"] = projects_view
     if "main_view" in data:
         main_view = str(data["main_view"]).strip().lower()
-        if main_view not in {"projects", "board", "creds", "locks"}:
+        if main_view not in {"projects", "board", "creds", "locks", "enforce"}:
             return jsonify({"error": "main_view must be 'projects', 'board', "
-                                     "'creds' or 'locks'"}), 400
+                                     "'creds', 'locks' or 'enforce'"}), 400
         cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
@@ -1723,6 +1723,9 @@ def api_search_global():
 _CONFIG_READ_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "bitbucket", "meta",
                          "memory_llm")
 _CONFIG_WRITE_SECTIONS = ("hybrid", "agents", "delegate", "proxy", "mcp", "meta", "memory_llm")
+# "enforcement" is deliberately NOT writable here: the generic deep-merge would
+# bypass mode/ttl/blocked_tools validation and the set_by provenance rules.
+# POST /api/projects/enforcement is the only write path.
 # api_key: secrets never transit the hub or land in config.json — the Ollama
 # cloud key lives in the OS keyring (project Settings UI / OLLAMA_API_KEY env).
 _CONFIG_REFUSED_KEYS = ("version", "project_path", "permission_tier", "subprojects", "parent",
@@ -2166,6 +2169,7 @@ def api_hub_enforcement_overview():
                 row["set_by"] = policy.set_by
                 row["signal_ttl_s"] = policy.signal_ttl_s
                 row["warnings"] = list(policy.warnings)
+                row["blocked_tools"] = sorted(policy.blocked_tools)
 
                 cfg_path = Path(ppath) / ".c3" / "config.json"
                 try:
@@ -2188,12 +2192,28 @@ def api_hub_enforcement_overview():
             row["error"] = str(e)
         rows.append(row)
 
+    # The global (~/.c3) section, shown as its own card. A corrupt global
+    # config must not blank the tab — report the error inside the object.
+    try:
+        g = ep.resolve_global()
+        global_policy = {
+            "configured": g.scope == "global",
+            "mode": g.mode or None,
+            "set_by": g.set_by,
+            "signal_ttl_s": g.signal_ttl_s,
+            "blocked_tools": sorted(g.blocked_tools),
+            "warnings": list(g.warnings),
+        }
+    except Exception as e:
+        global_policy = {"configured": False, "mode": None, "error": str(e)}
+
     return jsonify({
         "projects": rows,
         "modes": [{"id": m, "help": ep.MODE_HELP[m]} for m in ep.MODES],
         "default_mode": ep.DEFAULT_MODE,
         "tier_map": ep.TIER_TO_MODE,
         "totals": totals,
+        "global_policy": global_policy,
         # Stated so the tab can never imply that turning discipline down also
         # turns the security boundaries down. Mirrors docs/enforcement.md.
         "coverage_note": (
@@ -2206,56 +2226,169 @@ def api_hub_enforcement_overview():
     })
 
 
-@app.route("/api/projects/enforcement", methods=["POST"])
-def api_projects_enforcement_set():
-    """Set one project's tool-discipline mode. Human-only, audited on target.
+@app.route("/api/projects/enforcement", methods=["GET"])
+def api_projects_enforcement_get():
+    """One project's effective policy plus its denial evidence.
 
-    Always writes ``set_by='user'``: a change made deliberately in the Hub is
-    an explicit choice and must survive a later permission-tier change, the
-    same as `c3 enforce`.
+    Hub-side mirror of the per-project GET /api/enforcement — feeds the drill
+    panel's Discipline tab. Optional ``?session=`` narrows the denial
+    aggregate to one session id (full id; the event search route does prefix
+    matching for the UI's 8-char short ids).
     """
+    from services import access_telemetry as at
     from services import enforcement_policy as ep
 
-    data = request.get_json(force=True) or {}
-    path = (data.get("path") or "").strip()
-    mode = (data.get("mode") or "").strip().lower()
-    ttl = data.get("signal_ttl_s")
-    if not path or not mode:
-        return jsonify({"error": "path and mode are required"}), 400
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
     try:
         resolved = _resolve_project_path(path)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 
+    policy = ep.resolve(resolved)
     try:
-        result = ep.set_mode(mode, resolved, set_by=ep.SET_BY_USER,
-                             scope="project",
-                             signal_ttl_s=int(ttl) if ttl else None)
+        cfg = json.loads((Path(resolved) / ".c3" / "config.json")
+                         .read_text(encoding="utf-8"))
+        tier = str(cfg.get("permission_tier") or "") if isinstance(cfg, dict) else ""
+    except Exception:
+        tier = ""
+    session = (request.args.get("session") or "").strip()
+    agg = at.aggregate(resolved, session_id=session)
+
+    return jsonify({
+        "mode": policy.mode,
+        "scope": policy.scope,
+        "set_by": policy.set_by,
+        "signal_ttl_s": policy.signal_ttl_s,
+        "blocked_tools": sorted(policy.blocked_tools),
+        "warnings": list(policy.warnings),
+        "tier": tier,
+        "tier_implies": ep.derive_from_tier(tier) if tier else "",
+        "default_mode": ep.DEFAULT_MODE,
+        "modes": [{"id": m, "help": ep.MODE_HELP[m]} for m in ep.MODES],
+        "denials": {
+            "total": agg["total"],
+            "by_layer": agg["by_layer"],
+            "rows": [{**r, "fix": at.suggest(r)} for r in agg["rows"][:12]],
+        },
+    })
+
+
+@app.route("/api/projects/enforcement", methods=["POST"])
+def api_projects_enforcement_set():
+    """Set tool-discipline policy fields. Human-only, audited on target.
+
+    Body: ``{path?, scope?, mode?, signal_ttl_s?, blocked_tools?}``.
+    ``scope`` defaults to project (``path`` required); ``global`` writes
+    ``~/.c3`` and ignores ``path``. A body with ``mode`` goes through
+    ``set_mode`` — always ``set_by='user'``: a change made deliberately in
+    the Hub is an explicit choice and must survive a later permission-tier
+    change, the same as `c3 enforce`. A mode-less body goes through
+    ``set_fields``, which never touches ``mode``/``set_by``.
+    """
+    from services import enforcement_policy as ep
+
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    scope = (data.get("scope") or "project").strip().lower()
+    mode = (data.get("mode") or "").strip().lower()
+    ttl = data.get("signal_ttl_s")
+    blocked = data.get("blocked_tools")
+    if scope not in ("project", "global"):
+        return jsonify({"error": "scope must be 'project' or 'global'"}), 400
+    if scope == "project":
+        if not path:
+            return jsonify({"error": "path is required for project scope"}), 400
+        try:
+            resolved = _resolve_project_path(path)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    else:
+        resolved = "."
+
+    try:
+        if mode:
+            result = ep.set_mode(mode, resolved, set_by=ep.SET_BY_USER,
+                                 scope=scope, signal_ttl_s=ttl,
+                                 blocked_tools=blocked)
+        elif ttl is not None or blocked is not None:
+            result = ep.set_fields(resolved, scope=scope,
+                                   signal_ttl_s=ttl, blocked_tools=blocked)
+        else:
+            return jsonify({"error": "nothing to set — pass mode, "
+                                     "signal_ttl_s or blocked_tools"}), 400
     except (ValueError, TypeError) as e:
         return jsonify({"error": str(e)}), 400
 
-    try:
-        from services.activity_log import ActivityLog
-        ActivityLog(resolved).log("access_action", {
-            "kind": "enforcement", "action": "set_mode",
-            "mode": result["mode"], "previous": result.get("previous", ""),
-            "scope": result["scope"], "via": "hub"})
-    except Exception:
-        pass
-    try:
-        from services.edit_ledger import EditLedger
-        EditLedger(resolved).log_edit(
-            file=f"enforcement://{result['scope']}",
-            change_type="enforcement_set_mode",
-            summary=(f"tool discipline {result.get('previous') or 'default'} "
-                     f"-> {result['mode']} via the Hub"),
-            tags=["enforcement", "access"],
-            detail={"kind": "enforcement", "mode": result["mode"],
-                    "previous": result.get("previous", ""),
-                    "scope": result["scope"], "via": "hub"})
-    except Exception:
-        pass
+    # Audit on the target project. Global scope has no target project to
+    # audit into — the ~/.c3/config.json write is itself the record.
+    if scope == "project":
+        action = "set_mode" if mode else "set_fields"
+        detail = {"kind": "enforcement", "action": action,
+                  "mode": result.get("mode", ""),
+                  "previous": result.get("previous", ""),
+                  "scope": result["scope"], "via": "hub"}
+        if "signal_ttl_s" in result:
+            detail["signal_ttl_s"] = result["signal_ttl_s"]
+        if "blocked_tools" in result:
+            detail["blocked_tools"] = result["blocked_tools"]
+        if mode:
+            summary = (f"tool discipline {result.get('previous') or 'default'} "
+                       f"-> {result['mode']} via the Hub")
+        else:
+            parts = []
+            if "signal_ttl_s" in result:
+                parts.append(f"signal_ttl_s={result['signal_ttl_s']}")
+            if "blocked_tools" in result:
+                parts.append("blocked_tools="
+                             + ",".join(result["blocked_tools"] or ["<none>"]))
+            summary = "tool discipline " + ", ".join(parts) + " via the Hub"
+        try:
+            from services.activity_log import ActivityLog
+            ActivityLog(resolved).log("access_action", dict(detail))
+        except Exception:
+            pass
+        try:
+            from services.edit_ledger import EditLedger
+            EditLedger(resolved).log_edit(
+                file=f"enforcement://{result['scope']}",
+                change_type=f"enforcement_{action}",
+                summary=summary,
+                tags=["enforcement", "access"],
+                detail=detail)
+        except Exception:
+            pass
     return jsonify(result)
+
+
+@app.route("/api/projects/enforcement/denials/search", methods=["GET"])
+def api_projects_enforcement_denials_search():
+    """Search one project's raw denial events. Read-only; newest first.
+
+    Params: ``path`` (required), ``q`` (AND'd case-insensitive substrings over
+    path/rule/tool), ``layer``, ``tool`` (exact), ``session`` (prefix — the UI
+    shows 8-char short ids), ``since`` (ISO-8601; events store
+    second-resolution UTC isoformat, so plain string comparison is correct),
+    ``limit`` (default 200, cap 500).
+    """
+    from services import access_telemetry as at
+
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(at.search_events(
+        resolved,
+        q=request.args.get("q") or "",
+        layer=request.args.get("layer") or "",
+        tool=request.args.get("tool") or "",
+        session=request.args.get("session") or "",
+        since=request.args.get("since") or "",
+        limit=request.args.get("limit") or 200))
 
 
 @app.route("/api/projects/enforcement/denials", methods=["DELETE"])

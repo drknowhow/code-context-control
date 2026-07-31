@@ -120,6 +120,54 @@ def read_events(project_path: str = ".", limit: int = 20_000) -> list:
     return out[-limit:]
 
 
+def search_events(project_path: str = ".", *, q: str = "", layer: str = "",
+                  tool: str = "", session: str = "", since: str = "",
+                  limit: int = 200) -> dict:
+    """Filter raw denial events, newest first — the backing for the UI search.
+
+    ``q`` is AND'd case-insensitive substrings over path/rule/tool;
+    ``layer``/``tool`` match exactly; ``session`` is a prefix match (the UI
+    shows 8-char short ids); ``since`` compares ISO-8601 strings, which is
+    correct because ``record()`` stores second-resolution UTC isoformat.
+    ``limit`` caps returned events (1..500); matching continues past it so
+    ``matched`` stays honest.
+    """
+    terms = [t for t in str(q or "").lower().split() if t]
+    layer = str(layer or "").strip().lower()
+    tool = str(tool or "").strip()
+    session = str(session or "").strip()
+    since = str(since or "").strip()
+    try:
+        limit = max(1, min(500, int(limit)))
+    except (TypeError, ValueError):
+        limit = 200
+
+    events = read_events(project_path)
+    matched = 0
+    out: list = []
+    for ev in reversed(events):  # read_events returns newest LAST
+        if layer and str(ev.get("layer") or "") != layer:
+            continue
+        if tool and str(ev.get("tool") or "") != tool:
+            continue
+        if session and not str(ev.get("session") or "").startswith(session):
+            continue
+        if since and str(ev.get("ts") or "") < since:
+            continue
+        if terms:
+            hay = " ".join((str(ev.get("path") or ""),
+                            str(ev.get("rule") or ""),
+                            str(ev.get("tool") or ""))).lower()
+            if not all(t in hay for t in terms):
+                continue
+        matched += 1
+        if len(out) < limit:
+            out.append({**ev, "fix": suggest(ev)})
+
+    return {"events": out, "matched": matched, "scanned": len(events),
+            "truncated": matched > len(out)}
+
+
 def aggregate(project_path: str = ".", *, session_id: str = "") -> dict:
     """Coalesce events per (layer, rule, tool) with a hit counter — the shape
     ``docs/access-guard.md`` §3 asked for.

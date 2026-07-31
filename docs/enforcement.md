@@ -103,8 +103,20 @@ JSON, or a `blocked_tools` entry naming a tool this policy does not govern all
 resolve to `strict` and surface a `[c3:enforcement-config]` warning to the
 agent rather than silently relaxing enforcement.
 
-`signal_ttl_s` is clamped to 30…86400. Raise it when a long single-file
-refactor keeps outrunning the 10-minute default and getting re-blocked.
+`signal_ttl_s` is clamped to 30…86400 **at read time** (a hand-edited file gets
+a warning, not a crash); the write surfaces — `c3 enforce --signal-ttl` and the
+UI/Hub routes — reject an out-of-range value instead of adjusting it. Raise it
+when a long single-file refactor keeps outrunning the 10-minute default and
+getting re-blocked.
+
+Since v2.67 `signal_ttl_s` and `blocked_tools` are also editable without
+touching the mode (the Hub TTL/tools editors use this): a mode-less write goes
+through `enforcement_policy.set_fields`, which never touches `mode`/`set_by` —
+so a TTL tweak cannot turn a tier-derived choice into a `user` one. It also
+**refuses to create** an `enforcement` section: resolution stops at the first
+scope whose section exists, and a mode-less section coerces to `strict`, so a
+TTL-only section would silently shadow an inherited `advisory`. Pick a mode at
+that scope first.
 
 ## Project UI — the Discipline tab
 
@@ -128,26 +140,57 @@ Credentials / Locks. It is the same knob as `c3 enforce`, across every
 registered project at once:
 
 - One row per project with its current mode, where that mode came from
-  (`project` / `global` / never set), and its permission tier.
+  (`project` / `global` / never set), its permission tier, its signal TTL and
+  its `blocked_tools` count.
+- **Search, filter, sort** (v2.67): a free-text filter over name / path /
+  mode / tier (`/` focuses it), chips for `Strict` / `Advisory` / `Off` /
+  `Has denials` / `Attention` (warnings, unreadable policies, tier drift),
+  and sorting by name, denial count, or mode. The list polls every 5 s —
+  never while you are typing or a dialog is open.
 - A three-way mode picker per row. Switching to `off` asks for confirmation
   and spells out both what stays enforced and what you give up.
+- A **Global default card** (v2.67) for the `~/.c3` fallback: its own mode
+  picker and TTL editor, `NOT SET` when no global section exists. Projects
+  with their own setting are unaffected, and the card says so.
+- **TTL and blocked-tools editors** per row (v2.67), enabled only when the
+  row's policy actually comes from the project scope — an inherited policy
+  says why it is disabled instead of writing a section that would shadow the
+  inheritance. Both post mode-less bodies, so `set_by` is untouched.
+- **Bulk apply** (v2.67): `select` puts the list in checkbox mode; a sticky
+  bar applies one mode to every selected project after a single confirm.
+  Each write is still audited per project.
 - Denial counts per project. Expand a row for the ranked breakdown — hits,
-  rule, tool, and the exact command that clears it — plus a counter reset.
+  rule, tool, last hit, session count, and the exact command that clears it —
+  plus a counter reset and a **raw event search** (v2.67): substring over
+  path/rule/tool, layer chips, click a session id to filter to that session,
+  `all events` to browse the log newest-first.
 - Projects that are unreadable or have no `.c3` are listed under **Not
   reporting** rather than silently shown as `strict`. "We don't know" and
   "running strict" are different claims and the tab keeps them apart.
 - A malformed `enforcement` section raises a banner saying those projects
   resolve to `strict` and will not honour the mode displayed.
+- Clicking a project name opens the drill panel on its **Discipline** tab
+  (v2.67) — the same controls scoped to one project, with the full 12-row
+  denial aggregate and the event search.
 
 It is deliberately a separate tab from Access Guard, for the same reason
 `c3 enforce` is a separate command: path policy is a security boundary, tool
 discipline is a workflow preference, and one tab for both invites the mistake
 of loosening the wrong one.
 
-Routes: `GET /api/hub/enforcement/overview`, `POST /api/projects/enforcement`,
-`DELETE /api/projects/enforcement/denials`. Mutations are ledger- and
-activity-logged on the target project and always recorded as `set_by: "user"`,
-so a Hub change survives a later tier change.
+Routes: `GET /api/hub/enforcement/overview`,
+`GET|POST /api/projects/enforcement` (POST body
+`{path?, scope?, mode?, signal_ttl_s?, blocked_tools?}`; `scope: "global"`
+writes `~/.c3` and needs no path),
+`GET /api/projects/enforcement/denials/search`,
+`DELETE /api/projects/enforcement/denials`. Project-scope mutations are
+ledger- and activity-logged on the target project; mode changes are always
+recorded as `set_by: "user"`, so a Hub change survives a later tier change.
+Global-scope writes have no target project to audit into — the
+`~/.c3/config.json` write is itself the record. The `enforcement` section is
+deliberately excluded from the generic Config editor's write whitelist: the
+dedicated route is the only write path, so validation and provenance rules
+cannot be bypassed.
 
 ## Denial telemetry
 
@@ -164,6 +207,16 @@ Events append to `.c3/denials.jsonl` (rotated at 512 KB) and are coalesced per
 `(layer, rule, tool)` at read time — hooks are concurrent short-lived
 subprocesses, so a shared counter file would race, while a single-line append
 is the pattern `edit_ledger.jsonl` already relies on.
+
+Since v2.67 the raw events are also searchable without coalescing:
+`access_telemetry.search_events` backs
+`GET /api/enforcement/denials/search` (project UI) and
+`GET /api/projects/enforcement/denials/search?path=…` (Hub). Filters: `q`
+(AND'd case-insensitive substrings over path/rule/tool), `layer`, `tool`
+(exact), `session` (prefix, so 8-char short ids work), `since` (ISO-8601),
+`limit` (default 200, cap 500). Newest first; `matched` keeps counting past
+the cap so truncation is visible. The rotated `.jsonl.1` is included. The
+aggregate endpoints also accept `?session=` to narrow to one session.
 
 The log is local, gitignored, and records the denied path. Clear it with
 `--clear` if that matters for a given repo.
