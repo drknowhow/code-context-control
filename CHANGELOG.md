@@ -4,6 +4,87 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.68.0] - 2026-08-07
+
+### Added — C3 on your phone: a companion-app gateway, including the security surface
+
+`/api/mobile/*` is a new surface on the Oracle for the C3 mobile companion
+app: a merged cross-project activity feed, the project overview with health,
+the PM board read/write, the daily digest, notification ack — and, new in this
+release, the credential vault and Access Guard.
+
+That last part is why this took more care than a read-only feed. Credentials
+and Access Guard already had HTTP surfaces, but every one of them is
+loopback-only and unauthenticated; their whole confidentiality model is
+"nothing sensitive ever leaves, and only localhost can ask." This gateway is
+the first **network-reachable** surface for either subsystem, so that model
+does not transfer and the controls are rebuilt here as explicit invariants
+rather than assumptions.
+
+- **The gateway never returns a credential value, structurally.** There is no
+  reveal route and no way to add one by accident: entries cross the wire only
+  through an allowlist serializer (`credential_store.public_entry`, promoted
+  out of the Hub so the two copies cannot drift), and `mobile_api` never
+  imports `get_value` or `expand_templates` at all — a source-grep test
+  asserts that, and `credential_store.is_resolvable()` exists so the check
+  route can prove a value is present without reading it. You get a length and
+  an on-demand fingerprint; that is enough to tell *which* value is stored and
+  nothing more. A canary test seeds a known secret and asserts it appears in
+  no response and no log, sweeping `/api/mobile/feed` last — that route merges
+  the activity log and edit ledger across every project, so an audit line that
+  ever carried a value would be exfiltrated by the next poll.
+- **Full vault and guard management.** Credentials list/get/check/set/delete;
+  Access Guard rules, mask rules, mask activation, path checks and denial
+  counters; tool discipline read and write. `check` and `access/check` are
+  POST rather than GET on purpose — one decrypts and the other walks the
+  filesystem, so both belong in the security rate budget, not the cache.
+- **Bearer on every method, GETs included.** Unlike the legacy Oracle reads,
+  nothing here is anonymous. Every project path is validated against the
+  registry, and every write is audited three ways: the project's activity log
+  and edit ledger, the global vault's own log when the write is global-scope
+  (otherwise a global edit with no project context would leave no trace
+  anywhere), and the gateway's own `discovery_audit` — the only per-gateway
+  record, and the one that answers "my token leaked, what did it touch"
+  without grepping every project. Names and globs only, never values.
+- **Capabilities, not 404-collecting.** Each subsystem has an enable switch
+  and a write switch: `mobile_credentials_enabled` / `mobile_credentials_write`
+  cover the vault, and `mobile_access_enabled` / `mobile_access_write` cover
+  path policy *and* tool discipline (the `enforcement` capability rides the
+  access switches today — discipline has no separate key).
+  `/api/mobile/info` reports the **effective** list, so a client hides a
+  feature it cannot use
+  instead of discovering the truth by collecting failures. A disabled
+  subsystem 404s — deliberately indistinguishable from a server too old to
+  have it, so one client path handles both. `API_VERSION` is now `2`.
+- **Two levers ship complete but off.**
+  `mobile_creds_agent_readable_raise` gates *raising* `agent_readable` from
+  the phone (lowering always works), and `mobile_access_global_scope` gates
+  machine-wide access rules. Each is the one operation in its subsystem whose
+  blast radius exceeds what the token can otherwise reach. Global-scope writes
+  never derive their location from the request — the store path is a
+  server-side constant — and refuse with `409 needs_init` rather than creating
+  `~/.c3`, so the set of paths this surface can initialize is unchanged.
+- **Deliberately absent, and worth knowing before you add one back.** No bulk
+  `.env` import (largest blast radius in the vault, no phone affordance). No
+  denial-counter clearing (a leaked token's first move after being denied is
+  to erase the evidence). No `set_builtin_disabled` — builtin guards stay
+  CLI-only. No raw-content access preview. Globs like `**` are refused as too
+  broad for a phone, while the CLI stays unrestricted; the difference between
+  the surfaces is the point. Mask activation is single-flight and never
+  accepts `rebuild_index` from the wire.
+- **Typed confirmations, honestly scoped.** Removing a rule or a mask, first
+  mask activation, and turning tool discipline off all require the client to
+  echo a specific string. That stops a fat-finger and a blind replay, and it
+  forces a deliberate two-step UI. It is **not** a defence against a leaked
+  Bearer token — an attacker holding one constructs the field trivially. The
+  config switches above are the control that resists that.
+- **Pairing.** Oracle Settings gains a *Mobile app* card that renders a QR
+  carrying the server URL and the Discovery API token. It renders only on an
+  explicit click, never on page load, and says plainly that the code contains
+  the raw token. Remote reachability is the same recipe as the Discovery API:
+  set `bind_host` to your Tailscale/LAN address (not `0.0.0.0`) and list it in
+  `allowed_hosts`. Disable the whole surface with `"mobile_api_enabled": false`.
+
 ## [2.67.1] - 2026-08-07
 
 ### Fixed — a startup thread could wedge the whole MCP server, silently
