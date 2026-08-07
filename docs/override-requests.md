@@ -1,7 +1,8 @@
 # Override Requests — v1 Design Spec (implementation contract)
 
 Status: **FROZEN 2026-08-07. P1 + P2 + P3 shipped (v2.69.0 / v2.70.0 /
-v2.71.0); P2a, P4 and P5 outstanding.**
+v2.71.0). P4 built and installed on the phone, awaiting its live
+end-to-end run. P2a and P5 outstanding.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -15,7 +16,7 @@ Implementation status per phase (§14):
 | P2 agent surface (`c3_override`) | **shipped v2.70.0** | `services/override_requests.py`, `cli/tools/override.py`, refusal offer line, `c3 override requests\|approve\|deny` |
 | **P2a grants on the `c3_*` surfaces** | **not started — see §13** | the hooks honour grants; the MCP content tools do not yet |
 | P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
-| P4 mobile Requests pane | not started | — |
+| P4 mobile Requests pane | **built — awaiting live end-to-end** | separate repo `c3-mobile` (local, no remote): `50f0c49` + `5c1769b` — `src/api/{types,queries,mutations}.ts`, `src/components/guard/overrides.tsx`, `src/notifications/{routing,route-map}.ts`, 43 node:test cases. arm64 release APK delivered 2026-08-07 |
 | P5 desktop parity | not started | — |
 
 **Resolved deviation (P1 → P2).** §10's `c3 override approve <id>` / `deny
