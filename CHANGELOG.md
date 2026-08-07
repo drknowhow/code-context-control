@@ -4,6 +4,66 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.67.1] - 2026-08-07
+
+### Fixed — a startup thread could wedge the whole MCP server, silently
+
+Three separate hangs, all of which left a process that looked healthy. The
+event loop stayed alive and idle throughout, so nothing logged, nothing
+crashed, and no health check noticed; the only visible symptom was every c3
+tool call dying at the client's 120s timeout.
+
+- **`collection.delete(where=...)` never returns.** `EmbeddingIndex.build()`
+  runs on the `c3-embed-index` thread spawned from `cli/mcp_server.py` and
+  calls `_remove_file_chunks()` for each changed file. That used chromadb's
+  `delete(where={"doc_id": ...})`, which was caught wedged inside the Rust
+  bindings (`chromadb/api/rust.py`, `RustBindingsAPI._delete`): two py-spy
+  dumps four minutes apart with byte-identical frames, 0.031s of CPU over
+  3s, and no writes to `chroma.sqlite3` for ten hours. `_remove_file_chunks`
+  now resolves the ids with `get(where=...)` first and deletes by explicit
+  id, moving the metadata filtering onto the read path, which does return.
+
+  The old code already carried a get-ids-then-delete fallback, and its
+  comment already suspected the where-delete — but the fallback sat behind
+  `except`, and an `except` clause cannot catch a call that never comes
+  back. It was unreachable by construction. It is now the only path.
+
+- **An unbounded lock turned one slow call into a dead server.** `build()`
+  took `self._lock` with a bare `with` and held it across the whole build
+  loop, so the wedged delete parked every later caller behind it forever. It
+  now acquires with a timeout (`_acquire_build_lock`, mirroring the
+  `_init_lock` pattern `_ensure_ready` already used correctly), logs once at
+  WARNING, and returns a `degraded` result carrying the normal stats shape so
+  callers reading it with `.get()` defaults keep working. A redundant build
+  is worth far less than a responsive server. This is the part that makes a
+  *future* backend hang survivable instead of fatal.
+
+- **`subprocess.run(timeout=...)` hangs inside its own timeout handler.**
+  `check_gemini` / `check_codex` / `check_claude` passed `stdin=DEVNULL` and
+  `timeout=10` and hung anyway: on Windows, when the timeout fires, CPython's
+  handler kills only the direct child and then calls `communicate()` a
+  *second* time with **no timeout** (the `_mswindows` branch of `run()` in
+  `Lib/subprocess.py`). That join never completes while a surviving
+  grandchild still holds the stdout/stderr write-ends. Observed wedging the
+  `c3-delegate-prewarm` thread for 10h and leaking its two reader threads, so
+  delegate health checks never completed and every first `c3_agent` call paid
+  full preflight. All three now go through `_probe_cli_version`: Popen, a
+  `taskkill /T` process-*tree* kill, and a bounded `communicate()` in
+  `finally`. `tests/test_cli_smoke.py` documented this exact footgun for test
+  code back in 2.43.0; production code now follows the same convention.
+
+### Tests
+
+- `tests/test_embedding_index_deadlock.py` — pins the chunk-removal contract
+  (a `doc_id`'s chunks are removed without ever passing `where=` to
+  `delete`), reproduces the hang against a blocking fake collection with a
+  bounded join so a regression *fails* rather than wedging pytest, and proves
+  the busy-lock path degrades instead of blocking.
+- `tests/test_delegate_version_probe.py` — asserts the second `communicate()`
+  is bounded, that the kill is a tree kill, and that the pipes close on every
+  exit path.
+- 22 of the 26 new tests fail against the pre-fix source.
+
 ## [2.67.0] - 2026-07-31
 
 ### Added — The Discipline tab grows search, evidence, and controls (Hub)

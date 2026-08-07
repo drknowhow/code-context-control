@@ -14,6 +14,10 @@ from pathlib import Path
 
 log = logging.getLogger("c3.embedding_index")
 _SEARCH_INIT_WAIT_SECONDS = 0.25
+# Upper bound on how long a caller will park waiting for an in-flight build.
+# A redundant build is worth far less than a responsive server, so we give up
+# and degrade rather than block. See _acquire_build_lock().
+_BUILD_LOCK_WAIT_SECONDS = 30.0
 
 
 class EmbeddingIndex:
@@ -43,6 +47,7 @@ class EmbeddingIndex:
         self._model_ok = False
         self._file_hashes: dict[str, str] = {}  # doc_id -> content hash
         self._lock = threading.Lock()
+        self._lock_warned = False  # WARN once, not once per blocked caller
         self._chunk_map: dict[str, dict] = {}  # chunk_id -> metadata
 
         # Heavy backend init (chromadb import/client + ollama probe) and hash
@@ -169,6 +174,45 @@ class EmbeddingIndex:
 
     # ── Build / Update ────────────────────────────────────
 
+    def _acquire_build_lock(self, timeout: float | None = None) -> bool:
+        """Acquire the build lock with a bound. Mirrors ``_ensure_ready``.
+
+        An unbounded ``with self._lock`` turns any slow backend call into a
+        dead server: whoever holds the lock never returns, every later caller
+        parks behind it forever, and the MCP client kills the tool call at its
+        own timeout while the event loop still looks perfectly healthy. A
+        bounded acquire degrades instead — the caller skips the embedding work
+        and serves its request without it.
+
+        Returns True when the lock is held (caller MUST release it).
+        """
+        wait = _BUILD_LOCK_WAIT_SECONDS if timeout is None else timeout
+        if self._lock.acquire(timeout=max(0.0, wait)):
+            return True
+        if not self._lock_warned:
+            self._lock_warned = True
+            log.warning(
+                "Embedding index build lock still held after %.1fs — skipping "
+                "this build. Semantic search keeps serving whatever is already "
+                "indexed; this is logged once per index instance.",
+                wait,
+            )
+        return False
+
+    def _busy_result(self) -> dict:
+        """Build stats shaped like a normal return, marked degraded."""
+        return {
+            "error": "Embedding index busy (build already in flight); skipped",
+            "available": True,
+            "degraded": True,
+            "files_processed": 0,
+            "files_skipped": 0,
+            "chunks_embedded": 0,
+            "chunks_skipped": 0,
+            "errors": 0,
+            "total_embedded": 0,
+        }
+
     def build(self, code_index, force: bool = False, on_progress=None) -> dict:
         """Build or incrementally update the embedding index from CodeIndex chunks.
 
@@ -213,7 +257,9 @@ class EmbeddingIndex:
                 except Exception:
                     pass
 
-        with self._lock:
+        if not self._acquire_build_lock():
+            return self._busy_result()
+        try:
             # Detect deleted files — remove their embeddings
             indexed_files = set(self._file_hashes.keys())
             current_files = set(chunks_by_file.keys())
@@ -283,6 +329,8 @@ class EmbeddingIndex:
                 _report()
 
             self._save_hashes()
+        finally:
+            self._lock.release()
 
         return {
             "files_processed": files_processed,
@@ -311,20 +359,41 @@ class EmbeddingIndex:
             return False
 
     def _remove_file_chunks(self, doc_id: str):
-        """Remove all embedded chunks belonging to a file."""
+        """Remove all embedded chunks belonging to a file.
+
+        Resolves the ids first and deletes by id. It never calls
+        ``delete(where=...)``.
+
+        ``collection.delete(where=...)`` has been observed to never return
+        inside the chromadb Rust bindings (``chromadb/api/rust.py``,
+        ``RustBindingsAPI._delete``): two py-spy dumps four minutes apart with
+        byte-identical frames, 0.031s of CPU over 3s, and no writes to
+        chroma.sqlite3 for ten hours. Because this is a *hang* and not an
+        exception, the ``except``-guarded fallback that used to live here could
+        never fire — the comment right below it already suspected the
+        where-delete, but an ``except`` clause cannot catch a thread that never
+        comes back. Worse, build() called this while holding the build lock, so
+        one wedged delete took every later caller down with it.
+
+        Deleting by explicit id keeps the metadata filtering on ``get()``,
+        which does return, and leaves ``delete()`` with the one argument shape
+        that has never been seen to stall.
+        """
         if not self._collection:
             return
         try:
-            self._collection.delete(where={"doc_id": doc_id})
-        except Exception:
-            # Some chromadb versions don't support where-delete well;
-            # fall back to getting IDs first
             try:
-                results = self._collection.get(where={"doc_id": doc_id})
-                if results and results.get("ids"):
-                    self._collection.delete(ids=results["ids"])
+                # include=[] skips fetching documents/embeddings we throw away.
+                results = self._collection.get(
+                    where={"doc_id": doc_id}, include=[])
             except Exception:
-                pass
+                # Older chromadb (we support >=0.4.24) may reject include=[].
+                results = self._collection.get(where={"doc_id": doc_id})
+            ids = (results or {}).get("ids") or []
+            if ids:
+                self._collection.delete(ids=ids)
+        except Exception as e:
+            log.debug("Removing chunks for %s failed: %s", doc_id, e)
 
     # ── Search ────────────────────────────────────────────
 

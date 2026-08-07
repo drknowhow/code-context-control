@@ -112,6 +112,60 @@ def _popen_kwargs():
     return kwargs
 
 
+def _probe_cli_version(exe: str, timeout: int = 10):
+    """Run ``<exe> --version`` without subprocess.run's timeout footgun.
+
+    ``subprocess.run(cmd, capture_output=True, timeout=N)`` reads as safe and
+    is not. When the timeout fires on Windows, CPython's own handler kills the
+    direct child and then calls ``process.communicate()`` a *second* time with
+    **no timeout** (the ``_mswindows`` branch of ``run()`` in Lib/subprocess.py).
+    That second call joins the stdout/stderr reader threads, which never see
+    EOF while any surviving grandchild still holds the pipe write-ends — so
+    ``run()`` blocks forever inside its own timeout handler. Observed wedging
+    the c3-delegate-prewarm thread for 10h and leaking its two reader threads,
+    so delegate health checks never completed and every first c3_agent call
+    paid full preflight.
+
+    Popen + a process-*tree* kill + a bounded communicate() in ``finally``
+    closes the write-ends no matter which way we leave. ``_kill_proc_tree``
+    uses ``taskkill /T`` on Windows, so grandchildren die too — the exact case
+    CPython's bare ``process.kill()`` misses.
+
+    Returns (stdout, stderr, returncode), or None if it timed out.
+    """
+    timed_out = False
+    proc = subprocess.Popen(
+        harden_win_argv([exe, "--version"]),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+        **_popen_kwargs(),
+    )
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            return None
+        return (out or "").strip(), (err or "").strip(), proc.returncode
+    finally:
+        if proc.poll() is None:
+            _kill_proc_tree(proc)
+        if timed_out:
+            # Reap the reader threads with a bound. This is the call CPython
+            # makes with no timeout at all; the bound is the whole fix.
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            for stream in (proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+
+
 # ---------------------------------------------------------------------------
 # Codex CLI backend
 # ---------------------------------------------------------------------------
@@ -198,19 +252,16 @@ def check_claude() -> dict:
         _claude_available = False
         return {"status": "not_installed", "detail": "claude CLI not found on PATH"}
     try:
-        proc = subprocess.run(
-            [exe, "--version"],
-            capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode == 0:
+        probed = _probe_cli_version(exe, timeout=10)
+        if probed is None:
+            _claude_available = False
+            return {"status": "timeout", "detail": "claude --version timed out (10s)"}
+        out, err, code = probed
+        if code == 0:
             _claude_available = True
-            return {"status": "ok", "version": proc.stdout.strip()}
+            return {"status": "ok", "version": out}
         _claude_available = False
-        return {"status": "error", "detail": proc.stderr.strip() or f"exit {proc.returncode}"}
-    except subprocess.TimeoutExpired:
-        _claude_available = False
-        return {"status": "timeout", "detail": "claude --version timed out (10s)"}
+        return {"status": "error", "detail": err or f"exit {code}"}
     except Exception as e:
         _claude_available = False
         return {"status": "error", "detail": str(e)}
@@ -286,21 +337,17 @@ def check_gemini() -> dict:
         _gemini_available = False
         return {"status": "not_installed", "detail": "gemini CLI not found on PATH"}
     try:
-        proc = subprocess.run(
-            [exe, "--version"],
-            capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode == 0:
-            version = proc.stdout.strip()
+        probed = _probe_cli_version(exe, timeout=10)
+        if probed is None:
+            _gemini_available = False
+            return {"status": "timeout", "detail": "gemini --version timed out (10s)"}
+        out, err, code = probed
+        if code == 0:
             _gemini_available = True
-            return {"status": "ok", "version": version}
+            return {"status": "ok", "version": out}
         else:
             _gemini_available = False
-            return {"status": "error", "detail": proc.stderr.strip() or f"exit code {proc.returncode}"}
-    except subprocess.TimeoutExpired:
-        _gemini_available = False
-        return {"status": "timeout", "detail": "gemini --version timed out (10s)"}
+            return {"status": "error", "detail": err or f"exit code {code}"}
     except Exception as e:
         _gemini_available = False
         return {"status": "error", "detail": str(e)}
@@ -545,21 +592,17 @@ def check_codex() -> dict:
         _codex_available = False
         return {"status": "not_installed", "detail": "codex CLI not found on PATH"}
     try:
-        proc = subprocess.run(
-            [exe, "--version"],
-            capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode == 0:
-            version = proc.stdout.strip()
+        probed = _probe_cli_version(exe, timeout=10)
+        if probed is None:
+            _codex_available = False
+            return {"status": "timeout", "detail": "codex --version timed out (10s)"}
+        out, err, code = probed
+        if code == 0:
             _codex_available = True
-            return {"status": "ok", "version": version}
+            return {"status": "ok", "version": out}
         else:
             _codex_available = False
-            return {"status": "error", "detail": proc.stderr.strip() or f"exit code {proc.returncode}"}
-    except subprocess.TimeoutExpired:
-        _codex_available = False
-        return {"status": "timeout", "detail": "codex --version timed out (10s)"}
+            return {"status": "error", "detail": err or f"exit code {code}"}
     except Exception as e:
         _codex_available = False
         return {"status": "error", "detail": str(e)}
