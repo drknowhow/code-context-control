@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens, maybe_related_facts
 from core import count_tokens
 from services import access_guard
@@ -123,8 +124,14 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     # before existence so probes get the same refusal whether or not the
     # target exists (R2). Batch members hit this via the per-file dispatch,
     # so allowed members are served and denied ones carry the S1 line inline.
+    # A live grant (P2a) is consulted only on the DENIAL branch. The masked
+    # branch below is untouched on purpose: a mask is not a refusal to be
+    # lifted, it is a different view being served, and "approve once" has no
+    # meaning for it. Widening that is a separate decision, not a side effect.
     _verdict = access_guard.verdict(file_path, "read", svc.project_path)
-    if _verdict.denial:
+    if _verdict.denial and not _grants.allow(svc, _verdict.denial,
+                                             tool="c3_read", op="read",
+                                             path=file_path):
         resp = access_guard.refusal(_verdict.denial, file_path, "read")
         if finalize is None:
             return resp

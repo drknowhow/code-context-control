@@ -10,6 +10,7 @@ import json
 import re
 from pathlib import Path
 
+from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
 from services import access_guard
@@ -31,7 +32,9 @@ def handle_filter(file_path: str, text: str, pattern: str, max_lines: int,
     # Access Guard: read verdict (docs/access-guard.md §3), checked before
     # existence so probes can't distinguish missing from denied (R2).
     denial = access_guard.check(file_path, "read", svc.project_path)
-    if denial:
+    _granted = _grants.allow(svc, denial, tool="c3_filter", op="read",
+                             path=file_path) if denial else None
+    if denial and not _granted:
         return finalize("c3_filter", {"file": file_path},
                         access_guard.refusal(denial, file_path, "read"),
                         "access-denied")

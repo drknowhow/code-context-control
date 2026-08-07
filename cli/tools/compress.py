@@ -8,6 +8,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
 from services import access_guard
@@ -118,7 +119,9 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
     # Access Guard: read verdict up front — covers the map/dense_map paths
     # that never reach compressor.compress_file (docs/access-guard.md §3).
     _verdict = access_guard.verdict(file_path, "read", svc.project_path)
-    if _verdict.denial:
+    if _verdict.denial and not _grants.allow(svc, _verdict.denial,
+                                             tool="c3_compress", op="read",
+                                             path=file_path):
         return finalize("c3_compress", {"file_path": file_path, "mode": mode},
                         access_guard.refusal(_verdict.denial, file_path, "read"),
                         "access-denied")

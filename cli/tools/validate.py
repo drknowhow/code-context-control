@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cli.tools import _grants
 from services import access_guard
 
 
@@ -169,7 +170,8 @@ async def _validate_one(file_path: str, svc) -> tuple:
     # Access Guard: read verdict (docs/access-guard.md §3) — the S1 refusal
     # becomes the batch line for this member; other members are still served.
     denial = access_guard.check(file_path, "read", svc.project_path)
-    if denial:
+    if denial and not _grants.allow(svc, denial, tool="c3_validate",
+                                    op="read", path=file_path):
         return ("SKIP", access_guard.refusal(denial, file_path, "read"))
     full = Path(svc.project_path) / file_path
     if not full.exists():
@@ -250,7 +252,8 @@ async def _validate_single(file_path: str, svc, finalize) -> str:
     """Original single-file validation path."""
     # Access Guard: read verdict, checked before existence (R2 probe parity).
     denial = access_guard.check(file_path, "read", svc.project_path)
-    if denial:
+    if denial and not _grants.allow(svc, denial, tool="c3_validate",
+                                    op="read", path=file_path):
         return finalize("c3_validate", {"file_path": file_path},
                         access_guard.refusal(denial, file_path, "read"),
                         "access-denied")

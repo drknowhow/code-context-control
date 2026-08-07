@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cli.tools import _grants
 from services import access_guard
 
 _SKIP_DIRS = frozenset({
@@ -115,7 +116,8 @@ def handle_impact(target: str, file_path: str, mode: str, svc, finalize) -> str:
     # Access Guard: refuse outright when the named source file is read-denied.
     if file_path:
         denial = access_guard.check(file_path, "read", str(project))
-        if denial:
+        if denial and not _grants.allow(svc, denial, tool="c3_impact",
+                                        op="read", path=file_path):
             return finalize("c3_impact", {"target": target, "mode": mode},
                             access_guard.refusal(denial, file_path, "read"),
                             "access-denied")

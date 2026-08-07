@@ -1,8 +1,8 @@
 # Override Requests — v1 Design Spec (implementation contract)
 
-Status: **FROZEN 2026-08-07. P1 + P2 + P3 shipped (v2.69.0 / v2.70.0 /
-v2.71.0). P4 built and installed on the phone, awaiting its live
-end-to-end run. P2a and P5 outstanding.**
+Status: **FROZEN 2026-08-07. P1 + P2 + P2a + P3 shipped (v2.69.0 / v2.70.0 /
+v2.72.0 / v2.71.0). P4 built and installed on the phone; its first live run
+found the P2a gap, which is what v2.72.0 closes. P5 outstanding.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -14,7 +14,7 @@ Implementation status per phase (§14):
 | P0 spike | folded into P1 | cross-process lock + policy short-circuit |
 | P1 grant primitive | **shipped v2.69.0** | `services/override_policy.py`, `services/override_grants.py`, both PreToolUse hooks, `c3 override` |
 | P2 agent surface (`c3_override`) | **shipped v2.70.0** | `services/override_requests.py`, `cli/tools/override.py`, refusal offer line, `c3 override requests\|approve\|deny` |
-| **P2a grants on the `c3_*` surfaces** | **not started — see §13** | the hooks honour grants; the MCP content tools do not yet |
+| **P2a grants on the `c3_*` surfaces** | **shipped v2.72.0** | `cli/tools/_grants.py` (one gate, one session id), wired into `c3_read`, `c3_edit`, `c3_compress`, `c3_filter`, `c3_impact`, `c3_validate`; `tests/test_override_grants_mcp.py` |
 | P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
 | P4 mobile Requests pane | **built — awaiting live end-to-end** | separate repo `c3-mobile` (local, no remote): `50f0c49` + `5c1769b` — `src/api/{types,queries,mutations}.ts`, `src/components/guard/overrides.tsx`, `src/notifications/{routing,route-map}.ts`, 43 node:test cases. arm64 release APK delivered 2026-08-07 |
 | P5 desktop parity | not started | — |
@@ -552,7 +552,7 @@ surfaces it as *"this rule is costing you — edit it or accept it."*
 | Surface | Denial enforced | Grant honoured |
 |---|---|---|
 | Claude Code native tools (hooks installed) | yes | yes |
-| `c3_*` MCP tools | yes | **not yet — P2a.** The content tools (`c3_read`, `c3_edit`, `c3_compress`, `c3_filter`, `c3_impact`, `c3_validate`) call the evaluator and refuse without consulting grants. Until they do, the refusal offer line is hook-surface only. |
+| `c3_*` MCP tools | yes | **yes (v2.72.0).** All six content tools consult `cli/tools/_grants.allow` before refusing, which delegates to the same `override_grants.gate_access` the hooks call — policy first, grants second. **Masked paths are excluded on purpose:** a mask is not a refusal to be lifted but a different view being served, so "approve once" has no meaning for it; only the `denial` branch of `verdict()` consults a grant. |
 | Hookless IDEs (Codex, Gemini CLI) | discipline is advisory only today | n/a — nothing to override |
 | Raw shell / direct file API | **no** | **no** |
 | `c3_project` cross-project writes | `allow_write` unchanged | never |
