@@ -183,4 +183,47 @@ async function _dkCopy(text, okMsg) {
   catch { toast('Copy failed', 'Select the field and copy manually.', 'error'); }
 }
 
+// ── Mobile pairing (companion app QR) ──
+// Renders {v, kind, url, token} as a QR for the C3 mobile app scanner.
+// The token is the Discovery Bearer key — the QR only renders on explicit
+// click, and never on page load.
+
+async function showMobilePairQr() {
+  const urlInput = document.getElementById('mpUrl');
+  if (!urlInput.value.trim()) urlInput.value = window.location.origin;
+  let s = window._discoveryKey;
+  if (!s) { await loadDiscoveryKey(); s = window._discoveryKey; }
+  if (!s || !s.exists) {
+    toast('No token', 'Generate a Discovery API token first (card above).', 'warning');
+    return;
+  }
+  if (!s.key) {
+    toast('Token unavailable', 'Open the dashboard via "c3 oracle open" so this session may reveal the token.', 'warning');
+    return;
+  }
+  const payload = JSON.stringify({
+    v: 1,
+    kind: 'c3-oracle',
+    url: urlInput.value.trim().replace(/\/+$/, ''),
+    token: s.key,
+  });
+  try {
+    const qr = qrcode(0, 'M'); // type auto, medium error correction
+    qr.addData(payload);
+    qr.make();
+    document.getElementById('mpQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
+  } catch (e) {
+    toast('QR render failed', String(e), 'error');
+    return;
+  }
+  document.getElementById('mpQrWrap').style.display = '';
+  document.getElementById('mpHideBtn').style.display = '';
+}
+
+function hideMobilePairQr() {
+  document.getElementById('mpQrWrap').style.display = 'none';
+  document.getElementById('mpQr').innerHTML = '';
+  document.getElementById('mpHideBtn').style.display = 'none';
+}
+
 // ═══════════════════════════════════════════════════════════

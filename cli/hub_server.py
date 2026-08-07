@@ -1780,25 +1780,15 @@ def api_projects_config_get():
 # returned by any hub route (no reveal exists here). `credentials` stays out of
 # _CONFIG_WRITE_SECTIONS — these dedicated routes are the only hub write path.
 
-_CRED_PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
-                       "agent_readable", "description", "storage", "created",
-                       "updated")
-
-
 def _cred_entry_public(name, entry, *, usage=None, shadows_global=None):
-    """Explicit allowlist serializer — structurally cannot emit a value."""
-    rec = {"name": name}
-    for key in _CRED_PUBLIC_FIELDS:
-        rec[key] = entry.get(key, "")
-    rec["value_len"] = entry.get("value_len", 0)
-    rec["inject"] = bool(entry.get("inject"))
-    rec["agent_readable"] = bool(entry.get("agent_readable"))
-    if usage is not None:
-        rec["last_used"] = (usage.get(name) or {}).get("last_used", "")
-        rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
-    if shadows_global is not None:
-        rec["shadows_global"] = bool(shadows_global)
-    return rec
+    """Explicit allowlist serializer — structurally cannot emit a value.
+
+    Delegates to credential_store.public_entry so the hub, the per-project UI
+    and the mobile gateway all serialize through one allowlist; a second copy
+    is exactly the drift the write-only wire contract cannot survive."""
+    from services import credential_store as cred_store
+    return cred_store.public_entry(
+        name, entry, usage=usage, shadows_global=shadows_global)
 
 
 def _resolve_cred_target(path: str, scope: str, *, mutation: bool):

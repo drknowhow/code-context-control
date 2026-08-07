@@ -122,6 +122,8 @@ def _init_services():
         ToolExecutor(_chat_engine),
         max_tier=_cfg.get("api_max_tier", "action"),
     )
+    mobile_api.init_services(scanner=_scanner, checker=_checker,
+                             reporter=_activity_reporter)
     atexit.register(lambda: _c3_bridge.shutdown() if _c3_bridge else None)
 
 
@@ -244,6 +246,14 @@ def _local_write_guard():
     return jsonify({"error": "unauthorized"}), 401
 
 
+# ── Mobile gateway (companion app surface, /api/mobile/*) ─
+# Bearer required on every method, GETs included — see mobile_api docstring.
+from oracle.services import mobile_api  # noqa: E402
+
+mobile_api.configure(get_cfg=lambda: _cfg, get_limiter=_rate_limiter)
+app.register_blueprint(mobile_api.bp)
+
+
 # ── Static ────────────────────────────────────────────────
 
 # JS load order for the concatenated Oracle UI build (mirrors cli/hub_server.py).
@@ -251,6 +261,7 @@ def _local_write_guard():
 # app.js (the init IIFE) must stay LAST.
 _ORACLE_JS_FILES = [
     "ui/core.js",
+    "ui/qrcode.js",   # vendored qrcode-generator 1.4.4 (MIT) — mobile pairing
     "ui/busy.js",
     "ui/theme_tabs.js",
     "ui/crossgraph.js",

@@ -489,6 +489,43 @@ def list_entries(project_path: str = ".") -> dict:
     return dict(sorted(merged.items()))
 
 
+PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
+                 "agent_readable", "description", "storage", "created",
+                 "updated")
+
+
+def public_entry(name: str, entry: dict, *, usage=None,
+                 shadows_global=None) -> dict:
+    """Explicit allowlist serializer — structurally cannot emit a value.
+
+    Lives here, beside _UPDATABLE_FIELDS and the entry-shape literal that
+    define these field names, so a new field cannot be added to the store and
+    silently leak through a surface that forgot to update its own copy. Every
+    HTTP surface serializes through this."""
+    rec = {"name": name}
+    for key in PUBLIC_FIELDS:
+        rec[key] = entry.get(key, "")
+    rec["value_len"] = entry.get("value_len", 0)
+    rec["inject"] = bool(entry.get("inject"))
+    rec["agent_readable"] = bool(entry.get("agent_readable"))
+    if usage is not None:
+        rec["last_used"] = (usage.get(name) or {}).get("last_used", "")
+        rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
+    if shadows_global is not None:
+        rec["shadows_global"] = bool(shadows_global)
+    return rec
+
+
+def is_resolvable(name: str, *, project_path: str = ".", scope: str = "") -> bool:
+    """Whether the stored value can still be decoded — a bool, never the value.
+
+    Exists so a surface that must provably never hold plaintext (the mobile
+    gateway) can answer "is this credential still good?" without importing
+    get_value at all. That absence is what the source-grep invariant test
+    asserts, which is a stronger guarantee than reviewing call sites."""
+    return get_value(name, project_path=project_path, scope=scope) is not None
+
+
 def get_value(name: str, *, project_path: str = ".", scope: str = "") -> Optional[str]:
     """Decoded value from the owning realm, or None. Never falls through:
     a project-registered name resolves in the project realm or not at all."""
