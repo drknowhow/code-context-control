@@ -22,25 +22,22 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from cli.tools import _grants
 from services import access_guard, agent_locks
 from services import credential_store as _cs
 from services.task_store import _FileLock
 
 
 def _session_id(svc) -> str:
-    """This agent's lease identity.
+    """This agent's lease identity — see `cli.tools._grants.session_id`.
 
-    Falls back to the process id, never to "". Two agents that both resolved
-    to "" would count as ONE session and stop blocking each other — the exact
-    opposite of what a lock is for. Each Claude Code session runs its own
-    c3-mcp process, so the pid is a faithful stand-in.
-
-    It is also the right identity for c3_project: that proxy builds a runtime
-    for the TARGET project but runs inside the CALLER's process, so the pid
-    keeps the edit attributed to the agent that actually asked for it.
+    Was defined here and copied into locks.py and override.py, each with a
+    comment saying it had to match. P2a makes that invariant load-bearing:
+    a grant is minted under the id c3_override computes and consumed under
+    the one c3_edit computes, so a divergence would make every approval
+    silently fail to apply. One definition, three callers.
     """
-    session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
-    return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
+    return _grants.session_id(svc)
 
 # ── Same-file serialization ───────────────────────────────────────────────
 # In-process locks, keyed by resolved absolute path string.
@@ -325,7 +322,8 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     # (never replaces) any dedicated vault-file guard.
     op = "write" if path.exists() else "create"
     denial = access_guard.check(str(path), op, svc.project_path)
-    if denial:
+    if denial and not _grants.allow(svc, denial, tool="c3_edit", op=op,
+                                    path=str(path)):
         return finalize("c3_edit", {"file": file_path},
                         access_guard.refusal(denial, file_path, op),
                         "access-denied")

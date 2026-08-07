@@ -12,9 +12,9 @@ Layers that can never be escalated (the credential vault, Tier-0 denies, the
 dispatcher fail-closed deny, catastrophic shell blocks) are refused at
 creation with `[c3-override:not-escalatable]` and never reach a human.
 """
-import os
 import time
 
+from cli.tools import _grants
 from services import access_guard as ag
 from services import override_policy as opol
 from services import override_requests as orq
@@ -28,9 +28,8 @@ _DEFAULT_TOOL = {"read": "Read", "write": "Edit"}
 
 
 def _session_id(svc) -> str:
-    """Must match cli/tools/edit.py._session_id — the grant is bound to it."""
-    session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
-    return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
+    """The identity the grant is bound to — one definition, in `_grants`."""
+    return _grants.session_id(svc)
 
 
 def _fmt(row: dict) -> str:

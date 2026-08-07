@@ -12,17 +12,14 @@ and letting go early instead of waiting out the TTL.
 force_release is deliberately absent: it is a human override that bumps the
 fencing counter, and it lives in `c3 locks force-release` / the Hub tab.
 """
-import os
-
+from cli.tools import _grants
 from services import agent_locks as al
 
 
 def _session_id(svc) -> str:
-    """Must match cli/tools/edit.py._session_id exactly — a lease taken by
-    c3_edit has to be recognised as ours by c3_locks, and vice versa. Never ""
-    (see the note there: two anonymous agents would stop blocking each other)."""
-    session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
-    return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
+    """A lease taken by c3_edit has to be recognised as ours by c3_locks, and
+    vice versa — so both read the one definition in `_grants`."""
+    return _grants.session_id(svc)
 
 
 def _split(paths: str) -> list:

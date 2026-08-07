@@ -4,6 +4,40 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.0] - 2026-08-07
+
+### Fixed — Override Requests, phase 2a: the approval now does something
+
+The first live end-to-end of the whole feature failed, and it failed in the
+one place the spec had already written down. A blocked `c3_edit`, a request on
+the phone, a real human tapping approve, a grant minted with exactly the right
+shape — and then the retried call was refused with a byte-identical message,
+because nothing on the MCP surface had ever been taught to look at a grant.
+`c3 override list` afterwards still read `1 use(s) left`.
+
+- **All six content tools consult grants before refusing.** `c3_read`,
+  `c3_edit`, `c3_compress`, `c3_filter`, `c3_impact` and `c3_validate` now
+  call `cli/tools/_grants.allow`, which delegates to the same
+  `override_grants.gate_access` the PreToolUse hooks have called since P1.
+  One implementation, because two would drift and the drift would be silent.
+- **Masked paths are deliberately not covered.** A mask is not a refusal
+  waiting to be lifted; it is a different view being served. "Approve once"
+  has no meaning there, so only the `denial` branch of `verdict()` consults a
+  grant. Widening that is a separate decision, not a side effect of this one.
+- **One definition of the session id.** It lived in `edit.py`, `locks.py` and
+  `override.py`, each carrying a comment saying it had to match the others.
+  P2a makes that load-bearing rather than tidy: a grant is minted under the id
+  `c3_override` computes and spent under the one `c3_edit` computes, so any
+  divergence would make every approval silently fail to apply — indistinguish-
+  able from the user never approving. All three now read `_grants.session_id`.
+- **Fail-closed.** Any error reaching the grant store leaves the caller on its
+  ordinary refusal path. A grant that cannot be read is not a grant.
+
+Tests assert the **use counter**, not just the outcome. A write that succeeds
+proves nothing on its own: the project that surfaced this bug runs
+`enforcement: advisory`, where native writes land regardless of grants, and
+that is exactly how a dead gate can look like a working one.
+
 ## [2.71.0] - 2026-08-07
 
 ### Added — Override Requests, phase 3: the phone can answer
