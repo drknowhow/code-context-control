@@ -9,10 +9,12 @@ them turns an informed choice into a blind one.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -33,8 +35,16 @@ class TestEnforcementRoutes(unittest.TestCase):
         server.PROJECT_PATH = self.proj
         server.app.config["TESTING"] = True
         self.client = server.app.test_client()
+        # Enforcement resolves project -> global -> default. Without a clean
+        # home, a developer whose own ~/.c3/config.json carries an
+        # `enforcement` section sees scope 'global' here while CI passes.
+        self._home = tempfile.TemporaryDirectory()
+        self._env = mock.patch.dict(os.environ, {"C3_HOME": self._home.name})
+        self._env.start()
 
     def tearDown(self):
+        self._env.stop()
+        self._home.cleanup()
         server.PROJECT_PATH = self._orig
         self._tmp.cleanup()
 

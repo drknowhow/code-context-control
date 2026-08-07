@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.68.0"
+__version__ = "2.69.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6209,6 +6209,244 @@ def _enforce_audit(result: dict, project_path: str) -> None:
         pass
 
 
+_OVERRIDE_DEFAULT_TOOL = {"read": "Read", "write": "Edit"}
+
+
+def cmd_override(args):
+    """`c3 override` — Override Requests: allow one blocked call, once.
+
+    The human half of docs/override-requests.md. Every verb here mints or
+    inspects a *grant*; none of them edits policy. That separation is the
+    entire point of the feature: today the only way to unblock an agent is to
+    weaken a rule permanently, and a guard that spends its life in `advisory`
+    is not a guard.
+
+    No agent surface reaches this command, and no approval here can touch the
+    'never' rows of spec §2 — the credential vault, Tier-0 absolute denies, or
+    the catastrophic shell blocks.
+    """
+    sub = getattr(args, "override_cmd", None)
+    if not sub:
+        print("Usage: c3 override <policy|grant|list|revoke|check|sweep> ...")
+        print("       c3 override policy    # what is escalatable right now")
+        return
+
+    from services import override_grants as og
+    from services import override_policy as opol
+
+    project_path = str(Path(getattr(args, "project_path", ".") or ".").resolve())
+    policy = opol.resolve(project_path)
+    for warn in policy.warnings:
+        print(f"  [warn] {warn}")
+
+    if sub == "policy":
+        _override_show(policy, project_path, opol)
+    elif sub == "grant":
+        _override_grant(args, policy, project_path, og, opol)
+    elif sub == "list":
+        _override_list(args, project_path, og)
+    elif sub == "check":
+        _override_check(args, policy, project_path, og, opol)
+    elif sub == "revoke":
+        gid = getattr(args, "grant_id", "")
+        print("  Revoked." if og.revoke(project_path, gid)
+              else f"  No live grant with id '{gid}'.")
+    elif sub == "sweep":
+        print(f"  Dropped {og.sweep_expired(project_path)} expired/spent grant(s).")
+
+
+def _override_show(policy, project_path: str, opol) -> None:
+    print_header("Override Requests")
+    state = "on" if policy.enabled else "off"
+    print(f"  Enabled : {state}   (channel: {policy.channel})")
+    print(f"  Project : {project_path}")
+    print("\n  Escalatable layers:")
+    for key in opol.LAYER_KEYS:
+        on = policy.escalatable(key)
+        mark = "*" if on else " "
+        extra = "  (approval needs the rule typed by hand)" \
+            if key in opol.TYPED_CONFIRM_LAYERS else ""
+        print(f"   {mark} {key:18s} {'yes' if on else 'no':3s}{extra}")
+    print("\n  Limits:")
+    print(f"    grant TTL   : <= {policy.max_ttl_s}s (hard ceiling "
+          f"{opol.HARD_MAX_TTL_S}s)")
+    print(f"    uses        : {policy.default_uses} "
+          f"(session grants: {'allowed' if policy.allow_session_grants else 'off'})")
+    print(f"    request TTL : {policy.request_ttl_s}s")
+    print(f"    rate        : {policy.max_pending_per_session} pending/session, "
+          f"{policy.max_requests_per_hour}/hour")
+    if policy.corrupt_scopes:
+        print(f"\n  FAILING CLOSED — corrupt scope(s): "
+              f"{', '.join(policy.corrupt_scopes)}")
+    print("\n  Never escalatable, at any setting: the credential vault, "
+          ".c3/secrets.enc,")
+    print("  .c3/cred_state.json, the dispatcher fail-closed deny, and the "
+          "catastrophic")
+    print("  shell blocks. Policy lives in .c3/config.json 'override' "
+          "(human-edited).")
+
+
+def _override_identify(args, project_path: str, opol):
+    """(gate, layer_key, rule, tool, op, error) for the call being approved.
+
+    Derived from the denial the path ACTUALLY produces, not from what the
+    caller claims: a grant whose rule string does not match the rule that
+    denies would never match at consume time, and a silently-useless grant is
+    worse than a refusal.
+    """
+    op = getattr(args, "op", "read") or "read"
+    tool = getattr(args, "tool", None) or _OVERRIDE_DEFAULT_TOOL[op]
+    layer = getattr(args, "layer", None)
+    target = getattr(args, "target", "")
+
+    if layer == "discipline":
+        return (opol.GATE_DISCIPLINE, opol.LAYER_DISCIPLINE,
+                opol.RULE_DISCIPLINE, tool, "write", None)
+    if layer == "shell":
+        return (opol.GATE_SHELL, opol.LAYER_SHELL_WARN,
+                opol.RULE_SHELL_WARN, tool, op, None)
+
+    from services import access_guard as ag
+    denial = ag.check(target, op, project_path)
+    if denial is None:
+        return (None, None, None, tool, op,
+                f"`{target}` is not blocked for {op} — nothing to approve.")
+    layer_key = opol.rule_class_for_denial(denial)
+    if layer_key is None:
+        return (None, None, None, tool, op,
+                f"{opol.TAG_NOT_ESCALATABLE} `{denial.rule}` can never be "
+                f"overridden — no config value and no approval reaches it.")
+    gate = opol.GATE_FOR_LAYER_KEY[layer_key]
+    if layer and layer != gate:
+        return (None, None, None, tool, op,
+                f"--layer {layer} does not match the layer that denied "
+                f"({gate}, rule `{denial.rule}`).")
+    return gate, layer_key, denial.rule, tool, op, None
+
+
+def _override_grant(args, policy, project_path: str, og, opol) -> None:
+    gate, layer_key, rule, tool, op, err = _override_identify(
+        args, project_path, opol)
+    if err:
+        print(f"  {err}")
+        return
+    if not policy.enabled:
+        print("  Overrides are disabled for this project.")
+        print("  Enable by hand in .c3/config.json — the 'override' section, "
+              "\"enabled\": true,")
+        print(f"  plus \"layers\": {{\"{layer_key}\": true}}. Nothing is "
+              "escalatable by default.")
+        return
+    if not policy.escalatable(layer_key):
+        print(f"  The '{layer_key}' layer is not escalatable "
+              f"(override.layers.{layer_key} is false).")
+        print("  Opt in per layer, deliberately — that is the point of the "
+              "default.")
+        return
+    if (layer_key in opol.TYPED_CONFIRM_LAYERS
+            and getattr(args, "confirm", None) != rule):
+        print(f"  This approves ONE call against an {layer_key} rule "
+              f"({rule}).")
+        print(f"  Retype the rule to confirm:  --confirm '{rule}'")
+        return
+    try:
+        grant = og.mint(project_path, session_id=getattr(args, "session_id", ""),
+                        layer=gate, rule=rule, tool=tool, op=op,
+                        path=getattr(args, "target", ""),
+                        ttl_s=getattr(args, "ttl_s", None),
+                        uses=getattr(args, "uses", None),
+                        granted_by="cli", policy=policy)
+    except ValueError as exc:
+        print(f"  Error: {exc}")
+        return
+
+    print_header("Override granted")
+    print(f"  Id      : {grant['id']}")
+    print(f"  Allows  : {tool} {op} on {grant['path_key']}")
+    print(f"  Layer   : {gate}   Rule: {rule}")
+    print(f"  Session : {grant['session_id']}")
+    print(f"  Expires : {grant['expires_at']}   Uses: "
+          f"{grant['uses_remaining']}")
+    if getattr(args, "ttl_s", None) and grant.get("expires_at"):
+        print(f"  (TTL clamped to override.max_ttl_s = {policy.max_ttl_s}s "
+              f"where it exceeded it)")
+    print(f"\n  The rule {rule} is still in force. This grant authorises one "
+          "retry of")
+    print("  this exact call, in this session, on this exact path, and "
+          "nothing else.")
+    _override_audit(grant, project_path)
+
+
+def _override_list(args, project_path: str, og) -> None:
+    grants = og.active(project_path, getattr(args, "session_id", "") or "")
+    print_header("Live override grants")
+    if not grants:
+        print("  (none)")
+    for g in grants:
+        print(f"  {g.get('id', '?'):18s} {g.get('tool', '?')} "
+              f"{g.get('op', '?')} {g.get('path_key', '?')}")
+        print(f"  {'':18s} rule {g.get('rule', '?')} · session "
+              f"{g.get('session_id', '?')} · expires {g.get('expires_at', '?')}"
+              f" · {g.get('uses_remaining', 0)} use(s) left")
+    tail = int(getattr(args, "audit", 0) or 0)
+    if tail:
+        print("\n  Audit (.c3/overrides.jsonl):")
+        for line in og.read_audit(project_path, tail):
+            print(f"    {line.get('ts', '?')}  {line.get('event', '?'):12s} "
+                  f"{line.get('grant_id', '')} {line.get('path', '')}")
+
+
+def _override_check(args, policy, project_path: str, og, opol) -> None:
+    gate, layer_key, rule, tool, op, err = _override_identify(
+        args, project_path, opol)
+    if err:
+        print(f"  {err}")
+        return
+    if not policy.escalatable(layer_key):
+        print(f"  Denied — the '{layer_key}' layer is not escalatable, so no "
+              "grant is even consulted.")
+        return
+    hit = og.find(project_path, session_id=getattr(args, "session_id", ""),
+                  layer=gate, rule=rule, tool=tool, op=op,
+                  path=getattr(args, "target", ""))
+    if hit:
+        print(f"  Allowed by {hit['id']} — {hit['uses_remaining']} use(s) "
+              f"left, expires {hit['expires_at']}.")
+        print("  (`check` never consumes a use.)")
+    else:
+        print("  Denied — no live grant matches this exact "
+              "session/layer/rule/tool/op/path.")
+
+
+def _override_audit(grant: dict, project_path: str) -> None:
+    """Ledger + activity entry. The JSONL audit is written by the service."""
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(project_path).log("access_action", {
+            "kind": "override", "action": "grant", "grant_id": grant["id"],
+            "layer": grant["layer"], "rule": grant["rule"],
+            "tool": grant["tool"], "op": grant["op"],
+            "path": grant["path_key"], "session_id": grant["session_id"],
+            "expires_at": grant["expires_at"],
+            "uses": grant["uses_remaining"], "granted_by": grant["granted_by"],
+        })
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(project_path).log_edit(
+            file=f"override://{grant['id']}",
+            change_type="override_grant",
+            summary=(f"granted {grant['tool']} {grant['op']} on "
+                     f"{grant['path_key']} once (rule {grant['rule']}, "
+                     f"expires {grant['expires_at']}) via `c3 override`"),
+            tags=["override", "access"],
+            detail={"kind": "override", **grant},
+        )
+    except Exception:
+        pass
+
+
 def cmd_access(args):
     """Access Guard rule management — human-only mutation surface (spec §1)."""
     sub = getattr(args, "access_cmd", None)
@@ -7994,6 +8232,7 @@ def main():
         "creds": cmd_creds,
         "access": cmd_access,
         "enforce": cmd_enforce,
+        "override": cmd_override,
         "locks": cmd_locks,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,

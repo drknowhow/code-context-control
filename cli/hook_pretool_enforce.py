@@ -360,6 +360,25 @@ def _vault_denial(tool_name: str, tool_input: dict) -> dict | None:
     return None
 
 
+def _override_allows(base: Path, tool_name: str, tool_input: dict,
+                     session_id: str) -> str | None:
+    """A live discipline grant for this exact write, or None (spec §5).
+
+    Runs AFTER `_vault_denial`, which stays unconditional: no grant, no
+    config value and no approval can open a native write path to the vault.
+    """
+    target = str(tool_input.get("file_path")
+                 or tool_input.get("notebook_path") or "")
+    if not target:
+        return None
+    try:
+        from services import override_grants as og  # noqa: PLC0415 — lazy
+        return og.gate_discipline(base, tool=tool_name, path=target,
+                                  session_id=session_id)
+    except Exception:
+        return None  # fail closed: no grant, ordinary block
+
+
 def run(payload: dict, project_path: Path | None = None) -> dict | None:
     """Core enforcement logic — importable by the dispatcher and tests.
 
@@ -421,6 +440,9 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     # the ledger stays complete either way; what is lost is the pre-edit
     # snapshot c3_edit would have taken.
     if tool_name in blocked_tools and mode == "strict":
+        granted = _override_allows(base, tool_name, tool_input, session_id)
+        if granted:
+            return _with_warnings({"additionalContext": granted}, policy)
         _record_block(tool_name, tool_input, session_id, base)
         reason = (
             f"[c3:enforce] Native `{tool_name}` is blocked to preserve the edit "
