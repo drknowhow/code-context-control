@@ -1163,6 +1163,25 @@
       </div>
       <div id="discoveryMsg" class="status-msg"></div>
     </div>
+
+    <!-- ── Mobile pairing (companion app) ── -->
+    <h2 style="font-size:16px;font-weight:600;margin:28px 0 16px">Mobile app <span style="font-size:11px;color:var(--text2);font-weight:400">— pair the C3 companion app</span></h2>
+    <div class="card">
+      <p style="font-size:12px;color:var(--text2);margin:0 0 14px;line-height:1.5">Scan a QR code from the C3 mobile companion to pair it with this Oracle. The code carries the server URL and the <b>Discovery API token</b> above — treat it like a password, and note that rotating the token un-pairs every client that uses it.</p>
+      <div class="field">
+        <label>Server URL (as reachable from the phone)</label>
+        <input id="mpUrl" type="text" placeholder="e.g. http://100.x.y.z:3331 (Tailscale IP)">
+        <div style="font-size:11px;color:var(--text2);margin-top:6px">Defaults to this page's origin — replace it with the Tailscale/LAN address the phone can reach. Remote access needs <code>bind_host</code> and <code>allowed_hosts</code> set in <code>~/.c3/oracle/config.json</code>.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" onclick="showMobilePairQr()">Show pairing code</button>
+        <button class="btn btn-ghost" id="mpHideBtn" onclick="hideMobilePairQr()" style="display:none">Hide</button>
+      </div>
+      <div id="mpQrWrap" style="display:none;margin-top:14px">
+        <div id="mpQr" style="display:inline-block;background:#fff;padding:14px;border-radius:8px;line-height:0"></div>
+        <div style="font-size:11px;color:var(--text2);margin-top:8px">Contains the raw API token — don't screenshot or share it.</div>
+      </div>
+    </div>
   </div>
 
   <!-- Agent Modal -->
