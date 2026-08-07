@@ -37,6 +37,15 @@ DEFAULTS = {
     # A global-scope access rule applies to EVERY project on this machine —
     # blast radius beyond the projects the token can even enumerate.
     "mobile_access_global_scope": False,
+    # ── Override Requests (docs/override-requests.md §3.2) ──
+    # The approval inbox. `override` serves the read routes (list / one /
+    # policy); `override_write` is what turns a phone tap into a real grant,
+    # so it is the switch that matters. Both default ON to match the access
+    # pair — the feature is already off by default one layer down, in the
+    # PROJECT policy (`override.enabled: false`, every layer false), which is
+    # what decides whether a request can exist at all.
+    "mobile_override_enabled": True,      # read: request list / one / policy
+    "mobile_override_write": True,        # decide / mute / policy edit
     # Second, tighter budget for security mutations, on top of the shared
     # api_rate_limit_per_min bucket. 0 = share the main bucket only.
     "mobile_security_rate_limit_per_min": 12,
