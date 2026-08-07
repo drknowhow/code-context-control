@@ -540,6 +540,40 @@ def build_parser(version: str, parse_cli_ide_arg):
     ov_sweep.add_argument("--path", dest="project_path", default=".",
                           help="Project directory (default: current)")
 
+    # Requests: what agents have ASKED for. Deciding is human-only and lives
+    # here (and, later, on the phone) — never on the c3_override agent tool.
+    ov_requests = override_subs.add_parser(
+        "requests", help="Override requests agents have asked for"
+    )
+    ov_requests.add_argument("--status", default="",
+                             help="pending | approved | denied | expired | withdrawn")
+    ov_requests.add_argument("--all", dest="all_projects", action="store_true",
+                             help="Every project, not just this one")
+    ov_requests.add_argument("--path", dest="project_path", default=".",
+                             help="Project directory (default: current)")
+
+    ov_approve = override_subs.add_parser(
+        "approve", help="Approve one request — mints a single-use grant"
+    )
+    ov_approve.add_argument("request_id", help="Request id (ovr_…)")
+    ov_approve.add_argument("--ttl", type=int, default=None, dest="ttl_s",
+                            help="Seconds until the grant expires (clamped to override.max_ttl_s)")
+    ov_approve.add_argument("--uses", type=int, default=None,
+                            help="Uses allowed (default 1)")
+    ov_approve.add_argument("--note", default="",
+                            help="Note recorded with the decision")
+    ov_approve.add_argument("--confirm", default=None,
+                            help="Required for deny/builtin rules: retype the rule glob by hand")
+    ov_approve.add_argument("--path", dest="project_path", default=".",
+                            help="Project directory (default: current)")
+
+    ov_deny = override_subs.add_parser("deny", help="Refuse one request")
+    ov_deny.add_argument("request_id", help="Request id (ovr_…)")
+    ov_deny.add_argument("--note", default="",
+                         help="Note the agent will see with the refusal")
+    ov_deny.add_argument("--path", dest="project_path", default=".",
+                         help="Project directory (default: current)")
+
     # ── Tool discipline / enforcement mode (v2.66.0) ────────────────────
     # LAYER C: how hard C3 pushes the agent toward c3_* tools. Distinct from
     # `c3 access` (path policy — a security boundary) and from

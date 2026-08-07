@@ -353,6 +353,31 @@ def resolve(project_path: str = ".") -> OverridePolicy:
     return OverridePolicy(warnings=tuple(warnings), **values)
 
 
+def project_root_for(path) -> Path | None:
+    """Nearest ancestor of *path* that owns a ``.c3`` directory.
+
+    Lets a refusal decide whether to offer an override without every call site
+    threading a project through. Only ever runs on the denial path.
+    """
+    try:
+        p = Path(path).resolve()
+    except Exception:
+        return None
+    for cand in (p, *p.parents):
+        try:
+            if (cand / ".c3").is_dir():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def resolve_for_path(path) -> OverridePolicy:
+    """Policy for whichever project owns *path*; DISABLED when none does."""
+    root = project_root_for(path)
+    return resolve(str(root)) if root else DISABLED
+
+
 def offer_line(layer_key: str, path, tool: str, op: str) -> str:
     """The single line appended to a refusal when a layer IS escalatable.
 

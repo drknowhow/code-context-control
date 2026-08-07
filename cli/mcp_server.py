@@ -759,6 +759,30 @@ async def c3_locks(action: str = "list", paths: str = "", intent: str = "",
 
 
 @mcp.tool()
+async def c3_override(action: str = "list", path: str = "", tool: str = "",
+                      op: str = "read", why: str = "", request_id: str = "",
+                      layer: str = "", timeout_s: int = 60,
+                      ctx: Context = None) -> str:
+    """ASK A HUMAN to allow ONE blocked call — never a policy change.
+    actions: request, status, wait (blocks <=180s), list, withdraw.
+    request: path = the exact blocked path; why = one concrete sentence for the human.
+    A yes mints a single-use, session-bound, path-exact grant with a short TTL; the
+    rule that blocked you stays in force. There is NO approve action here — only the
+    user can decide, from their phone or `c3 override approve`.
+    Most denials are NOT escalatable (credential vault, Tier-0, catastrophic shell
+    commands); those are refused here and never shown to anyone. If a refusal did not
+    invite you to ask, do not ask — mark the step blocked and tell the user."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.override import handle_override
+    return await asyncio.to_thread(handle_override, action, path, tool, op, why,
+                                   request_id, layer, timeout_s, svc, finalize)
+
+
+@mcp.tool()
 async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
                     ctx: Context = None) -> str:
     """BLAST RADIUS before editing a shared symbol — all call sites, imports, references.

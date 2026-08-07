@@ -1,6 +1,7 @@
 # Override Requests — v1 Design Spec (implementation contract)
 
-Status: **FROZEN 2026-08-07. P1 shipped in v2.69.0; P2–P5 outstanding.**
+Status: **FROZEN 2026-08-07. P1 + P2 shipped (v2.69.0 / v2.70.0); P2a and
+P3–P5 outstanding.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -11,16 +12,23 @@ Implementation status per phase (§14):
 |---|---|---|
 | P0 spike | folded into P1 | cross-process lock + policy short-circuit |
 | P1 grant primitive | **shipped v2.69.0** | `services/override_policy.py`, `services/override_grants.py`, both PreToolUse hooks, `c3 override` |
-| P2 agent surface (`c3_override`) | not started | — |
+| P2 agent surface (`c3_override`) | **shipped v2.70.0** | `services/override_requests.py`, `cli/tools/override.py`, refusal offer line, `c3 override requests\|approve\|deny` |
+| **P2a grants on the `c3_*` surfaces** | **not started — see §13** | the hooks honour grants; the MCP content tools do not yet |
 | P3 Oracle routes | not started | — |
 | P4 mobile Requests pane | not started | — |
 | P5 desktop parity | not started | — |
 
-**Documented deviation (P1).** §10 specifies `c3 override approve <id>` /
-`deny <id>`, which operate on the *request* store (§3.3) that P2 introduces.
-P1 ships the grant-centric verbs — `policy`, `grant`, `list`, `check`,
-`revoke`, `sweep` — so the primitive is complete and testable before any
-request exists. The id-based verbs arrive with the store.
+**Resolved deviation (P1 → P2).** §10's `c3 override approve <id>` / `deny
+<id>` needed the request store; both shipped in P2 alongside `requests`. The
+P1 grant-centric verbs (`grant`, `check`, `revoke`, `sweep`) remain — they are
+the surface for approving something no agent asked for.
+
+**Gap found while building P2, recorded rather than papered over.** §13 claims
+grants are honoured on the `c3_*` MCP tools. They are not: P1 wired the gate
+into the two PreToolUse hooks only, so an approved grant unblocks native
+`Read`/`Edit` but not `c3_read`/`c3_edit`. Until P2a closes that, the refusal
+offer line is emitted on the **hook surface only** — an offer that promises a
+human "yes" will work must not appear where the retry would still refuse.
 
 **Addition (P1).** `override_grants.json` and `overrides.jsonl` join the
 never-writable target list alongside the vault files: an approved `**/.c3/**`
@@ -495,7 +503,7 @@ surfaces it as *"this rule is costing you — edit it or accept it."*
 | Surface | Denial enforced | Grant honoured |
 |---|---|---|
 | Claude Code native tools (hooks installed) | yes | yes |
-| `c3_*` MCP tools | yes | yes (`c3_shell` soft-warn only) |
+| `c3_*` MCP tools | yes | **not yet — P2a.** The content tools (`c3_read`, `c3_edit`, `c3_compress`, `c3_filter`, `c3_impact`, `c3_validate`) call the evaluator and refuse without consulting grants. Until they do, the refusal offer line is hook-surface only. |
 | Hookless IDEs (Codex, Gemini CLI) | discipline is advisory only today | n/a — nothing to override |
 | Raw shell / direct file API | **no** | **no** |
 | `c3_project` cross-project writes | `allow_write` unchanged | never |

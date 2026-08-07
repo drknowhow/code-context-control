@@ -4,6 +4,54 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.70.0] - 2026-08-07
+
+### Added — Override Requests, phase 2: the agent can ask
+
+2.69.0 added the grant — one retry, one path, once — but the only way to
+produce one was a human typing `c3 override grant` for a call they had to
+already know about. This closes the loop: a blocked agent can now **ask**, and
+a human answers.
+
+- **`c3_override`** (new MCP tool) — `request`, `status`, `wait`, `list`,
+  `withdraw`. That is the whole surface. There is no `approve` action; asking
+  for one by name gets a refusal that says so rather than a generic "unknown
+  action" that reads like a typo worth retrying. `wait` blocks up to 180s
+  inside the MCP server, which is allowed to be slow, instead of freezing a
+  PreToolUse hook with no spinner and no cancel.
+- **`services/override_requests.py`** — the request store
+  (`~/.c3/oracle/override_requests.json`). Rate limits are enforced at
+  creation: three pending per session, twenty an hour per project, and an
+  identical still-pending ask returns the existing card rather than minting a
+  second one. An agent in a retry loop cannot fill your phone.
+- **The refusal now tells the agent it may ask** — one appended line, and only
+  when the layer is escalatable and the project opted in. When it is not, the
+  refusal says nothing at all: an agent must never learn from a denial that a
+  request surface exists for the credential vault.
+- **`c3 override requests | approve | deny`** — the desktop half. Approving a
+  `deny` or builtin rule still requires the glob retyped by hand, and that
+  check now lives in the service so the CLI and the coming Oracle route cannot
+  drift apart on the one thing that matters. The agent's justification renders
+  quoted, labelled untrusted, because it is: it is capped at 400 characters,
+  never parsed, never matched on, never interpolated anywhere.
+
+Approving mints the grant, and the grant behaves exactly as it did in 2.69.0 —
+single-use, session-bound, path-exact, and gone in fifteen minutes.
+
+### Known gap — grants are honoured by the hooks, not yet by `c3_*`
+
+Building P2 surfaced something P1 had claimed and not delivered: the grant
+gate lives in the two PreToolUse hooks, so an approved grant unblocks native
+`Read`/`Edit` but **not** `c3_read`/`c3_edit`/`c3_compress`/`c3_filter`/
+`c3_impact`/`c3_validate`, which call the evaluator and refuse on their own.
+The spec's coverage matrix said otherwise; it has been corrected rather than
+left to be discovered later.
+
+The offer line is therefore emitted on the hook surface only. An offer that
+promises a human "yes" will unblock you is worse than no offer at all on a
+surface that would still refuse afterwards. Phase P2a wires the remaining
+surfaces.
+
 ## [2.69.0] - 2026-08-07
 
 ### Added — Override Requests, phase 1: the grant primitive

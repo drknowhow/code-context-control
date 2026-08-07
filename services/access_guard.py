@@ -701,12 +701,43 @@ def _cap(s: str) -> str:
     return s[: _PATH_CAP // 2 - 2] + " … " + s[-(_PATH_CAP // 2 - 2):]
 
 
+def _override_offer(denial: Denial, path, operation: str, tool: str) -> str:
+    """The one line docs/override-requests.md §6 appends — or ''.
+
+    Emitted ONLY when the layer is escalatable AND the project turned
+    overrides on. Silence, not an explanation, is the answer for the layers
+    that can never be escalated: an agent must not learn from a refusal that
+    a request surface exists for the credential vault (§6).
+
+    Restricted to the hook surface on purpose. The offer promises that a human
+    'yes' makes the retry work, and today only the PreToolUse gates consult
+    grants — the ``c3_*`` content surfaces do not (see §13, phase P2a). An
+    offer on a surface that would still refuse after approval is worse than
+    no offer.
+    """
+    try:
+        from services import override_policy as _op  # noqa: PLC0415 — cycle
+        layer = _op.rule_class_for_denial(denial)
+        if layer is None:
+            return ""
+        if not _op.resolve_for_path(path).escalatable(layer):
+            return ""
+        return _op.offer_line(layer, path, tool, operation)
+    except Exception:
+        return ""
+
+
 def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
             tool: str = "", project: str = "") -> str:
     """The exact S1/S2/S3/S5 string for a denial (see frozen spec).
 
     Mask denials use S6 (raw access on a surface that cannot render) and S7
     (write to a masked path) — docs/mask-guard.md §5.
+
+    On the hook surface an escalatable denial gains one appended line telling
+    the agent it may ASK (docs/override-requests.md §6). The pinned strings
+    above are unchanged: the append is absent unless the project opted in,
+    which is off by default.
     """
     p, glob, scope = _cap(path), denial.rule, denial.scope
     if denial.kind == _KIND_MASK:
@@ -745,7 +776,7 @@ def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
             "decision, not a transient error — do not retry through another "
             "tool or the shell. Mark the affected step blocked and continue "
             "with unaffected files. Rules: `c3 access list`."
-        )
+        ) + _override_offer(denial, path, operation, tool)
     if surface == "proxy":
         return (
             f"{TAG_DENIED} {operation} denied for {p} through project "
