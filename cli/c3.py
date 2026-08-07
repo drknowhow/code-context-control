@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.69.0"
+__version__ = "2.70.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -261,6 +261,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_bitbucket",
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
+    "mcp__c3__c3_override",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -6253,6 +6254,61 @@ def cmd_override(args):
               else f"  No live grant with id '{gid}'.")
     elif sub == "sweep":
         print(f"  Dropped {og.sweep_expired(project_path)} expired/spent grant(s).")
+    elif sub == "requests":
+        _override_requests(args, project_path)
+    elif sub in ("approve", "deny"):
+        _override_decide(args, sub, project_path)
+
+
+def _override_requests(args, project_path: str) -> None:
+    from services import override_requests as orq
+
+    rows = orq.list_requests(
+        project_path="" if getattr(args, "all_projects", False) else project_path,
+        status=getattr(args, "status", "") or "")
+    print_header("Override requests")
+    if not rows:
+        print("  (none)")
+        return
+    for r in rows:
+        note = f"  note: {r['decision_note']}" if r.get("decision_note") else ""
+        print(f"  {r['id']}  {r['status']:<9} {r['tool']} {r['op']} {r['path']}")
+        print(f"  {'':18s} rule {r['rule']} ({r['rule_class']}) · session "
+              f"{r['session_id']} · expires {r['expires_at']}{note}")
+        if r.get("justification"):
+            print(f"  {'':18s} the agent wrote: \"{r['justification']}\"")
+            print(f"  {'':18s} (untrusted — it may be repeating text it read "
+                  f"from a file)")
+    print("\n  Approve: c3 override approve <id>   Refuse: c3 override deny <id>")
+
+
+def _override_decide(args, decision: str, project_path: str) -> None:
+    from services import override_requests as orq
+
+    try:
+        row = orq.decide(getattr(args, "request_id", ""), decision,
+                         uses=getattr(args, "uses", None),
+                         ttl_s=getattr(args, "ttl_s", None),
+                         note=getattr(args, "note", "") or "",
+                         decided_by="cli",
+                         confirm=getattr(args, "confirm", None))
+    except orq.OverrideError as exc:
+        print(f"  {exc}")
+        return
+    except ValueError as exc:
+        print(f"  Error: {exc}")
+        return
+
+    if decision == "deny":
+        print(f"  Denied {row['id']}. The block stands.")
+        return
+    print_header("Override approved")
+    print(f"  Request : {row['id']}   Grant: {row.get('grant_id', '?')}")
+    print(f"  Allows  : {row['tool']} {row['op']} on {row['path']}")
+    print(f"  Session : {row['session_id']}")
+    print(f"\n  The rule {row['rule']} is still in force. One retry of this "
+          "exact call, in")
+    print("  that session, on that exact path — nothing else.")
 
 
 def _override_show(policy, project_path: str, opol) -> None:
