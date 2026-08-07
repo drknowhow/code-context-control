@@ -472,6 +472,74 @@ def build_parser(version: str, parse_cli_ide_arg):
     lk_sweep = locks_subs.add_parser("sweep", help="Drop expired leases now")
     lk_sweep.add_argument("--path", dest="project_path", default=".")
 
+    # ── Override Requests (v2.69.0, docs/override-requests.md) ──────────
+    # Human-only approval surface. A grant is single-use, session-bound,
+    # path-exact and TTL-capped, and it never edits policy: the rule that
+    # denied the call is still in force the moment the grant is spent.
+    # There is no agent-facing path to any verb in this command.
+    p_override = subparsers.add_parser(
+        "override",
+        help="Override Requests — allow one blocked call once, without weakening the rule",
+    )
+    override_subs = p_override.add_subparsers(dest="override_cmd")
+
+    ov_policy = override_subs.add_parser(
+        "policy", help="Show the effective `override` policy and which layers are escalatable"
+    )
+    ov_policy.add_argument("--path", dest="project_path", default=".",
+                           help="Project directory (default: current)")
+
+    ov_grant = override_subs.add_parser(
+        "grant", help="Mint a single-use grant for one blocked call (human approval)"
+    )
+    ov_grant.add_argument("target", help="The exact path that was blocked")
+    ov_grant.add_argument("--session", dest="session_id", required=True,
+                          help="Claude Code session id the grant is bound to — a grant never crosses sessions")
+    ov_grant.add_argument("--op", choices=["read", "write"], default="read",
+                          help="Operation to allow (default: read)")
+    ov_grant.add_argument("--tool", default=None,
+                          help="Exact tool name (default: Read for --op read, Edit for --op write)")
+    ov_grant.add_argument("--layer", choices=["access", "discipline", "mask", "shell"],
+                          default=None,
+                          help="Force a layer. Default: derive it from the denial the path actually produces")
+    ov_grant.add_argument("--ttl", type=int, default=None, dest="ttl_s",
+                          help="Seconds until the grant expires (clamped to override.max_ttl_s, hard ceiling 900)")
+    ov_grant.add_argument("--uses", type=int, default=None,
+                          help="Uses allowed (default 1; >1 needs override.allow_session_grants)")
+    ov_grant.add_argument("--confirm", default=None,
+                          help="Required for deny/builtin rules: retype the rule glob by hand")
+    ov_grant.add_argument("--path", dest="project_path", default=".",
+                          help="Project directory (default: current)")
+
+    ov_list = override_subs.add_parser("list", help="Live grants for this project")
+    ov_list.add_argument("--session", dest="session_id", default="",
+                         help="Only grants bound to this session id")
+    ov_list.add_argument("--audit", type=int, default=0, metavar="N",
+                         help="Also print the last N lines of .c3/overrides.jsonl")
+    ov_list.add_argument("--path", dest="project_path", default=".",
+                         help="Project directory (default: current)")
+
+    ov_revoke = override_subs.add_parser("revoke", help="Drop a live grant before it is used")
+    ov_revoke.add_argument("grant_id", help="Grant id (grt_…)")
+    ov_revoke.add_argument("--path", dest="project_path", default=".",
+                           help="Project directory (default: current)")
+
+    ov_check = override_subs.add_parser(
+        "check", help="Would a grant cover this call right now? (never consumes one)"
+    )
+    ov_check.add_argument("target", help="Path to test")
+    ov_check.add_argument("--session", dest="session_id", required=True)
+    ov_check.add_argument("--op", choices=["read", "write"], default="read")
+    ov_check.add_argument("--tool", default=None)
+    ov_check.add_argument("--layer", choices=["access", "discipline", "mask", "shell"],
+                          default=None)
+    ov_check.add_argument("--path", dest="project_path", default=".",
+                          help="Project directory (default: current)")
+
+    ov_sweep = override_subs.add_parser("sweep", help="Drop expired / spent grants now")
+    ov_sweep.add_argument("--path", dest="project_path", default=".",
+                          help="Project directory (default: current)")
+
     # ── Tool discipline / enforcement mode (v2.66.0) ────────────────────
     # LAYER C: how hard C3 pushes the agent toward c3_* tools. Distinct from
     # `c3 access` (path policy — a security boundary) and from

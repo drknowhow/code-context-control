@@ -11,6 +11,7 @@ Three things these pin that a screenshot cannot:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -54,8 +55,16 @@ class TestHubEnforcementRoutes(unittest.TestCase):
         self._resolve = mock.patch.object(
             hub_server, "_resolve_project_path", side_effect=lambda p: str(Path(p)))
         self._resolve.start()
+        # Enforcement resolves project -> global -> default. Without a clean
+        # home, a developer whose own ~/.c3/config.json carries an
+        # `enforcement` section sees scope 'global' here while CI passes.
+        self._home = tempfile.TemporaryDirectory()
+        self._env = mock.patch.dict(os.environ, {"C3_HOME": self._home.name})
+        self._env.start()
 
     def tearDown(self):
+        self._env.stop()
+        self._home.cleanup()
         self._pm.stop()
         self._resolve.stop()
         self._tmp.cleanup()

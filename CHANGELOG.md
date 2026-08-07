@@ -4,6 +4,69 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.69.0] - 2026-08-07
+
+### Added — Override Requests, phase 1: the grant primitive
+
+C3 blocks in seven places and every one of those blocks is terminal. The only
+way to un-block an agent today is a human at the desktop typing `c3 enforce
+advisory` or `c3 access remove` — that is, weakening a rule permanently to get
+past one call. A guard that spends its life in `advisory` is not a guard.
+
+This release adds the missing primitive: a **grant**. A grant makes one retry
+of one tool call on one path succeed, once, soon. It does not edit policy —
+the rule that denied the call is still in force the moment the grant is spent,
+and the hook says so out loud in `additionalContext`.
+
+What landed (docs/override-requests.md phase P1):
+
+- **`services/override_policy.py`** — the new top-level `override` section in
+  `.c3/config.json`. Everything defaults to `false`, including each of the six
+  escalatable layers, so this release changes nothing for anyone who does not
+  opt in. Project and global scopes merge by **tightening only**: booleans are
+  ANDed, numbers take the minimum, and a project can never widen what global
+  forbids. Unknown keys are a hard error, exactly as in `access`, so a future
+  knob can never silently no-op on an older C3.
+- **`services/override_grants.py`** — the store, the matching rules, and the
+  audit trail. A grant authorises a retry only when the session, layer, rule,
+  tool, operation and *canonical* path all match, the TTL has not passed, and
+  a use remains. Consumption burns the use at allow-time under a cross-process
+  lock, so two hook subprocesses racing the last use of a single-use grant
+  cannot both win. Every lifecycle event appends to `.c3/overrides.jsonl`,
+  including the near-misses — "you approved Read on X, the agent then tried
+  Write on Y" is a thing you can now see.
+- **Gates in both PreToolUse hooks** — `hook_access_guard` consults grants
+  after a `Denial` and before the refusal; `hook_pretool_enforce` does the same
+  for the tool-discipline write block, *after* the credential-vault guard,
+  which stays unconditional. Policy is read before grants, so switching the
+  feature off voids live grants immediately.
+- **`c3 override`** — `policy`, `grant`, `list`, `check`, `revoke`, `sweep`.
+  This is the only approval path in this release, and it is human-only: there
+  is no agent-facing verb here, and there is no `approve` action anywhere in
+  the design.
+
+What cannot be overridden, at any setting, by any approval: the credential
+vault, `.c3/secrets.enc`, `.c3/cred_state.json`, the Tier-0 absolute denies,
+the dispatcher's fail-closed deny, and the catastrophic `c3_shell` blocks. A
+denial from one of those never even reads the grants file, and the refusal
+never mentions that a request surface exists. `.c3/override_grants.json`
+itself is on the never-writable list, so an approved `**/.c3/**` write cannot
+be turned into the agent minting its own grants.
+
+Deviation from the spec, deliberately: §10 lists `c3 override approve <id>`
+and `deny <id>`, which need the *request* store that arrives in P2. P1 ships
+the grant-centric verbs instead, so the primitive is complete and testable on
+its own. The agent-facing `c3_override` tool, the Oracle routes and the mobile
+Requests pane follow in P2–P4.
+
+### Fixed
+
+- `tests/test_enforcement_policy.py` no longer reads the developer's real
+  `~/.c3/config.json`. Resolution is project → global → default, so anyone
+  whose global config carried an `enforcement` section saw
+  `test_missing_section_defaults_to_strict` fail locally while CI, with a
+  clean home directory, passed.
+
 ## [2.68.0] - 2026-08-07
 
 ### Added — C3 on your phone: a companion-app gateway, including the security surface

@@ -51,10 +51,23 @@ class TestModeResolution(unittest.TestCase):
     def test_missing_section_defaults_to_strict(self):
         """An install that predates this feature must not change behavior."""
         tmp, root = _project(None)
-        with tmp:
-            policy = ep.resolve(str(root))
-            self.assertEqual(policy.mode, ep.MODE_STRICT)
-            self.assertEqual(policy.scope, "default")
+        empty_home = TemporaryDirectory()
+        with tmp, empty_home:
+            # Hermeticity: resolution is project -> global -> default, so a
+            # developer whose real ~/.c3/config.json carries an `enforcement`
+            # section would otherwise see scope 'global' and fail here while
+            # CI (clean home) passed.
+            prior = os.environ.get("C3_HOME")
+            os.environ["C3_HOME"] = empty_home.name
+            try:
+                policy = ep.resolve(str(root))
+                self.assertEqual(policy.mode, ep.MODE_STRICT)
+                self.assertEqual(policy.scope, "default")
+            finally:
+                if prior is None:
+                    os.environ.pop("C3_HOME", None)
+                else:
+                    os.environ["C3_HOME"] = prior
 
     def test_each_mode_round_trips(self):
         for mode in ep.MODES:

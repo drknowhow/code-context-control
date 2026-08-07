@@ -81,6 +81,22 @@ def _record(denial, tool: str, operation: str, path: str,
         pass
 
 
+def _override_allows(base: str, denial, *, tool: str, op: str, path: str,
+                     session_id: str):
+    """A live override grant covering this exact call, or None (spec §5).
+
+    Lazy import and policy-before-grants ordering keep the hot path free: a
+    project that never turned overrides on pays one dict lookup and never
+    opens the grants file. Any failure returns None — the denial stands.
+    """
+    try:
+        from services import override_grants as og  # noqa: PLC0415 — lazy
+        return og.gate_access(base, denial, tool=tool, op=op, path=path,
+                              session_id=session_id)
+    except Exception:
+        return None  # fail closed: no grant, ordinary denial
+
+
 def _target(tool_input: dict) -> str:
     return str(
         tool_input.get("file_path")
@@ -136,6 +152,10 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         op = "write" if tool in _WRITE_TOOLS else "read"
         denial = ag.check(fp, op, base)
         if denial:
+            granted = _override_allows(base, denial, tool=tool, op=op,
+                                       path=fp, session_id=session_id)
+            if granted:
+                return {"additionalContext": granted}
             _record(denial, tool, op, fp, base, session_id)
             return _deny(ag.refusal(denial, fp, op, surface="hook", tool=tool))
         return None
