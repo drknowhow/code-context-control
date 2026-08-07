@@ -4,6 +4,79 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.71.0] - 2026-08-07
+
+### Added — Override Requests, phase 3: the phone can answer
+
+2.70.0 let a blocked agent ask. The only thing that could answer was a human
+at a desktop typing `c3 override approve`, which is exactly the situation the
+feature exists to fix. This puts the answer on the phone.
+
+- **Six routes** under the existing `/api/mobile` prefix, Bearer-authenticated
+  on every method including GET:
+  - `GET /api/mobile/overrides` — the inbox. Newest first. `project` is
+    **optional**, and omitting it returns every project, because the point of
+    an approval inbox is answering while away from the desk, not first
+    guessing which project is blocked.
+  - `GET /api/mobile/overrides/<id>` — one request, plus what approving would
+    actually cost (clamped TTL, whether a typed confirm is coming), so the card
+    can say it *before* the tap rather than reporting a clamp afterwards.
+  - `POST /api/mobile/overrides/<id>/decide` — approve or deny.
+  - `POST /api/mobile/overrides/<id>/mute` — deny, and stop asking.
+  - `GET`/`POST /api/mobile/overrides/policy` — read and edit the project's
+    `override` section.
+- **Two capabilities**, `override` and `override_write`, backed by
+  `mobile_override_enabled` / `mobile_override_write`. Switched off ⇒ **404,
+  not 403**: a disabled subsystem is indistinguishable from a server too old to
+  have it, so one client code path handles both.
+- **The typed-confirm challenge is the rule glob itself.** Approving an
+  `access_deny` or `access_builtin` request means retyping `**/.env*` by hand.
+  Not a nonce, not "yes" — the string that names what you are opening up, on
+  the theory that a habit-tap should cost more than reading a notification
+  (§11 threat 1). Session grants carry their own separate challenge, and are
+  refused outright unless `allow_session_grants` is on.
+- **`ttl_s` is clamped and the client is told.** Asking for a week returns a
+  15-minute grant plus `clamped: true` and a note naming the ceiling that did
+  it. Silent clamping would leave a phone displaying a grant that does not
+  exist.
+- **Approvals ride the existing feed.** A decision appends an acknowledgeable
+  notification, so the feed records that the open question was answered instead
+  of showing it open forever.
+
+### Added — mute, the one genuinely new primitive
+
+"Deny and suppress identical requests for this session" had no P2 equivalent.
+It lives in `services/override_requests.py` next to its siblings, and `create()`
+honours it, rather than becoming a parallel store in the Oracle layer.
+
+Its suppression key is byte-identical to the tuple `create()` already used for
+duplicate detection — `(project, session, layer, rule, tool, op, path_key)` —
+so a mute is precisely "duplicate suppression that outlives the pending row".
+Session-scoped, because a new session has a new problem and has earned the
+right to ask once. The mute store fails **open** (a corrupt file means the
+agent may ask again), the deliberate opposite of the grant store's fail-closed
+read: a lost mute costs one notification, while a lost-open grant would be a
+capability.
+
+### Changed
+
+- `override_requests.decide()` gained `mode` (`once`|`session`) and `mute`, and
+  now emits the decision notification. `decided_by` is `"mobile"` from this
+  surface.
+- Request rows cross the wire through an **explicit field allowlist**, not
+  `dict(row)`, so an internal field added later cannot silently start being
+  published. `path_key` is deliberately withheld.
+
+### Tests
+
+`tests/test_mobile_override_routes.py` (50 tests). One of them,
+`test_wire_contract_field_names_the_mobile_client_reads`, asserts the literal
+JSON key names the phone reads, duplicated on purpose from the spec rather than
+imported from the code under test. A previous cross-repo feature shipped with
+both sides green because each side pinned its own spelling of the contract and
+the wire dropped every key in between; a tautological assertion would not have
+caught it.
+
 ## [2.70.0] - 2026-08-07
 
 ### Added — Override Requests, phase 2: the agent can ask

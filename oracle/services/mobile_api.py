@@ -66,6 +66,7 @@ CAPABILITIES = [
     "credentials", "credentials_write",
     "access", "access_write",
     "enforcement", "enforcement_write",
+    "override", "override_write",
 ]
 
 # capability -> config key that gates it. Absent from this map = always on.
@@ -76,6 +77,8 @@ _CAPABILITY_SWITCHES = {
     "access_write": "mobile_access_write",
     "enforcement": "mobile_access_enabled",
     "enforcement_write": "mobile_access_write",
+    "override": "mobile_override_enabled",
+    "override_write": "mobile_override_write",
 }
 
 FEED_TYPES = ("notification", "activity", "edit", "session_stat")
@@ -1616,3 +1619,469 @@ def mobile_enforcement_set():
         pass
     _gw_audit("mobile.enforcement.set_mode", {"mode": result["mode"]})
     return jsonify(result)
+
+
+# ── Override Requests (docs/override-requests.md §8) ──────
+# The approval inbox: the agent asks, the phone answers, the answer is a
+# narrow time-boxed grant rather than a policy change. These routes are
+# deliberately THIN — every decision, refusal and grant-mint lives in
+# services/override_requests.py so the CLI (`c3 override`) and this surface
+# cannot drift apart on the one check that matters (the typed confirmation).
+#
+# The wire contract is frozen in §3.3 and re-asserted by
+# tests/test_mobile_override_routes.py: the request row is serialised through
+# an explicit allowlist, not `dict(row)`, so an internal field added later
+# (e.g. `path_key`) cannot silently start crossing the network.
+
+#: §3.3 field order, verbatim. The mobile client reads these names.
+_OVERRIDE_FIELDS = (
+    "id", "project_path", "session_id", "created_at", "expires_at", "status",
+    "layer", "rule", "rule_class", "scope", "tool", "op", "path", "refusal",
+    "justification", "resolved_at", "decided_by", "decision_note",
+)
+
+#: Decisions made here are always attributed to the phone (§3.3 decided_by).
+_DECIDED_BY = "mobile"
+
+
+def _override_row(row: dict) -> dict:
+    """One request row for the wire. Allowlisted, never the raw dict.
+
+    ``path_key`` is deliberately absent: it is a canonicalised local
+    filesystem identity used for grant matching, and the phone already gets
+    the human-readable ``path``.
+    """
+    out = {k: row.get(k) for k in _OVERRIDE_FIELDS}
+    # Decision extras — present only once decided, so a pending card is exactly
+    # the §3.3 shape and nothing more.
+    for extra in ("grant_id", "grant_mode", "muted"):
+        if row.get(extra) is not None:
+            out[extra] = row.get(extra)
+    return out
+
+
+def _override_audit(action: str, row: dict, *, confirmed: bool = False,
+                    detail_extra: dict | None = None) -> None:
+    """Identifiers and rule globs only — never the justification.
+
+    The justification is agent-supplied untrusted text (§3.3); copying it into
+    the activity log would put attacker-controlled prose into a surface the
+    feed ships verbatim to every client.
+    """
+    detail = {"kind": "override", "action": action,
+              "request_id": row.get("id", ""),
+              "session_id": row.get("session_id", ""),
+              "rule": row.get("rule", ""),
+              "rule_class": row.get("rule_class", ""),
+              "tool": row.get("tool", ""), "op": row.get("op", ""),
+              "via": "oracle-mobile", "caller": _caller(),
+              "confirmed": bool(confirmed)}
+    detail.update(detail_extra or {})
+    project = row.get("project_path") or ""
+    if not project:
+        return
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(str(project)).log("access_action", dict(detail))
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(project)).log_edit(
+            file=f"override://{row.get('id', '')}",
+            change_type=f"override_{action}",
+            summary=(f"{action} override {row.get('id', '')} "
+                     f"({row.get('rule', '')}) via mobile"),
+            tags=["override", action], detail=dict(detail))
+    except Exception:
+        pass
+
+
+def _override_write_gate():
+    """Capability + rate budget for every override mutation."""
+    gate = _feature_or_404("override") or _feature_or_404("override_write")
+    if gate:
+        return gate
+    return _security_gate()
+
+
+@bp.route("/overrides", methods=["GET"])
+def mobile_overrides_list():
+    """Pending + recently-decided requests, newest first.
+
+    ``project`` is OPTIONAL and omitting it means every project (§15.5): the
+    entire point of the inbox is answering while away from the desk, and a
+    phone that must first pick the right project to discover it has a pending
+    approval defeats that.
+    """
+    gate = _feature_or_404("override")
+    if gate:
+        return gate
+    from services import override_requests as orq
+    raw_project = (request.args.get("project") or "").strip()
+    project_path = ""
+    if raw_project:
+        # A named project must still be one this token can see.
+        resolved, err = _project_or_404(raw_project)
+        if err:
+            return err
+        project_path = str(resolved)
+    status = (request.args.get("status") or "").strip().lower()
+    try:
+        limit = int(request.args.get("limit") or _DEFAULT_LIMIT)
+    except (TypeError, ValueError):
+        limit = _DEFAULT_LIMIT
+    limit = max(1, min(limit, _MAX_LIMIT))
+    try:
+        rows = orq.list_requests(project_path=project_path, status=status,
+                                 limit=limit)
+    except Exception as exc:
+        return _svc_error(exc)
+    if not raw_project:
+        # Cross-project listing must not leak rows for projects this gateway
+        # does not serve — the store is one file across every project on the
+        # machine, including ones the scanner has since dropped.
+        rows = [r for r in rows
+                if _resolve_registered(str(r.get("project_path") or "")) is not None]
+    return jsonify({
+        "requests": [_override_row(r) for r in rows],
+        "count": len(rows),
+        "project": project_path,
+        "status": status,
+        "limit": limit,
+    })
+
+
+@bp.route("/overrides/policy", methods=["GET"])
+def mobile_overrides_policy_get():
+    """The effective (already merged + clamped) `override` section (§3.1).
+
+    Registered BEFORE `/overrides/<id>` would otherwise catch it — Flask
+    matches static rules ahead of converters, but the ordering is made
+    explicit here so a later refactor cannot turn `policy` into a request id.
+    """
+    gate = _feature_or_404("override")
+    if gate:
+        return gate
+    from services import override_policy as opol
+    resolved, err = _project_or_404(request.args.get("project") or "")
+    if err:
+        return err
+    policy = opol.resolve(str(resolved))
+    return jsonify({
+        "path": str(resolved),
+        "policy": policy.as_dict(),
+        "layers": list(opol.LAYER_KEYS),
+        "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
+        "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
+        "defaults": {"max_ttl_s": opol.DEFAULTS["max_ttl_s"],
+                     "default_uses": opol.DEFAULTS["default_uses"]},
+        "writable": bool(_cfg().get("mobile_override_write", True)),
+        # Verbatim from the spec: policy is a floor, not a promise. Global and
+        # project merge by TIGHTENING, so a layer shown true here can still be
+        # false in effect if the other scope forbids it.
+        "coverage_note": (
+            "Project and global policy merge by tightening only: a layer is "
+            "escalatable iff both scopes allow it, and the numeric limits take "
+            "the smaller value. Grants are honoured on the PreToolUse hook "
+            "surface; the c3_* MCP tools do not consult them yet (P2a)."
+        ),
+    })
+
+
+@bp.route("/overrides/policy", methods=["POST"])
+def mobile_overrides_policy_set():
+    """Edit the project's `override` section.
+
+    Widening — enabling the feature, turning a layer on, raising a ceiling, or
+    allowing session grants — needs a typed confirmation. Tightening never
+    does: making the guard stricter is always allowed to be one tap.
+    """
+    gate = _override_write_gate()
+    if gate:
+        return gate
+    from services import override_policy as opol
+    data = request.get_json(silent=True) or {}
+    resolved, err = _project_or_404(data.get("project") or "")
+    if err:
+        return err
+
+    section = data.get("override")
+    if not isinstance(section, dict):
+        return jsonify({"error": "body needs an 'override' object"}), 400
+    unknown = sorted(set(section) - set(opol.DEFAULTS))
+    if unknown:
+        # §3.1: unknown keys are a hard error, never a silent no-op.
+        return jsonify({
+            "error": f"unknown override key(s): {', '.join(unknown)}",
+            "valid": sorted(opol.DEFAULTS),
+        }), 400
+    layers = section.get("layers")
+    if layers is not None:
+        if not isinstance(layers, dict):
+            return jsonify({"error": "'layers' must be an object"}), 400
+        bad = sorted(set(layers) - set(opol.LAYER_KEYS))
+        if bad:
+            return jsonify({"error": f"unknown layer(s): {', '.join(bad)}",
+                            "valid": list(opol.LAYER_KEYS)}), 400
+
+    current = opol.resolve(str(resolved))
+    widened = _override_widenings(current, section)
+    if widened and not _confirmed(data, "widen"):
+        return jsonify({
+            "error": "this widens what a phone tap can approve: "
+                     + ", ".join(widened),
+            "widens": widened,
+            "needs_confirmation": True, "confirm_with": "widen",
+        }), 400
+
+    try:
+        result = _write_override_section(resolved, section)
+    except (OSError, ValueError) as exc:
+        return _svc_error(exc)
+
+    _override_audit("policy_set",
+                    {"id": "", "project_path": str(resolved), "rule": ""},
+                    confirmed=bool(widened),
+                    detail_extra={"widens": widened,
+                                  "keys": sorted(section)})
+    _gw_audit("mobile.override.policy_set",
+              {"keys": sorted(section), "widens": widened})
+    effective = opol.resolve(str(resolved))
+    return jsonify({"path": str(resolved), "written": result,
+                    "policy": effective.as_dict(), "widened": widened})
+
+
+def _override_widenings(current, section: dict) -> list:
+    """Which requested changes LOOSEN the policy. Names, for the challenge."""
+    out = []
+    if section.get("enabled") and not current.enabled:
+        out.append("enabled")
+    for key, want in (section.get("layers") or {}).items():
+        if want and not current.layers.get(key, False):
+            out.append(f"layers.{key}")
+    for key in ("max_ttl_s", "default_uses", "request_ttl_s",
+                "max_pending_per_session", "max_requests_per_hour"):
+        if key in section:
+            try:
+                if int(section[key]) > int(getattr(current, key)):
+                    out.append(key)
+            except (TypeError, ValueError):
+                pass
+    if section.get("allow_session_grants") and not current.allow_session_grants:
+        out.append("allow_session_grants")
+    return out
+
+
+def _write_override_section(project: Path, section: dict) -> dict:
+    """Merge *section* into the project's `.c3/config.json` `override` block.
+
+    Project scope only. A global override policy governs every project on the
+    machine, and the phone has no affordance for reviewing that blast radius —
+    same call `mobile_enforcement_set` makes about machine-wide discipline.
+    """
+    cfg_file = Path(project) / ".c3" / "config.json"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {}
+    if cfg_file.is_file():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8")) or {}
+        except ValueError as exc:
+            raise ValueError(f"project config is not valid JSON: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise ValueError("project config is not a JSON object")
+    block = dict(cfg.get("override") or {})
+    for key, value in section.items():
+        if key == "layers":
+            merged = dict(block.get("layers") or {})
+            merged.update({k: bool(v) for k, v in (value or {}).items()})
+            block["layers"] = merged
+        else:
+            block[key] = value
+    cfg["override"] = block
+    tmp = cfg_file.with_name(f"{cfg_file.name}.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
+                   encoding="utf-8")
+    tmp.replace(cfg_file)
+    return block
+
+
+@bp.route("/overrides/<request_id>", methods=["GET"])
+def mobile_override_get(request_id):
+    """One request, full context."""
+    gate = _feature_or_404("override")
+    if gate:
+        return gate
+    from services import override_requests as orq
+    row = orq.get(str(request_id))
+    if row is None:
+        return jsonify({"error": "unknown request"}), 404
+    if _resolve_registered(str(row.get("project_path") or "")) is None:
+        # Same refusal as an unknown id: whether a request exists for a project
+        # this gateway does not serve is not this token's business.
+        return jsonify({"error": "unknown request"}), 404
+    from services import override_policy as opol
+    policy = opol.resolve(str(row.get("project_path") or "."))
+    return jsonify({
+        "request": _override_row(row),
+        # What approving would actually cost, so the card can say it BEFORE
+        # the tap rather than reporting a clamp afterwards.
+        "policy": {
+            "max_ttl_s": policy.max_ttl_s,
+            "default_uses": policy.default_uses,
+            "allow_session_grants": policy.allow_session_grants,
+            "escalatable": policy.escalatable(str(row.get("rule_class") or "")),
+        },
+        "needs_typed_confirm": (
+            str(row.get("rule_class") or "") in opol.TYPED_CONFIRM_LAYERS),
+        "confirm_with": (
+            row.get("rule") if str(row.get("rule_class") or "")
+            in opol.TYPED_CONFIRM_LAYERS else ""),
+    })
+
+
+@bp.route("/overrides/<request_id>/decide", methods=["POST"])
+def mobile_override_decide(request_id):
+    """Approve (minting a grant) or deny one request.
+
+    The typed-confirmation challenges are computed here for the CLIENT's
+    benefit — the authoritative check is inside ``override_requests.decide``,
+    which refuses regardless of what this route believes. Two places compute
+    it; only one enforces it.
+    """
+    gate = _override_write_gate()
+    if gate:
+        return gate
+    from services import override_policy as opol
+    from services import override_requests as orq
+    data = request.get_json(silent=True) or {}
+    decision = str(data.get("decision") or "").strip().lower()
+    if decision not in (orq.DECISION_APPROVE, orq.DECISION_DENY):
+        return jsonify({"error": "decision must be 'approve' or 'deny'"}), 400
+    mode = str(data.get("mode") or orq.MODE_ONCE).strip().lower()
+    if mode not in orq.MODES:
+        return jsonify({"error": f"mode must be one of: "
+                                 f"{', '.join(orq.MODES)}"}), 400
+
+    row = orq.get(str(request_id))
+    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+        return jsonify({"error": "unknown request"}), 404
+    if row.get("status") != orq.STATUS_PENDING:
+        # §12.7: it lapsed while the phone was showing it. 409, and the card
+        # refreshes to the real status instead of silently minting a grant.
+        return jsonify({"error": f"request is {row.get('status')}, not pending",
+                        "request": _override_row(row)}), 409
+
+    project_path = str(row.get("project_path") or ".")
+    policy = opol.resolve(project_path)
+    rule_class = str(row.get("rule_class") or "")
+    confirm = data.get("confirm")
+
+    if decision == orq.DECISION_APPROVE:
+        # (a) approving an access_deny / access_builtin request — the challenge
+        # is the RULE GLOB itself, typed by hand (§8, §11 threat 1).
+        if rule_class in opol.TYPED_CONFIRM_LAYERS and confirm != row.get("rule"):
+            return jsonify({
+                "error": f"approving an {rule_class} request needs the rule "
+                         "glob retyped by hand",
+                "needs_confirmation": True,
+                "confirm_with": row.get("rule"),
+            }), 400
+        # (b) a session grant, and only where policy allows one at all.
+        if mode == orq.MODE_SESSION:
+            if not policy.allow_session_grants:
+                return jsonify({
+                    "error": "session grants are disabled for this project",
+                    "detail": "`override.allow_session_grants` is false — "
+                              "approve once instead.",
+                }), 403
+            if (rule_class not in opol.TYPED_CONFIRM_LAYERS
+                    and confirm != orq.CONFIRM_SESSION):
+                return jsonify({
+                    "error": "a session grant is unlimited-use until it expires",
+                    "needs_confirmation": True,
+                    "confirm_with": orq.CONFIRM_SESSION,
+                }), 400
+
+    requested_ttl = data.get("ttl_s")
+    try:
+        requested_ttl = int(requested_ttl) if requested_ttl is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "ttl_s must be an integer"}), 400
+    requested_uses = data.get("uses")
+    try:
+        requested_uses = int(requested_uses) if requested_uses is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "uses must be an integer"}), 400
+
+    try:
+        result = orq.decide(
+            str(request_id), decision, uses=requested_uses,
+            ttl_s=requested_ttl, note=str(data.get("note") or ""),
+            decided_by=_DECIDED_BY, confirm=confirm, mode=mode,
+            mute=bool(data.get("mute")))
+    except orq.OverrideError as exc:
+        _override_audit(f"{decision}_refused", row)
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return _svc_error(exc)
+
+    _override_audit(decision, result,
+                    confirmed=rule_class in opol.TYPED_CONFIRM_LAYERS,
+                    detail_extra={"mode": mode,
+                                  "grant_id": result.get("grant_id", "")})
+    _gw_audit(f"mobile.override.{decision}",
+              {"request_id": str(request_id), "rule_class": rule_class,
+               "mode": mode})
+
+    payload = {"request": _override_row(result), "decision": decision}
+    if decision == orq.DECISION_APPROVE:
+        granted_ttl = policy.clamp_ttl(requested_ttl)
+        payload["grant"] = {
+            "id": result.get("grant_id", ""),
+            "mode": result.get("grant_mode", mode),
+            "ttl_s": granted_ttl,
+            "uses": policy.clamp_uses(
+                opol.HARD_MAX_USES if mode == orq.MODE_SESSION
+                else requested_uses),
+        }
+        # §8: a client asking for a week gets 15 minutes and is TOLD so.
+        if requested_ttl is not None and granted_ttl < requested_ttl:
+            payload["clamped"] = True
+            payload["clamped_note"] = (
+                f"requested ttl_s={requested_ttl} was clamped to "
+                f"{granted_ttl}s by this project's override.max_ttl_s "
+                f"({policy.max_ttl_s}s).")
+    return jsonify(payload)
+
+
+@bp.route("/overrides/<request_id>/mute", methods=["POST"])
+def mobile_override_mute(request_id):
+    """Deny, and suppress identical requests for this session (§8).
+
+    Never needs a confirmation: muting only ever makes the agent MORE blocked,
+    and deny must always be the cheaper gesture than approve (§9).
+    """
+    gate = _override_write_gate()
+    if gate:
+        return gate
+    from services import override_requests as orq
+    data = request.get_json(silent=True) or {}
+    row = orq.get(str(request_id))
+    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+        return jsonify({"error": "unknown request"}), 404
+    if row.get("status") != orq.STATUS_PENDING:
+        return jsonify({"error": f"request is {row.get('status')}, not pending",
+                        "request": _override_row(row)}), 409
+    try:
+        result = orq.decide(str(request_id), orq.DECISION_DENY,
+                            note=str(data.get("note") or ""),
+                            decided_by=_DECIDED_BY, mute=True)
+    except orq.OverrideError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return _svc_error(exc)
+    _override_audit("mute", result, detail_extra={"muted": True})
+    _gw_audit("mobile.override.mute", {"request_id": str(request_id)})
+    return jsonify({"request": _override_row(result), "decision": "deny",
+                    "muted": True})

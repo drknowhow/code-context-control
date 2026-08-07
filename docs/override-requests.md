@@ -1,7 +1,7 @@
 # Override Requests — v1 Design Spec (implementation contract)
 
-Status: **FROZEN 2026-08-07. P1 + P2 shipped (v2.69.0 / v2.70.0); P2a and
-P3–P5 outstanding.**
+Status: **FROZEN 2026-08-07. P1 + P2 + P3 shipped (v2.69.0 / v2.70.0 /
+v2.71.0); P2a, P4 and P5 outstanding.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -14,7 +14,7 @@ Implementation status per phase (§14):
 | P1 grant primitive | **shipped v2.69.0** | `services/override_policy.py`, `services/override_grants.py`, both PreToolUse hooks, `c3 override` |
 | P2 agent surface (`c3_override`) | **shipped v2.70.0** | `services/override_requests.py`, `cli/tools/override.py`, refusal offer line, `c3 override requests\|approve\|deny` |
 | **P2a grants on the `c3_*` surfaces** | **not started — see §13** | the hooks honour grants; the MCP content tools do not yet |
-| P3 Oracle routes | not started | — |
+| P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
 | P4 mobile Requests pane | not started | — |
 | P5 desktop parity | not started | — |
 
@@ -29,6 +29,40 @@ into the two PreToolUse hooks only, so an approved grant unblocks native
 `Read`/`Edit` but not `c3_read`/`c3_edit`. Until P2a closes that, the refusal
 offer line is emitted on the **hook surface only** — an offer that promises a
 human "yes" will work must not appear where the retry would still refuse.
+
+**Deviations recorded while building P3, not papered over.**
+
+1. **Test file name.** §14 names `tests/test_override_routes.py`; the file
+   shipped as **`tests/test_mobile_override_routes.py`**, matching the
+   surrounding `test_mobile_*` convention. These are the *mobile* gateway's
+   routes; the desktop dashboard routes (P5) will want the unqualified name.
+2. **The mute store is a new file, not a new key.** §8 asks for "deny +
+   suppress identical requests for this session" and §3.3 freezes
+   `override_requests.json` as a JSON array of request rows. Those cannot both
+   hold, so mutes live in a sibling **`~/.c3/oracle/override_mutes.json`**,
+   written by the same load-all/mutate/save-all helper. Suppression key is the
+   tuple `create()` already used for duplicate detection —
+   `(project, session, layer, rule, tool, op, path_key)` — so mute is
+   duplicate suppression that outlives the pending row. It fails **open**
+   (corrupt ⇒ the agent may ask again), deliberately the opposite of the grant
+   store's fail-closed read: a lost mute costs one notification, a lost-open
+   grant would be a capability.
+3. **Session grants needed a second challenge.** §8 lists `mode: 'session'` as
+   requiring confirmation but does not say with what. Reusing the rule glob
+   would let one set of keystrokes answer two different questions ("I accept
+   this access layer" and "I accept an unlimited-uses grant"), so a session
+   grant on a non-typed-confirm layer challenges with the literal string
+   `session`. On an `access_deny`/`access_builtin` layer the rule glob still
+   governs — one typed confirmation per tap, never two.
+4. **Policy writes are project-scope only.** §3.1 allows a global `override`
+   section, but `POST /overrides/policy` writes the project's
+   `.c3/config.json` and nothing else — the same call `mobile_enforcement_set`
+   makes about machine-wide discipline. A phone has no affordance for
+   reviewing a change that re-governs every project on the machine.
+5. **`decide()` did not notify.** P2's `create()` appended to the feed but
+   `decide()` did not, so the feed showed questions and never answers. §8
+   requires the decision entry, so `_notify_decision` was added to the service
+   (not the route) — the CLI gets it too.
 
 **Addition (P1).** `override_grants.json` and `overrides.jsonl` join the
 never-writable target list alongside the vault files: an approved `**/.c3/**`
@@ -342,7 +376,7 @@ existing id rather than minting a second card.
 
 ## 8. Oracle surface
 
-New blueprint routes under the existing `/api/mobile` prefix
+**Shipped v2.71.0.** Blueprint routes under the existing `/api/mobile` prefix
 (`oracle/services/mobile_api.py`), Bearer-auth on every method including GET,
 `_security_gate()` rate budget on the mutating ones:
 
@@ -368,12 +402,26 @@ with `confirm`. Required for:
 - widening `override.layers` in the policy route.
 
 `ttl_s` is clamped server-side to `min(requested, override.max_ttl_s)`. A client
-asking for a week gets 15 minutes and is told so.
+asking for a week gets 15 minutes and is told so — the approve response carries
+`clamped: true` and a `clamped_note` naming the ceiling that did it, because a
+silent clamp leaves the phone displaying a grant that does not exist.
 
 On approval the Oracle: writes the grant to `.c3/override_grants.json`,
 appends to `.c3/overrides.jsonl`, flips request status, and appends an
 acknowledgeable entry to `.c3/notifications.jsonl` so the existing feed shows
 the decision.
+
+**As built (v2.71.0).** Request rows are serialised through an explicit field
+allowlist — the §3.3 names exactly — rather than the raw dict, so an internal
+field added later cannot silently start crossing the network. `path_key` is
+withheld for that reason: it is a canonical local-filesystem identity used for
+grant matching, and the client already has the human-readable `path`. The
+cross-project listing additionally drops rows whose project the gateway's
+scanner does not serve; the store is one file for the whole machine, and a
+token's reach must not exceed the projects it can enumerate.
+
+See the deviation list at the top of this document for the four places the
+implementation had to decide something §8 left open.
 
 ---
 
@@ -533,10 +581,17 @@ race, TTL expiry, session isolation.
 Tests: no `approve` action exists; non-escalatable layers refused at creation;
 refusal line absent for non-escalatable layers.
 
-**P3 — Oracle.** Routes, capabilities, config switches, notification emission,
-typed-confirm challenges, TTL clamping. Tests in `tests/test_override_routes.py`
-following `test_enforcement_routes.py` style, plus an endpoint sweep proving no
-route ever mints a grant without a valid decide call.
+**P3 — Oracle. Shipped v2.71.0.** Routes, capabilities, config switches,
+notification emission, typed-confirm challenges, TTL clamping. Tests in
+`tests/test_mobile_override_routes.py` (renamed — see deviation 1), including
+the endpoint sweep proving no route ever mints a grant without a valid decide
+call, and a wire-contract test pinning the §3.3 field names the mobile client
+reads.
+
+**Ship gate not yet met.** The suite is green, but the live end-to-end run —
+request from a real blocked call, approve on the real phone, watch the retry
+succeed — needs P4's client. Until then P3 is verified only against Flask's
+test client.
 
 **P4 — Mobile.** `CAP_OVERRIDE` constants, `useOverrides` / `useDecideOverride`,
 Requests segment, badge, notification tap-through, "Fix it properly" deep-link.
