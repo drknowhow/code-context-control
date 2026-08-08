@@ -179,7 +179,9 @@ class TestMobileAPI(unittest.TestCase):
         # filtered by config, rather than the static CAPABILITIES constant.
         # 3 since `/feed?wait=` — advertised so a client can choose to hold a
         # connection open instead of discovering support by timing a request.
-        self.assertEqual(body["api_version"], 3)
+        # 4 since the ops surface (/edits, /locks, /status, /insights,
+        # /suggestions, /review) — see tests/test_mobile_extras.py.
+        self.assertEqual(body["api_version"], 4)
         self.assertIn("feed", body["capabilities"])
         self.assertIn("feed_wait", body["capabilities"])
         self.assertIn("pm", body["capabilities"])
