@@ -4,6 +4,50 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.76.2] - 2026-08-08
+
+### Fixed — the two path-SHAPED idioms `<ads>` still denied (#50)
+
+v2.74.1 removed the shell tokens that were *not paths* — markdown links, jq
+filters, list literals. Two everyday idioms survived it, and they are the
+opposite class: they really are path-shaped, and they are the two ordinary ways
+a developer writes a path with a colon in it.
+
+```
+python -m pytest tests/test_chat_poll.py::TestAbort  ->  was DENIED  '<ads>'
+git show origin/main:pyproject.toml                  ->  was DENIED  '<ads>'
+```
+
+**Pytest node ids.** `a/b.py::Thing` is a node id or a C++/Rust scope, never a
+stream. But `::` alone is not a safe signal — `file::$DATA` is the real NTFS
+default-stream form, and an early draft that skipped every `::` token would have
+opened a hole. The safe discriminator is the type slot: stream types are
+`$`-prefixed system constants, so `::` *not* followed by `$` cannot be a
+spelling. A control pins `type ./notes.txt::$DATA` as still denied, deliberately
+against a path no deny glob covers so `<ads>` is the only rule that can catch it.
+
+**Git revspecs.** `<rev>:<path>` gets the path half checked rather than the whole
+token — a fix and a tightening at once. Every revspec is denied today by
+accident, which reads as pure false-positive until you notice that
+`git show HEAD:.env` prints a denied file's contents and the accident is the
+only thing stopping it. Whitelisting the shape would open that; checking the
+path half closes it on the rule that should have been deciding all along.
+`pyproject.toml` is allowed on its own merits, `.env` is denied on its own rule.
+
+The rewrite also skips the existence gate, because a revspec names a path in
+*history*: `git show HEAD~5:secrets/gone.txt` reads a denied file whether or not
+it is in the working tree today, and gating on the working tree would be a hole
+the rewrite itself opened.
+
+Recognised as git-only. `<word>:<word>` means something else almost everywhere
+else, so nothing outside a `git` command changes behaviour.
+
+Worth recording, since it is now three for three: this rule's false positives
+have been found by the rule blocking the work of fixing it. #50 was filed after
+`git commit` was refused twice for a message mentioning an IPv6 CIDR; #73's
+commit was refused twice for quoting its own repros; and both idioms above were
+hit while writing and testing this change.
+
 ## [2.76.1] - 2026-08-08
 
 ### Fixed — a stalled ledger write no longer holds a finished edit hostage (#74)

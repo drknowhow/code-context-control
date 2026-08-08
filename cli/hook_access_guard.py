@@ -72,10 +72,57 @@ _IPV6_RE = re.compile(
 # so each became a hard deny on text that names no file at all.
 _SYNTAX_CHARS = frozenset("{}[]()<>\"'`|&*?")
 
+# `pkg/mod.py::TestThing`, `ns::Type` — a pytest node id or a C++/Rust scope.
+# NTFS spells a stream `file:name:$TYPE`, and the doubled-colon default-stream
+# form `file::$DATA` is real, so "contains ::" is NOT safe on its own. What is
+# safe is the type slot: stream types are `$`-prefixed system constants, so a
+# `::` NOT followed by `$` cannot be a stream spelling.
+_DOUBLE_COLON_RE = re.compile(r"::(?!\$)")
+
+# `<rev>:<path>` — how git names a blob: `git show HEAD:setup.py`,
+# `git cat-file -p origin/main:src/a.py`.
+_GIT_REVSPEC_RE = re.compile(r"^(?P<rev>[^:\s]+):(?P<path>[^:\s]+)$")
+_GIT_CMD_RE = re.compile(r"^\s*(?:[\w.\-]*[/\\])?git(?:\.exe)?\b", re.IGNORECASE)
+
 
 def _is_network_token(tok: str) -> bool:
     """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling."""
     return bool(_SCHEME_RE.match(tok) or _IPV6_RE.match(tok))
+
+
+def _is_scope_token(tok: str) -> bool:
+    """True for `a/b.py::Thing` and `ns::Type` — never an ADS spelling."""
+    return bool(_DOUBLE_COLON_RE.search(tok))
+
+
+def _git_revspec_path(cmd: str, tok: str):
+    """The path half of a git ``<rev>:<path>`` token, or None.
+
+    Returned so the caller can check **the path** rather than the whole token,
+    which is the fix and a tightening at once. Today every git revspec is denied
+    by accident: ``<rev>:<path>`` canonicalizes to something with a residual
+    colon and trips ``<ads>``, so ``git show origin/main:pyproject.toml`` — an
+    everyday command naming nothing sensitive — is refused.
+
+    Whitelisting the shape outright would go too far the other way, because
+    ``git show HEAD:.env`` really does print a denied file's contents, and right
+    now the only thing stopping it is the false positive. Checking the path half
+    gets both right: `.env` is denied on its own rule, `pyproject.toml` is
+    allowed on its own merits, and neither answer depends on a rule misfiring.
+
+    Gated on the command actually being ``git``, since ``<word>:<word>`` means
+    something else almost everywhere else.
+    """
+    if not _GIT_CMD_RE.match(cmd or ""):
+        return None
+    if len(tok) > 1 and tok[1] == ":":
+        return None  # a drive letter is not a revspec separator
+    m = _GIT_REVSPEC_RE.match(tok)
+    if not m:
+        return None
+    path = m.group("path")
+    # A `$`-prefixed suffix is a stream type, not a path. Do not reinterpret it.
+    return None if path.startswith("$") else path
 
 
 def _looks_like_a_path(tok: str) -> bool:
@@ -167,6 +214,16 @@ def _scan_shell(cmd: str, base: str):
         # a path at all" — and the second is the one that generalizes.
         if not _looks_like_a_path(tok) or _is_network_token(tok):
             continue
+        # `tests/x.py::TestThing` is a node id, not a stream spelling.
+        if _is_scope_token(tok):
+            continue
+        # `git show <rev>:<path>` — judge the PATH, not the whole token. This
+        # is the one place the scan rewrites what it checks rather than skipping
+        # it, because skipping would let `git show HEAD:.env` through.
+        revspec_path = _git_revspec_path(cmd, tok)
+        from_revspec = revspec_path is not None
+        if from_revspec:
+            tok = revspec_path
         if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
             tok = f"{tok[1]}:{tok[2:]}"
         denial = ag.check(tok, "read", base)
@@ -176,7 +233,11 @@ def _scan_shell(cmd: str, base: str):
                 exists = (p if p.is_absolute() else Path(base) / p).exists()
             except OSError:
                 exists = False
-            if exists or denial.rule.startswith("<"):
+            # A revspec names a path in HISTORY, so the working tree is the
+            # wrong place to ask whether it is real. `git show HEAD~5:.env`
+            # reads a denied file whether or not that file exists today, and
+            # existence-gating it would be a hole this rewrite opened.
+            if exists or from_revspec or denial.rule.startswith("<"):
                 return denial, tok
     return None, ""
 
