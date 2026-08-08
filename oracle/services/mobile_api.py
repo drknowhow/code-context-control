@@ -62,7 +62,10 @@ from oracle.services.tool_registry import _c3_version
 # 3: /feed accepts `wait` (long-poll). Advertised as the `feed_wait`
 #    capability so a client can choose to hold a connection open instead of
 #    polling, rather than discovering support by timing a request.
-API_VERSION = 3
+# 4: the ops surface — /edits, /locks, /status, /insights, /suggestions,
+#    /review. Reads are always on; the two capabilities that WRITE
+#    (insight dismissal, suggestion approval) carry their own switches.
+API_VERSION = 4
 
 CAPABILITIES = [
     "feed", "feed_wait", "projects", "health", "pm", "pm_events", "digest",
@@ -71,6 +74,14 @@ CAPABILITIES = [
     "access", "access_write",
     "enforcement", "enforcement_write",
     "override", "override_write",
+    "edits", "locks", "status",
+    "insights", "insights_write",
+    "suggestions", "suggestions_write",
+    "review",
+    # Poll-based chat transport, served by services/chat_poll.py under
+    # /api/mobile/chat/*. Advertised here because /info is the single place a
+    # client probes; the routes themselves live in that blueprint.
+    "chat",
 ]
 
 # capability -> config key that gates it. Absent from this map = always on.
@@ -83,6 +94,12 @@ _CAPABILITY_SWITCHES = {
     "enforcement_write": "mobile_access_write",
     "override": "mobile_override_enabled",
     "override_write": "mobile_override_write",
+    # The ops reads (edits, locks, status, insights, suggestions, review) are
+    # deliberately absent: they expose nothing the feed does not already, so
+    # gating them would only cost a client a capability probe. Only the two
+    # that mutate are switchable.
+    "insights_write": "mobile_insights_write",
+    "suggestions_write": "mobile_suggestions_write",
 }
 
 FEED_TYPES = ("notification", "activity", "edit", "session_stat")
@@ -2209,3 +2226,582 @@ def mobile_override_mute(request_id):
     _gw_audit("mobile.override.mute", {"request_id": str(request_id)})
     return jsonify({"request": _override_row(result), "decision": "deny",
                     "muted": True})
+
+
+# ══ Ops surface (api_version 4) ═══════════════════════════
+#
+# Six read-mostly views the phone needs to answer "what is this machine
+# doing right now": the edit ledger, agent locks, an aggregate status card,
+# insights, suggestions, and the review agent's heartbeat. Everything here
+# that costs TOKENS is deliberately absent — see the comments on /insights
+# and /review.
+
+
+def _project_arg(source=None):
+    """(Path|None, error|None) for an OPTIONAL ``project``.
+
+    Distinct from ``_project_or_404``, which requires one: here a missing
+    project means "server-wide", while a supplied-but-unregistered one is
+    still a 404 rather than a silent widening.
+    """
+    src = request.args if source is None else source
+    raw = str(src.get("project") or "").strip()
+    if not raw:
+        return None, None
+    return _project_or_404(raw)
+
+
+def _limit_arg(default: int = _DEFAULT_LIMIT) -> int:
+    try:
+        return max(1, min(_MAX_LIMIT, int(request.args.get("limit", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _oracle_globals():
+    """The Oracle's live service singletons (bridge, writer, cross-memory,
+    review agent).
+
+    They live in ``oracle_server`` module state rather than being handed to
+    ``init_services``, and importing that module at file scope would be
+    circular — it imports this one. Late, and failure-safe: a partially
+    initialized server degrades a sub-section to null rather than 500ing.
+    """
+    try:
+        import oracle.oracle_server as srv
+        return srv
+    except Exception:
+        return None
+
+
+# ── Edit ledger ───────────────────────────────────────────
+
+def _edit_row(entry: dict) -> dict:
+    """One ledger entry for the wire, with every field present.
+
+    Older lines predate several fields and enrichment lands asynchronously
+    (``enrich_pending``), so absent keys are emitted as null/[]/{} rather than
+    omitted — a typed client can then rely on the shape instead of testing
+    presence key by key.
+    """
+    git = entry.get("git") or {}
+    return {
+        "id": entry.get("id") or None,
+        "timestamp": entry.get("timestamp") or None,
+        "session_id": entry.get("session_id") or None,
+        "file": entry.get("file") or None,
+        "change_type": entry.get("change_type") or None,
+        "summary": entry.get("summary") or None,
+        "lines_changed": entry.get("lines_changed"),
+        "version": entry.get("version") or None,
+        "git": {
+            "branch": git.get("branch") or None,
+            "commit": git.get("commit") or None,
+            "subject": git.get("subject") or None,
+            "author": git.get("author") or None,
+            "dirty": bool(git.get("dirty")),
+            "head_sha": git.get("head_sha") or None,
+        },
+        "diff_summary": entry.get("diff_summary") or None,
+        "tags": entry.get("tags") or [],
+    }
+
+
+def _ledger_file_arg(project: Path, raw: str) -> str:
+    """The ledger's own key for a client-supplied file.
+
+    Entries are stored repo-relative with forward slashes, so an absolute
+    path from a phone (which is what a client holds after tapping a feed row)
+    is relativized here rather than silently matching nothing.
+    """
+    rel = str(raw or "").strip().replace("\\", "/")
+    if not rel:
+        return ""
+    try:
+        candidate = Path(rel)
+        if candidate.is_absolute():
+            rel = str(candidate.resolve().relative_to(project)).replace("\\", "/")
+    except (OSError, ValueError):
+        pass
+    return rel.lstrip("./")
+
+
+@bp.route("/edits", methods=["GET"])
+def mobile_edits():
+    """Edit ledger for one project, newest first.
+
+    Query: project (required), file?, limit (default 50, max 200), since?
+    (ISO watermark), branch?. Scan is capped at ``_SOURCE_CAP`` like the
+    feed's, so one page can never turn into a full-history read.
+    """
+    gate = _feature_or_404("edits")
+    if gate:
+        return gate
+    resolved, err = _project_or_404(request.args.get("project") or "")
+    if err:
+        return err
+    from services.edit_ledger import EditLedger
+
+    limit = _limit_arg()
+    ledger = EditLedger(str(resolved))
+    file_arg = _ledger_file_arg(resolved, request.args.get("file") or "")
+    try:
+        rows = ledger.get_history(
+            file=file_arg or None,
+            limit=_SOURCE_CAP,
+            since=(request.args.get("since") or "").strip() or None,
+            branch=(request.args.get("branch") or "").strip() or None,
+        )
+    except Exception as exc:
+        return _svc_error(exc)
+    rows.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    truncated = len(rows) > limit
+    try:
+        stats = ledger.get_stats()
+    except Exception:
+        stats = {}
+    return jsonify({
+        "path": str(resolved),
+        "entries": [_edit_row(e) for e in rows[:limit]],
+        "stats": {
+            "total": int(stats.get("total") or 0),
+            "by_type": stats.get("by_type") or {},
+            "files": int(stats.get("files") or 0),
+        },
+        "truncated": truncated,
+    })
+
+
+@bp.route("/edits/versions", methods=["GET"])
+def mobile_edit_versions():
+    """Version history for ONE file, newest first. Query: project, file."""
+    gate = _feature_or_404("edits")
+    if gate:
+        return gate
+    resolved, err = _project_or_404(request.args.get("project") or "")
+    if err:
+        return err
+    raw_file = (request.args.get("file") or "").strip()
+    if not raw_file:
+        return jsonify({"error": "file is required"}), 400
+    from services.edit_ledger import EditLedger
+
+    rel = _ledger_file_arg(resolved, raw_file)
+    try:
+        rows = EditLedger(str(resolved)).get_file_versions(rel)
+    except Exception as exc:
+        return _svc_error(exc)
+    rows.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    return jsonify({
+        "path": str(resolved),
+        "file": rel,
+        "versions": [{
+            "version": e.get("version") or None,
+            "id": e.get("id") or None,
+            "timestamp": e.get("timestamp") or None,
+            "summary": e.get("summary") or None,
+            "change_type": e.get("change_type") or None,
+            "lines_changed": e.get("lines_changed"),
+            "session_id": e.get("session_id") or None,
+        } for e in rows],
+    })
+
+
+# ── Agent locks ───────────────────────────────────────────
+
+def _iso(epoch) -> str | None:
+    """Epoch seconds -> ISO-8601 UTC. None for anything else."""
+    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
+        return None
+    try:
+        return datetime.fromtimestamp(float(epoch), tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+@bp.route("/locks", methods=["GET"])
+def mobile_locks():
+    """Live agent leases for one project. Query: project.
+
+    Strictly read-only — ``snapshot`` never prunes, and this route offers no
+    acquire/release/force-release/sweep. Breaking another agent's lease from a
+    phone is a decision that belongs at the machine holding the work.
+    """
+    gate = _feature_or_404("locks")
+    if gate:
+        return gate
+    resolved, err = _project_or_404(request.args.get("project") or "")
+    if err:
+        return err
+    from services import agent_locks
+
+    try:
+        snap = agent_locks.store_for(str(resolved)).snapshot()
+    except Exception as exc:
+        return _svc_error(exc)
+    now = time.time()
+    rows = []
+    for row in snap.get("locks") or []:
+        expires = row.get("expires_at")
+        acquired = row.get("acquired_at")
+        # `relpath` is the store's own human-readable key. If a future backend
+        # stores only a hashed key, `file` stays null rather than inventing a
+        # path a client would then try to open.
+        rel = row.get("relpath")
+        rows.append({
+            "key": rel or row.get("lock_id") or None,
+            "file": rel or None,
+            "agent_id": row.get("agent_id") or None,
+            "session_id": row.get("session_id") or None,
+            "fencing_token": row.get("fencing_token"),
+            "intent": row.get("intent") or None,
+            # The store keeps epoch floats; the wire speaks ISO like every
+            # other timestamp on this surface.
+            "acquired_at": _iso(acquired),
+            "expires_at": _iso(expires),
+            "ttl_s": (round(float(expires) - float(acquired), 1)
+                      if isinstance(expires, (int, float))
+                      and isinstance(acquired, (int, float)) else None),
+            "expired": (bool(float(expires) <= now)
+                        if isinstance(expires, (int, float)) else False),
+        })
+    return jsonify({"path": str(resolved), "count": len(rows), "locks": rows})
+
+
+# ── Aggregate status ──────────────────────────────────────
+
+@bp.route("/status", methods=["GET"])
+def mobile_status():
+    """The ops card: server, optional project, session totals, notifications.
+
+    Query: project? (omit for the server-wide view only).
+
+    Every sub-section is wrapped on its own: Ollama is a network call, session
+    parsing walks transcripts, and the notification store touches disk. One
+    slow or broken source degrades ITS key to null rather than costing the
+    client the whole card.
+    """
+    gate = _feature_or_404("status")
+    if gate:
+        return gate
+    resolved, err = _project_arg()
+    if err:
+        return err
+    srv = _oracle_globals()
+
+    server = {"c3_version": _c3_version(), "api_version": API_VERSION,
+              "hub_available": False, "ollama": None}
+    try:
+        bridge = getattr(srv, "_bridge", None) if srv else None
+        available = bool(bridge.is_available(timeout=3)) if bridge else False
+        models = (bridge.list_models() or []) if (bridge and available) else []
+        server["ollama"] = {
+            "available": available,
+            "model": (getattr(bridge, "model", None) or None) if bridge else None,
+            "has_model": bool(bridge.has_model()) if (bridge and available) else False,
+            "models_count": len(models),
+        }
+    except Exception:
+        server["ollama"] = None
+    try:
+        # Same probe /api/health uses: the hub answers with its service name.
+        import urllib.request
+        hub_url = str(_cfg().get("hub_url", "http://localhost:3330")).rstrip("/")
+        with urllib.request.urlopen(f"{hub_url}/api/health", timeout=2) as r:
+            server["hub_available"] = \
+                json.loads(r.read()).get("service") == "c3-hub"
+    except Exception:
+        server["hub_available"] = False
+
+    project = ({"path": str(resolved), "name": resolved.name}
+               if resolved is not None else None)
+
+    sessions = None
+    if resolved is not None:
+        try:
+            from services.session_manager import SessionManager
+            mgr = SessionManager(str(resolved))
+            recent = mgr.list_sessions(n=10)
+            # Cost and token counts are hook-captured per session and live in
+            # a different file from the session records, so they are joined
+            # here by session id rather than assumed present on either.
+            stats = {s.get("session_id"): s
+                     for s in mgr.get_session_stats(_SOURCE_CAP)}
+            rows, totals = [], {"sessions": 0, "tool_calls": 0,
+                                "input_tokens": 0, "output_tokens": 0,
+                                "cost_usd": 0.0}
+            for s in recent:
+                st = stats.get(s.get("id")) or {}
+                rows.append({
+                    "id": s.get("id") or None,
+                    "started": s.get("started") or None,
+                    "description": s.get("description") or None,
+                    "tool_calls": int(s.get("tool_calls") or 0),
+                    "input_tokens": int(st.get("input_tokens") or 0),
+                    "output_tokens": int(st.get("output_tokens") or 0),
+                    "cost_usd": float(st.get("cost_usd") or 0.0),
+                })
+            totals["sessions"] = len(recent)
+            totals["tool_calls"] = sum(r["tool_calls"] for r in rows)
+            # Totals span every captured stat line, not just the page above.
+            for st in stats.values():
+                totals["input_tokens"] += int(st.get("input_tokens") or 0)
+                totals["output_tokens"] += int(st.get("output_tokens") or 0)
+                totals["cost_usd"] += float(st.get("cost_usd") or 0.0)
+            totals["cost_usd"] = round(totals["cost_usd"], 4)
+            sessions = {"recent": rows, "totals": totals}
+        except Exception:
+            sessions = None
+
+    notifications = None
+    if resolved is not None:
+        try:
+            from services.notifications import NotificationStore
+            store = NotificationStore(str(resolved))
+            pending = store.get_unacknowledged(
+                limit=_SOURCE_CAP, severities=("info", "warning", "critical"))
+            by_severity: dict = {}
+            for e in pending:
+                sev = str(e.get("severity") or "unknown")
+                by_severity[sev] = by_severity.get(sev, 0) + 1
+            notifications = {"unacked": len(pending),
+                             "by_severity": by_severity}
+        except Exception:
+            notifications = None
+
+    return jsonify({"server": server, "project": project,
+                    "sessions": sessions, "notifications": notifications})
+
+
+# ── Insights ──────────────────────────────────────────────
+#
+# Read + dismiss ONLY. There is deliberately no mobile equivalent of
+# /api/insights/generate or /api/insights/cross: both run the InsightEngine
+# against an LLM over every fact in every project, so one tap on a phone
+# spends real tokens and minutes of wall clock. Generation stays where
+# someone can see what it costs.
+
+def _cross_memory():
+    """The Oracle's CrossMemory singleton, reloaded from disk.
+
+    Reload matters: the review agent writes insights from its own thread, and
+    the singleton caches the whole file in memory at construction.
+    """
+    srv = _oracle_globals()
+    store = getattr(srv, "_cross_memory", None) if srv else None
+    if store is None:
+        return None
+    try:
+        store.reload()
+    except Exception:
+        pass
+    return store
+
+
+def _insight_row(row: dict) -> dict:
+    """One insight for the wire.
+
+    The store calls the body ``text`` and the projects ``source_projects``;
+    the mobile contract calls them ``content`` and ``projects``. ``title`` has
+    no counterpart in the store at all, so it is the first line of the body
+    rather than an invented field.
+    """
+    text = str(row.get("text") or "")
+    title = text.split("\n", 1)[0].strip()
+    return {
+        "id": row.get("id") or None,
+        "type": row.get("type") or None,
+        "title": (title[:120] or None),
+        "content": text or None,
+        "confidence": row.get("confidence"),
+        "projects": row.get("source_projects") or [],
+        "created_at": row.get("created_at") or None,
+        "dismissed": bool(row.get("dismissed")),
+    }
+
+
+@bp.route("/insights", methods=["GET"])
+def mobile_insights():
+    """Undismissed insights, newest first. Query: project?, limit."""
+    gate = _feature_or_404("insights")
+    if gate:
+        return gate
+    resolved, err = _project_arg()
+    if err:
+        return err
+    store = _cross_memory()
+    if store is None:
+        return jsonify({"insights": [], "stats": {}})
+    try:
+        rows = (store.get_for_project(str(resolved)) if resolved is not None
+                else store.get_all_insights())
+        stats = store.stats()
+    except Exception as exc:
+        return _svc_error(exc)
+    rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""),
+                  reverse=True)[:_limit_arg()]
+    return jsonify({"insights": [_insight_row(r) for r in rows],
+                    "stats": stats or {}})
+
+
+@bp.route("/insights/dismiss", methods=["POST"])
+def mobile_insights_dismiss():
+    """Body: {id}. Dismissal is the only insight mutation on this surface."""
+    gate = _feature_or_404("insights") or _feature_or_404("insights_write")
+    if gate:
+        return gate
+    limited = _security_gate()
+    if limited:
+        return limited
+    data = request.get_json(silent=True) or {}
+    iid = str(data.get("id") or "").strip()
+    if not iid:
+        return jsonify({"error": "id is required"}), 400
+    store = _cross_memory()
+    if store is None:
+        return jsonify({"error": "insights not available on this Oracle"}), 404
+    try:
+        result = store.dismiss(iid)
+    except Exception as exc:
+        return _svc_error(exc)
+    if result.get("error"):
+        return jsonify({"error": "unknown insight"}), 404
+    _gw_audit("mobile.insights.dismiss", {"id": iid})
+    return jsonify({"dismissed": True})
+
+
+# ── Suggestions ───────────────────────────────────────────
+
+_SUGGESTION_DECISIONS = ("approve", "dismiss")
+
+
+def _writer():
+    srv = _oracle_globals()
+    return getattr(srv, "_writer", None) if srv else None
+
+
+def _suggestion_summary(row: dict) -> str:
+    """A short human line for a phone card, derived from type + data.
+
+    The store carries only a type and a type-specific payload, so this is
+    composed here rather than read from a field that does not exist. The raw
+    ``data`` travels alongside it, unmodified.
+    """
+    stype = str(row.get("type") or "")
+    data = row.get("data") or {}
+    name = Path(str(row.get("project_path") or "")).name or "project"
+    if stype == "archive_facts":
+        return f"Archive {len(data.get('fact_ids') or [])} fact(s) in {name}"
+    if stype == "merge_facts":
+        return f"Merge {len(data.get('fact_ids') or [])} fact(s) in {name}"
+    if stype == "add_fact":
+        text = str(data.get("fact") or data.get("text") or "").strip()
+        return f"Add a fact to {name}" + (f": {text[:60]}" if text else "")
+    return f"{stype or 'suggestion'} in {name}"
+
+
+@bp.route("/suggestions", methods=["GET"])
+def mobile_suggestions():
+    """Pending suggestions, newest first. Query: project?, limit."""
+    gate = _feature_or_404("suggestions")
+    if gate:
+        return gate
+    resolved, err = _project_arg()
+    if err:
+        return err
+    writer = _writer()
+    if writer is None:
+        return jsonify({"suggestions": []})
+    try:
+        rows = writer.list_pending(str(resolved) if resolved is not None
+                                   else None)
+    except Exception as exc:
+        return _svc_error(exc)
+    rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""),
+                  reverse=True)[:_limit_arg()]
+    return jsonify({"suggestions": [{
+        "id": r.get("id") or None,
+        "type": r.get("type") or None,
+        "project_path": r.get("project_path") or None,
+        "project_name": (Path(str(r.get("project_path"))).name
+                         if r.get("project_path") else None),
+        "summary": _suggestion_summary(r),
+        "data": r.get("data") or {},
+        "created_at": r.get("created_at") or None,
+    } for r in rows]})
+
+
+@bp.route("/suggestions/decide", methods=["POST"])
+def mobile_suggestions_decide():
+    """Body: {id, decision: approve|dismiss, confirm?}.
+
+    ``approve`` executes the write-back into the project's ``.c3/facts`` —
+    facts are merged, archived or added on disk and the suggestion is marked
+    resolved, with no undo. So it takes the same typed confirmation as mask
+    activation and rule loosening, with the suggestion id as the challenge.
+    ``dismiss`` only ever removes a card, so it needs none.
+    """
+    gate = _feature_or_404("suggestions") or _feature_or_404("suggestions_write")
+    if gate:
+        return gate
+    limited = _security_gate()
+    if limited:
+        return limited
+    data = request.get_json(silent=True) or {}
+    sid = str(data.get("id") or "").strip()
+    decision = str(data.get("decision") or "").strip().lower()
+    if not sid:
+        return jsonify({"error": "id is required"}), 400
+    if decision not in _SUGGESTION_DECISIONS:
+        return jsonify({"error": "decision must be 'approve' or 'dismiss'"}), 400
+    writer = _writer()
+    if writer is None:
+        return jsonify({"error": "suggestions not available on this Oracle"}), 404
+
+    if decision == "approve" and not _confirmed(data, sid):
+        return jsonify({
+            "error": "approving a suggestion writes to this project's .c3/facts "
+                     "and cannot be undone",
+            "needs_confirmation": True, "confirm_with": sid,
+        }), 400
+
+    try:
+        result = (writer.approve_suggestion(sid) if decision == "approve"
+                  else writer.dismiss_suggestion(sid))
+    except Exception as exc:
+        return _svc_error(exc)
+    if result.get("error"):
+        return jsonify({"error": "unknown or already-resolved suggestion"}), 404
+    # Identifiers only — a suggestion payload is project memory content and
+    # never belongs in an audit line.
+    _gw_audit(f"mobile.suggestions.{decision}", {"id": sid})
+    return jsonify({"id": sid, "decision": decision, "result": result})
+
+
+# ── Review agent ──────────────────────────────────────────
+
+@bp.route("/review", methods=["GET"])
+def mobile_review():
+    """Review-agent heartbeat. Read-only.
+
+    No start/stop/run-now on purpose: /api/review/run triggers an immediate
+    LLM pass over every project, so a phone must not be able to spend that.
+    Starting and stopping the daemon is likewise a machine-local decision.
+    """
+    gate = _feature_or_404("review")
+    if gate:
+        return gate
+    srv = _oracle_globals()
+    agent = getattr(srv, "_agent", None) if srv else None
+    status: dict = {}
+    if agent is not None:
+        try:
+            status = agent.status or {}
+        except Exception:
+            status = {}
+    return jsonify({
+        "running": bool(status.get("running")),
+        "last_run": status.get("last_run") or None,
+        "interval_seconds": status.get("interval_seconds"),
+        "digest_enabled": bool(status.get("digest_enabled")),
+    })

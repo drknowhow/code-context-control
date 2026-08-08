@@ -248,10 +248,16 @@ def _local_write_guard():
 
 # ── Mobile gateway (companion app surface, /api/mobile/*) ─
 # Bearer required on every method, GETs included — see mobile_api docstring.
-from oracle.services import mobile_api  # noqa: E402
+from oracle.services import chat_poll, mobile_api  # noqa: E402
 
 mobile_api.configure(get_cfg=lambda: _cfg, get_limiter=_rate_limiter)
 app.register_blueprint(mobile_api.bp)
+
+# Poll-based chat transport (/api/mobile/chat/*) — phones cannot hold the SSE
+# connection /api/chat serves. Same bearer token, same engine generator.
+chat_poll.configure(get_engine=lambda: _chat_engine, get_store=lambda: _chat_store,
+                    get_cfg=lambda: _cfg)
+app.register_blueprint(chat_poll.bp)
 
 
 # ── Static ────────────────────────────────────────────────

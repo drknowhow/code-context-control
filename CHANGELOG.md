@@ -4,6 +4,61 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.76.0] - 2026-08-08
+
+### Added — the phone can watch the machine work, and talk to it (#76)
+
+`api_version` 4. Six read-mostly routes under `/api/mobile/*` plus a chat
+transport that survives a backgrounded app.
+
+The gap this closes is not a missing feature on the desktop — it is that the
+companion app could see *events* and not *state*. It knew an edit happened; it
+could not ask what changed in a file. It knew a session was running; it could
+not ask what that session was holding or spending.
+
+**Ops surface** — `edits`, `locks`, `status`, `insights`, `suggestions`,
+`review`, each a capability on `/info` so an older Oracle degrades to a hidden
+tab rather than a broken one:
+
+- `GET /edits` and `/edits/versions` — the edit ledger the phone previously saw
+  only as flattened feed rows, filterable by branch and file. Absent fields are
+  emitted as `null`/`[]`/`{}` rather than omitted, because enrichment lands
+  asynchronously and a typed client should not have to test key presence.
+- `GET /locks` — `.c3/locks.json` had no HTTP surface outside loopback. Who
+  holds which file, right now.
+- `GET /status` — the aggregate card: token spend, session stats, ollama
+  reachability, version.
+- `GET /insights`, `POST /insights/dismiss`, `GET /suggestions`,
+  `POST /suggestions/decide`, `GET /review`.
+
+Every route that would cost tokens is deliberately absent. `/insights` lists and
+dismisses; it does not generate. `/review` reports the daemon's heartbeat; it
+does not run it. A phone in a pocket must not be able to start an LLM job by
+being opened.
+
+`suggestions/decide` approve writes `.c3/facts/` irreversibly, so the server
+issues the typed challenge and the client echoes it back — the client never
+invents the confirmation string.
+
+**Chat** — `POST /api/mobile/chat/turn`, `GET /turn/<id>?after=`,
+`DELETE /turn/<id>` (`oracle/services/chat_poll.py`). `/api/chat` streams SSE,
+which is the right shape for a browser and the wrong one for a phone: the OS
+suspends a backgrounded app and tears the socket down, and the client cannot
+tell a finished turn from a killed one, nor resume either.
+
+So the same turn is expressed as state a client can re-read. The engine
+generator is drained on a background thread into an append-only list; `after` is
+how many events the client already holds. Nothing about chat logic is
+reimplemented — the events on the wire are the raw engine dicts, byte-for-byte
+what the SSE route sends after its `data: ` prefix, so one renderer serves both
+transports. A phone frozen for ten minutes comes back and asks `after=0` for the
+whole turn, which is the property SSE cannot offer.
+
+The registry is bounded on purpose (32 runs, 30-minute TTL on finished ones,
+running turns never reaped): each retained run holds its full event list
+including tool results, so an unbounded registry is a leak with a chat UI
+attached to it.
+
 ## [2.75.0] - 2026-08-08
 
 ### Added — `c3_edits(action='verify')`: did that edit land? (#74)
