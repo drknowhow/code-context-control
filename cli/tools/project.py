@@ -337,8 +337,12 @@ def _proxy(action, fsvc, *, query, file_path, symbols, lines, mode, view, top_k,
     if action == "edits":
         from cli.tools.edits import handle_edits
 
+        # old_string/new_string/edits are threaded through for edits_action=
+        # 'verify'. A cross-project edit that times out is the same problem as a
+        # local one, and the proxy carries those params already (#74).
         return handle_edits(edits_action, file, "", "", "", tags, limit, "", "",
-                           tag, fsvc, _foreign_finalize)
+                           tag, fsvc, _foreign_finalize, "",
+                           old_string, new_string, edits)
     if action == "validate":
         from cli.tools.validate import handle_validate
 

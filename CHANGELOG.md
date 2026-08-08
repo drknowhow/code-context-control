@@ -4,6 +4,64 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.75.0] - 2026-08-08
+
+### Added — `c3_edits(action='verify')`: did that edit land? (#74)
+
+A `c3_edit` call can fail *after* doing its work. In one logged session a call
+hung until the harness aborted it at the 1800s MCP idle timeout, and the write
+had fully landed — 3 hunks, 89 lines to 142, all correct. Another call in the
+same session dropped the MCP connection and had written nothing. Both reached
+the caller as an error, and nothing told them apart.
+
+That ambiguity is the defect, separately from whatever causes the stall. The
+retry that is correct after the second incident is a double-apply after the
+first, and the case where that corrupts a file is ordinary rather than exotic:
+any edit whose `new_string` contains its `old_string` — appending a line,
+wrapping a call — matches again on a retry and applies twice. What saves the
+common case today is `c3_edit`'s own not-found error, which is luck, not a
+property.
+
+`verify` takes the same arguments the failed `c3_edit` took, so recovering means
+re-sending the call to a different action rather than reconstructing anything:
+
+```
+c3_edits(action='verify', file=<same file_path>, old_string=..., new_string=...)
+c3_edits(action='verify', file=<same file_path>, edits=<same JSON batch>)
+```
+
+**The file is the primary evidence; the ledger corroborates.** They answer
+different questions — the file says whether the intended text is there now, the
+ledger says whether *this* edit is what put it there — and neither alone is
+enough. Text present with no ledger entry may have been there all along; a
+ledger entry with the text absent means something else overwrote it.
+
+Three verdicts, and the third one is the honest half:
+
+- **`NOT_APPLIED`** — `new_string` is absent. Definitive; safe to re-send.
+- **`APPLIED`** — `new_string` is present *and* a ledger entry for this file
+  records this exact old/new pair. Definitive; do not retry.
+- **`INCONCLUSIVE`** — anything else, naming the check that failed. Never
+  collapsed into either neighbour: told APPLIED when it cannot tell, a caller
+  loses work; told NOT_APPLIED, a caller applies an edit twice.
+
+Details that make it usable at the moment it is needed: it accepts the absolute
+path you gave `c3_edit` and maps it to the ledger's relative spelling; it reads
+the file with the same LF normalization `c3_edit` matches against, so CRLF files
+do not all report `NOT_APPLIED`; it compares against the ledger's truncated
+detail prefix, so a large edit — the kind most likely to have timed out — can
+still corroborate; it runs *before* the ledger-availability gate, since the file
+half is readable whether or not a ledger exists; and a ledger that raises
+downgrades a verdict to `INCONCLUSIVE` rather than failing the call.
+
+`c3_edit`'s own tool description now says to do this instead of retrying blind —
+a timeout produces no output from C3 at all, so the pointer has to live
+somewhere that is in context before the failure.
+
+This does **not** fix the underlying stall. #74 stays open for that; the
+mechanism is unreproduced and unnamed, and shipping a guess would be worse than
+shipping the part that is knowable.
+
 ## [2.74.1] - 2026-08-08
 
 ### Fixed — the `<ads>` shell scan was fixed for two shapes, not for the class (#50)

@@ -141,7 +141,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_locks` | Agent leases — who is working on which file, so two agents don't collide (v2.65.0) |
 | `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini |
 | `c3_agent` | Workflows: `review_changes`, `investigate`, `preflight`, `prepare_context`, `validate_compress` |
-| `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter |
+| `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter, `verify` (did a failed `c3_edit` still land?) |
 | `c3_task` | Per-project PM — tasks, dependencies, milestones, time tracking (v2.53.0) |
 | `c3_artifacts` | Agent-config version history, diff & restore (v2.46.0) |
 | `c3_credentials` | Named-secret vault; values never enter model context (v2.58.0) |
