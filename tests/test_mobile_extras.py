@@ -142,7 +142,12 @@ class _OpsBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp(prefix="c3-mobile-extras-"))
+        # .resolve() is load-bearing, not tidiness: the API returns the path
+        # the registry resolved, and mkdtemp hands back the UNRESOLVED spelling
+        # — 8.3 short names on a Windows CI runner (RUNNER~1), /var for
+        # /private/var on macOS. Comparing against the raw temp dir passes on
+        # Linux and fails on both others.
+        cls.tmp = Path(tempfile.mkdtemp(prefix="c3-mobile-extras-")).resolve()
         cls.alpha = cls.tmp / "alpha"
         cls.beta = cls.tmp / "beta"
         cls.outsider = cls.tmp / "outsider"   # never registered
