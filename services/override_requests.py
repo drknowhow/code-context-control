@@ -460,6 +460,22 @@ def _notify_decision(project_path: str, row: dict, grant=None) -> None:
         pass  # the decision already happened; a missing feed line never undoes it
 
 
+def _wake(project_path: str, row: dict, grant=None, policy=None) -> dict:
+    """Tell the asking session a human answered (§7.1).
+
+    The notification feed tells the *user* what they decided. Nothing told the
+    *agent*, which is how an approved grant expired unused on 2026-08-08 with
+    everyone believing the tap had worked. Failure here is swallowed on
+    purpose: the decision is already on disk and the agent's ``action='status'``
+    path still works — a wake is a shortcut past waiting, not the mechanism.
+    """
+    try:
+        from services import override_wake as owake  # noqa: PLC0415
+        return owake.fire(project_path, row, grant, policy=policy)
+    except Exception as exc:
+        return {"fired": False, "reason": f"wake unavailable: {exc}"}
+
+
 def withdraw(request_id: str, session_id: str) -> dict:
     """An agent cancelling its OWN pending request (e.g. it found another way)."""
     rows = load()
@@ -526,6 +542,10 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
             "decided_by": decided_by, "muted": bool(mute),
         })
         _notify_decision(project_path, row, grant=None)
+        # A denial is news too: without it the agent sits in `wait` until the
+        # request lapses, then reports a timeout for a question that was
+        # answered in two seconds.
+        row["wake"] = _wake(project_path, row)
         return row
 
     policy = op_policy.resolve(project_path)
@@ -569,4 +589,8 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
     row["grant_mode"] = mode
     _save(rows)
     _notify_decision(project_path, row, grant=grant)
+    # AFTER _save: the woken agent's very first move is to retry the blocked
+    # call, which reads this store. Waking before persisting would race the
+    # agent against the decision it was told about.
+    row["wake"] = _wake(project_path, row, grant, policy=policy)
     return row

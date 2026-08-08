@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,10 +59,13 @@ from oracle.services.tool_registry import _c3_version
 
 # 2: /info reports EFFECTIVE capabilities (filtered by the config switches)
 # rather than a static list, so a client can gate its UI instead of probing.
-API_VERSION = 2
+# 3: /feed accepts `wait` (long-poll). Advertised as the `feed_wait`
+#    capability so a client can choose to hold a connection open instead of
+#    polling, rather than discovering support by timing a request.
+API_VERSION = 3
 
 CAPABILITIES = [
-    "feed", "projects", "health", "pm", "pm_events", "digest",
+    "feed", "feed_wait", "projects", "health", "pm", "pm_events", "digest",
     "notifications_ack",
     "credentials", "credentials_write",
     "access", "access_write",
@@ -89,6 +93,38 @@ FEED_TYPES = ("notification", "activity", "edit", "session_stat")
 _SOURCE_CAP = 1000
 _MAX_LIMIT = 200
 _DEFAULT_LIMIT = 50
+
+# ── Long-poll (`/feed?wait=`) ─────────────────────────────
+#
+# WHY: the phone's only delivery paths were two pollers — every 15s while the
+# app is open, and Android WorkManager's ~15-MINUTE floor once it is closed.
+# An override request with a 10-minute TTL could therefore expire before the
+# phone was ever told it existed (observed 2026-08-07). `wait` lets a client
+# hold one request open and be answered the moment something lands, turning
+# "up to 15 seconds" into "about a second" without spending a request every
+# 15s to get it.
+#
+# It is NOT push, and nothing here should be read as a claim that it is: a
+# process Android has frozen cannot hold a socket. This narrows the live
+# window. FCM or a foreground service is what would close the closed-app one.
+_MAX_WAIT_S = 30
+# Re-scan cadence while holding. The scan is skipped unless an mtime moved,
+# so this is a stat() per second, not a feed rebuild per second.
+_WAIT_TICK_S = 1.0
+# Each waiter parks a server thread for up to _MAX_WAIT_S, and the Oracle
+# serves the desktop UI and discovery off the same pool. Past the cap `wait`
+# degrades to an ordinary immediate answer rather than queueing behind other
+# waiters. One phone needs one slot; four leaves room for the watch and a
+# spare.
+_MAX_WAITERS = 4
+_waiters = threading.Semaphore(_MAX_WAITERS)
+
+#: Files whose mtime means "the feed may have changed" — the same set
+#: ``_last_activity`` reports on, kept literal in both places on purpose. Here
+#: it is a correctness input: a file missing from this tuple is a wake that
+#: never returns early.
+_FEED_FILES = ("activity_log.jsonl", "edit_ledger.jsonl",
+               "notifications.jsonl", "pm/pm.json")
 
 bp = Blueprint("mobile", __name__, url_prefix="/api/mobile")
 
@@ -489,6 +525,54 @@ def _feed_items_for(path: str, name: str, types: set, severities: set,
     return items
 
 
+def _feed_mtime(targets: list) -> float:
+    """Newest mtime across every target's feed files. 0.0 when none exist."""
+    latest = 0.0
+    for t in targets:
+        c3 = Path(t["path"]) / ".c3"
+        for rel in _FEED_FILES:
+            try:
+                latest = max(latest, (c3 / rel).stat().st_mtime)
+            except OSError:
+                continue
+    return latest
+
+
+def _hold_for_items(targets: list, collect, wait_s: int):
+    """Block up to *wait_s* for the feed to produce something.
+
+    Returns ``(items, waited_seconds)``. Rebuilding the feed every tick would
+    be a full history read per target, so the loop watches mtimes and only
+    pays for a rebuild when one moves. An mtime that moves without producing a
+    matching item — a severity this client filters out, say — re-baselines
+    instead of re-scanning on every subsequent tick.
+
+    Returns immediately when every waiter slot is taken. The caller then
+    behaves exactly as if ``wait`` had not been passed: a slower client, not a
+    wrong one.
+    """
+    started = time.monotonic()
+    if not _waiters.acquire(blocking=False):
+        return [], 0.0
+    try:
+        seen = _feed_mtime(targets)
+        deadline = started + wait_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return [], time.monotonic() - started
+            time.sleep(min(_WAIT_TICK_S, remaining))
+            current = _feed_mtime(targets)
+            if current == seen:
+                continue
+            seen = current
+            found = collect()
+            if found:
+                return found, time.monotonic() - started
+    finally:
+        _waiters.release()
+
+
 @bp.route("/feed")
 def mobile_feed():
     """Merged cross-project feed, newest first.
@@ -496,11 +580,14 @@ def mobile_feed():
     Query: types (csv of notification|activity|edit|session_stat, default
     all), project (optional single project), severity (csv, notifications
     only), since (exclusive watermark — "only newer than"), before
-    (exclusive pagination cursor), limit (default 50, max 200).
+    (exclusive pagination cursor), limit (default 50, max 200), wait
+    (seconds, 0-30 — hold the request open until something matches).
 
     Response: {items, next_cursor, truncated}. Cursor is the ts of the last
     returned item; identical-ts items can repeat across pages, so clients
-    dedup by item id.
+    dedup by item id. A `wait` request also carries `waited_s`, and an empty
+    `items` after a full hold is the normal, expected answer — the client
+    reconnects with the same watermark.
     """
     if _scanner is None:
         return jsonify({"error": "not initialized"}), 500
@@ -523,6 +610,18 @@ def mobile_feed():
     except (TypeError, ValueError):
         limit = _DEFAULT_LIMIT
 
+    try:
+        wait_s = max(0, min(_MAX_WAIT_S, int(request.args.get("wait", 0))))
+    except (TypeError, ValueError):
+        wait_s = 0
+    # Holding open only makes sense against a watermark. Without `since` the
+    # first scan matches history and returns instantly, so a client that
+    # forgot it would silently get the old behaviour and never learn why its
+    # push felt slow; with `before` this is a pagination cursor, where waiting
+    # is meaningless.
+    if before or not since:
+        wait_s = 0
+
     project_arg = (request.args.get("project") or "").strip()
     if project_arg:
         resolved, err = _project_or_404(project_arg)
@@ -536,10 +635,17 @@ def mobile_feed():
                    if p.get("has_c3") and p.get("path")
                    and (Path(p["path"]) / ".c3").is_dir()]
 
-    items: list[dict] = []
-    for t in targets:
-        items.extend(_feed_items_for(t["path"], t["name"], types, severities,
-                                     since, before))
+    def collect() -> list:
+        out: list[dict] = []
+        for t in targets:
+            out.extend(_feed_items_for(t["path"], t["name"], types,
+                                       severities, since, before))
+        return out
+
+    items = collect()
+    waited = 0.0
+    if not items and wait_s:
+        items, waited = _hold_for_items(targets, collect, wait_s)
 
     items.sort(key=lambda i: i["ts"], reverse=True)
     truncated = len(items) > limit
@@ -548,6 +654,9 @@ def mobile_feed():
         "items": page,
         "next_cursor": page[-1]["ts"] if truncated and page else None,
         "truncated": truncated,
+        # Only when the client asked to hold, so the response shape is
+        # byte-identical for every client that did not.
+        **({"waited_s": round(waited, 2)} if wait_s else {}),
     })
 
 
@@ -1634,6 +1743,10 @@ def mobile_enforcement_set():
 # (e.g. `path_key`) cannot silently start crossing the network.
 
 #: §3.3 field order, verbatim. The mobile client reads these names.
+#: The one `override` key no remote surface may write. See the refusal in
+#: `mobile_overrides_policy_set` for why it is a 403 rather than a 400.
+_WAKE_KEY = "wake"
+
 _OVERRIDE_FIELDS = (
     "id", "project_path", "session_id", "created_at", "expires_at", "status",
     "layer", "rule", "rule_class", "scope", "tool", "op", "path", "refusal",
@@ -1809,6 +1922,17 @@ def mobile_overrides_policy_set():
     section = data.get("override")
     if not isinstance(section, dict):
         return jsonify({"error": "body needs an 'override' object"}), 400
+    if _WAKE_KEY in section:
+        # `wake` is an argv this machine will execute. Everything else on this
+        # route widens what a tap can approve; this one would decide what runs
+        # when it does. A bearer token from a phone is authentication, not
+        # physical presence, so it stays a desktop edit to a human-owned file.
+        return jsonify({
+            "error": "'wake' cannot be set from the phone — it names a "
+                     "command this machine runs. Edit .c3/config.json on the "
+                     "desktop.",
+            "key": _WAKE_KEY,
+        }), 403
     unknown = sorted(set(section) - set(opol.DEFAULTS))
     if unknown:
         # §3.1: unknown keys are a hard error, never a silent no-op.
