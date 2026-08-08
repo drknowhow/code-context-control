@@ -355,6 +355,16 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         """
         self.assertIsNone(
             hag._git_revspec_path("cat ./notes.txt:hidden", "./notes.txt:hidden"))
+
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
+    def test_a_non_git_segment_beside_a_git_one_still_denies(self):
+        """The end-to-end half of the above, and Windows-only for a reason.
+
+        `<ads>` is an NTFS spelling rule, so on POSIX this command denies
+        nothing and the assertion would be about the platform rather than the
+        code. Shipping it undecorated turned six of nine CI jobs red — the
+        matrix caught in a minute what a Windows-only local run could not.
+        """
         denial, _ = hag._scan_shell(
             "cat ./secrets/key.txt:hidden && git status", str(self.proj))
         self.assertIsNotNone(denial)
