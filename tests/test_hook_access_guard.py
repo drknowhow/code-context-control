@@ -323,6 +323,42 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         self.assertIsNotNone(denial)
         self.assertEqual(tok, "secrets/gone.txt")
 
+    def test_a_git_command_is_recognised_after_a_shell_separator(self):
+        """`cd /repo && git show <rev>:<path>` — the shape people actually type.
+
+        The first cut anchored "is this git?" to the start of the whole command
+        string, so a leading `cd` disabled the rewrite entirely. Every unit test
+        passed, because a test author writes the command as `git show …`. A live
+        probe after release is what caught it.
+        """
+        for cmd in (
+            "cd /tmp/repo && git show origin/main:pyproject.toml",
+            "git fetch -q; git show origin/main:pyproject.toml",
+            "cd x || git show HEAD:setup.py",
+        ):
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNone(denial, f"{cmd!r} denied on {tok!r}")
+
+    def test_a_denied_revspec_is_still_caught_after_a_separator(self):
+        denial, tok = hag._scan_shell(
+            "cd /tmp/repo && git show HEAD:secrets/key.txt", str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(tok, "secrets/key.txt")
+
+    def test_a_git_segment_does_not_license_rewrites_in_other_segments(self):
+        """Per-segment, not per-string: `cat a:b && git status` is two commands.
+
+        Attributing the whole string to git would let a non-git token be
+        reinterpreted — the scan would check `hidden` instead of the real
+        spelling, which is a hole rather than a false positive.
+        """
+        self.assertIsNone(
+            hag._git_revspec_path("cat ./notes.txt:hidden", "./notes.txt:hidden"))
+        denial, _ = hag._scan_shell(
+            "cat ./secrets/key.txt:hidden && git status", str(self.proj))
+        self.assertIsNotNone(denial)
+
     def test_revspec_rewriting_only_applies_to_git(self):
         """`<word>:<word>` means something else in every other command."""
         path = hag._git_revspec_path("cat HEAD:secrets/key.txt", "HEAD:secrets/key.txt")

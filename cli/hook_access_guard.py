@@ -84,6 +84,15 @@ _DOUBLE_COLON_RE = re.compile(r"::(?!\$)")
 _GIT_REVSPEC_RE = re.compile(r"^(?P<rev>[^:\s]+):(?P<path>[^:\s]+)$")
 _GIT_CMD_RE = re.compile(r"^\s*(?:[\w.\-]*[/\\])?git(?:\.exe)?\b", re.IGNORECASE)
 
+# Where one command ends and the next begins. Anchoring "is this git?" to the
+# start of the whole string was wrong in the most ordinary way possible:
+# `cd /repo && git show origin/main:pyproject.toml` starts with `cd`, so the
+# revspec rewrite never fired for the shape people actually type. Caught by a
+# live probe after release, not by the unit tests — which passed the command as
+# `git show …` because that is how the test author writes it, not how a shell
+# call arrives.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|\n]")
+
 
 def _is_network_token(tok: str) -> bool:
     """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling."""
@@ -201,44 +210,58 @@ def _scan_shell(cmd: str, base: str):
     outright, as are URLs and IPv6 literals: all of them trip the ADS spelling
     check, which is exempt from existence-gating, so a token naming nothing on
     disk would otherwise hard-deny (#50).
+
+    Scanning is per **command segment**, not per whole string. A segment is what
+    sits between `&&`, `||`, `;`, `|` or a newline, and each one answers "am I a
+    git command?" for itself — so the revspec rewrite applies to the tokens of
+    the git segment and to no others. `cat notes.txt:hidden && git status` must
+    not have its first token reinterpreted just because a later segment is git.
     """
-    for raw in _TOKEN_SPLIT.split(cmd)[:_MAX_TOKENS]:
-        tok = raw.strip("\"'`;,()")
-        if not tok or tok.startswith("-"):
-            continue
-        if "/" not in tok and "\\" not in tok and not tok.startswith("."):
-            continue
-        # Order matters only for readability: a URL is also syntax-free, so
-        # either check alone would skip 'https://x'. Both are kept because they
-        # answer different questions — "is this a network literal" and "is this
-        # a path at all" — and the second is the one that generalizes.
-        if not _looks_like_a_path(tok) or _is_network_token(tok):
-            continue
-        # `tests/x.py::TestThing` is a node id, not a stream spelling.
-        if _is_scope_token(tok):
-            continue
-        # `git show <rev>:<path>` — judge the PATH, not the whole token. This
-        # is the one place the scan rewrites what it checks rather than skipping
-        # it, because skipping would let `git show HEAD:.env` through.
-        revspec_path = _git_revspec_path(cmd, tok)
-        from_revspec = revspec_path is not None
-        if from_revspec:
-            tok = revspec_path
-        if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
-            tok = f"{tok[1]}:{tok[2:]}"
-        denial = ag.check(tok, "read", base)
-        if denial and denial.kind == "deny":
-            try:
-                p = Path(tok)
-                exists = (p if p.is_absolute() else Path(base) / p).exists()
-            except OSError:
-                exists = False
-            # A revspec names a path in HISTORY, so the working tree is the
-            # wrong place to ask whether it is real. `git show HEAD~5:.env`
-            # reads a denied file whether or not that file exists today, and
-            # existence-gating it would be a hole this rewrite opened.
-            if exists or from_revspec or denial.rule.startswith("<"):
-                return denial, tok
+    budget = _MAX_TOKENS
+    for segment in _SEGMENT_SPLIT.split(cmd or ""):
+        if budget <= 0:
+            break
+        is_git = bool(_GIT_CMD_RE.match(segment))
+        for raw in _TOKEN_SPLIT.split(segment)[:budget]:
+            budget -= 1
+            tok = raw.strip("\"'`;,()")
+            if not tok or tok.startswith("-"):
+                continue
+            if "/" not in tok and "\\" not in tok and not tok.startswith("."):
+                continue
+            # Order matters only for readability: a URL is also syntax-free, so
+            # either check alone would skip 'https://x'. Both are kept because
+            # they answer different questions — "is this a network literal" and
+            # "is this a path at all" — and the second is the one that
+            # generalizes.
+            if not _looks_like_a_path(tok) or _is_network_token(tok):
+                continue
+            # `tests/x.py::TestThing` is a node id, not a stream spelling.
+            if _is_scope_token(tok):
+                continue
+            # `git show <rev>:<path>` — judge the PATH, not the whole token.
+            # This is the one place the scan rewrites what it checks rather than
+            # skipping it, because skipping would let `git show HEAD:.env`
+            # through.
+            revspec_path = _git_revspec_path(segment, tok) if is_git else None
+            from_revspec = revspec_path is not None
+            if from_revspec:
+                tok = revspec_path
+            if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
+                tok = f"{tok[1]}:{tok[2:]}"
+            denial = ag.check(tok, "read", base)
+            if denial and denial.kind == "deny":
+                try:
+                    p = Path(tok)
+                    exists = (p if p.is_absolute() else Path(base) / p).exists()
+                except OSError:
+                    exists = False
+                # A revspec names a path in HISTORY, so the working tree is the
+                # wrong place to ask whether it is real. `git show HEAD~5:.env`
+                # reads a denied file whether or not that file exists today, and
+                # existence-gating it would be a hole this rewrite opened.
+                if exists or from_revspec or denial.rule.startswith("<"):
+                    return denial, tok
     return None, ""
 
 
