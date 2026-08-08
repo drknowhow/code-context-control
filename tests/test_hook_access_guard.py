@@ -218,6 +218,68 @@ class TestShellScanNetworkTokens(HookGuardBase):
             self.assertTrue(hag._is_network_token(tok), tok)
 
 
+class TestShellScanSyntaxTokens(HookGuardBase):
+    """#50 follow-up — the first fix whitelisted two SHAPES, not the class.
+
+    ``_is_network_token`` matched a scheme only at position 0, plus a bare IPv6.
+    So a URL that was not the whole token still hard-denied, and syntax carrying
+    no URL at all was never covered at all. Every command below names no file on
+    disk; each one was a hard deny on v2.74.0, observed in a real session.
+    """
+
+    _ALLOWED = (
+        # a URL inside markdown link syntax — the scheme is not at position 0
+        'echo "see [#1](https://example.com/a/b)"',
+        'gh pr create --body "fixes [#7](https://github.com/o/r/pull/7)"',
+        # jq filters: '/' in the text, ':' in the object syntax, no URL at all
+        """echo '{a:.x,b:("/"+.y)}'""",
+        'gh pr view 1 --json a -q \'{repo:(.owner.login+"/"+.name)}\'',
+        # a python expression naming paths, which is itself not a path
+        """python -c "print(['src/a.py','src/b.py'])\"""",
+        """python -c "p=pathlib.Path('.claude/x.json')\"""",
+        # brace expansion
+        "cp {src/a,src/b}/x.txt .",
+    )
+
+    def test_syntax_tokens_do_not_deny(self):
+        for cmd in self._ALLOWED:
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNone(denial, f"{cmd!r} denied on token {tok!r}")
+
+    def test_a_plain_denied_path_is_still_caught(self):
+        """The half that matters: loosening the gate must not blind the scan."""
+        for cmd, want in (
+            ("cat ./secrets/key.txt", "./secrets/key.txt"),
+            ("cp ./secrets/key.txt /tmp/x", "./secrets/key.txt"),
+        ):
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNotNone(denial, cmd)
+                self.assertEqual(tok, want)
+
+    def test_a_quoted_denied_path_is_still_caught(self):
+        """Quotes are stripped at the ends, so quoting is not an escape hatch."""
+        denial, _ = hag._scan_shell('cat "./secrets/key.txt"', str(self.proj))
+        self.assertIsNotNone(denial)
+
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
+    def test_a_real_ads_spelling_is_still_caught(self):
+        """The rule keeps its teeth on a token that IS a path spelling."""
+        denial, _ = hag._scan_shell(
+            "type ./secrets/key.txt:hidden", str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(denial.rule, "<ads>")
+
+    def test_the_classifier_splits_paths_from_syntax(self):
+        for tok in ("./a/b", "C:/x/f.txt", "./f.txt:stream", "src/a.py",
+                    r"\\server\share\x"):
+            self.assertTrue(hag._looks_like_a_path(tok), tok)
+        for tok in ("[#1](https://x.com/a)", '{a:.x,b:("/"+.y)}',
+                    "['src/a.py','src/b.py']", "{src/a,src/b}/x.txt"):
+            self.assertFalse(hag._looks_like_a_path(tok), tok)
+
+
 class TestSyntheticRulesDiscoverable(unittest.TestCase):
     """#50 — a refusal cites a rule name; `c3 access list` must show it."""
 

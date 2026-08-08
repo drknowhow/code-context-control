@@ -48,10 +48,47 @@ _IPV6_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Characters that make a token a compound expression rather than a path
+# argument: what Windows forbids in a filename outright (< > " | ? *) plus the
+# bracketing and quoting that marks structure ({} [] () ' ` &).
+#
+# NOT in this set, deliberately: ':' is the thing under test; '$' and '=' are
+# legal in a real path AND in a real ADS spelling — './notes.txt:$DATA' is the
+# canonical default-stream syntax, and dropping it here silently deleted an
+# existing negative control the first time this was written. Every genuinely
+# dangerous shell use of '$' arrives with '(' or '{' anyway, which are covered.
+#
+# This is the general form of the fix #50 attempted with _is_network_token, and
+# the reason that one was not enough: it whitelisted two *shapes* — a token
+# STARTING with a scheme, or a bare IPv6 — so a URL that was not the whole token
+# still tripped, and syntax carrying no URL at all was never covered:
+#
+#     echo "see [#1](https://example.com/a/b)"   -> token '[#1](https://…' , scheme not at position 0
+#     echo '{a:.x,b:("/"+.y)}'                   -> a jq filter, no URL anywhere
+#     python -c "… ['src/a.py','src/b.py'] …"    -> a list literal
+#
+# All three contain '/', so the token gate admitted them; all three canonicalize
+# to something with a residual colon, and <ads> is exempt from existence-gating,
+# so each became a hard deny on text that names no file at all.
+_SYNTAX_CHARS = frozenset("{}[]()<>\"'`|&*?")
+
 
 def _is_network_token(tok: str) -> bool:
     """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling."""
     return bool(_SCHEME_RE.match(tok) or _IPV6_RE.match(tok))
+
+
+def _looks_like_a_path(tok: str) -> bool:
+    """False for tokens that are shell syntax rather than a path argument.
+
+    Deliberately asymmetric, because the two errors are not equal. Skipping a
+    token that WAS a path costs a missed advisory flag in a best-effort scanner
+    — the real gates (the Read/Write/Edit path check above, and every c3 tool)
+    still refuse it. Flagging a token that was NOT a path costs a hard,
+    unappealable deny on a command that touches nothing, which is what #50 was.
+    So this errs toward skipping.
+    """
+    return not (_SYNTAX_CHARS & set(tok))
 
 
 def _deny(reason: str) -> dict:
@@ -113,9 +150,10 @@ def _scan_shell(cmd: str, base: str):
     covers (existence-gating keeps regex/pattern arguments like '\\.env'
     from false-denying), or the evaluator flags the spelling itself.
 
-    URLs and IPv6 literals are skipped outright: they trip the ADS spelling
-    check, which is exempt from existence-gating, so a token naming nothing
-    on disk would otherwise hard-deny (#50).
+    Tokens that are shell syntax rather than path arguments are skipped
+    outright, as are URLs and IPv6 literals: all of them trip the ADS spelling
+    check, which is exempt from existence-gating, so a token naming nothing on
+    disk would otherwise hard-deny (#50).
     """
     for raw in _TOKEN_SPLIT.split(cmd)[:_MAX_TOKENS]:
         tok = raw.strip("\"'`;,()")
@@ -123,7 +161,11 @@ def _scan_shell(cmd: str, base: str):
             continue
         if "/" not in tok and "\\" not in tok and not tok.startswith("."):
             continue
-        if _is_network_token(tok):
+        # Order matters only for readability: a URL is also syntax-free, so
+        # either check alone would skip 'https://x'. Both are kept because they
+        # answer different questions — "is this a network literal" and "is this
+        # a path at all" — and the second is the one that generalizes.
+        if not _looks_like_a_path(tok) or _is_network_token(tok):
             continue
         if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
             tok = f"{tok[1]}:{tok[2:]}"
