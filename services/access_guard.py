@@ -709,11 +709,12 @@ def _override_offer(denial: Denial, path, operation: str, tool: str) -> str:
     that can never be escalated: an agent must not learn from a refusal that
     a request surface exists for the credential vault (§6).
 
-    Restricted to the hook surface on purpose. The offer promises that a human
-    'yes' makes the retry work, and today only the PreToolUse gates consult
-    grants — the ``c3_*`` content surfaces do not (see §13, phase P2a). An
-    offer on a surface that would still refuse after approval is worse than
-    no offer.
+    Restricted to the hook surface on purpose — see ``refusal``. The rule was
+    written when only the PreToolUse gates consulted grants; P2a taught the
+    ``c3_*`` content surfaces to consult them too, so extending the offer to
+    the MCP surface is now defensible. It is deliberately NOT done here: that
+    is a separate, wider change (every c3_* refusal grows a line) and belongs
+    in its own review, not smuggled in beside a fix for the branch ordering.
     """
     try:
         from services import override_policy as _op  # noqa: PLC0415 — cycle
@@ -738,7 +739,26 @@ def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
     the agent it may ASK (docs/override-requests.md §6). The pinned strings
     above are unchanged: the append is absent unless the project opted in,
     which is off by default.
+
+    The append happens HERE, once, for every kind — not inside a branch. It
+    used to live at the tail of the deny branch, which sits below the mask and
+    read-only early returns, so those two kinds could never carry an offer on
+    any surface even though `rule_class_for_denial` marks both escalatable.
+    `access_readonly` was the only layer anyone had turned on, so in practice
+    the invitation half of Override Requests had never fired once.
     """
+    body = _refusal_body(denial, path, operation, surface=surface,
+                         tool=tool, project=project)
+    # Hook only, still: the offer promises that a 'yes' makes the retry work,
+    # and the proxy surface answers for a DIFFERENT project's policy.
+    if surface == "hook":
+        return body + _override_offer(denial, path, operation, tool)
+    return body
+
+
+def _refusal_body(denial: Denial, path, operation: str, *, surface: str,
+                  tool: str, project: str) -> str:
+    """The pinned string itself, with no override append."""
     p, glob, scope = _cap(path), denial.rule, denial.scope
     if denial.kind == _KIND_MASK:
         if operation in ("write", "create", "delete"):
@@ -762,12 +782,20 @@ def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
             "`c3 access list` or the Access tab."
         )
     if denial.kind == _KIND_READ_ONLY:
+        # `{operation}`, not a hardcoded "write". A read-only rule blocks the
+        # whole write class, and for a file that does not exist yet the tools
+        # call that operation `create`. Saying "write" told the agent to ask
+        # the user to approve `op='write'`, the approval was minted for
+        # `write`, and the grant matcher — which compares op exactly — then
+        # refused the `create` the tool actually attempted. A real approval
+        # was spent and silently discarded (§4 near_miss).
         return (
-            f"{TAG_READ_ONLY} write denied for {p} by Access Guard rule "
+            f"{TAG_READ_ONLY} {operation} denied for {p} by Access Guard rule "
             f"'{glob}' ({scope} scope). The effective policy is read-only; "
-            "reads are evaluated separately. Do not retry the write. Mark "
-            "the affected step blocked and continue with unaffected files; "
-            "report the skip. Rules: `c3 access list` or the Access tab."
+            f"reads are evaluated separately. Do not retry the {operation}. "
+            "Mark the affected step blocked and continue with unaffected "
+            "files; report the skip. Rules: `c3 access list` or the Access "
+            "tab."
         )
     if surface == "hook":
         return (
@@ -776,7 +804,7 @@ def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
             "decision, not a transient error — do not retry through another "
             "tool or the shell. Mark the affected step blocked and continue "
             "with unaffected files. Rules: `c3 access list`."
-        ) + _override_offer(denial, path, operation, tool)
+        )
     if surface == "proxy":
         return (
             f"{TAG_DENIED} {operation} denied for {p} through project "

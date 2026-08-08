@@ -420,6 +420,12 @@ def _notify(project_path: str, row: dict, policy) -> None:
                   f"{Path(row['path']).name}?",
             message=(f"Blocked by rule {row['rule']} ({row['rule_class']}). "
                      f"Approve once: c3 override approve {row['id']}"),
+            # A phone routes on these, not on the title. Without them a tap
+            # opens the app and drops the user wherever they were last —
+            # which, for the one notification that exists to be answered, is
+            # the same as not delivering it (§9).
+            kind="override",
+            ref_id=row["id"],
         )
     except Exception:
         pass  # a missing notification must never fail the request

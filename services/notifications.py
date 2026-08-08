@@ -43,7 +43,8 @@ class NotificationStore:
         self._collapsed = False
 
     def add(self, agent: str, severity: str, title: str, message: str,
-            ai_enhanced: bool = False, replace_if_unacked: bool = False) -> dict | None:
+            ai_enhanced: bool = False, replace_if_unacked: bool = False,
+            kind: str = "", ref_id: str = "") -> dict | None:
         """Append a notification. Dedup: an identical (agent, title, message)
         that is still unacknowledged collapses into the existing record — its
         ``count`` is bumped and ``last_seen`` refreshed instead of appending a
@@ -54,6 +55,13 @@ class NotificationStore:
             already exists, update its message/severity in-place (bumping
             count/last_seen) instead of appending a new entry. Use for
             high-frequency agents (budget, index, key-file drift) to prevent pile-up.
+        kind: machine-readable class for clients that ROUTE on a tap rather
+            than parse the title — 'override' for an approval request. Omitted
+            from the record when empty, so every existing producer and every
+            stored line is unchanged.
+        ref_id: the id of the thing the notification is ABOUT (e.g. the
+            override request), which is not the notification's own ``id``.
+            A client needs both: ``id`` to acknowledge, ``ref_id`` to navigate.
         Returns the entry if written/updated, None if deduped.
         """
         with self._lock:
@@ -75,6 +83,13 @@ class NotificationStore:
                         existing["last_seen"] = now.isoformat()
                         existing["count"] = _entry_count(existing) + 1
                         existing["ai_enhanced"] = ai_enhanced
+                        # Refresh the routing fields too: an in-place update
+                        # keeps the record but the thing it points AT may have
+                        # changed (a new request id under the same title).
+                        if kind:
+                            existing["kind"] = kind
+                        if ref_id:
+                            existing["ref_id"] = ref_id
                         self._write_all(entries)
                         return existing
                     # Same notification still pending — collapse into the
@@ -108,6 +123,12 @@ class NotificationStore:
                 "acknowledged": False,
                 "ai_enhanced": ai_enhanced,
             }
+            # Additive only: absent keys rather than empty ones, so a client
+            # can test presence and old lines stay byte-identical in shape.
+            if kind:
+                entry["kind"] = kind
+            if ref_id:
+                entry["ref_id"] = ref_id
             with open(self._file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
             return entry
