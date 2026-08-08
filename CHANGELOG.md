@@ -4,6 +4,52 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.76.1] - 2026-08-08
+
+### Fixed — a stalled ledger write no longer holds a finished edit hostage (#74)
+
+**The stall in #74 is not a C3 defect.** Caught live: the host hits
+commit-charge exhaustion in short, unpredictable windows — 1.1 GB of commit free
+against a 184.5 GB limit while 31.7 GB of physical RAM sat idle, because one
+elevated `python.exe` committed ~197 GB in ninety seconds and then exited. In
+the same window `gh` died with `runtime: cannot allocate memory` and bash could
+not fork. That accounts for both reported incidents (an allocation that fails
+outright kills the server → *connection closed*; one that stalls looks like a
+hang) and for the payload-size correlation, since the largest calls allocate
+most. Full evidence is on the issue.
+
+Nothing in C3 prevents that. What C3 controls is **what it costs to find out.**
+
+`c3_edit` writes the file and *then* records it, so a stall in the bookkeeping
+is a stall after the work is done — the logged incident spent 1800s to report an
+edit that had completed in milliseconds. The record-keeping now runs on a daemon
+thread with a 10-second deadline. Past it, the call returns anyway and the
+response says so:
+
+```
+✓ src/mod.py [-1+1L]
+  [c3:ledger-deferred] The FILE WRITE SUCCEEDED. Recording it in the ledger
+  outran 10s and was left running in the background, so the edit may be missing
+  from c3_edits history and from c3_edits(action='verify') corroboration.
+  Do not re-apply this edit on the strength of that absence — the file is the
+  evidence, and it already has the change.
+```
+
+Three deliberate choices:
+
+- **The thread is left running, not killed.** It may finish a moment later, and
+  a half-written ledger entry is worse than a late one.
+- **The note is loud rather than silent.** A degraded record that renders like a
+  clean one is the exact failure class this subsystem exists to remove — and
+  since a missing ledger entry downgrades `verify` to `INCONCLUSIVE`, saying so
+  is what stops the note's absence from being read as "the edit did not land".
+- **Only a stall is news.** A ledger that *raises* is already swallowed by
+  design and stays silent; nothing changed there.
+
+10 seconds is far outside normal (a JSONL append plus a git call that already
+caps itself at 4s) and far inside the harness idle timeout, which is the number
+this exists to stay away from.
+
 ## [2.76.0] - 2026-08-08
 
 ### Added — the phone can watch the machine work, and talk to it (#76)

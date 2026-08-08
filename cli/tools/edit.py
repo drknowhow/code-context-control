@@ -387,10 +387,12 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         n_new = new_string.count("\n") + 1 if new_string else 0
         create_summary = summary or f"Created {rel} ({n_new}L)"
-        _log_to_ledger(rel, create_summary, tag_list, svc,
-                       detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP], "created": True})
+        deferred = _log_to_ledger(
+            rel, create_summary, tag_list, svc,
+            detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP], "created": True})
         short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "")
-        return finalize("c3_edit", {"file": file_path}, short, f"{rel} created")
+        return finalize("c3_edit", {"file": file_path}, short + deferred,
+                        f"{rel} created")
 
     # Parse tag list once
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
@@ -477,6 +479,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                                 f"Write error: {e}", "write error")
 
         # Log batch to ledger as one entry (store each patch's old/new for diff view)
+        deferred = ""
         if any_applied:
             batch_detail = {"patches": [
                 {
@@ -486,7 +489,9 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 }
                 for p in edit_list if p.get("old_string") is not None
             ]}
-            _log_to_ledger(rel, summary or f"Batch edit: {len(edit_list)} patches", tag_list, svc, detail=batch_detail)
+            deferred = _log_to_ledger(
+                rel, summary or f"Batch edit: {len(edit_list)} patches",
+                tag_list, svc, detail=batch_detail)
 
         # Classify from the structured status list, not by substring-scanning
         # the human-readable result lines — a patch *summary* containing words
@@ -499,7 +504,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             short += "\n" + "\n".join(failed)
             if first_miss:
                 short += first_miss
-        return finalize("c3_edit", {"file": file_path}, short,
+        return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} patched ({len(edit_list)} patches)")
 
     # ── Single-edit mode ──────────────────────────────────────────────────────
@@ -548,7 +553,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     }
     if used_fallback:
         single_detail["unicode_normalized"] = True
-    _log_to_ledger(rel, auto_summary, tag_list, svc, detail=single_detail)
+    deferred = _log_to_ledger(rel, auto_summary, tag_list, svc,
+                              detail=single_detail)
 
     n_old = old_string.count("\n") + 1
     n_new = new_string.count("\n") + 1
@@ -556,14 +562,73 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
     norm_tag = " [unicode-normalized]" if used_fallback else ""
     short = f"✓ {rel} [{delta}]{occ}{norm_tag}" + (f" — {summary}" if summary else "")
-    return finalize("c3_edit", {"file": file_path}, short, f"{rel} patched")
+    return finalize("c3_edit", {"file": file_path}, short + deferred,
+                    f"{rel} patched")
 
 
 _DETAIL_CAP = 2000  # chars stored per old/new string in the ledger
 
+#: How long the post-write bookkeeping gets before the caller stops waiting on
+#: it. Normal is milliseconds — a JSONL append and a git call that already caps
+#: itself at 4s. Ten seconds is far outside normal and far inside the harness's
+#: idle timeout, which is the number this exists to stay away from.
+_LEDGER_DEADLINE_S = 10.0
 
-def _log_to_ledger(rel: str, summary: str, tag_list, svc, detail: dict = None) -> None:
-    """Log an edit to the ledger, activity log, and session manager. Never raises."""
+_DEFERRED_NOTE = (
+    "\n  [c3:ledger-deferred] The FILE WRITE SUCCEEDED. Recording it in the "
+    "ledger outran {sec:.0f}s and was left running in the background, so the "
+    "edit may be missing from c3_edits history and from "
+    "c3_edits(action='verify') corroboration.\n"
+    "  Do not re-apply this edit on the strength of that absence — the file is "
+    "the evidence, and it already has the change."
+)
+
+
+def _log_to_ledger(rel: str, summary: str, tag_list, svc,
+                   detail: dict = None) -> str:
+    """Record an edit in the ledger, activity log, and session manager.
+
+    Never raises, and — since #74 — never blocks the caller indefinitely.
+
+    The write has already happened by the time this runs. That ordering is what
+    makes a stall here so expensive: one logged `c3_edit` hung until the harness
+    aborted it at 1800s while the file on disk was already correct, so half an
+    hour bought a report of work that had finished in milliseconds.
+
+    The host-side cause of that stall is not C3's (see #74 — the box hits
+    commit-charge exhaustion in short unpredictable windows), and nothing here
+    prevents it. What this does prevent is *paying 1800s to find out*. The
+    bookkeeping runs on a daemon thread; if it outlives the deadline the caller
+    returns anyway, with the response saying plainly that the write landed and
+    the record may not have. The thread is left alone rather than killed — it
+    may well finish a moment later, and a half-written ledger entry would be
+    worse than a late one.
+
+    Returns "" normally, or a note to append to the response when the deadline
+    passed. Reporting a degraded record is the point; a silent one would make
+    this indistinguishable from a clean run, which is the failure class this
+    whole subsystem exists to remove.
+    """
+    if not svc.edit_ledger:
+        return ""
+    done = threading.Event()
+
+    def _record() -> None:
+        try:
+            _log_to_ledger_blocking(rel, summary, tag_list, svc, detail)
+        finally:
+            done.set()
+
+    threading.Thread(target=_record, name="c3-edit-ledger",
+                     daemon=True).start()
+    if done.wait(_LEDGER_DEADLINE_S):
+        return ""
+    return _DEFERRED_NOTE.format(sec=_LEDGER_DEADLINE_S)
+
+
+def _log_to_ledger_blocking(rel: str, summary: str, tag_list, svc,
+                            detail: dict = None) -> None:
+    """The bookkeeping itself. Never raises; may block. Always run on a thread."""
     if not svc.edit_ledger:
         return
     try:
