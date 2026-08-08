@@ -271,6 +271,74 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         self.assertIsNotNone(denial)
         self.assertEqual(denial.rule, "<ads>")
 
+    def test_a_pytest_node_id_is_not_a_stream_spelling(self):
+        """`a/b.py::Thing` — one of two path-SHAPED idioms #73 did not cover."""
+        for cmd in (
+            "python -m pytest tests/test_chat_poll.py::TestAbort",
+            "pytest tests/a.py::TestX::test_y -q",
+        ):
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNone(denial, f"{cmd!r} denied on {tok!r}")
+
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
+    def test_the_doubled_colon_default_stream_form_still_denies(self):
+        """`file::$DATA` is real ADS syntax, so `::` alone cannot be a pass.
+
+        This is the control that stops the node-id fix from being a hole. An
+        earlier draft skipped every `::` token and would have opened it.
+        """
+        # Deliberately a path NO deny glob covers, so `<ads>` is the only rule
+        # that can catch it. Pointing this at `secrets/**` would have "passed"
+        # on the glob and proven nothing about the spelling check.
+        denial, _ = hag._scan_shell("type ./notes.txt::$DATA", str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(denial.rule, "<ads>")
+
+    def test_a_git_revspec_is_judged_on_its_path_half(self):
+        """`git show <rev>:<path>` — the second idiom, and a tightening.
+
+        Every revspec is denied today by accident: the residual colon trips
+        `<ads>`. Whitelisting the shape would let `git show HEAD:.env` print a
+        denied file, so the path half is what gets checked.
+        """
+        denial, _ = hag._scan_shell(
+            "git show origin/main:pyproject.toml", str(self.proj))
+        self.assertIsNone(denial)
+
+        denial, tok = hag._scan_shell(
+            "git show HEAD:secrets/key.txt", str(self.proj))
+        self.assertIsNotNone(denial, "a revspec naming a denied path must deny")
+        self.assertEqual(tok, "secrets/key.txt")
+
+    def test_a_revspec_denies_a_path_that_only_exists_in_history(self):
+        """The gap the rewrite would otherwise open.
+
+        `git show HEAD~5:secrets/gone.txt` reads a denied file whether or not it
+        is in the working tree, so the existence gate — right for an ordinary
+        token — is the wrong question here.
+        """
+        denial, tok = hag._scan_shell(
+            "git show HEAD~5:secrets/gone.txt", str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(tok, "secrets/gone.txt")
+
+    def test_revspec_rewriting_only_applies_to_git(self):
+        """`<word>:<word>` means something else in every other command."""
+        path = hag._git_revspec_path("cat HEAD:secrets/key.txt", "HEAD:secrets/key.txt")
+        self.assertIsNone(path)
+        path = hag._git_revspec_path("git show HEAD:a.py", "HEAD:a.py")
+        self.assertEqual(path, "a.py")
+
+    def test_a_drive_letter_is_not_a_revspec_separator(self):
+        self.assertIsNone(
+            hag._git_revspec_path("git show C:/x/f.txt", "C:/x/f.txt"))
+
+    def test_a_stream_type_suffix_is_not_treated_as_a_path(self):
+        """`git show notes.txt:$DATA` must not be rewritten into `$DATA`."""
+        self.assertIsNone(
+            hag._git_revspec_path("git show notes.txt:$DATA", "notes.txt:$DATA"))
+
     def test_the_classifier_splits_paths_from_syntax(self):
         for tok in ("./a/b", "C:/x/f.txt", "./f.txt:stream", "src/a.py",
                     r"\\server\share\x"):
