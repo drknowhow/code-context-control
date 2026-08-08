@@ -139,6 +139,35 @@ class _ChatPollBase(unittest.TestCase):
             time.sleep(0.01)
         self.fail("run did not finish within timeout")
 
+    def wait_until(self, run_id, predicate, timeout=5.0, what=""):
+        """Poll until ``predicate(body)`` holds. Returns that body, or fails.
+
+        Written for #78. A `time.sleep(0.1)` standing in for "by now the worker
+        has produced an event" is a hope, and on a loaded CI runner the hope is
+        occasionally wrong — the thread simply never got scheduled, the test
+        asserted on a run that had collected nothing, and the failure looked
+        like a bug in the code under test rather than in the test's own setup.
+
+        The distinction that matters is between a *precondition* and an
+        *assertion*. A precondition that has not been established yet should be
+        waited for; one that never arrives should fail saying which condition
+        never came true, not by tripping some later assertion with a number that
+        means nothing to the reader.
+        """
+        deadline = time.time() + timeout
+        body = None
+        while time.time() < deadline:
+            body = self.poll(run_id, after=0).get_json()
+            if predicate(body):
+                return body
+            time.sleep(0.01)
+        self.fail(
+            f"timed out after {timeout}s waiting for "
+            f"{what or 'the condition'}; last poll: "
+            f"status={(body or {}).get('status')!r}, "
+            f"events={len((body or {}).get('events') or [])}"
+        )
+
 
 class TestStartPollDone(_ChatPollBase):
     def test_start_returns_run_and_conversation_immediately(self):
@@ -295,12 +324,8 @@ class TestAbort(_ChatPollBase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.get_json()["aborted"])
 
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            body = self.poll(run, after=0).get_json()
-            if body["status"] != "running":
-                break
-            time.sleep(0.02)
+        body = self.wait_until(run, lambda b: b["status"] != "running",
+                               what="the run to leave 'running'")
         self.assertEqual(body["status"], "aborted")
 
     def test_aborted_run_keeps_what_it_collected(self):
@@ -309,12 +334,25 @@ class TestAbort(_ChatPollBase):
             per_event_delay=0.02)
         run = self.start_turn()["run_id"]
         self.engine.entered.wait(5)
-        time.sleep(0.1)  # let a couple of events land
+
+        # Establish the precondition rather than sleeping toward it (#78). The
+        # claim under test is that an abort PRESERVES collected events, and that
+        # claim says nothing at all until something has been collected — so
+        # "some event exists" is setup, and waiting for it is not the same as
+        # asserting it.
+        before = self.wait_until(run, lambda b: len(b["events"]) > 0,
+                                 what="the first event to be collected")
+        collected = len(before["events"])
+
         self.client.delete(f"/api/mobile/chat/turn/{run}", headers=AUTH)
-        time.sleep(0.2)
-        body = self.poll(run, after=0).get_json()
+        body = self.wait_until(run, lambda b: b["status"] != "running",
+                               what="the run to leave 'running'")
+
         self.assertEqual(body["status"], "aborted")
-        self.assertGreater(len(body["events"]), 0)
+        # Retention, not mere non-emptiness. `> 0` would also pass if the abort
+        # truncated five collected events down to one, which is the failure this
+        # test exists to catch.
+        self.assertGreaterEqual(len(body["events"]), collected)
 
     def test_abort_does_not_wedge_the_worker_thread(self):
         self.engine = _StubEngine(
