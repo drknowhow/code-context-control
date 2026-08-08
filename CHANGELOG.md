@@ -4,6 +4,46 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.74.1] - 2026-08-08
+
+### Fixed — the `<ads>` shell scan was fixed for two shapes, not for the class (#50)
+
+v2.63.x denied any command whose text contained a URL or IPv6 literal, because
+the Access Guard's best-effort shell scan resolved arbitrary tokens as paths and
+read the residual colon as an NTFS alternate data stream. #50 fixed that by
+skipping tokens that *look like network literals*.
+
+That whitelist was two shapes: a token **starting** with `scheme://`, or a bare
+IPv6. Both remained true of the examples in the issue and false of everything
+else, so the class was still open. Three denials from one real session, on
+v2.74.0, none of which names a file:
+
+```
+echo "see [#1](https://example.com/a/b)"       # scheme is not at position 0
+echo '{a:.x,b:("/"+.y)}'                       # a jq filter — no URL at all
+python -c "print(['src/a.py','src/b.py'])"     # a list literal
+```
+
+The token gate admitted all three because it asks only "does this contain a
+slash", and `<ads>` is exempt from existence-gating, so each became a hard,
+unappealable deny on text that touches nothing.
+
+The scan now asks whether a token is a path at all before asking how it is
+spelled: a token containing what Windows forbids in a filename (`< > " | ? *`)
+or the bracketing that marks a compound expression (`{} [] () ' \` &`) is not a
+path argument and is skipped.
+
+`:` stays out of that set — it is the thing under test. So do `$` and `=`, which
+are legal in a real path *and* in a real ADS spelling: `./notes.txt:$DATA` is
+canonical default-stream syntax, and an earlier draft of this fix that treated
+`$` as syntax silently deleted the existing negative control for it. Every
+genuinely dangerous shell use of `$` arrives with `(` or `{`, which are covered.
+
+The direction is deliberate. This scanner is advisory and best-effort; a token
+it declines to flag is still refused by the real path check on Read/Write/Edit
+and by every `c3_*` tool. A token it flags *wrongly* is a hard deny on a command
+that names no file, which is the bug. So it errs toward skipping.
+
 ## [2.74.0] - 2026-08-08
 
 ### Fixed — Override Requests: the first live run found three ways to lose a human's answer
