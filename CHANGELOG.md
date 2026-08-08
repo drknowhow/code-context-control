@@ -4,6 +4,31 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.76.3] - 2026-08-08
+
+### Fixed — the revspec rewrite never fired for the shape people actually type (#50)
+
+v2.76.2 taught the shell scan to judge a git revspec by its path half. It
+anchored "is this a git command?" to the start of the whole command string, so:
+
+```
+git show origin/main:pyproject.toml        -> allowed  (as intended)
+cd /repo && git show origin/main:pyproject.toml  -> still DENIED '<ads>'
+```
+
+A leading `cd` disabled the whole rewrite. Every unit test passed, because a
+test author writes the command as `git show …` — which is exactly not how a
+shell call arrives. It was caught by a live probe minutes after release, and
+that is the general lesson: a fixture that encodes the idiom the way you would
+type it in a test is not evidence about the way it reaches you in production.
+
+The scan now works **per command segment** — what sits between `&&`, `||`, `;`,
+`|`, or a newline — and each segment answers the git question for itself. That
+is also the safer shape, not just the more permissive one: attributing the whole
+string to git would let `cat notes.txt:hidden && git status` have its *first*
+token reinterpreted, checking `hidden` instead of the real spelling, which is a
+hole rather than a false positive. A control pins that case.
+
 ## [2.76.2] - 2026-08-08
 
 ### Fixed — the two path-SHAPED idioms `<ads>` still denied (#50)
