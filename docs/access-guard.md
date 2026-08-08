@@ -143,11 +143,19 @@ Machine tags are stable API: `[c3-access:denied]`, `[c3-access:read_only]`,
 > `c3 access list` or the Access tab.
 
 **S2 — MCP read-only:**
-> [c3-access:read_only] write denied for {path} by Access Guard rule
+> [c3-access:read_only] {operation} denied for {path} by Access Guard rule
 > '{glob}' ({scope} scope). The effective policy is read-only; reads are
-> evaluated separately. Do not retry the write. Mark the affected step
+> evaluated separately. Do not retry the {operation}. Mark the affected step
 > blocked and continue with unaffected files; report the skip. Rules:
 > `c3 access list` or the Access tab.
+
+`{operation}` is the operation the CALLER named, not the literal word
+"write". A read-only rule blocks the whole write class, and `c3_edit` names
+that operation `create` when the file does not exist yet. This string said
+"write" until v2.74.0, which taught agents to request an override for
+`op='write'`; the grant matcher compares `op` exactly, so an approval the
+user had already given was minted for one operation, spent against another,
+and refused.
 
 **S3 — hook deny (native tool):**
 > [c3-access:denied] native {tool} {operation} denied for {path} by Access

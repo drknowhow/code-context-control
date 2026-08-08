@@ -325,5 +325,130 @@ class TestOfferLine(RequestBase):
         self.assertIn("do not retry through another tool or the shell", text)
 
 
+# ── §6 the offer must not depend on WHICH kind denied ──────────────────────
+
+class TestOfferReachesEveryEscalatableKind(RequestBase):
+    """The bug this class exists for.
+
+    `refusal()` used to append the offer at the tail of the deny branch, which
+    sits *below* the mask and read-only early returns. Both of those kinds map
+    to an escalatable layer in `rule_class_for_denial`, so policy said "offer
+    this" and the composer structurally could not. `access_readonly` was the
+    only layer that had ever been switched on in the wild, which made the
+    invitation half of the feature dead on the one path anybody used.
+
+    These assert on the LAYER, not on a branch, so re-introducing an early
+    return in front of the append fails here rather than in production.
+    """
+
+    def _refuse(self, rel, operation, tool="Write"):
+        target = self.proj / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        denial = ag.check(str(target), operation, str(self.proj))
+        self.assertIsNotNone(denial, f"fixture must deny {rel} on {operation}")
+        return denial, ag.refusal(denial, str(target), operation,
+                                  surface="hook", tool=tool)
+
+    def test_read_only_denial_carries_the_offer(self):
+        denial, text = self._refuse("docs/a.md", "write")
+        self.assertEqual(denial.kind, "read_only")
+        self.assertEqual(opol.rule_class_for_denial(denial),
+                         opol.LAYER_ACCESS_READONLY)
+        self.assertIn(opol.TAG_OFFER, text)
+        self.assertIn("action='request'", text)
+
+    def test_deny_denial_still_carries_the_offer(self):
+        denial, text = self._refuse("secrets/other.txt", "read", tool="Read")
+        self.assertEqual(denial.kind, "deny")
+        self.assertIn(opol.TAG_OFFER, text)
+
+    def test_every_escalatable_kind_is_offered(self):
+        """No kind may be silently unreachable."""
+        cases = [("docs/a.md", "write"), ("secrets/other.txt", "read")]
+        for rel, operation in cases:
+            with self.subTest(path=rel):
+                denial, text = self._refuse(rel, operation)
+                layer = opol.rule_class_for_denial(denial)
+                self.assertIsNotNone(layer)
+                self.assertIn(opol.TAG_OFFER, text)
+
+    def test_offer_still_absent_when_the_layer_is_off(self):
+        layers = dict(ALL_LAYERS_ON)
+        layers[opol.LAYER_ACCESS_READONLY] = False
+        self.write_config(layers=layers)
+        _, text = self._refuse("docs/a.md", "write")
+        self.assertNotIn(opol.TAG_OFFER, text)
+
+    def test_offer_absent_on_the_mcp_surface(self):
+        denial = ag.check(str(self.proj / "docs" / "a.md"), "write",
+                          str(self.proj))
+        text = ag.refusal(denial, "docs/a.md", "write")
+        self.assertNotIn(opol.TAG_OFFER, text)
+
+
+# ── §4 the refusal must name the operation the caller named ────────────────
+
+class TestRefusalNamesTheRealOperation(RequestBase):
+    """A read-only refusal that always said "write" cost a real approval.
+
+    `c3_edit` calls the operation `create` when the file does not exist. The
+    agent copied "write" out of the refusal, the human approved `write`, and
+    the grant matcher — exact on `op` — refused the `create` that followed.
+    """
+
+    def _text(self, operation):
+        target = self.proj / "docs" / "new.md"
+        denial = ag.check(str(target), operation, str(self.proj))
+        return ag.refusal(denial, str(target), operation)
+
+    def test_create_is_named_create(self):
+        text = self._text("create")
+        self.assertIn("create denied", text)
+        self.assertNotIn("write denied", text)
+        self.assertIn("Do not retry the create", text)
+
+    def test_write_is_still_named_write(self):
+        text = self._text("write")
+        self.assertIn("write denied", text)
+
+    def test_delete_is_named_delete(self):
+        self.assertIn("delete denied", self._text("delete"))
+
+    def test_the_offer_carries_the_same_operation(self):
+        target = self.proj / "docs" / "new.md"
+        denial = ag.check(str(target), "create", str(self.proj))
+        text = ag.refusal(denial, str(target), "create", surface="hook",
+                          tool="c3_edit")
+        self.assertIn("op='create'", text)
+        self.assertNotIn("op='write'", text)
+
+
+# ── §9 the phone routes on the payload, not on the title ───────────────────
+
+class TestNotificationPayload(RequestBase):
+    def _entries(self):
+        raw = (self.proj / ".c3" / "notifications.jsonl").read_text("utf-8")
+        return [json.loads(ln) for ln in raw.splitlines() if ln.strip()]
+
+    def test_request_notification_carries_kind_and_ref_id(self):
+        row = self.request()
+        entry = next(e for e in self._entries()
+                     if e.get("title", "").startswith("Approve "))
+        self.assertEqual(entry["kind"], "override")
+        self.assertEqual(entry["ref_id"], row["id"])
+        # The notification's own id stays its own — a client needs both, one
+        # to acknowledge and one to navigate.
+        self.assertNotEqual(entry["id"], row["id"])
+
+    def test_other_producers_are_unchanged(self):
+        from services.notifications import NotificationStore
+        NotificationStore(str(self.proj)).add(
+            agent="IndexStaleness", severity="info", title="t", message="m")
+        entry = next(e for e in self._entries() if e.get("agent") ==
+                     "IndexStaleness")
+        self.assertNotIn("kind", entry)
+        self.assertNotIn("ref_id", entry)
+
+
 if __name__ == "__main__":
     unittest.main()

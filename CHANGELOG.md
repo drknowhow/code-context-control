@@ -4,6 +4,43 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.74.0] - 2026-08-08
+
+### Fixed — Override Requests: the first live run found three ways to lose a human's answer
+
+v2.73.0 closed the loop on paper. Running it end to end against a real phone
+broke it three separate times, and each break was silent — no error, no failing
+test, just a user tapping Approve and nothing happening.
+
+- **The invitation was unreachable for the only layer anyone had enabled.**
+  `access_guard.refusal()` appended the `[c3-override]` offer at the tail of the
+  deny branch, which sits below the mask and read-only early returns. Both of
+  those kinds map to an escalatable layer, so policy said "offer this" and the
+  string composer structurally could not. Since `access_readonly` is the layer
+  people actually turn on, the invitation half of the feature had never fired.
+  The append now happens once, after the body, for every kind. Hook surface
+  only, unchanged — extending it to the `c3_*` refusals is defensible now that
+  P2a consults grants, but that is a wider change and gets its own review.
+
+- **The read-only refusal named the wrong operation, and it cost a real
+  approval.** The S2 string hardcoded the word "write" while `operation` sat
+  unused in scope. `c3_edit` calls it `create` when the file does not exist, so
+  an agent copying the refusal's wording asked for `op='write'`, the user
+  approved `write`, and the grant matcher — exact on `op` — refused the
+  `create` that followed. The audit recorded it precisely
+  (`near_miss`, `differs:["op"]`) and nobody was reading the audit. S2 now
+  interpolates `{operation}`; docs/access-guard.md §4 updated to match.
+
+- **A phone could not route a tap to the request.** The request notification
+  carried `agent:"override"` and its own hashed id; the client routes on
+  `kind` and needs the request id to pin the card. `NotificationStore.add()`
+  takes optional `kind` and `ref_id`, written only when non-empty so every
+  other producer and every stored line is untouched.
+
+Eleven tests, six of which fail against 2.73.0. They assert on the layer rather
+than the branch, so putting an early return back in front of the append fails
+here instead of in someone's hands.
+
 ## [2.73.0] - 2026-08-08
 
 ### Added — Override Requests: the decision reaches the agent, and the phone hears sooner
