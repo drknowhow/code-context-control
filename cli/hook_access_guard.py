@@ -10,6 +10,7 @@ Bash coverage is a best-effort, existence-gated token scan — advisory by
 design (docs/access-guard.md §3/§6); it catches an agent naming a denied
 path, not an adversary hiding one.
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -92,6 +93,14 @@ _GIT_CMD_RE = re.compile(r"^\s*(?:[\w.\-]*[/\\])?git(?:\.exe)?\b", re.IGNORECASE
 # `git show …` because that is how the test author writes it, not how a shell
 # call arrives.
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|\n]")
+
+# `cd <dir>` — the segment that moves the ground under every later one. Handles
+# a quoted target, since project paths on this platform contain spaces, and the
+# Windows `/d` flag.
+_CD_RE = re.compile(
+    r"""^\s*cd\s+(?:/d\s+)?(?P<dir>"[^"]+"|'[^']+'|\S+)\s*$""",
+    re.IGNORECASE,
+)
 
 
 def _is_network_token(tok: str) -> bool:
@@ -199,6 +208,20 @@ def _target(tool_input: dict) -> str:
     )
 
 
+def _cd_target(segment: str, cwd: str) -> str | None:
+    """The directory a `cd` segment moves to, resolved against ``cwd``."""
+    m = _CD_RE.match(segment or "")
+    if not m:
+        return None
+    target = m.group("dir").strip("\"'")
+    if not target or target.startswith("-"):
+        return None
+    try:
+        return os.path.abspath(os.path.join(cwd, os.path.expanduser(target)))
+    except (OSError, ValueError):
+        return None
+
+
 def _scan_shell(cmd: str, base: str):
     """(denial, token) for the first confident deny-rule hit, else (None, '').
 
@@ -218,6 +241,7 @@ def _scan_shell(cmd: str, base: str):
     not have its first token reinterpreted just because a later segment is git.
     """
     budget = _MAX_TOKENS
+    cwd = base
     for segment in _SEGMENT_SPLIT.split(cmd or ""):
         if budget <= 0:
             break
@@ -227,7 +251,10 @@ def _scan_shell(cmd: str, base: str):
             tok = raw.strip("\"'`;,()")
             if not tok or tok.startswith("-"):
                 continue
-            if "/" not in tok and "\\" not in tok and not tok.startswith("."):
+            # A revspec's path half need not contain a separator — `HEAD:.env`
+            # has none, so it used to be dropped here before any rule saw it.
+            if ("/" not in tok and "\\" not in tok and not tok.startswith(".")
+                    and not (is_git and _GIT_REVSPEC_RE.match(tok))):
                 continue
             # Order matters only for readability: a URL is also syntax-free, so
             # either check alone would skip 'https://x'. Both are kept because
@@ -249,11 +276,22 @@ def _scan_shell(cmd: str, base: str):
                 tok = revspec_path
             if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
                 tok = f"{tok[1]}:{tok[2:]}"
-            denial = ag.check(tok, "read", base)
+            # Resolve against the cwd the command will actually run in, not the
+            # session root. `cd /elsewhere && cat .env` used to compute the
+            # denial correctly and then throw it away, because the existence
+            # gate looked for `.env` under the project root where it does not
+            # live (#82). The rule base stays `base` — policy is the project's;
+            # only the path being judged follows the shell.
+            probe = tok
+            if not os.path.isabs(probe):
+                try:
+                    probe = os.path.join(cwd, probe)
+                except (OSError, ValueError):
+                    probe = tok
+            denial = ag.check(probe, "read", base)
             if denial and denial.kind == "deny":
                 try:
-                    p = Path(tok)
-                    exists = (p if p.is_absolute() else Path(base) / p).exists()
+                    exists = Path(probe).exists()
                 except OSError:
                     exists = False
                 # A revspec names a path in HISTORY, so the working tree is the
@@ -262,6 +300,11 @@ def _scan_shell(cmd: str, base: str):
                 # existence-gating it would be a hole this rewrite opened.
                 if exists or from_revspec or denial.rule.startswith("<"):
                     return denial, tok
+        # AFTER the segment's own tokens: `cd x` moves the ground for what
+        # follows, not for its own argument.
+        moved = _cd_target(segment, cwd)
+        if moved is not None:
+            cwd = moved
     return None, ""
 
 

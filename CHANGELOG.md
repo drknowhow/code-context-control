@@ -4,6 +4,51 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.77.0] - 2026-08-08
+
+### Fixed — the shell scan now judges paths against the cwd, not the session root (#82)
+
+Found by running the negative controls after shipping 2.76.3. `cd <elsewhere>
+&& cat .env` was **not** flagged, and the reason was not the rule:
+
+```python
+_scan_shell("cat .env", base=<main checkout>)      # -> **/.env* deny
+_scan_shell("cat .env", base=<session worktree>)   # -> None
+```
+
+`access_guard.check` was returning the deny correctly for both the relative and
+the absolute spelling. Only the *existence gate* was asking the wrong
+directory — it joined the token to the session's project root while the command
+ran wherever `cd` had put it — so the denial was computed and then discarded.
+
+The scan has been per-segment since 2.76.3, so a `cd` segment now updates the
+cwd used by the segments after it, and relative tokens resolve against that.
+Policy still comes from the project (`base` is unchanged); only the path being
+judged follows the shell. Quoted targets and `cd /d` are handled, because
+project paths on this platform contain spaces.
+
+Two consequences worth stating rather than leaving to be discovered:
+
+- **A project-scoped rule stops binding once you `cd` into a different repo**,
+  which is correct and is a behaviour change. `cd /other-repo && git show
+  HEAD:secrets/key.txt` no longer denies on this project's `secrets/**` — it is
+  a different repository's file. Paths that resolve back inside the project
+  still deny, absolute or relative, and a control pins each.
+- **A separator-free filename is still out of scope.** `cd <denied-dir> && type
+  key.txt` is caught only incidentally, by the `cd` argument. That is a limit of
+  the token gate, unchanged here, and now written down in a test so it is a
+  known boundary rather than an assumption.
+
+Also fixed, the narrower half of the same issue: a git revspec whose path has no
+separator (`git show HEAD:.env`) never passed the token gate, so it reached no
+rule at all. It does now, and the revspec bypass of the existence gate gives the
+right verdict for a blob that exists only in history.
+
+**Correction to 2.76.2's entry**, which claimed `git show HEAD:.env` was being
+stopped by the `<ads>` false positive: it was not. That token never reached the
+ADS check either. The reasoning for judging a revspec's path half stands; the
+claim about what it replaced was wrong.
+
 ## [2.76.3] - 2026-08-08
 
 ### Fixed — the revspec rewrite never fired for the shape people actually type (#50)
