@@ -708,7 +708,9 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
     """EDIT — read+patch+write+log in one step. Primary code-change tool; always prefer over native Edit.
     old_string: text to replace. new_string: replacement. summary: ledger description.
     edits: JSON list of {old_string, new_string, summary?} for multi-hunk batch on one file.
-    Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>."""
+    Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
+    If this call ERRORS OR TIMES OUT, do not retry blind — a failed c3_edit may still have
+    written the file. Re-send the same args to c3_edits(action='verify') for a verdict."""
     path_err = validate_file_path(file_path)
     if path_err:
         return f"[c3_edit:error] {path_err}"
@@ -725,10 +727,15 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
 async def c3_edits(action: str, file: str = "", change_type: str = "modified",
              summary: str = "", lines_changed: str = "", tags: str = "",
              limit: int = 50, since: str = "", edit_id: str = "",
-             tag: str = "", branch: str = "", ctx: Context = None) -> str:
+             tag: str = "", branch: str = "", old_string: str = "",
+             new_string: str = "", edits: str = "", ctx: Context = None) -> str:
     """EDIT HISTORY — inspect the ledger. Different from c3_edit (which writes); this one reads.
-    actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id).
-    branch: filter history to edits stamped with a given git branch."""
+    actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id),
+    verify (did an edit land?).
+    branch: filter history to edits stamped with a given git branch.
+    verify: pass the SAME file/old_string/new_string (or edits) you gave the c3_edit that errored or
+    timed out. Answers APPLIED (do not retry) / NOT_APPLIED (safe to retry) / INCONCLUSIVE (read the
+    file) — a failed c3_edit may still have written, so retrying blind can apply an edit twice."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -737,7 +744,8 @@ async def c3_edits(action: str, file: str = "", change_type: str = "modified",
     from cli.tools.edits import handle_edits
     return await asyncio.to_thread(handle_edits, action, file, change_type, summary,
                                    lines_changed, tags, limit, since, edit_id, tag,
-                                   svc, finalize, branch)
+                                   svc, finalize, branch, old_string, new_string,
+                                   edits)
 
 
 @mcp.tool()

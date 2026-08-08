@@ -1,11 +1,26 @@
 """c3_edits — AI-tracked edit ledger: log, query, and version file changes."""
 
+from cli.tools.edit_verify import verify as _verify
+
 
 def handle_edits(action: str, file: str, change_type: str, summary: str,
                  lines_changed: str, tags: str, limit: int, since: str,
-                 edit_id: str, tag: str, svc, finalize, branch: str = "") -> str:
+                 edit_id: str, tag: str, svc, finalize, branch: str = "",
+                 old_string: str = "", new_string: str = "",
+                 edits: str = "") -> str:
     """Route c3_edits actions."""
     ledger = svc.edit_ledger
+
+    # verify runs BEFORE the ledger-availability gate. It leads on the file, and
+    # the file is readable whether or not the ledger is: answering "did my edit
+    # land" with "ledger disabled" would withhold the evidence that matters most
+    # at the one moment a caller has no other way to find out (#74).
+    if action == "verify":
+        body, summ = _verify(file, old_string, new_string, edits, svc,
+                             limit=limit or 200)
+        return finalize("c3_edits", {"action": "verify", "file": file},
+                        body, summ)
+
     if ledger is None:
         return finalize("c3_edits", {"action": action}, "Edit ledger not available", "ledger disabled")
 
@@ -119,5 +134,6 @@ def handle_edits(action: str, file: str, change_type: str, summary: str,
 
     else:
         return finalize("c3_edits", {"action": action},
-                        f"Unknown action: {action}. Use: log, history, versions, stats, tag",
+                        f"Unknown action: {action}. "
+                        "Use: log, history, versions, stats, tag, verify",
                         "unknown action")
