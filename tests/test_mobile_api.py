@@ -16,8 +16,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -174,8 +177,11 @@ class TestMobileAPI(unittest.TestCase):
         body = r.get_json()
         # 2 since the security surface: capabilities is the EFFECTIVE list,
         # filtered by config, rather than the static CAPABILITIES constant.
-        self.assertEqual(body["api_version"], 2)
+        # 3 since `/feed?wait=` — advertised so a client can choose to hold a
+        # connection open instead of discovering support by timing a request.
+        self.assertEqual(body["api_version"], 3)
         self.assertIn("feed", body["capabilities"])
+        self.assertIn("feed_wait", body["capabilities"])
         self.assertIn("pm", body["capabilities"])
 
     # ── Projects ─────────────────────────────────────────
@@ -241,6 +247,112 @@ class TestMobileAPI(unittest.TestCase):
         self.assertEqual(page1["next_cursor"], T5)
         page2 = self._feed(limit=2, before=page1["next_cursor"])
         self.assertEqual([i["ts"] for i in page2["items"]], [T4, T3])
+
+    # ── Feed long-poll (`wait`) ──────────────────────────
+    #
+    # The delivery floor is what this is for: before `wait`, the phone learned
+    # about an override request either on its 15s foreground tick or on
+    # Android's ~15-MINUTE WorkManager tick, and a 10-minute request TTL could
+    # expire in between. These tests pin the two halves that make holding a
+    # connection safe — it returns EARLY when something lands, and it returns
+    # AT ALL when nothing does.
+
+    def _raw_feed(self, **params):
+        r = self.client.get("/api/mobile/feed", query_string=params,
+                            headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()
+
+    def test_feed_wait_needs_a_watermark(self):
+        # Without `since` the first scan matches history and answers instantly,
+        # so honouring `wait` would be a promise the parameter cannot keep.
+        # Silently ignoring it is correct; doing so *invisibly* is not, hence
+        # the absent `waited_s`.
+        body = self._raw_feed(wait=5, project=str(self.beta))
+        self.assertNotIn("waited_s", body)
+        self.assertEqual([i["ts"] for i in body["items"]], [T6])
+
+    def test_feed_wait_ignored_when_paginating(self):
+        body = self._raw_feed(wait=5, since=T1, before=FIXTURE_CEILING,
+                              project=str(self.alpha))
+        self.assertNotIn("waited_s", body)
+
+    def test_feed_wait_returns_empty_after_holding(self):
+        # An empty page after a full hold is the NORMAL answer, not an error:
+        # the client reconnects with the same watermark. If this ever raised or
+        # blocked past its deadline, one phone would pin a server thread.
+        started = time.monotonic()
+        body = self._raw_feed(wait=2, since="2099-01-01T00:00:00+00:00",
+                              project=str(self.beta))
+        elapsed = time.monotonic() - started
+        self.assertEqual(body["items"], [])
+        self.assertGreaterEqual(body["waited_s"], 1.0)
+        self.assertLess(elapsed, 10)
+
+    def test_feed_wait_returns_early_when_something_lands(self):
+        # The whole point, measured end to end: a notification written while
+        # the request is in flight comes back on that request, not on the next
+        # poll. Timestamped in 2099 so it stays outside every other test's
+        # `before=FIXTURE_CEILING` window.
+        landed = "2099-06-01T00:00:00+00:00"
+        target = self.gamma / ".c3" / "notifications.jsonl"
+
+        def land():
+            time.sleep(0.4)
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(json.dumps(
+                    _notification("n-woke", "critical", landed, False)) + "\n")
+
+        writer = threading.Thread(target=land, daemon=True)
+        started = time.monotonic()
+        writer.start()
+        try:
+            body = self._raw_feed(wait=20, since="2099-01-01T00:00:00+00:00",
+                                  types="notification",
+                                  project=str(self.gamma))
+        finally:
+            writer.join(timeout=5)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual([i["data"]["id"] for i in body["items"]], ["n-woke"])
+        # Early, not at the deadline — otherwise the mtime watch is dead code
+        # and this passes for the wrong reason.
+        self.assertLess(elapsed, 15)
+
+    def test_feed_wait_is_clamped(self):
+        # A client asking for an hour gets the ceiling. That clamp is the only
+        # thing bounding how long a phone can hold a server thread, so it is
+        # asserted against a lowered ceiling rather than by actually sitting
+        # through 30 seconds in CI — the behaviour under test is the min(), not
+        # the duration.
+        self.assertEqual(mobile_api._MAX_WAIT_S, 30)
+        started = time.monotonic()
+        with mock.patch.object(mobile_api, "_MAX_WAIT_S", 2):
+            body = self._raw_feed(wait=99999,
+                                  since="2099-01-01T00:00:00+00:00",
+                                  project=str(self.beta))
+        elapsed = time.monotonic() - started
+        self.assertEqual(body["items"], [])
+        self.assertLess(elapsed, 10)
+        self.assertLessEqual(body["waited_s"], 4)
+
+    def test_feed_wait_degrades_when_every_slot_is_taken(self):
+        # Backpressure, not a queue: past the waiter cap the request answers
+        # immediately rather than parking another thread behind the others.
+        held = [mobile_api._waiters.acquire(blocking=False)
+                for _ in range(mobile_api._MAX_WAITERS)]
+        try:
+            self.assertTrue(all(held))
+            started = time.monotonic()
+            body = self._raw_feed(wait=20, since="2099-01-01T00:00:00+00:00",
+                                  project=str(self.beta))
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual(body["items"], [])
+            self.assertEqual(body["waited_s"], 0.0)
+        finally:
+            for ok in held:
+                if ok:
+                    mobile_api._waiters.release()
 
     def test_feed_unknown_type(self):
         r = self.client.get("/api/mobile/feed",

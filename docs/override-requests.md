@@ -17,6 +17,7 @@ Implementation status per phase (§14):
 | **P2a grants on the `c3_*` surfaces** | **shipped v2.72.0** | `cli/tools/_grants.py` (one gate, one session id), wired into `c3_read`, `c3_edit`, `c3_compress`, `c3_filter`, `c3_impact`, `c3_validate`; `tests/test_override_grants_mcp.py` |
 | P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
 | P4 mobile Requests pane | **built — awaiting live end-to-end** | separate repo `c3-mobile` (local, no remote): `50f0c49` + `5c1769b` — `src/api/{types,queries,mutations}.ts`, `src/components/guard/overrides.tsx`, `src/notifications/{routing,route-map}.ts`, 43 node:test cases. arm64 release APK delivered 2026-08-07 |
+| **P4a wake on decide + long-poll delivery** | **shipped v2.73.0** | `services/override_wake.py`, `override.wake` policy key, `/api/mobile/feed?wait=` (`feed_wait` capability, api_version 3), `c3-mobile` live-push loop |
 | P5 desktop parity | not started | — |
 
 **Resolved deviation (P1 → P2).** §10's `c3 override approve <id>` / `deny
@@ -164,10 +165,14 @@ credential vault.
     "max_pending_per_session": 3,
     "max_requests_per_hour": 20,
     "notify_severity": "critical",
-    "allow_session_grants": false
+    "allow_session_grants": false,
+    "wake": null
   }
 }
 ```
+
+`wake` is §7.1. `null` (the default) means nobody is told when a request is
+decided — see there for why that was the bug and not the design.
 
 Rules, mirroring `access`:
 
@@ -373,6 +378,66 @@ Rate limits enforced at `request`: `max_pending_per_session` (3),
 identical `(layer, rule, tool, op, path_key)` while one is pending returns the
 existing id rather than minting a second card.
 
+### 7.1 Wake on decide — `override.wake` (shipped v2.73.0)
+
+**The gap this closes, measured.** 2026-08-08, live run: an agent asked at
+00:36Z, ended its turn, the user approved from the phone at 00:42:32Z, and the
+grant expired unused at 00:57:32Z. Both halves worked and nothing connected
+them. Before this, the only ways an agent learned of a decision were `wait`
+(≤180 s, and gone the moment the turn ends) or `status` (which requires
+something to have already woken it). Grants are capped at 900 s, so an idle
+agent misses the window by construction, and the user's tap looks broken while
+being entirely correct.
+
+On every decision — approve **and** deny — C3 runs one configured command:
+
+```json
+"wake": {
+  "command": ["python", "-m", "my_agent.notify", "{message}"],
+  "cwd": "/path/to/the/orchestrator",
+  "timeout_s": 10,
+  "on": ["approved", "denied"]
+}
+```
+
+Placeholders, substituted per argv element: `{request_id}` `{session_id}`
+`{status}` `{decided_by}` `{tool}` `{op}` `{path}` `{path_key}` `{rule}`
+`{rule_class}` `{layer}` `{grant_id}` `{project}` `{project_name}`
+`{message}`. `{message}` is the pre-built line for the agent — it names the
+decision, the grant, and exactly one next step ("retry the SAME call once").
+
+**Why a command and not an integration.** C3 has no idea what runs the agent —
+a chat daemon, a queue, a webhook. One argv covers all three; a backend per
+orchestrator would rot in this repo.
+
+Four constraints, each load-bearing:
+
+- **argv, never a shell string.** `command` must be a list; there is no
+  `shell=True` and no string form. A placeholder carrying a quote or a
+  semicolon is an argument, not syntax. Substitution happens per element after
+  the list is fixed, so it can never add an argument.
+- **Config-only, never remote.** Set it in `.c3/config.json` on the desktop.
+  `POST /api/mobile/overrides/policy` returns **403** for this key, `widen`
+  confirmation included: a bearer token is authentication, not physical
+  presence. Agents cannot write the file either (`**/.c3/**` is builtin
+  read-only, and `forbidden_target` refuses to let any grant cover it), so it
+  cannot be self-approved.
+- **Synchronous, bounded.** `timeout_s` defaults to 10, hard max 60.
+  Backgrounding it would look kinder and silently lose every wake: `c3
+  override approve` exits the instant `decide()` returns.
+- **A wake that fails never unwinds a decision.** Exit code, timeout and
+  missing binary all land in `.c3/overrides.jsonl` as `wake_failed`; the grant
+  stands and `action='status'` still works. A wake is a shortcut past waiting,
+  not the mechanism.
+
+A `wake` section that does not validate makes the **whole `override` section**
+read as corrupt — i.e. the feature disables itself loudly. Degrading a typo
+into "no wake, carry on" would restore the exact silence this exists to fix.
+
+`GET /overrides/policy` reports `wake_configured: true|false` and never the
+argv, which can name a conversation id or a path a policy screen has no reason
+to see.
+
 ---
 
 ## 8. Oracle surface
@@ -438,6 +503,22 @@ badge on the Guard tab icon carries the urgency.
 `['overrides', baseUrl, project, status]`, `refetchInterval` tied to
 `feedIntervalMs` (default 15 s) — pending approvals are the one thing in the
 app where polling latency is felt.
+
+**Delivery latency (v2.73.0).** `GET /api/mobile/feed` accepts `wait`
+(seconds, 0–30, requires `since` and no `before`) and holds the request open
+until something matches — advertised as the `feed_wait` capability. The app
+keeps one such request in flight while it is alive, so a request lands in
+about a second instead of on the next 15 s tick, and the local notification
+fires from the same path the background poll uses. Server-side the hold
+watches `.c3` mtimes and only rebuilds the feed when one moves; waiters are
+capped (4) and degrade to an immediate answer past the cap.
+
+**This is not push, and the distinction matters.** A process Android has
+frozen cannot hold a socket, so with the app killed the floor is still
+WorkManager's ~15 minutes. That is why `request_ttl_s` must stay well above
+it — 3600 on this box. Closing the closed-app gap needs FCM (a Firebase
+project + credentials) or an Android foreground service; both are real work,
+neither is in v2.73.0.
 
 **Card** (reuse `Card` + left-border pattern from `feed.tsx` / `denials.tsx`):
 

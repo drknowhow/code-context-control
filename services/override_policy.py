@@ -93,6 +93,11 @@ DEFAULTS = {
     "max_requests_per_hour": 20,
     "notify_severity": "critical",
     "allow_session_grants": False,
+    # The command run when a request is DECIDED, so the asking agent hears
+    # about it (services/override_wake.py). None = nobody is listening, which
+    # is the pre-2.73 behaviour and the reason a grant could expire unused
+    # while the user assumed their tap had done something.
+    "wake": None,
 }
 
 _VALID_KEYS = frozenset(DEFAULTS)
@@ -193,6 +198,7 @@ class OverridePolicy:
     max_requests_per_hour: int = 20
     notify_severity: str = "critical"
     allow_session_grants: bool = False
+    wake: dict | None = None
     warnings: tuple = ()
     corrupt_scopes: tuple = ()
 
@@ -221,6 +227,11 @@ class OverridePolicy:
             "max_requests_per_hour": self.max_requests_per_hour,
             "notify_severity": self.notify_severity,
             "allow_session_grants": self.allow_session_grants,
+            # The spec itself never crosses the wire. It is an argv the box
+            # will run, and it can carry a conversation id or a path that says
+            # more about this machine than a policy screen needs to. A phone
+            # only needs to know whether anything is listening.
+            "wake_configured": bool(self.wake),
             "warnings": list(self.warnings),
             "corrupt_scopes": list(self.corrupt_scopes),
         }
@@ -254,6 +265,18 @@ def _validate(section: dict):
         if not isinstance(layers, dict) or set(layers) - set(LAYER_KEYS):
             return _CORRUPT
         if any(not isinstance(v, bool) for v in layers.values()):
+            return _CORRUPT
+    if "wake" in section:
+        # Lazy import: override_wake reads a resolved policy back out of this
+        # module on the fire path, and a module-level import would close that
+        # loop. A validator we cannot even load reads as corrupt, not as
+        # "probably fine" — this key names a command the machine will run.
+        try:
+            from services import override_wake as owake  # noqa: PLC0415
+            valid = owake.validate_spec(section["wake"])
+        except Exception:
+            return _CORRUPT
+        if not valid:
             return _CORRUPT
     return section
 
@@ -349,6 +372,14 @@ def resolve(project_path: str = ".") -> OverridePolicy:
         for s in sections:
             if key in s:
                 values[key] = s[key]
+
+    # `wake` is not a permission, so it has no tightening direction to merge
+    # along — it is "who to tell", and the nearest scope is the one that knows.
+    # Project last, so a project's own wake replaces the machine-wide default
+    # rather than firing both.
+    for s in sections:
+        if "wake" in s:
+            values["wake"] = s["wake"]
 
     return OverridePolicy(warnings=tuple(warnings), **values)
 

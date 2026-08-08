@@ -4,6 +4,57 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.73.0] - 2026-08-08
+
+### Added — Override Requests: the decision reaches the agent, and the phone hears sooner
+
+v2.72.0 made an approval mean something to the tool that was blocked. It still
+meant nothing to the agent that asked, because nothing told it. On the first
+run after that release the request went out at 00:36Z, the approval came back
+at 00:42:32Z, and the grant expired unused at 00:57:32Z. Every component was
+correct and the loop was open.
+
+- **`override.wake` — one command, run when a request is decided.** Approve or
+  deny, C3 executes the argv configured in `.c3/config.json` with the
+  identifiers a woken agent needs, including a `{message}` that names the
+  single next step ("retry the SAME call once"). What runs the agent is not
+  C3's business — a chat daemon, a queue, a webhook all fit one argv, and a
+  backend per orchestrator would rot in this repo.
+- **argv, never a shell string.** `command` must be a list, there is no
+  `shell=True` and no string form to fall back to, and substitution happens
+  per element after the list is fixed — so no placeholder can add an argument.
+- **The phone cannot set it.** `POST /api/mobile/overrides/policy` returns 403
+  for `wake`, `widen` confirmation included. Every other key on that route
+  widens what a tap can approve; this one would choose what executes when the
+  tap happens, and a bearer token is authentication, not physical presence.
+  `GET .../policy` reports `wake_configured` and never the argv.
+- **Failure is contained, and audited.** Non-zero exit, missing binary,
+  timeout, missing cwd — all land in `.c3/overrides.jsonl` as `wake_failed`,
+  and the approval and its grant stand. A wake is a shortcut past waiting, not
+  the mechanism.
+- **A `wake` we cannot parse fails the whole `override` section closed.** It
+  names a command this machine will run. Degrading a typo into "no wake, carry
+  on quietly" would restore the exact silence this fixes.
+
+### Added — `GET /api/mobile/feed?wait=` (api_version 3, capability `feed_wait`)
+
+The phone had two delivery paths: a 15-second tick while the app is open, and
+Android WorkManager's ~15-**minute** floor once it is closed. A request with a
+10-minute TTL could expire before the phone was ever told it existed.
+
+- `wait` (0–30 s) holds the request open until something matches the
+  watermark, so a live app hears in about a second without spending a request
+  every 15 s to get there. Requires `since`, refused with `before` — waiting
+  against a pagination cursor is meaningless, and waiting without a watermark
+  would answer instantly from history while looking like it worked.
+- The hold watches `.c3` mtimes and only rebuilds the feed when one moves, so
+  it is a `stat()` per second rather than a history read per second. Waiters
+  are capped at 4; past the cap `wait` degrades to an immediate answer instead
+  of parking another server thread.
+- **It is not push.** A frozen process cannot hold a socket, so the closed-app
+  floor is unchanged. Closing that needs FCM or a foreground service. Keep
+  `request_ttl_s` above the delivery floor either way.
+
 ## [2.72.0] - 2026-08-07
 
 ### Fixed — Override Requests, phase 2a: the approval now does something

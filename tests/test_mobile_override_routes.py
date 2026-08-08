@@ -165,6 +165,45 @@ class _OverrideRouteBase(unittest.TestCase):
             justification=justification, refusal="[c3-access:denied] test")
 
 
+class TestWakeIsNotRemotelyWritable(_OverrideRouteBase):
+    """`override.wake` names an argv this machine runs. A token is not hands.
+
+    Every other key on the policy route widens what a tap can APPROVE, and the
+    typed-confirm challenge is the right guard for that. This one would decide
+    what executes when the tap happens — a different question, with a
+    different answer: not from here, at all, confirmed or not.
+    """
+
+    def test_policy_set_refuses_wake(self):
+        r = self.post("/api/mobile/overrides/policy", {
+            "project": str(self.proj),
+            "override": {"wake": {"command": ["calc.exe"]}},
+        })
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.get_json()["key"], "wake")
+
+    def test_refusal_beats_the_typed_confirmation(self):
+        # 'widen' unlocks widenings. It must not unlock this.
+        r = self.post("/api/mobile/overrides/policy", {
+            "project": str(self.proj), "confirm": "widen",
+            "override": {"enabled": True,
+                         "wake": {"command": ["calc.exe"]}},
+        })
+        self.assertEqual(r.status_code, 403)
+        cfg = json.loads((self.proj / ".c3" / "config.json")
+                         .read_text(encoding="utf-8"))
+        self.assertNotIn("wake", cfg["override"])
+
+    def test_policy_get_reports_only_whether_one_is_configured(self):
+        self.write_policy(self.proj, wake={"command": ["c3-wake", "{message}"],
+                                           "cwd": str(self.proj)})
+        body = self.get(f"/api/mobile/overrides/policy?project={self.proj}") \
+            .get_json()
+        self.assertTrue(body["policy"]["wake_configured"])
+        self.assertNotIn("wake", body["policy"])
+        self.assertNotIn("c3-wake", json.dumps(body))
+
+
 class TestWireContract(_OverrideRouteBase):
     """The cross-repo contract. See the comment inside the test."""
 
