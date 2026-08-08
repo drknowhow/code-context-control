@@ -342,9 +342,101 @@ class TestShellScanSyntaxTokens(HookGuardBase):
 
     def test_a_denied_revspec_is_still_caught_after_a_separator(self):
         denial, tok = hag._scan_shell(
-            "cd /tmp/repo && git show HEAD:secrets/key.txt", str(self.proj))
+            f'cd "{self.proj}" && git show HEAD:secrets/key.txt', str(self.proj))
         self.assertIsNotNone(denial)
         self.assertEqual(tok, "secrets/key.txt")
+
+    def test_a_revspec_path_without_a_separator_now_reaches_the_rules(self):
+        """`HEAD:.env` — no slash, so the token gate used to drop it (#82).
+
+        It also never reached the ADS check, which is the claim #81's body got
+        wrong. It reaches the rules now, and the revspec bypass of the existence
+        gate is what makes the verdict right: a blob in history is denied
+        whether or not that file is in the working tree today.
+        """
+        denial, tok = hag._scan_shell(
+            "git show HEAD:.env", str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(tok, ".env")
+
+
+class TestShellScanFollowsCd(HookGuardBase):
+    """#82 — the scan judged paths against the session root, not the cwd.
+
+    `cd <elsewhere> && cat .env` computed the denial correctly and then threw it
+    away, because the existence gate looked for `.env` under the project root
+    where it does not live. The rule was never wrong; the question was asked
+    about the wrong directory.
+    """
+
+    def test_a_denied_file_read_after_cd_is_caught(self):
+        """The reported case, reproduced with the rule that made it reachable.
+
+        Session rooted in one directory, command `cd`-ing to another, and a
+        builtin `**/.env*` deny — builtin because it binds on any path, which is
+        why the live failure was a secret file rather than a project-scoped one.
+        Before this fix the denial was computed and then discarded, because the
+        existence gate looked under the session root.
+        """
+        (self.proj / ".env").write_text("SECRET=x", encoding="utf-8")
+        denial, _ = hag._scan_shell(
+            f'cd "{self.proj}" && cat .env', str(self.proj.parent))
+        self.assertIsNotNone(denial)
+        self.assertEqual(denial.rule, "**/.env*")
+
+    def test_cd_out_then_relative_back_in_is_caught(self):
+        denial, _ = hag._scan_shell(
+            f'cd "{self.proj.parent}" && cat {self.proj.name}/secrets/key.txt',
+            str(self.proj))
+        self.assertIsNotNone(denial)
+
+    def test_cd_out_then_absolute_back_in_is_caught(self):
+        denial, _ = hag._scan_shell(
+            f'cd "{self.proj.parent}" && cat "{self.proj / "secrets/key.txt"}"',
+            str(self.proj))
+        self.assertIsNotNone(denial)
+
+    def test_the_existence_gate_still_applies_at_the_new_cwd(self):
+        """Following the shell must not mean flagging files that are not there.
+
+        A `cd` into a directory without the file leaves nothing to read, and a
+        deny on nothing is the false positive this scanner keeps being fixed for.
+        """
+        denial, _ = hag._scan_shell(
+            f'cd "{self.proj.parent}" && cat secrets/key.txt', str(self.proj))
+        self.assertIsNone(denial)
+
+    def test_cd_moves_only_the_segments_after_it(self):
+        """`cat secrets/key.txt && cd /elsewhere` reads before it moves."""
+        denial, _ = hag._scan_shell(
+            "cat secrets/key.txt && cd /tmp", str(self.proj))
+        self.assertIsNotNone(denial)
+
+    def test_a_quoted_cd_target_with_spaces_is_parsed(self):
+        spaced = self.proj / "a dir"
+        spaced.mkdir()
+        denial, _ = hag._scan_shell(
+            f'cd "{spaced}" && cat ../secrets/key.txt', str(self.proj))
+        self.assertIsNotNone(denial)
+
+    def test_the_cd_target_itself_is_still_scanned(self):
+        """`cd` into a denied directory is itself a token worth refusing."""
+        denial, tok = hag._scan_shell(
+            f'cd "{self.proj / "secrets"}"', str(self.proj))
+        self.assertIsNotNone(denial)
+
+    def test_a_bare_filename_is_still_out_of_scope(self):
+        """Stated rather than implied: the token gate is unchanged.
+
+        `cd <denied dir> && type key.txt` is caught only incidentally, by the
+        `cd` argument. A separator-free filename still never reaches the rules,
+        which is a known limit of the token gate and not what #82 was about.
+        """
+        self.assertIsNone(hag._cd_target("type key.txt", str(self.proj)))
+        denial, tok = hag._scan_shell(
+            f'cd "{self.proj / "secrets"}" && type key.txt', str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertNotIn("key.txt", tok)
 
     def test_a_git_segment_does_not_license_rewrites_in_other_segments(self):
         """Per-segment, not per-string: `cat a:b && git status` is two commands.
