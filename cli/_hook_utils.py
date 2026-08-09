@@ -359,6 +359,48 @@ def record_unlocked_files(
         save_enforcement_state(state, project_path)
 
 
+# ── Host (IDE runtime) detection ─────────────────────────────────────────────
+# Three hosts drive C3 hooks, and their OUTPUT contracts differ enough that one
+# shared payload shape cannot satisfy all of them:
+#
+#   claude — top-level "tool_result" / "additionalContext" accepted.
+#   gemini — no tool_result; context nests under hookSpecificOutput.
+#   codex  — every hook output schema is additionalProperties:false and
+#            hookSpecificOutput.hookEventName is REQUIRED. Unknown keys are a
+#            hard deserialization error, not a warning, so emitting the Claude
+#            shape makes Codex discard the whole hook response.
+HOST_CLAUDE = "claude"
+HOST_GEMINI = "gemini"
+HOST_CODEX = "codex"
+
+
+def detect_host(data: dict) -> str:
+    """Identify which agent runtime sent this hook payload.
+
+    Codex is detected by `turn_id`, which its wire schema marks required on
+    every turn-scoped event C3 hooks (pre/post tool use, user prompt submit,
+    stop) and documents as "Codex extension". Claude Code never sends it.
+
+    Codex MUST be checked before Gemini: Codex declares `tool_response` as
+    free-form, so an MCP tool that returns an object would otherwise trip the
+    isinstance-dict test and be mistaken for Gemini.
+
+    The CODEX_* env fallback covers a future Codex that drops `turn_id`. A
+    false positive there degrades gracefully — Claude Code also accepts
+    hookSpecificOutput.additionalContext — so guessing "codex" is the safe
+    direction to be wrong in.
+    """
+    if not isinstance(data, dict):
+        return HOST_CLAUDE
+    if data.get("turn_id"):
+        return HOST_CODEX
+    if isinstance(data.get("tool_response"), dict):
+        return HOST_GEMINI
+    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_MANAGED_BY_NPM"):
+        return HOST_CODEX
+    return HOST_CLAUDE
+
+
 # Map Gemini CLI built-in tool names → canonical Claude Code equivalents
 GEMINI_TOOL_MAP = {
     "run_shell_command": "Bash",
