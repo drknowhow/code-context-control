@@ -14,12 +14,20 @@ Matcher granularity that previously lived in .claude/settings.local.json
 routing tables below — install-mcp registers the dispatcher once per matcher,
 and the dispatcher decides which sub-hook logic applies.
 
-Output composition follows Claude Code hook semantics:
+Output composition merges sub-hook results the same way for every host:
   - a permissionDecision "deny" from any sub-hook wins over allows;
   - additionalContext strings from all sub-hooks are concatenated;
-  - a tool_result replacement (hook_filter) is preserved;
-  - plain-text (user-visible) messages are printed only when no structured
-    JSON output exists, matching the old per-hook stdout behavior.
+  - a tool_result replacement (hook_filter) is captured.
+
+Serialization then branches by host, because the three runtimes do NOT share
+a wire contract (see _hook_utils.detect_host):
+  - Claude Code — top-level tool_result / additionalContext; plain-text
+    messages print raw when no structured JSON output exists;
+  - Gemini CLI — no tool_result; context nests under hookSpecificOutput;
+  - Codex CLI — every hook output schema is additionalProperties:false with a
+    required hookEventName, so output is built from a per-event whitelist and
+    Codex never sees a tool_result. Codex also skips hook_filter entirely:
+    it is the only sub-hook that tokenizes the full tool payload.
 
 Failure visibility: a sub-hook crash is logged to .c3/hook_errors.log and
 never kills the remaining sub-hooks. CRITICAL failures — a sub-hook module
@@ -44,9 +52,39 @@ from cli import _hook_utils  # noqa: E402
 # spellings share ONE module instance (state warnings must not split).
 sys.modules.setdefault("_hook_utils", _hook_utils)
 
-from cli._hook_utils import log_hook_error, normalize_tool_name  # noqa: E402
+from cli._hook_utils import (  # noqa: E402
+    HOST_CLAUDE,
+    HOST_CODEX,
+    HOST_GEMINI,
+    detect_host,
+    log_hook_error,
+    normalize_tool_name,
+)
 
 VALID_EVENTS = ("pretool", "posttool", "stop", "prompt")
+
+# ── Codex wire contract ─────────────────────────────────────────────────────
+# Codex validates hook output against additionalProperties:false schemas, so
+# the Codex branch emits by WHITELIST rather than by "drop the keys we know
+# about". A sub-hook that invents a new output key can then never break Codex
+# — the key is simply not forwarded.
+_CODEX_EVENT_NAMES = {
+    "pretool": "PreToolUse",
+    "posttool": "PostToolUse",
+    "prompt": "UserPromptSubmit",
+    "stop": "Stop",
+}
+
+# Keys each event's hookSpecificOutput accepts. "stop" is absent deliberately:
+# stop.command.output has no hookSpecificOutput member at all.
+_CODEX_HSO_KEYS = {
+    "pretool": {
+        "hookEventName", "additionalContext",
+        "permissionDecision", "permissionDecisionReason", "updatedInput",
+    },
+    "posttool": {"hookEventName", "additionalContext", "updatedMCPToolOutput"},
+    "prompt": {"hookEventName", "additionalContext"},
+}
 
 # ── Routing tables (parity with the pre-v2.42 per-matcher registration) ─────
 
@@ -77,9 +115,15 @@ _GHOST_TOOLS = {
 }
 
 
-def _routes(event: str, raw_tool: str, norm_tool: str):
+def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
     """Yield sub-hook module names applicable to this event + tool, in the
-    same relative order the separate hook commands used to run."""
+    same relative order the separate hook commands used to run.
+
+    `host` gates hooks that cannot pay their way on a given runtime — see the
+    hook_filter carve-out below. Every other sub-hook is host-agnostic: they
+    do bookkeeping (ledger, artifact, signal, unlock, ghost sweep) without
+    parsing or tokenizing the tool payload, so they stay on for all hosts.
+    """
     if event == "pretool":
         # Access Guard runs FIRST: merge_outputs keeps the first deny, so a
         # policy denial here cannot be readmitted by sticky-unlock allows.
@@ -87,7 +131,13 @@ def _routes(event: str, raw_tool: str, norm_tool: str):
         # hook_pretool_enforce self-filters via its _PREREQS table.
         yield "hook_pretool_enforce"
     elif event == "posttool":
-        if norm_tool == "Bash":
+        # hook_filter is the ONE sub-hook that reads the whole tool payload:
+        # it tiktoken-encodes the entire Bash output to measure savings, a
+        # Rust-side allocation proportional to output size. On Codex that work
+        # is also pointless — its schema has no tool_result, so the filtered
+        # text could never replace the output anyway. Skip it entirely rather
+        # than risk an allocation failure for a result we must discard.
+        if norm_tool == "Bash" and host != HOST_CODEX:
             yield "hook_filter"
         if norm_tool == "Read":
             yield "hook_read"
@@ -155,18 +205,66 @@ def _load_run(module_name: str):
     return result
 
 
-def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
-                  event: str = "") -> dict | None:
-    """Compose sub-hook outputs per Claude Code hook semantics.
+def _codex_output(event: str, deny_hso, contexts: list, tool_result,
+                  texts: list) -> dict | None:
+    """Serialize merged sub-hook results into Codex's wire contract.
 
+    Codex accepts neither a top-level `tool_result` nor a top-level
+    `additionalContext`, and requires `hookEventName` inside
+    hookSpecificOutput. Anything that has no Codex-legal home is folded into a
+    channel that does exist rather than dropped:
+
+    - a tool_result replacement becomes leading context (it cannot replace the
+      output on Codex, but the filtered text is still worth reading);
+    - "_text" becomes `systemMessage`, the only user-visible string field
+      present on every Codex hook output schema — including Stop, which has no
+      hookSpecificOutput at all, so its context lands there too.
+    """
+    if tool_result is not None:
+        contexts.insert(0, str(tool_result))
+
+    result: dict = {}
+    hso_keys = _CODEX_HSO_KEYS.get(event)
+    joined = "\n".join(c for c in contexts if c)
+
+    if hso_keys is not None:
+        hso = {k: v for k, v in (deny_hso or {}).items() if k in hso_keys}
+        if joined:
+            # A deny's own reason travels in permissionDecisionReason; `joined`
+            # is the non-deny context, so the two never collide.
+            hso["additionalContext"] = joined
+        if hso:
+            hso["hookEventName"] = _CODEX_EVENT_NAMES[event]
+            result["hookSpecificOutput"] = hso
+    elif joined:
+        texts.insert(0, joined)
+
+    if texts:
+        result["systemMessage"] = "\n".join(texts)
+    return result or None
+
+
+def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
+                  event: str = "", host: str | None = None) -> dict | None:
+    """Compose sub-hook outputs into ONE host-appropriate hook response.
+
+    Collection is host-agnostic:
     - deny beats allow: the first hookSpecificOutput carrying a
-      permissionDecision "deny" is kept verbatim;
+      permissionDecision "deny" is kept;
     - additionalContext strings are concatenated with newlines
       (critical warnings appended last);
-    - tool_result replacement (hook_filter) is preserved;
-    - "_text" plain messages ride along under "_text" — main() prints them
-      raw only when no structured output exists.
+    - a tool_result replacement (hook_filter) is captured.
+
+    Emission is not. Each host gets the shape its parser accepts — Claude
+    takes top-level keys, Gemini nests context and has no tool_result, Codex
+    validates against additionalProperties:false schemas (see _codex_output).
+
+    `is_gemini` is retained for callers that predate `host`; `host` wins when
+    both are given.
     """
+    if host is None:
+        host = HOST_GEMINI if is_gemini else HOST_CLAUDE
+
     deny_hso = None
     contexts: list = []
     texts: list = []
@@ -192,6 +290,10 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
 
     contexts.extend(warnings)
 
+    if host == HOST_CODEX:
+        return _codex_output(event, deny_hso, contexts, tool_result, texts)
+
+    is_gemini = host == HOST_GEMINI
     result: dict = {}
     if deny_hso is not None:
         result["hookSpecificOutput"] = deny_hso
@@ -229,14 +331,14 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
     """Run all applicable sub-hooks in-process and merge their outputs."""
     raw_tool = str(payload.get("tool_name", ""))
     norm_tool = normalize_tool_name(raw_tool)
-    is_gemini = isinstance(payload.get("tool_response", ""), dict)
+    host = detect_host(payload)
 
     outputs: list = []
     warnings: list = []
     # Drain any stale warnings from a previous dispatch in this process.
     _hook_utils.drain_state_warnings()
 
-    for module_name in _routes(event, raw_tool, norm_tool):
+    for module_name in _routes(event, raw_tool, norm_tool, host):
         run_fn, err = _load_run(module_name)
         if run_fn is None:
             warnings.append(
@@ -263,7 +365,7 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
         # become visible instead of silently disabling enforcement.
         warnings.extend(_hook_utils.drain_state_warnings())
 
-    return merge_outputs(outputs, warnings, is_gemini=is_gemini, event=event)
+    return merge_outputs(outputs, warnings, event=event, host=host)
 
 
 def main() -> None:
@@ -288,14 +390,24 @@ def main() -> None:
     try:
         output = dispatch(event, payload)
     except Exception as exc:
-        # The dispatcher itself failing is critical — say so.
+        # The dispatcher itself failing is critical — say so. Route the notice
+        # through merge_outputs so even the panic path speaks the host's
+        # dialect: a raw {"additionalContext": ...} is itself invalid on Codex,
+        # which would turn one crash into two error reports.
         log_hook_error("hook_dispatch", exc)
-        print(json.dumps({
+        notice = {
             "additionalContext": (
                 f"[c3:hook-error] hook_dispatch: {type(exc).__name__}: {exc}; "
                 "see .c3/hook_errors.log"
             )
-        }))
+        }
+        try:
+            output = merge_outputs([notice], [], event=event,
+                                   host=detect_host(payload))
+        except Exception:
+            output = notice
+        if output:
+            print(json.dumps(output))
         return
 
     if not output:
