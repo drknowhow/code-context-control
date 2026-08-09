@@ -4,6 +4,72 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.78.0] - 2026-08-09
+
+### Fixed — Codex validates hook output, and we were sending it Claude's shape (#84)
+
+Reported by a Codex session whose hooks route into the shared dispatcher. The
+dispatcher had exactly two host branches, chosen by one boolean:
+
+```python
+is_gemini = isinstance(payload.get("tool_response", ""), dict)
+```
+
+Codex fell through to the Claude branch. That was survivable for Gemini, which
+ignores what it does not recognise. It is not survivable for Codex, because
+Codex is the first host that actually **validates**: every hook output schema
+embedded in `codex.exe` (verified against 0.147.0) is
+`additionalProperties: false`, `hookSpecificOutput.hookEventName` is required,
+and the deserializer is `deny_unknown_fields`. One unknown key discards the
+**entire** response, not just the offending field.
+
+So all three shapes C3 could emit were rejected:
+
+| C3 emitted | Codex verdict |
+|---|---|
+| `{"tool_result": …}` | unknown top-level field — `tool_result` is in no Codex schema |
+| `{"additionalContext": …}` | unknown top-level field — it exists nested only |
+| `{"hookSpecificOutput": {"additionalContext": …}}` | well-formed, but `hookEventName` is missing |
+
+`Stop` was a fourth case: `stop.command.output` carries no `hookSpecificOutput`
+at all, and `main()` printed raw `_text` to stdout there, which is not valid
+hook JSON for any Codex event.
+
+Host detection was wrong in the other direction too. Codex declares
+`tool_response` as free-form, so an MCP tool that returned an object made a
+Codex payload read as **Gemini**.
+
+**What changed.** Collection stays shared; only serialization branches.
+`_codex_output()` builds from a per-event **whitelist** rather than stripping
+keys it happens to know about, so a sub-hook that invents a new output key can
+never break Codex again. Nothing is silently dropped: a `tool_result` degrades
+to leading context, and `_text` becomes `systemMessage` — the only
+user-visible string slot present on every Codex schema, and the only one
+`Stop` has. `main()`'s panic path routes through the same emitter, so a
+dispatcher crash reports once instead of twice.
+
+Detection now keys on `turn_id`, which Codex requires on every turn-scoped
+event and documents as a Codex extension. It is tested **before** the Gemini
+check, which fixes the misdetection above.
+
+**`hook_filter` no longer runs on Codex.** It is the one sub-hook that reads
+the whole payload — it tiktoken-encodes the entire Bash output to measure
+savings, a Rust-side allocation proportional to output size, made worse by an
+`lru_cache(maxsize=2048)` keyed on the full text. A Codex session reported a
+Rust allocation failure on large tool output; this is the most plausible
+source, though no backtrace was retained, so treat the causal link as strongly
+suspected rather than proven. On Codex the work could never pay off in any
+case: there is no `tool_result` for the filtered text to land in.
+
+Everything else is bookkeeping that never parses the payload, so it stays on
+for Codex — edit ledger, artifact tracking, c3 signal, sticky unlock, ghost
+sweep, and Access Guard enforcement.
+
+**Scope.** This fixes the dispatcher for any Codex session whose hooks are
+wired to it. C3 still does not *generate* `.codex/hooks.json` — the codex IDE
+profile remains `supports_hooks=False`, so hook files for Codex are
+hand-authored today.
+
 ## [2.77.0] - 2026-08-08
 
 ### Fixed — the shell scan now judges paths against the cwd, not the session root (#82)

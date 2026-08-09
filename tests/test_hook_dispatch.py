@@ -131,6 +131,12 @@ class DispatchBase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         (self.tmp / ".c3").mkdir()
+        # Pin the enforcement mode. Without this the tmp project inherits
+        # whatever ~/.c3/config.json says, so a developer who ran
+        # `c3 enforce advisory` turns every deny assertion below into a
+        # failure that has nothing to do with the dispatcher.
+        (self.tmp / ".c3" / "config.json").write_text(
+            json.dumps({"enforcement": {"mode": "strict"}}), encoding="utf-8")
         self._saved_cache = dict(hook_dispatch._RUN_CACHE)
         _hook_utils.drain_state_warnings()
 

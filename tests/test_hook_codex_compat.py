@@ -17,6 +17,7 @@ codex.exe 0.147.0 (`<event>.command.output`). It is duplicated here on
 purpose: the test must fail if hook_dispatch drifts from the real Codex
 schema, which it cannot do if both read the same constant.
 """
+import json
 import shutil
 import sys
 import tempfile
@@ -285,6 +286,10 @@ class TestCodexDispatchEndToEnd(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         (self.tmp / ".c3").mkdir()
+        # Pin enforcement so the deny assertions test the dispatcher, not
+        # whatever mode ~/.c3/config.json happens to be in.
+        (self.tmp / ".c3" / "config.json").write_text(
+            json.dumps({"enforcement": {"mode": "strict"}}), encoding="utf-8")
         self._saved_cache = dict(hook_dispatch._RUN_CACHE)
         _hook_utils.drain_state_warnings()
 
