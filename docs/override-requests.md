@@ -634,7 +634,8 @@ surfaces it as *"this rule is costing you — edit it or accept it."*
 |---|---|---|
 | Claude Code native tools (hooks installed) | yes | yes |
 | `c3_*` MCP tools | yes | **yes (v2.72.0).** All six content tools consult `cli/tools/_grants.allow` before refusing, which delegates to the same `override_grants.gate_access` the hooks call — policy first, grants second. **Masked paths are excluded on purpose:** a mask is not a refusal to be lifted but a different view being served, so "approve once" has no meaning for it; only the `denial` branch of `verdict()` consults a grant. |
-| Hookless IDEs (Codex, Gemini CLI) | discipline is advisory only today | n/a — nothing to override |
+| Codex (hooks wired manually) | yes — the dispatcher speaks Codex's wire format as of v2.78.0 | yes, same path as Claude Code |
+| IDEs without hooks installed (Codex out of the box, Antigravity, VS Code, Cursor) | discipline is advisory only today | n/a — nothing to override |
 | Raw shell / direct file API | **no** | **no** |
 | `c3_project` cross-project writes | `allow_write` unchanged | never |
 

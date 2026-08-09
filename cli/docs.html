@@ -1747,11 +1747,17 @@ Background agent system with periodic check loop and AI enhancement.
   ...</code></pre>
 
       <!-- â”€â”€â”€ Hooks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
-      <h3 id="hooks">PostToolUse Hooks <span class="badge badge-blue" style="font-size:10px">Claude Code only</span>
+      <h3 id="hooks">PostToolUse Hooks <span class="badge badge-blue" style="font-size:10px">installed for Claude Code</span>
       </h3>
-      <p>C3 registers two PostToolUse hooks in <code>.claude/settings.local.json</code> that run after Claude executes
-        certain tools. These hooks are only installed for Claude Code &mdash; other IDEs rely on the workflow
+      <p>C3 registers its PostToolUse hooks in <code>.claude/settings.local.json</code> that run after Claude executes
+        certain tools. C3 only <em>installs</em> them for Claude Code &mdash; other IDEs rely on the workflow
         instructions in their instructions file instead.</p>
+      <p>The dispatcher itself is not Claude-only. Since v2.78.0 it branches by host and speaks three wire formats:
+        Claude Code, Gemini CLI, and Codex CLI &mdash; so a Codex session with a hand-authored
+        <code>.codex/hooks.json</code> pointing at <code>cli/hook_dispatch.py</code> gets full enforcement and
+        bookkeeping. Codex validates hook output strictly (<code>additionalProperties: false</code>), which is why it
+        needs its own serializer rather than the Claude shape. Output filtering is skipped on Codex: its schema has no
+        <code>tool_result</code> to replace, so tokenizing the payload would be wasted work.</p>
 
       <table>
         <tr>
