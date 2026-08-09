@@ -75,6 +75,14 @@ class GuardBase(unittest.TestCase):
         (self.proj / ".c3").mkdir()
         self._gb = mock.patch.object(ag, "_global_base", return_value=None)
         self._gb.start()
+        # delegate's response cache is a module global that outlives a test.
+        # The codex cases below key their task on id(svc), and CPython reuses
+        # an address once the previous svc is collected — so the second test
+        # could hit the FIRST one's cached "CODEX-OUT", return without ever
+        # calling the mocked _run_codex, and assert against an empty capture
+        # (`sandbox` is None, not the pinned value). That is allocator luck,
+        # which is why it only ever failed on some runners.
+        delegate_mod._delegate_cache.clear()
 
     def tearDown(self):
         self._gb.stop()
@@ -354,8 +362,11 @@ class TestDelegateGuard(GuardBase):
                 mock.patch.object(delegate_mod, "_codex_available", True), \
                 mock.patch.object(delegate_mod, "_codex_memory_bridge",
                                   return_value=None):
+            # Key the task on the test name, not id(svc): an address is
+            # reused as soon as the previous svc is collected, which made two
+            # different tests share one cache entry.
             out = delegate_mod.handle_delegate(
-                f"t-codex-{id(svc)}", "ask", "", "", svc, _finalize,
+                f"t-codex-{self.id()}", "ask", "", "", svc, _finalize,
                 backend="codex")
         return out, seen
 
