@@ -455,7 +455,11 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
             if job_if:
                 problem = ci_expr.validate(job_if, github_fields)
                 if problem:
+                    # Blocks on BOTH engines: act evaluates conditions too, and
+                    # a condition reading a value that does not exist locally
+                    # (no event) is unjudgeable whatever runs the job.
                     blockers.append(f"job-level {problem}")
+                    act_blockers.append(f"job-level {problem}")
 
             steps: list = []
             if not isinstance(steps_raw, list):
@@ -686,8 +690,19 @@ def build_dag(workflows, event: str = "", git: dict = None) -> Dag:
     return Dag(instances=instances)
 
 
-def inspect_project(project_path, event: str = "") -> dict:
-    """Everything `c3 ci inspect` needs, as plain data."""
+def inspect_project(project_path, event: str = "", engine: str = "auto") -> dict:
+    """Everything `c3 ci inspect` needs, as plain data.
+
+    Engine-aware on purpose. "Is this job runnable here?" has no answer until
+    you know what would run it: a Linux job is out of reach for the native
+    shell on Windows and routine for act. Reporting the native count alone
+    told users 3 of 15 when the real answer was 11 — so the partition is
+    computed once, here, and every surface (tool text, `--json`, the Hub)
+    reads the same numbers.
+
+    `engine='native'` forces the pre-act view, which is what a test wants when
+    it must not depend on whether act happens to be installed.
+    """
     files = discover_workflows(project_path)
     workflows = [parse_workflow(p) for p in files]
     dag = build_dag([w for w in workflows if not w.error],
@@ -699,18 +714,51 @@ def inspect_project(project_path, event: str = "") -> dict:
     except CycleError as exc:
         ordered, cycle = dag.instances, str(exc)
 
+    # Lazy: keeps parsing independent of the execution engines, and avoids
+    # paying for a `docker version` probe on every import.
+    from services import ci_act
+    engines = ci_act.availability() if engine in ("auto", "act") else {
+        "ok": False, "reason": "engine='native' — containers not considered"}
+    act_ok = bool(engines.get("ok"))
+
+    native, container, foreign, unsupported = [], [], [], []
+    for i in ordered:
+        is_linux = runner_os(i.runs_on) == "Linux"
+        can_native = i.supported_by("native") and not i.foreign_runner
+        can_container = act_ok and is_linux and i.supported_by("act")
+
+        if can_native:
+            native.append(i)
+        elif can_container:
+            container.append(i)
+        else:
+            # It cannot run. Two very different reasons, and conflating them
+            # sends the reader to the wrong fix: `unsupported` means the job
+            # contains something no available engine reproduces, `foreign`
+            # means the job is fine but its runner is out of reach. Judge the
+            # blockers of the engine that WOULD have been chosen.
+            would_use = "act" if (act_ok and is_linux) else "native"
+            if not i.supported_by(would_use):
+                unsupported.append(i)
+            else:
+                foreign.append(i)
+
     return {
         "project": str(project_path),
         "host_os": host_os(),
+        "engines": engines,
         "workflows": [w.to_dict() for w in workflows],
         "jobs": [i.to_dict() for i in ordered],
         "order": [i.key for i in ordered],
         "cycle": cycle,
         "unknown_needs": dag.unknown_needs(),
-        "runnable": [i.key for i in ordered
-                     if i.supported and not i.foreign_runner],
-        "unsupported": [{"key": i.key, "blockers": i.blockers}
-                        for i in ordered if not i.supported],
-        "foreign": [{"key": i.key, "runs_on": i.runs_on}
-                    for i in ordered if i.supported and i.foreign_runner],
+        # `runnable` is the union — what can actually run here, by any engine
+        # available. The two breakdowns say how.
+        "runnable": [i.key for i in native + container],
+        "runnable_native": [i.key for i in native],
+        "runnable_container": [i.key for i in container],
+        "unsupported": [{"key": i.key,
+                         "blockers": i.blockers_for("act" if act_ok else "native")}
+                        for i in unsupported],
+        "foreign": [{"key": i.key, "runs_on": i.runs_on} for i in foreign],
     }

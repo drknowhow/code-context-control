@@ -91,7 +91,7 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
 
     # ── inspect ──────────────────────────────────────────────────────────
     if action in ("", "inspect", "jobs"):
-        data = inspect_project(project, event=event)
+        data = inspect_project(project, event=event, engine=engine)
         if not data["workflows"]:
             return finalize(
                 "c3_ci", args,
@@ -105,26 +105,39 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
             lines.append(f"  {wf['name']}  [{', '.join(wf['triggers']) or 'no triggers'}]"
                          f"  jobs={len(wf['jobs'])}{err}")
 
+        native = set(data.get("runnable_native") or [])
+        container = set(data.get("runnable_container") or [])
+
         lines.append("\nJob graph (dependency order):")
         by_key = {j["key"]: j for j in data["jobs"]}
         for key in data["order"]:
             j = by_key[key]
             needs = f"  needs={','.join(j['needs'])}" if j["needs"] else ""
-            if not j["supported"]:
-                state = "UNSUPPORTED"
-            elif j["foreign_runner"]:
-                state = f"other-OS ({j['runs_on']})"
-            else:
+            if key in native:
                 state = "runnable here"
+            elif key in container:
+                state = "runnable (container)"
+            elif not j["supported"] and not j.get("act_could_run"):
+                state = "UNSUPPORTED"
+            else:
+                state = f"other-OS ({j['runs_on']})"
             lines.append(f"  {key:<42} {state}{needs}")
 
+        engines = data.get("engines") or {}
         lines.append(
-            f"\nRunnable on this host: {len(data['runnable'])} of {len(data['jobs'])}")
+            f"\nRunnable here: {len(data['runnable'])} of {len(data['jobs'])}"
+            f"  ({len(native)} native, {len(container)} container)")
+        if engines.get("ok"):
+            lines.append(f"  engines: native + act ({engines.get('act_version', '')})")
+        else:
+            lines.append(
+                f"  engines: native only — {engines.get('reason', 'act unavailable')}")
         if data["foreign"]:
             lines.append(
-                f"  other-OS ({len(data['foreign'])}): these target a different "
-                "runner. c3_ci(action='run', allow_foreign=true) attempts them "
-                "anyway and labels the result cross-OS.")
+                f"  other-OS ({len(data['foreign'])}): these target a runner no "
+                "available engine can reproduce. c3_ci(action='run', "
+                "allow_foreign=true) attempts them on this OS anyway and labels "
+                "the result cross-OS.")
         if data["unsupported"]:
             lines.append(f"  unsupported ({len(data['unsupported'])}):")
             for item in data["unsupported"][:8]:

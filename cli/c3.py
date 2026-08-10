@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.81.0"
+__version__ = "2.82.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6065,7 +6065,9 @@ def _ci_main(args) -> int:
         from services import ci_runner as cr
         from services.ci_workflow import inspect_project
         if sub == "inspect":
-            payload = inspect_project(project_path, event=getattr(args, "event", "") or "")
+            payload = inspect_project(
+                project_path, event=getattr(args, "event", "") or "",
+                engine=getattr(args, "engine", "auto") or "auto")
         elif sub in ("run", "rerun"):
             only = None
             if sub == "rerun":

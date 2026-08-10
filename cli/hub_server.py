@@ -1321,12 +1321,9 @@ def api_ci_inspect():
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     try:
-        from services import ci_act
-        data = inspect_project(resolved)
-        # The UI has to be able to say WHY a job cannot run here, and
-        # "install act" is a different answer from "macOS is impossible".
-        data["engines"] = ci_act.availability()
-        return jsonify(data)
+        # inspect_project owns the engine partition, so the Hub, the CLI
+        # and the tool text can never disagree about what is runnable.
+        return jsonify(inspect_project(resolved))
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
