@@ -4,6 +4,55 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.80.0] - 2026-08-10
+
+### Added — AgentCI evaluates `if:` conditions
+
+v2.79.0 parsed `if:` and ignored it, so every guarded step ran locally whether
+or not CI would have run it. That over-runs rather than under-runs — it cannot
+manufacture a false green — but it wastes time and reports failures for steps
+that were never going to execute. It is now evaluated, with GitHub's semantics:
+
+- a condition naming no status function is implicitly `success() && (...)`,
+  which is why `if: always()` is the documented way to run after a failure;
+- a job-level `if:` **replaces** the `needs` success gate, so `always()` and
+  `failure()` run even when a dependency failed — while an ordinary condition
+  still skips, because the implicit `success()` is injected rather than lost;
+- a step with no `if:` keeps its implicit `success()` gate and is skipped once
+  the job has failed.
+
+Supported: the comparison and boolean operators, parentheses, literals, and
+`success` `failure` `always` `cancelled` `contains` `startsWith` `endsWith`
+`format` `join` `toJSON` `fromJSON`, over the `github` `env` `matrix` `runner`
+`job` `needs` `steps` `strategy` contexts. Evaluation short-circuits, so
+`false && needs.x.result == 'y'` does not blow up on an unresolvable branch.
+
+**A job skipped by its own `if:` does not cost coverage.** It gets its own
+status (`skipped_if`) and `FULL_CI_PASS` stays reachable, because CI would have
+skipped it too — not running it *is* the faithful reproduction. Counting it as
+a gap would have left any workflow containing a conditional job permanently
+unable to reach a full pass, which is wrong rather than merely strict.
+
+**Two things still refuse rather than guess**, consistent with the rest of the
+module: a condition we cannot parse, and one reading a value with no honest
+local equivalent. The second is mostly `github.event_name` — there is no event
+locally, and inventing `"push"` would evaluate the user's condition against
+fiction. So it blocks with a message naming the fix, and a new `--event` /
+`event=` parameter declares what you are simulating:
+
+```bash
+c3 ci run --event pull_request
+```
+
+`github.ref`, `ref_name` and `sha` are now read from git rather than the
+placeholder values v2.79.0 used, and `needs.*.result` resolves from real
+outcomes as the run proceeds.
+
+One regression the existing suite caught while this was being built: teaching
+the runner to continue past a failure (so `always()` can work) briefly made
+every *unguarded* later step run after a failure too. A missing `if:` still
+means `success()`, and there is now a test pinning exactly that.
+
 ## [2.79.0] - 2026-08-10
 
 ### Added — AgentCI: run this repo's real CI locally, before pushing

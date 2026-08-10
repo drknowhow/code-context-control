@@ -16,12 +16,15 @@ never silently narrowed.
 from __future__ import annotations
 
 import itertools
+import os
 import platform
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from services import ci_expr
 
 WORKFLOW_DIR = ".github/workflows"
 _WORKFLOW_GLOBS = ("*.yml", "*.yaml")
@@ -335,17 +338,50 @@ def _matrix_suffix(combo: dict) -> str:
 
 # ── Instantiation ───────────────────────────────────────────────────────────
 
-def _github_context(workflow: Workflow) -> dict:
-    return {
-        "workflow": workflow.name,
-        "ref": "refs/heads/local",
-        "event_name": "workflow_dispatch",
-        "run_number": "0",
-        "run_id": "0",
-    }
+def git_context(project_path) -> dict:
+    """Real branch/sha for the `github` context — read, never invented.
+
+    Only facts we can actually observe go in here. `event_name` is deliberately
+    absent unless the caller declares one: there is no event locally, and
+    guessing "push" would make `if: github.event_name == 'push'` evaluate
+    against fiction. An absent key raises UnknownRef, which blocks the job with
+    a message telling the user to declare the event they mean.
+    """
+    import subprocess
+
+    def _git(*args) -> str:
+        try:
+            out = subprocess.run(
+                ["git", *args], cwd=str(project_path), capture_output=True,
+                text=True, timeout=15, stdin=subprocess.DEVNULL,
+                **({"creationflags": subprocess.CREATE_NO_WINDOW}
+                   if os.name == "nt" else {}),
+            )
+            return (out.stdout or "").strip()
+        except Exception:
+            return ""
+
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    sha = _git("rev-parse", "HEAD")
+    ctx: dict = {}
+    if branch:
+        ctx["ref"] = f"refs/heads/{branch}"
+        ctx["ref_name"] = branch
+    if sha:
+        ctx["sha"] = sha
+    return ctx
 
 
-def instantiate(workflow: Workflow) -> list:
+def _github_context(workflow: Workflow, event: str = "",
+                    git: dict = None) -> dict:
+    ctx = {"workflow": workflow.name}
+    ctx.update(git or {})
+    if event:
+        ctx["event_name"] = event
+    return ctx
+
+
+def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
     """Expand a parsed workflow into concrete, runnable JobInstances."""
     instances: list = []
     for job_id, raw in (workflow.jobs or {}).items():
@@ -363,12 +399,14 @@ def instantiate(workflow: Workflow) -> list:
         steps_raw = raw.get("steps")
 
         for combo in expand_matrix(raw.get("strategy") or {}):
+            github_ctx = _github_context(workflow, event, git)
             ctx = {
                 "matrix": {k: v for k, v in combo.items()},
                 "env": {**workflow.env, **job_env},
-                "github": _github_context(workflow),
+                "github": github_ctx,
             }
             blockers: list = []
+            github_fields = set(github_ctx)
 
             runs_on_raw = raw.get("runs-on") or ""
             if isinstance(runs_on_raw, dict):       # {group:, labels:}
@@ -390,6 +428,16 @@ def instantiate(workflow: Workflow) -> list:
             if raw.get("services"):
                 blockers.append("job-level `services:` is not supported locally")
 
+            # `if:` is validated here and evaluated in the runner: whether it
+            # holds depends on results that do not exist yet, but whether it
+            # CAN ever be evaluated is knowable now, and a condition we could
+            # never judge must block rather than be quietly ignored.
+            job_if = str(raw.get("if") or "")
+            if job_if:
+                problem = ci_expr.validate(job_if, github_fields)
+                if problem:
+                    blockers.append(f"job-level {problem}")
+
             steps: list = []
             if not isinstance(steps_raw, list):
                 blockers.append("job has no steps")
@@ -397,7 +445,7 @@ def instantiate(workflow: Workflow) -> list:
                 for idx, sraw in enumerate(steps_raw):
                     if not isinstance(sraw, dict):
                         continue
-                    step, sblockers = _build_step(idx, sraw, ctx)
+                    step, sblockers = _build_step(idx, sraw, ctx, github_fields)
                     steps.append(step)
                     blockers.extend(sblockers)
 
@@ -418,9 +466,15 @@ def instantiate(workflow: Workflow) -> list:
     return instances
 
 
-def _build_step(index: int, raw: dict, ctx: dict) -> tuple:
+def _build_step(index: int, raw: dict, ctx: dict,
+                github_fields: set = None) -> tuple:
     """One step, with expressions resolved. Returns (Step, blockers)."""
     blockers: list = []
+    step_if = str(raw.get("if") or "")
+    if step_if:
+        problem = ci_expr.validate(step_if, github_fields or set())
+        if problem:
+            blockers.append(f"step {index} {problem}")
     uses = str(raw.get("uses") or "").strip()
     run_res = substitute(str(raw.get("run") or ""), ctx)
     name = substitute(str(raw.get("name") or ""), ctx).text
@@ -581,21 +635,22 @@ class Dag:
         return [i for i in self.instances if i.job_id == sel]
 
 
-def build_dag(workflows) -> Dag:
+def build_dag(workflows, event: str = "", git: dict = None) -> Dag:
     """Instances for one or many workflows, as a single DAG."""
     if isinstance(workflows, Workflow):
         workflows = [workflows]
     instances: list = []
     for wf in workflows:
-        instances.extend(instantiate(wf))
+        instances.extend(instantiate(wf, event=event, git=git))
     return Dag(instances=instances)
 
 
-def inspect_project(project_path) -> dict:
+def inspect_project(project_path, event: str = "") -> dict:
     """Everything `c3 ci inspect` needs, as plain data."""
     files = discover_workflows(project_path)
     workflows = [parse_workflow(p) for p in files]
-    dag = build_dag([w for w in workflows if not w.error])
+    dag = build_dag([w for w in workflows if not w.error],
+                    event=event, git=git_context(project_path))
 
     cycle = ""
     try:

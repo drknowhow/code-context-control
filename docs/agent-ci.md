@@ -119,6 +119,39 @@ already holds", so they are no-ops and say so in the log:
 By default it is refused. `--allow-foreign` runs it anyway, labels the result
 `cross-OS`, and caps the verdict at `PARTIAL_PASS` forever.
 
+### `if:` conditions (v2.80.0+)
+
+Job- and step-level `if:` are **evaluated**, with GitHub's semantics:
+
+- a condition naming no status function is implicitly `success() && (...)`,
+  which is why `if: always()` is how you run a step after a failure;
+- a job-level `if:` **replaces** the `needs` success gate, so `if: always()`
+  and `if: failure()` run even when a dependency failed;
+- a step with no `if:` keeps its implicit `success()` gate and is skipped once
+  something in the job has failed.
+
+Supported: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, parentheses,
+literals, and `success` `failure` `always` `cancelled` `contains` `startsWith`
+`endsWith` `format` `join` `toJSON` `fromJSON`. Contexts: `github`, `env`,
+`matrix`, `runner`, `job`, `needs`, `steps`, `strategy`.
+
+A job skipped by its own `if:` is status `skipped_if` and **does not cost
+coverage** — CI would have skipped it too, so not running it is the faithful
+outcome and `FULL_CI_PASS` stays reachable.
+
+Two things still block rather than guess, in keeping with the rest of the
+module: a condition we cannot **parse**, and one that reads something with no
+honest local value. The second is mostly `github.event_name` — there is no
+event locally, and inventing `"push"` would evaluate your condition against
+fiction. Declare what you are simulating instead:
+
+```bash
+c3 ci run --event pull_request
+```
+
+`github.ref`, `ref_name` and `sha` are read from git and always available.
+`needs.*.result` and step outcomes resolve at run time from real results.
+
 > On this repository, from Windows: 3 of 15 jobs are runnable, 9 target
 > another OS, and 3 use publish actions we do not execute. `c3 ci inspect`
 > prints exactly that, which is the honest answer.
@@ -180,10 +213,9 @@ Straight from the plan's own §41 "do not begin with" list:
 - test-impact prediction and CI intelligence (PRD 7)
 - caching and content-addressed reuse (PRD 4)
 
-`if:` conditions deserve a specific note: they are parsed and reported but
-**not evaluated**, so a step guarded by `if: github.event_name == 'push'` runs
-locally regardless. That is a known over-run — visible in the log rather than
-silent, which is the safer direction to be wrong in.
+Within expressions, composite actions, `${{ }}` inside `with:` blocks passed to
+shimmed actions, and object/array literals are not implemented; a condition
+using one blocks its job rather than being approximated.
 
 ---
 

@@ -769,7 +769,8 @@ async def c3_locks(action: str = "list", paths: str = "", intent: str = "",
 @mcp.tool()
 async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
                 allow_foreign: bool = False, workflow: str = "",
-                tail: int = 200, timeout: int = 0, ctx: Context = None) -> str:
+                tail: int = 200, timeout: int = 0, event: str = "",
+                ctx: Context = None) -> str:
     """RUN THIS REPO'S REAL CI LOCALLY — before pushing, not after.
     Reads .github/workflows/*.yml as the source of truth (no second CI config).
     actions: inspect (default) | run | rerun | status | failures | logs | runs.
@@ -783,7 +784,10 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
     that means "safe to push". PARTIAL_PASS means something did not run
     (different OS, unsupported action, or you selected a subset); it is NOT a
     green light. Jobs targeting another OS are refused unless allow_foreign=true,
-    which runs them and labels the result cross-OS."""
+    which runs them and labels the result cross-OS.
+    event: declare which GitHub event you are simulating ('push',
+      'pull_request'). Needed only when an `if:` reads github.event_name —
+      there is no event locally, so C3 refuses to guess one."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -792,7 +796,7 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
     from cli.tools.ci import handle_ci
     return await asyncio.to_thread(handle_ci, action, job, run_id,
                                    allow_foreign, workflow, tail, timeout,
-                                   svc, finalize)
+                                   svc, finalize, event)
 
 
 @mcp.tool()
