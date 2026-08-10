@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.83.0"
+__version__ = "2.84.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6055,6 +6055,10 @@ def _ci_main(args) -> int:
     from cli.tools.ci import handle_ci
 
     sub = getattr(args, "ci_cmd", None) or "inspect"
+    if sub == "cache" and getattr(args, "clear", False):
+        # `--clear` is a flag on the CLI; the shared handler takes it
+        # positionally so both surfaces route through one code path.
+        args.job = "clear"
     project_path = getattr(args, "project_path", ".") or "."
     as_json = bool(getattr(args, "json", False))
 
@@ -6109,7 +6113,8 @@ def _ci_main(args) -> int:
         getattr(args, "network", "") or "",
         "required" if getattr(args, "required", False) else "full",
         getattr(args, "base", "") or "",
-        bool(getattr(args, "allow_host_mutation", False)))
+        bool(getattr(args, "allow_host_mutation", False)),
+        bool(getattr(args, "no_cache", False)))
     print(out)
     # Exit code is the finding: a non-full verdict must not read as success to
     # a shell script or a pre-push hook.

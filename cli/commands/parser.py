@@ -515,6 +515,9 @@ def build_parser(version: str, parse_cli_ide_arg):
     ci_run.add_argument("--allow-host-mutation", action="store_true",
                         help="Permit native steps that reconfigure this machine "
                              "(pip/npm -g/apt install). Refused by default.")
+    ci_run.add_argument("--no-cache", action="store_true",
+                        help="Ignore cached results and execute every "
+                             "selected job")
     ci_run.add_argument("--network", default="",
                         help="Container network for the act engine (e.g. `none` "
                              "to cut egress). Default: act's own.")
@@ -542,6 +545,10 @@ def build_parser(version: str, parse_cli_ide_arg):
         "plan", help="Show which jobs a change requires, and why"))
     ci_plan.add_argument("--base", default="",
                          help="Diff against this ref instead of the working tree")
+    ci_cache_p = _ci_common(ci_subs.add_parser(
+        "cache", help="Cached-result store: size, or --clear it"))
+    ci_cache_p.add_argument("--clear", action="store_true",
+                            help="Drop every cached result and dependency cache")
     _ci_common(ci_subs.add_parser(
         "doctor", help="Which execution engines are available on this machine"))
 

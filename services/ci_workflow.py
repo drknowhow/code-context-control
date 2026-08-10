@@ -73,7 +73,7 @@ SHIMMED_ACTIONS = {
     "actions/setup-python": "using the interpreter C3 is running on",
     "actions/setup-node": "using the node on PATH",
     "actions/setup-go": "using the go on PATH",
-    "actions/cache": "cache is an optimization; skipped locally",
+    "actions/cache": "restored from / saved to the local dependency cache",
     "actions/upload-artifact": "artifacts copied to the local run directory",
     "actions/download-artifact": "artifacts read from the local run directory",
 }

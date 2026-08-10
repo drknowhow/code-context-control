@@ -19,7 +19,7 @@ from services.ci_workflow import inspect_project
 _MARK = {
     cr.PASSED: "PASS", cr.FAILED: "FAIL", cr.SKIPPED: "SKIP",
     cr.UNSUPPORTED: "UNSUP", cr.FOREIGN: "OTHER-OS", cr.TIMEOUT: "TIMEOUT",
-    cr.DESELECTED: "-",
+    cr.DESELECTED: "-", cr.CACHED: "CACHED",
 }
 
 # Verdicts an agent may treat as "safe to push". Deliberately one item long.
@@ -84,7 +84,8 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
               event: str = "", engine: str = "auto",
               allow_side_effects: bool = False, network: str = "",
               mode: str = "full", base: str = "",
-              allow_host_mutation: bool = False) -> str:
+              allow_host_mutation: bool = False,
+              no_cache: bool = False) -> str:
     """Route c3_ci actions."""
     project = str(svc.project_path)
     action = (action or "inspect").strip().lower()
@@ -213,7 +214,8 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
                            workflow=workflow, event=event, engine=engine,
                            allow_side_effects=allow_side_effects,
                            network=network, mode=mode, base=base,
-                           allow_host_mutation=allow_host_mutation)
+                           allow_host_mutation=allow_host_mutation,
+                           no_cache=no_cache)
         run = result.to_dict()
         lines = [_verdict_line(run), f"run {run['run_id']}  host={run['host_os']}"]
         fp = run.get("fingerprint") or {}
@@ -285,6 +287,36 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
             lines.append(f"  {row['run_id']}  {row['verdict']:<14} "
                          f"{row.get('started_at', '')[:19]}  {tally}")
         return finalize("c3_ci", args, "\n".join(lines), f"{len(rows)} runs")
+
+    # ── cache ────────────────────────────────────────────────────────────
+    if action == "cache":
+        from services import ci_cache
+        if (job or "").strip().lower() == "clear" or run_id == "clear":
+            freed = ci_cache.clear(project)
+            return finalize("c3_ci", args,
+                            f"Cleared the CI cache ({freed / 1024:.0f} KB).",
+                            "cache cleared")
+        info = ci_cache.stats(project)
+        rules = ci_impact.load_rules(project)
+        lines = [
+            f"Cached results: {info['results']}",
+            f"Dependency cache keys: {info['dependency_keys']}",
+            f"Location: {info['dir']}",
+            "",
+            "A job is reused when its definition, engine and inputs are all "
+            "unchanged since it last passed.",
+        ]
+        if rules:
+            lines.append(
+                f"{len(rules)} job(s) declare inputs via ci.required_map, so "
+                "only those paths invalidate them.")
+        else:
+            lines.append(
+                "No ci.required_map: every job is fingerprinted over the whole "
+                "tree, so any edit invalidates every cached result. Declaring "
+                "inputs is what makes the cache bite.")
+        return finalize("c3_ci", args, "\n".join(lines),
+                        f"{info['results']} cached")
 
     # ── doctor ───────────────────────────────────────────────────────────
     if action == "doctor":
