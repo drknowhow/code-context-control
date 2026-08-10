@@ -545,6 +545,14 @@ def build_parser(version: str, parse_cli_ide_arg):
         "plan", help="Show which jobs a change requires, and why"))
     ci_plan.add_argument("--base", default="",
                          help="Diff against this ref instead of the working tree")
+    ci_pub = _ci_common(ci_subs.add_parser(
+        "publish", help="Post the last run as a GitHub commit status"))
+    ci_pub.add_argument("--run", dest="run_id", default="")
+    ci_pub.add_argument("--dry-run", action="store_true")
+    ci_pub.add_argument("--force", action="store_true",
+                        help="Publish a PARTIAL result as `pending`")
+    _ci_common(ci_subs.add_parser(
+        "history", help="Per-job pass/fail history and flake detection"))
     ci_cache_p = _ci_common(ci_subs.add_parser(
         "cache", help="Cached-result store: size, or --clear it"))
     ci_cache_p.add_argument("--clear", action="store_true",

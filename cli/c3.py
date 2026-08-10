@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.84.0"
+__version__ = "2.85.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6055,6 +6055,11 @@ def _ci_main(args) -> int:
     from cli.tools.ci import handle_ci
 
     sub = getattr(args, "ci_cmd", None) or "inspect"
+    if sub == "publish":
+        if getattr(args, "dry_run", False):
+            args.job = "dry-run"
+        if getattr(args, "force", False):
+            args.allow_side_effects = True
     if sub == "cache" and getattr(args, "clear", False):
         # `--clear` is a flag on the CLI; the shared handler takes it
         # positionally so both surfaces route through one code path.

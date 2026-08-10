@@ -4,6 +4,73 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.85.0] - 2026-08-10
+
+### Added — run history, flake detection, and a GitHub status bridge
+
+Phases 9 and 8 of the AgentCI plan, both scoped to what the available data and
+credentials can honestly support.
+
+**`c3 ci history`** reads the run records that already existed. Per-job
+pass/fail counts, average duration, and one genuinely useful signal: a job that
+both passed **and** failed on the *same fingerprint* — identical definition,
+identical inputs — changed its mind without the world changing. That is a
+flake, not a regression, and it is the only local flake signal that is not a
+guess. Samples under five executions are labelled `(low n)` rather than
+presented as a rate; three runs is not a trend. Cached results are not counted
+as observations, because reuse is not evidence about behaviour.
+
+Deliberately absent: predicting which tests a change will break, inferring
+coverage, ranking "risk". Those need a dependency graph and coverage data C3
+does not have, and a confident-sounding number derived from neither is worse
+than silence — an agent would act on it.
+
+**`c3 ci publish`** posts a **commit status** through your existing `gh`
+authentication. No GitHub App to register, no callback URL, no token for C3 to
+hold. It refuses three things, because a status is a claim other people act on:
+
+- a **dirty tree** — the status attaches to a commit, and if the working tree
+  differs then the thing that ran is not the thing being labelled;
+- an **unpushed commit**, which has nothing to attach to;
+- a **`PARTIAL_PASS`**, unless forced — GitHub's states are success / failure /
+  pending / error and none of them mean "we checked some of it", so rather than
+  pick a misleading one it refuses, and when forced posts `pending` with the
+  reason.
+
+The context is `agentci/local` so nobody mistakes a laptop run for hosted CI.
+PRD 5's full GitHub App remains unbuilt: it needs an App registration, which is
+not something C3 can or should create on your behalf.
+
+## [2.84.0] - 2026-08-10
+
+### Added — fingerprinted result reuse and a real dependency cache
+
+See PR #92. A job whose definition, engine and inputs are unchanged since it
+last passed is reused as `cached` — never as a fresh pass — and the verdict
+note says how many came from cache. `ci.required_map` narrows both *selection*
+(Phase 5) and *invalidation* (Phase 4) from one declaration; without it the
+fingerprint covers the whole tree, so any edit invalidates. `actions/cache` is
+now real: restore at the step, save only after the job passes, keys immutable.
+
+Two bugs found by the cache never hitting: a local `fingerprint` shadowed the
+module-level function of the same name, and `lstrip("./")` — which strips a
+character set, not a prefix — turned `.c3/` into `c3/`, so C3 invalidated its
+own cache every run by writing its own bookkeeping.
+
+## [2.83.0] - 2026-08-10
+
+### Added — required mode, and a guard against C3 uninstalling itself
+
+See PR #91. `c3 ci plan` / `run --required` select the jobs a change could have
+broken, conservatively, with a reason for every decision. Anything unmapped
+runs.
+
+Running it found a real defect: the native engine has **no isolation**, so
+executing this repository's own `test` job (`pip install -e .`) uninstalled C3
+mid-run and broke every project's hooks. The native engine now refuses
+host-mutating steps and points at the act engine, where the same step is
+contained.
+
 ## [2.82.0] - 2026-08-10
 
 ### Fixed — the engine count was wrong in three places, and the Hub was lying
