@@ -154,6 +154,42 @@ def side_effects(inst) -> list:
     return found
 
 
+# ── Host-mutation gate (native engine only) ─────────────────────────────────
+# Learned the hard way, on this repository. A required-mode run selected every
+# job and the native engine executed C3's own `test` job, whose steps are
+# `python -m pip install -e ".[dev]"`. That uninstalled the copied C3 from
+# site-packages and replaced it with an editable install pointing at the repo;
+# the run then timed out mid-write and left the package — and every project's
+# hooks — broken.
+#
+# The native engine has no isolation: a `run:` step executes as the user, on
+# the user's machine, against the user's interpreter. Most CI jobs begin by
+# installing dependencies, so "run the repo's real CI natively" means "let a
+# YAML file reconfigure this machine". Under act the same step is contained and
+# harmless, which is why the refusal points there rather than just saying no.
+_HOST_MUTATION = re.compile(
+    r"(?:^|[\s;&|])(?:"
+    r"pip\s+(?:install|uninstall)|pip3\s+(?:install|uninstall)"
+    r"|python\s+-m\s+pip\s+(?:install|uninstall)"
+    r"|npm\s+(?:i|install)\s+(?:-g|--global)|npm\s+uninstall\s+(?:-g|--global)"
+    r"|yarn\s+global\s+add|pnpm\s+add\s+(?:-g|--global)"
+    r"|apt(?:-get)?\s+(?:install|remove|purge)|yum\s+install|dnf\s+install"
+    r"|brew\s+(?:install|uninstall)|choco\s+install|winget\s+install"
+    r"|cargo\s+install|go\s+install|gem\s+install"
+    r"|rustup\s|nvm\s+install|conda\s+(?:install|remove)"
+    r")\b", re.IGNORECASE)
+
+
+def host_mutations(inst) -> list:
+    """Steps that would reconfigure THIS machine if run without a container."""
+    found: list = []
+    for step in getattr(inst, "steps", []):
+        match = _HOST_MUTATION.search(str(getattr(step, "run", "") or ""))
+        if match:
+            found.append(f"step {step.index} runs `{match.group(0).strip()}`")
+    return found
+
+
 # ── Command construction ────────────────────────────────────────────────────
 
 def build_command(inst, project, act_path: str, event: str = "",

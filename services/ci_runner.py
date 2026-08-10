@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services import ci_act, ci_expr, ci_failures
+from services import ci_act, ci_expr, ci_failures, ci_impact
 from services.ci_workflow import (
     CycleError,
     build_dag,
@@ -157,6 +157,8 @@ class RunResult:
     allow_foreign: bool = False
     event: str = ""
     engine: str = "auto"
+    mode: str = "full"
+    plan: dict = field(default_factory=dict)
     note: str = ""
 
     # ── Roll-ups the report and the UI both read ──
@@ -182,7 +184,8 @@ class RunResult:
             "verdict": self.verdict, "host_os": self.host_os,
             "fingerprint": self.fingerprint, "selection": self.selection,
             "allow_foreign": self.allow_foreign, "event": self.event,
-            "engine": self.engine,
+            "engine": self.engine, "mode": self.mode,
+            "plan": self.plan,
             "note": self.note,
             "counts": self.counts,
             "failed": self.failed_keys, "not_run": self.not_run_keys,
@@ -523,7 +526,9 @@ def compute_verdict(jobs: list) -> tuple:
 def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
            only: list = None, timeout: int = DEFAULT_STEP_TIMEOUT,
            workflow: str = "", event: str = "", engine: str = "auto",
-           allow_side_effects: bool = False, network: str = "") -> RunResult:
+           allow_side_effects: bool = False, network: str = "",
+           mode: str = ci_impact.MODE_FULL, base: str = "",
+           allow_host_mutation: bool = False) -> RunResult:
     """Plan and execute. `selector` picks jobs; `only` is an explicit key list.
 
     `only` exists for `rerun --failed`: it names exact keys from a prior run,
@@ -578,6 +583,7 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
         return result
 
     # Selection
+    skip_reasons: dict = {}   # job key -> why the planner dropped it
     if only:
         wanted = set(only)
         chosen = {i.key for i in ordered if i.key in wanted}
@@ -588,6 +594,31 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             result.finished_at = _now()
             result.verdict = FAIL
             result.note = f"no job matches selector '{selector}'"
+            _persist(project, result, run_dir)
+            return result
+    elif mode == ci_impact.MODE_REQUIRED:
+        # Required mode narrows the run to what a change could plausibly have
+        # broken. Everything it drops becomes DESELECTED, which already caps
+        # the verdict at PARTIAL_PASS — a narrowed run must never read as a
+        # full one (PRD 3).
+        plan = ci_impact.plan_required(
+            project, ordered, [w for w in workflows if not w.error],
+            base=base, event=event)
+        result.mode = ci_impact.MODE_REQUIRED
+        result.plan = plan.to_dict()
+        result.selection = f"required(base={base or 'working tree'})"
+        chosen = set(plan.selected)
+        skip_reasons.update({d.job: d.reason for d in plan.decisions
+                             if d.decision == ci_impact.SKIP})
+        if not chosen:
+            result.finished_at = _now()
+            result.verdict = PARTIAL_PASS
+            result.note = (plan.note or "required mode selected no jobs") + \
+                          " — nothing was verified"
+            result.jobs = [JobResult(
+                key=i.key, job_id=i.job_id, name=i.name, workflow=i.workflow,
+                runs_on=i.runs_on, status=DESELECTED,
+                reason=skip_reasons.get(i.key, "not selected")) for i in ordered]
             _persist(project, result, run_dir)
             return result
     else:
@@ -615,7 +646,9 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             results.append(JobResult(
                 key=inst.key, job_id=inst.job_id, name=inst.name,
                 workflow=inst.workflow, runs_on=inst.runs_on,
-                status=DESELECTED, reason="not part of this run's selection"))
+                status=DESELECTED,
+                reason=skip_reasons.get(
+                    inst.key, "not part of this run's selection")))
             _record(inst, DESELECTED)
             continue
 
@@ -645,6 +678,29 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             failed_jobs.add((inst.workflow, inst.job_id))
             _record(inst, FOREIGN)
             continue
+
+        # The native engine has no isolation: a `run:` step executes as the
+        # user, against the user's interpreter. Running this repository's own
+        # CI natively once uninstalled C3 mid-run (`pip install -e .`), taking
+        # every project's hooks with it. Under act the same step is contained,
+        # so the refusal points there instead of merely saying no.
+        if chosen_engine == "native" and not allow_host_mutation:
+            mutations = ci_act.host_mutations(inst)
+            if mutations:
+                hint = ("Run it in a container instead (engine='act')"
+                        if act_state.get("ok") else
+                        "Install act + Docker to run it in a container")
+                results.append(JobResult(
+                    key=inst.key, job_id=inst.job_id, name=inst.name,
+                    workflow=inst.workflow, runs_on=inst.runs_on,
+                    status=UNSUPPORTED, engine="native", fidelity=fidelity,
+                    reason=("would modify THIS machine ("
+                            + "; ".join(mutations[:2]) +
+                            f"). The native engine has no isolation. {hint}, "
+                            "or pass allow_host_mutation to accept the change.")))
+                failed_jobs.add((inst.workflow, inst.job_id))
+                _record(inst, UNSUPPORTED)
+                continue
 
         # With a real action runner, a publishing job stops being unrunnable
         # and starts being one command away from actually publishing. No
