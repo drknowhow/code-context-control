@@ -227,6 +227,73 @@ c3 ci run --event pull_request
 
 ---
 
+## 4c. Modes, caching, history and publishing (v2.83.0+)
+
+### Required mode (§13.2, §14)
+
+```bash
+c3 ci plan                 # what a change requires, and WHY, per job
+c3 ci run --required       # execute just those
+c3 ci plan --base origin/main
+```
+
+The planner is **conservative**: it uses changed paths, workflow `paths:`
+filters, and an explicit `ci.required_map`, and anything it cannot reason about
+**runs**. On a repo with no filters and no map it selects everything and says
+so — that is the only honest V1, because guessing which tests a change cannot
+affect, with no dependency graph, is how a skipped job becomes a shipped bug.
+
+```json
+{ "ci": { "required_map": { "unit": ["src/**"], "docs": ["docs/**", "*.md"] } } }
+```
+
+A narrowed run is always `PARTIAL_PASS` — never a full pass.
+
+### Cached results (Phase 4)
+
+A job whose definition, engine and **inputs** are unchanged since it last
+passed is reused: status `cached`, nothing executed, and the verdict note says
+how many. `--no-cache` forces execution; `c3 ci cache --clear` empties the store.
+
+`ci.required_map` pays for itself twice here: a job that declares its inputs is
+fingerprinted over **only those paths**, so unrelated edits stop invalidating
+it. Without a map the fingerprint covers the whole tree and any edit
+invalidates — few hits, which is correct when nothing has declared what the job
+reads.
+
+`actions/cache` is honoured for real (restore at the step, save after the job
+**passes**, keys immutable). Image and action caching already belong to Docker
+and act; C3 does not reimplement them.
+
+### History and flakes (Phase 9)
+
+```bash
+c3 ci history
+```
+
+Per-job pass/fail counts, average duration, and **flake detection**: a job that
+both passed and failed on the *same fingerprint* changed its mind without the
+world changing. Sample sizes under five are labelled `(low n)` rather than
+presented as a rate. C3 does not predict which tests a change will break — that
+needs coverage data it does not have.
+
+### Publishing a status (Phase 8, partial)
+
+```bash
+c3 ci publish --dry-run
+c3 ci publish
+```
+
+Posts a **commit status** through your existing `gh` authentication — no GitHub
+App, no token for C3 to hold. It refuses three things: a **dirty tree** (the
+commit would not describe what ran), an **unpushed commit**, and a
+**`PARTIAL_PASS`** unless forced, in which case it posts `pending` with the
+reason. The context is `agentci/local` so nobody mistakes a laptop run for
+hosted CI.
+
+The full PRD 5 (a GitHub App posting check runs) is **not** built: it needs an
+App registration, which is not something C3 can or should create for you.
+
 ## 5. Execution details
 
 - **Order.** Jobs run in topological order of `needs`. `needs` is scoped to its

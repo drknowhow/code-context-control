@@ -288,6 +288,56 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
                          f"{row.get('started_at', '')[:19]}  {tally}")
         return finalize("c3_ci", args, "\n".join(lines), f"{len(rows)} runs")
 
+    # ── history / intelligence ───────────────────────────────────────────
+    if action in ("history", "intel", "flaky"):
+        from services import ci_intel
+        data = ci_intel.analyse(project)
+        if not data["runs_analysed"]:
+            return finalize("c3_ci", args, data["note"], "no history")
+        lines = [data["note"], ""]
+        if data["flaky"]:
+            lines.append("FLAKY — passed AND failed on identical inputs:")
+            for job in data["flaky"]:
+                lines.append(f"  {job['key']}  {job['failed']}/{job['executed']} failed")
+                lines.append("      same fingerprint gave both answers, so the "
+                             "code did not change between them")
+            lines.append("")
+        lines.append(f"{'job':<40}{'exec':>5}{'fail':>6}{'rate':>7}{'avg':>8}")
+        for job in data["jobs"][:15]:
+            rate = f"{job['fail_rate']:.0%}" if job["executed"] else "-"
+            avg = f"{job['avg_ms'] / 1000:.1f}s" if job["avg_ms"] else "-"
+            mark = "" if job["confident"] else "  (low n)"
+            lines.append(f"  {job['key']:<38}{job['executed']:>5}"
+                         f"{job['failed']:>6}{rate:>7}{avg:>8}{mark}")
+        if data["slowest"]:
+            lines.append("\nSlowest: " + ", ".join(
+                f"{j['key']} {j['avg_ms'] / 1000:.1f}s" for j in data["slowest"][:3]))
+        return finalize("c3_ci", args, "\n".join(lines),
+                        f"{len(data['flaky'])} flaky")
+
+    # ── publish (GitHub commit status) ───────────────────────────────────
+    if action == "publish":
+        from services import ci_github
+        run = cr.load_run(project, run_id)
+        if not run:
+            return finalize("c3_ci", args, "No run to publish.", "no runs")
+        res = ci_github.publish(project, run,
+                                force=allow_side_effects,
+                                dry_run=(job or "").lower() == "dry-run")
+        if res.get("dry_run"):
+            body = "\n".join([
+                f"Would POST {res['endpoint']}",
+                f"  state={res['state']}",
+                f"  {res['description']}",
+            ])
+            return finalize("c3_ci", args, body, "dry run")
+        if not res.get("published"):
+            return finalize("c3_ci", args,
+                            f"Not published: {res.get('reason')}", "refused")
+        body = (f"Published {res['state']} to {res['sha'][:8]} "
+                f"as {res['context']}.\n  {res['description']}")
+        return finalize("c3_ci", args, body, res["state"])
+
     # ── cache ────────────────────────────────────────────────────────────
     if action == "cache":
         from services import ci_cache

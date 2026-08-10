@@ -777,7 +777,11 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
     """RUN THIS REPO'S REAL CI LOCALLY — before pushing, not after.
     Reads .github/workflows/*.yml as the source of truth (no second CI config).
     actions: inspect | plan | run | rerun | status | failures | logs | runs |
-      cache | doctor. A job whose inputs are unchanged since it last passed
+      cache | history | publish | doctor. publish posts the last run as a
+      GitHub COMMIT STATUS via your gh auth; it refuses a dirty tree, an
+      unpushed commit, and (unless forced) a PARTIAL result. history reports per-job fail rates and
+      flags FLAKY jobs — ones that both passed and failed on identical
+      inputs, so the code cannot be the cause. A job whose inputs are unchanged since it last passed
       is reused (status `cached`, nothing executed); no_cache forces it.
     mode: full (default) | required. required runs only the jobs a change
       could have broken; it is CONSERVATIVE — anything unmapped runs. Use
