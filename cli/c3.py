@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.78.0"
+__version__ = "2.79.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -261,7 +261,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_bitbucket",
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
-    "mcp__c3__c3_override",
+    "mcp__c3__c3_override", "mcp__c3__c3_ci",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -4772,6 +4772,7 @@ back to native tools as the task progresses.
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
 - **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
+- **Local CI** (v2.79.0+): `c3_ci(action='inspect|run|rerun|failures')` — run THIS repo's real `.github/workflows` here instead of pushing for feedback. `run` executes in `needs` order; `failures` gives {file,line,message}; `rerun` retries only what failed. Only `FULL_CI_PASS` means safe to push — `PARTIAL_PASS` means something did not run (other OS, unsupported action, or your selection).
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
 - **Masked paths** (v2.63.0+): content prefixed `[c3-mask:transformed]` is a policy-transformed VIEW, not the file. Values may be synthetic, rows withheld, bodies stripped — don't copy literals out of it or infer completeness from it. Masked paths are read-only and refuse shell/git/validate/impact/filter/delegate (`[c3-mask:unsupported]`). That's policy, not a transient error — report the block instead of routing around it.
@@ -6028,6 +6029,80 @@ def _creds_cmd_import(args, project_path: str) -> None:
     if result["skipped"]:
         print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
               "(use --overwrite to replace)")
+
+
+def cmd_ci(args):
+    """AgentCI entry point — exits with the finding.
+
+    The shared dispatcher below discards every command's return value, so
+    `ci` exits for itself rather than changing exit-code behaviour for the
+    other twenty commands. A pre-push hook or a script has to be able to read
+    "not a full pass" from `$?`, which is the whole point of the verdict.
+    """
+    sys.exit(_ci_main(args))
+
+
+def _ci_main(args) -> int:
+    """AgentCI — run this repo's real CI locally (docs/agent-ci.md).
+
+    The human mirror of the c3_ci tool. It deliberately reuses the same
+    handler, so the CLI and the agent surface can never drift into disagreeing
+    about what a verdict means. Returns the process exit code.
+    """
+    import json as _json
+    from types import SimpleNamespace
+
+    from cli.tools.ci import handle_ci
+
+    sub = getattr(args, "ci_cmd", None) or "inspect"
+    project_path = getattr(args, "project_path", ".") or "."
+    as_json = bool(getattr(args, "json", False))
+
+    if as_json:
+        # Structured mode answers from the services directly — the text
+        # handler formats for reading, and reformatting prose into JSON would
+        # be a second, lossier schema.
+        from services import ci_runner as cr
+        from services.ci_workflow import inspect_project
+        if sub == "inspect":
+            payload = inspect_project(project_path)
+        elif sub in ("run", "rerun"):
+            only = None
+            if sub == "rerun":
+                prior = cr.load_run(project_path, getattr(args, "run_id", ""))
+                only = (prior or {}).get("failed") or []
+                if not only:
+                    print(_json.dumps({"error": "no failed jobs to rerun"}))
+                    return 1
+            payload = cr.run_ci(
+                project_path, selector=getattr(args, "job", ""),
+                allow_foreign=bool(getattr(args, "allow_foreign", False)),
+                only=only, timeout=getattr(args, "timeout", 0) or cr.DEFAULT_STEP_TIMEOUT,
+                workflow=getattr(args, "workflow", "")).to_dict()
+        elif sub == "runs":
+            payload = {"runs": cr.list_runs(project_path)}
+        else:
+            payload = cr.load_run(project_path, getattr(args, "run_id", ""))
+        print(_json.dumps(payload, indent=2))
+        verdict = payload.get("verdict") if isinstance(payload, dict) else ""
+        return 0 if verdict in (cr.FULL_PASS, None, "") else 1
+
+    svc = SimpleNamespace(project_path=project_path)
+
+    def finalize(_name, _args, resp, _summ, **_kw):
+        return resp
+
+    out = handle_ci(
+        sub, getattr(args, "job", "") or "", getattr(args, "run_id", "") or "",
+        bool(getattr(args, "allow_foreign", False)),
+        getattr(args, "workflow", "") or "", getattr(args, "tail", 200) or 200,
+        getattr(args, "timeout", 0) or 0, svc, finalize)
+    print(out)
+    # Exit code is the finding: a non-full verdict must not read as success to
+    # a shell script or a pre-push hook.
+    if sub in ("run", "rerun") and "FULL_CI_PASS" not in out:
+        return 1
+    return 0
 
 
 def cmd_locks(args):
@@ -8290,6 +8365,7 @@ def main():
         "enforce": cmd_enforce,
         "override": cmd_override,
         "locks": cmd_locks,
+        "ci": cmd_ci,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,
     }

@@ -139,6 +139,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_session` | Snapshot, restore, log decisions, compact history |
 | `c3_impact` | Blast-radius analysis before editing shared symbols |
 | `c3_locks` | Agent leases — who is working on which file, so two agents don't collide (v2.65.0) |
+| `c3_ci` | Run this repo's real `.github/workflows` locally, with structured failures, before pushing (v2.79.0) |
 | `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini |
 | `c3_agent` | Workflows: `review_changes`, `investigate`, `preflight`, `prepare_context`, `validate_compress` |
 | `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter, `verify` (did a failed `c3_edit` still land?) |
@@ -149,7 +150,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_jira` | Jira Cloud + Data Center — JQL, issues, transitions (v2.56.0) |
 | `c3_project` | Cross-project discovery & operations; guarded writes (v2.31.0) |
 
-Every tool is **read-only safe in plan mode** except `c3_edit`, `c3_shell`, `c3_artifacts(action='restore')`, `c3_delegate` with write delegation enabled, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task` / `c3_locks`.
+Every tool is **read-only safe in plan mode** except `c3_edit`, `c3_shell`, `c3_ci(action='run'|'rerun')`, `c3_artifacts(action='restore')`, `c3_delegate` with write delegation enabled, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task` / `c3_locks`.
 
 On Windows `c3_shell` uses Git Bash when available. Git Bash bundles no `jq`; use `python -m json.tool` for portable JSON formatting.
 

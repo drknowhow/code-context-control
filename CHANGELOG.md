@@ -4,6 +4,71 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.79.0] - 2026-08-10
+
+### Added — AgentCI: run this repo's real CI locally, before pushing
+
+A new `c3_ci` tool, `c3 ci` command, and Hub **CI** tab that execute the
+repository's own `.github/workflows/*.yml` on this machine. Implements the MVP
+loop from `AgentCI_Product_Architecture_PRD_Roadmap.md` §34 and follows its §41
+"start narrow" instruction.
+
+```
+edit → run CI locally → structured failure → fix → rerun what failed → full CI → push
+```
+
+The constraint that shaped everything: **C3 does not define a second CI
+config.** The workflow files are the source of truth, so there is nothing to
+keep in sync and no local script that can drift from what CI actually runs.
+
+**The verdict is the product.** `FULL_CI_PASS` is the only result that means
+"safe to push", and it requires that *every* job ran on this host and passed:
+
+| verdict | meaning |
+|---|---|
+| `FULL_CI_PASS` | every job ran here and passed |
+| `PARTIAL_PASS` | nothing failed, but something did not run |
+| `FAIL` | a job failed, timed out, or its dependency did |
+
+That distinction is not decoration. On this repository, from Windows, 3 of 15
+jobs are reproducible: nine target another OS and three use publish actions we
+do not execute. A tool that printed a green tick after running a fifth of the
+matrix would be at its most dangerous exactly when it is most used. So coverage
+is part of the verdict, `c3 ci run` exits non-zero for anything but a full
+pass, and a job whose `needs` dependency failed is `skipped` — never passed.
+
+**What refuses, and says why.** Anything we cannot reproduce faithfully is
+reported as `unsupported` and never run: an unknown `uses:` action, a
+`container:`/`services:` block, a reusable workflow, or an unresolved
+expression. `${{ secrets.TOKEN }}` quietly resolving to `""` is precisely how a
+job passes locally and fails in CI, so it blocks instead. `actions/checkout`,
+`setup-python|node|go`, `cache` and the artifact actions are shimmed, because
+their local equivalent really is "the condition already holds".
+
+A job whose `runs-on` targets a different OS is refused by default;
+`--allow-foreign` runs it anyway, labels it cross-OS, and caps the verdict at
+`PARTIAL_PASS` permanently. That is what makes the feature useful on a Windows
+box without making it dishonest — C3's own ubuntu `lint` job runs here in ~13s.
+
+Also in this release:
+
+- **Structured failures.** pytest, ruff, tsc, jest and Python-traceback
+  parsers turn a log into `{file, line, message}`. A failed job with no
+  recognised format yields an explicit `unparsed` failure carrying a bounded
+  tail — "0 failures" can only ever mean the job passed.
+- **Matrix + DAG.** `strategy.matrix` expands to one instance per cell
+  (including `include`/`exclude`), each resolving its own `runs-on`. `needs`
+  is scoped to its own workflow: two workflows may each define `build`, and a
+  global needs map would have invented an edge between them.
+- **Run history** under `.c3/ci/`, each run fingerprinted with commit, branch
+  and uncommitted-file count — a dirty tree is the normal case for an agent
+  mid-edit, so it is recorded rather than refused.
+
+Docs: `docs/agent-ci.md`. Deliberately not built, per the plan's own list:
+remote runners, GitHub App status bridge, full Actions emulation (`if:` is
+parsed but **not** evaluated), multi-CI support, caching, and test-impact
+prediction.
+
 ## [2.78.0] - 2026-08-09
 
 ### Fixed — Codex validates hook output, and we were sending it Claude's shape (#84)
