@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.82.0"
+__version__ = "2.83.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6106,7 +6106,10 @@ def _ci_main(args) -> int:
         getattr(args, "event", "") or "",
         getattr(args, "engine", "auto") or "auto",
         bool(getattr(args, "allow_side_effects", False)),
-        getattr(args, "network", "") or "")
+        getattr(args, "network", "") or "",
+        "required" if getattr(args, "required", False) else "full",
+        getattr(args, "base", "") or "",
+        bool(getattr(args, "allow_host_mutation", False)))
     print(out)
     # Exit code is the finding: a non-full verdict must not read as success to
     # a shell script or a pre-push hook.

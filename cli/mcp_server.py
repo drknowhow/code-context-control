@@ -771,10 +771,19 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
                 allow_foreign: bool = False, workflow: str = "",
                 tail: int = 200, timeout: int = 0, event: str = "",
                 engine: str = "auto", allow_side_effects: bool = False,
-                network: str = "", ctx: Context = None) -> str:
+                network: str = "", mode: str = "full", base: str = "",
+                allow_host_mutation: bool = False,
+                ctx: Context = None) -> str:
     """RUN THIS REPO'S REAL CI LOCALLY — before pushing, not after.
     Reads .github/workflows/*.yml as the source of truth (no second CI config).
-    actions: inspect | run | rerun | status | failures | logs | runs | doctor.
+    actions: inspect | plan | run | rerun | status | failures | logs | runs | doctor.
+    mode: full (default) | required. required runs only the jobs a change
+      could have broken; it is CONSERVATIVE — anything unmapped runs. Use
+      action='plan' to see the decision and reason for every job first.
+    allow_host_mutation: the NATIVE engine refuses steps that would
+      reconfigure this machine (pip/npm -g/apt/brew install...). It has no
+      isolation; running this repo's own CI natively once uninstalled C3.
+      Prefer engine='act'.
     inspect: workflows, the job DAG, and which jobs are runnable on THIS host.
     run: execute in dependency order; job='lint' or 'test (ubuntu-latest, 3.12)'
       selects one (bare job name = all its matrix cells). A job whose dependency
@@ -798,7 +807,8 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
     return await asyncio.to_thread(handle_ci, action, job, run_id,
                                    allow_foreign, workflow, tail, timeout,
                                    svc, finalize, event, engine,
-                                   allow_side_effects, network)
+                                   allow_side_effects, network,
+                                   mode, base, allow_host_mutation)
 
 
 @mcp.tool()

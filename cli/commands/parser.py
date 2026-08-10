@@ -507,6 +507,14 @@ def build_parser(version: str, parse_cli_ide_arg):
     ci_run.add_argument("--allow-side-effects", action="store_true",
                         help="Let the act engine run jobs that look like they "
                              "publish or deploy. Refused by default.")
+    ci_run.add_argument("--required", action="store_true",
+                        help="Run only the jobs a change could have broken "
+                             "(conservative; see `c3 ci plan`)")
+    ci_run.add_argument("--base", default="",
+                        help="Diff against this ref instead of the working tree")
+    ci_run.add_argument("--allow-host-mutation", action="store_true",
+                        help="Permit native steps that reconfigure this machine "
+                             "(pip/npm -g/apt install). Refused by default.")
     ci_run.add_argument("--network", default="",
                         help="Container network for the act engine (e.g. `none` "
                              "to cut egress). Default: act's own.")
@@ -530,6 +538,10 @@ def build_parser(version: str, parse_cli_ide_arg):
     ci_logs.add_argument("--tail", type=int, default=200)
 
     _ci_common(ci_subs.add_parser("runs", help="Recent local CI runs"))
+    ci_plan = _ci_common(ci_subs.add_parser(
+        "plan", help="Show which jobs a change requires, and why"))
+    ci_plan.add_argument("--base", default="",
+                         help="Diff against this ref instead of the working tree")
     _ci_common(ci_subs.add_parser(
         "doctor", help="Which execution engines are available on this machine"))
 

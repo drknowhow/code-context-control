@@ -12,6 +12,7 @@ That distinction is the product.
 """
 from __future__ import annotations
 
+from services import ci_impact
 from services import ci_runner as cr
 from services.ci_workflow import inspect_project
 
@@ -81,7 +82,9 @@ def _failure_rows(jobs: list, limit: int = 25) -> list:
 def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
               workflow: str, tail: int, timeout: int, svc, finalize,
               event: str = "", engine: str = "auto",
-              allow_side_effects: bool = False, network: str = "") -> str:
+              allow_side_effects: bool = False, network: str = "",
+              mode: str = "full", base: str = "",
+              allow_host_mutation: bool = False) -> str:
     """Route c3_ci actions."""
     project = str(svc.project_path)
     action = (action or "inspect").strip().lower()
@@ -152,6 +155,43 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
         return finalize("c3_ci", args, "\n".join(lines),
                         f"{len(data['jobs'])} jobs, {len(data['runnable'])} runnable")
 
+    # ── plan (required mode, no execution) ───────────────────────────────
+    if action == "plan":
+        from services.ci_workflow import (
+            build_dag,
+            discover_workflows,
+            git_context,
+            parse_workflow,
+        )
+        wfs = [parse_workflow(p) for p in discover_workflows(project)]
+        dag = build_dag([w for w in wfs if not w.error],
+                        event=event, git=git_context(project))
+        try:
+            ordered = dag.topo_order()
+        except Exception:
+            ordered = dag.instances
+        plan = ci_impact.plan_required(project, ordered, wfs, base=base,
+                                       event=event)
+        lines = [
+            f"Required-mode plan ({len(plan.selected)} run / "
+            f"{len(plan.skipped)} skip) vs {base or 'the working tree'}",
+            f"changed files: {len(plan.changed)}",
+        ]
+        for path in plan.changed[:10]:
+            lines.append(f"  {path}")
+        if len(plan.changed) > 10:
+            lines.append(f"  ... and {len(plan.changed) - 10} more")
+        lines.append("")
+        for decision in plan.decisions:
+            mark = "RUN " if decision.decision == ci_impact.RUN else "skip"
+            lines.append(f"  {mark} {decision.job}")
+            lines.append(f"       {decision.reason}")
+        if plan.note:
+            lines.append(f"\n{plan.note}")
+        lines.append("\nRun it: c3_ci(action='run', mode='required')")
+        return finalize("c3_ci", args, "\n".join(lines),
+                        f"{len(plan.selected)} required")
+
     # ── run / rerun ──────────────────────────────────────────────────────
     if action in ("run", "rerun"):
         only = None
@@ -172,7 +212,8 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
                            only=only, timeout=timeout or cr.DEFAULT_STEP_TIMEOUT,
                            workflow=workflow, event=event, engine=engine,
                            allow_side_effects=allow_side_effects,
-                           network=network)
+                           network=network, mode=mode, base=base,
+                           allow_host_mutation=allow_host_mutation)
         run = result.to_dict()
         lines = [_verdict_line(run), f"run {run['run_id']}  host={run['host_os']}"]
         fp = run.get("fingerprint") or {}
