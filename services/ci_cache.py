@@ -142,22 +142,51 @@ def _tree_state(project, scope: list = None) -> str:
                 dirty_hash = _sha(dirty_hash, path, "unreadable")
         return _sha(head, dirty_hash)
 
+    # Walk + fnmatch rather than Path.glob: `glob("src/**")` matches only
+    # DIRECTORIES before Python 3.13 and files as well from 3.13 on, so the
+    # scoped fingerprint hashed nothing on 3.10-3.12 and never changed — a
+    # cache that would happily reuse a result after its declared inputs were
+    # edited. Walking also keeps this matching identical to the planner's, so
+    # "what selects a job" and "what invalidates it" cannot drift apart.
     parts: list = []
-    for pattern in sorted(scope):
-        for match in sorted(project.glob(pattern)):
-            if not match.is_file():
-                continue
-            try:
-                if _is_c3_internal(match.relative_to(project).as_posix()):
-                    continue
-            except ValueError:
-                pass
-            try:
-                rel = match.relative_to(project).as_posix()
-                parts.append(_sha(rel, match.read_bytes()))
-            except (OSError, ValueError):
-                parts.append(_sha(str(match), "unreadable"))
+    for rel in _iter_files(project):
+        if not _matches_scope(rel, scope):
+            continue
+        full = project / rel
+        try:
+            parts.append(_sha(rel, full.read_bytes()))
+        except OSError:
+            parts.append(_sha(rel, "unreadable"))
     return _sha(*parts) if parts else _sha("empty-scope")
+
+
+def _iter_files(project: Path) -> list:
+    """Every file in the tree, repo-relative posix, C3/git state excluded."""
+    found: list = []
+    for path in project.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(project).as_posix()
+        except ValueError:
+            continue
+        if _is_c3_internal(rel):
+            continue
+        found.append(rel)
+    return sorted(found)
+
+
+def _matches_scope(rel: str, scope: list) -> bool:
+    import fnmatch
+    for pattern in scope:
+        bare = pattern.rstrip("/")
+        if (fnmatch.fnmatch(rel, pattern)
+                or fnmatch.fnmatch(rel, f"{bare}/*")
+                or fnmatch.fnmatch(rel, f"{bare}/**/*")
+                or rel.startswith(bare.replace("**", "").rstrip("/") + "/")
+                and "**" in pattern):
+            return True
+    return False
 
 
 def job_fingerprint(project, inst, engine: str = "native", image: str = "",
