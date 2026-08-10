@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services import ci_act, ci_expr, ci_failures, ci_impact
+from services import ci_act, ci_cache, ci_expr, ci_failures, ci_impact
 from services.ci_workflow import (
     CycleError,
     build_dag,
@@ -60,6 +60,7 @@ UNSUPPORTED = "unsupported"         # blockers from the parser
 FOREIGN = "foreign"                 # different OS; not attempted
 TIMEOUT = "timeout"
 DESELECTED = "deselected"           # not part of this run's selection
+CACHED = "cached"                   # passed before for these exact inputs
 
 # Run verdicts
 FULL_PASS = "FULL_CI_PASS"
@@ -119,6 +120,7 @@ class JobResult:
     reason: str = ""
     engine: str = "native"          # native | act
     fidelity: str = FIDELITY_NATIVE
+    fingerprint: str = ""
     cross_os: bool = False          # ran here despite a foreign `runs-on`
     duration_ms: int = 0
     steps: list = field(default_factory=list)
@@ -136,6 +138,7 @@ class JobResult:
             "workflow": self.workflow, "runs_on": self.runs_on,
             "status": self.status, "reason": self.reason,
             "engine": self.engine, "fidelity": self.fidelity,
+            "fingerprint": self.fingerprint,
             "cross_os": self.cross_os, "duration_ms": self.duration_ms,
             "steps": [s.to_dict() for s in self.steps],
             "failures": self.failures, "parser": self.parser,
@@ -232,6 +235,22 @@ def _run_step(step, cwd: Path, env: dict, timeout: int) -> tuple:
     # A shimmed `uses:` produces no output and cannot fail — it stands in for
     # setup whose local equivalent is "the condition already holds".
     if step.uses:
+        from services.ci_workflow import action_name
+        if action_name(step.uses) == "actions/cache":
+            # The one cache nothing else provides locally: act caches images
+            # and actions, Docker caches layers, but a workflow's declared
+            # dependency paths are ours to keep.
+            key = str((step.with_ or {}).get("key") or "").strip()
+            paths = [ln.strip() for ln in
+                     str((step.with_ or {}).get("path") or "").splitlines()
+                     if ln.strip()]
+            if key and paths:
+                hit = ci_cache.restore_dependency(cwd, key, paths)
+                note = "hit" if hit else "miss"
+                return (StepResult(index=step.index, name=step.name,
+                                   status="shim",
+                                   shim=f"dependency cache {note}"),
+                        f"[c3:ci] actions/cache {note} key={key}\n")
         return (StepResult(index=step.index, name=step.name, status="shim",
                            shim=step.shim),
                 f"[c3:ci] shim {step.uses} — {step.shim}\n")
@@ -253,6 +272,24 @@ def _run_step(step, cwd: Path, env: dict, timeout: int) -> tuple:
                        exit_code=res["exit_code"],
                        duration_ms=res["duration_ms"], shell=res["shell"]),
             header + body)
+
+
+def _save_dependency_caches(inst, project: Path) -> None:
+    """Persist `actions/cache` paths after a passing job, as GitHub does.
+
+    A failed job must not write the cache: the next run would restore whatever
+    half-built state caused the failure and then blame the code.
+    """
+    from services.ci_workflow import action_name
+    for step in inst.steps:
+        if action_name(step.uses) != "actions/cache":
+            continue
+        key = str((step.with_ or {}).get("key") or "").strip()
+        paths = [ln.strip() for ln in
+                 str((step.with_ or {}).get("path") or "").splitlines()
+                 if ln.strip()]
+        if key and paths:
+            ci_cache.save_dependency(project, key, paths)
 
 
 def _collect_artifacts(inst, run_dir: Path, project: Path) -> None:
@@ -480,6 +517,7 @@ def _run_job(inst, project: Path, run_dir: Path, timeout: int,
         result.parser = parsed.parser
     else:
         _collect_artifacts(inst, run_dir, project)
+        _save_dependency_caches(inst, project)
 
     return result
 
@@ -498,6 +536,7 @@ def compute_verdict(jobs: list) -> tuple:
     not_run = [j for j in jobs if j.status in _NOT_RUN]
     cross = [j for j in jobs if j.ran and j.fidelity == FIDELITY_CROSS_OS]
     if_skipped = [j for j in jobs if j.status == SKIPPED_IF]
+    cached = [j for j in jobs if j.status == CACHED]
     # Mentioned, never counted against coverage: not running these IS the
     # faithful reproduction. But the reader should know how many, because the
     # answer depends on which event was declared.
@@ -518,7 +557,14 @@ def compute_verdict(jobs: list) -> tuple:
             f"{host_os()} against a different target OS — indicative, not "
             "equivalent. Install act + Docker to run them in a container instead.")
     ran = len(jobs) - len(if_skipped)
-    return FULL_PASS, f"all {ran} applicable job(s) ran here and passed{if_note}"
+    cache_note = ""
+    if cached:
+        # A fully-cached run executed nothing. It is still a pass for these
+        # exact inputs, but the reader has to know it was not re-checked.
+        cache_note = (f" ({len(cached)} reused from cache -- identical inputs "
+                      "to a previous pass; --no-cache forces execution)")
+    return FULL_PASS, (f"all {ran} applicable job(s) passed{if_note}"
+                       f"{cache_note}")
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────
@@ -528,7 +574,8 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
            workflow: str = "", event: str = "", engine: str = "auto",
            allow_side_effects: bool = False, network: str = "",
            mode: str = ci_impact.MODE_FULL, base: str = "",
-           allow_host_mutation: bool = False) -> RunResult:
+           allow_host_mutation: bool = False,
+           no_cache: bool = False) -> RunResult:
     """Plan and execute. `selector` picks jobs; `only` is an explicit key list.
 
     `only` exists for `rerun --failed`: it names exact keys from a prior run,
@@ -584,6 +631,7 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
 
     # Selection
     skip_reasons: dict = {}   # job key -> why the planner dropped it
+    cache_rules = ci_impact.load_rules(project)
     if only:
         wanted = set(only)
         chosen = {i.key for i in ordered if i.key in wanted}
@@ -769,6 +817,31 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             _record(inst, SKIPPED)
             continue
 
+        # Cached reuse (Phase 4). The fingerprint covers the job definition,
+        # the engine, and the CONTENT of the inputs it declares — or the whole
+        # tree when it declares none, which is the conservative default.
+        job_fp = ""
+        try:
+            job_fp = ci_cache.job_fingerprint(
+                project, inst, chosen_engine,
+                ci_act.image_for(inst.runs_on) if chosen_engine == "act" else "",
+                scope=ci_cache.scope_for(inst, cache_rules))
+        except Exception:
+            job_fp = ""             # never let caching break a run
+
+        if job_fp and not no_cache:
+            hit = ci_cache.lookup(project, job_fp)
+            if hit:
+                results.append(JobResult(
+                    key=inst.key, job_id=inst.job_id, name=inst.name,
+                    workflow=inst.workflow, runs_on=inst.runs_on,
+                    status=CACHED, engine=chosen_engine, fidelity=fidelity,
+                    fingerprint=job_fp, duration_ms=0,
+                    reason=(f"identical inputs passed in run {hit.run_id} "
+                            f"at {hit.at[:19]} — reused, nothing executed")))
+                _record(inst, PASSED)   # downstream may proceed: it did pass
+                continue
+
         if chosen_engine == "act":
             job_result = _run_job_act(inst, project, run_dir, event, network,
                                       fidelity)
@@ -776,6 +849,10 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             job_result = _run_job(inst, project, run_dir, timeout,
                                   eval_values=eval_values)
             job_result.fidelity = fidelity
+        job_result.fingerprint = job_fp
+        if job_fp and job_result.status == PASSED:
+            ci_cache.record(project, job_fp, result.run_id, _now(),
+                            job_result.duration_ms)
         results.append(job_result)
         if job_result.status in (FAILED, TIMEOUT, UNSUPPORTED):
             failed_jobs.add((inst.workflow, inst.job_id))

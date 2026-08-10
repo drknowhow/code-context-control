@@ -773,10 +773,12 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
                 engine: str = "auto", allow_side_effects: bool = False,
                 network: str = "", mode: str = "full", base: str = "",
                 allow_host_mutation: bool = False,
-                ctx: Context = None) -> str:
+                no_cache: bool = False, ctx: Context = None) -> str:
     """RUN THIS REPO'S REAL CI LOCALLY — before pushing, not after.
     Reads .github/workflows/*.yml as the source of truth (no second CI config).
-    actions: inspect | plan | run | rerun | status | failures | logs | runs | doctor.
+    actions: inspect | plan | run | rerun | status | failures | logs | runs |
+      cache | doctor. A job whose inputs are unchanged since it last passed
+      is reused (status `cached`, nothing executed); no_cache forces it.
     mode: full (default) | required. required runs only the jobs a change
       could have broken; it is CONSERVATIVE — anything unmapped runs. Use
       action='plan' to see the decision and reason for every job first.
@@ -808,7 +810,8 @@ async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
                                    allow_foreign, workflow, tail, timeout,
                                    svc, finalize, event, engine,
                                    allow_side_effects, network,
-                                   mode, base, allow_host_mutation)
+                                   mode, base, allow_host_mutation,
+                                   no_cache)
 
 
 @mcp.tool()
