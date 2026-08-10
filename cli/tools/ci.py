@@ -74,7 +74,8 @@ def _failure_rows(jobs: list, limit: int = 25) -> list:
 
 
 def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
-              workflow: str, tail: int, timeout: int, svc, finalize) -> str:
+              workflow: str, tail: int, timeout: int, svc, finalize,
+              event: str = "") -> str:
     """Route c3_ci actions."""
     project = str(svc.project_path)
     action = (action or "inspect").strip().lower()
@@ -84,7 +85,7 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
 
     # ── inspect ──────────────────────────────────────────────────────────
     if action in ("", "inspect", "jobs"):
-        data = inspect_project(project)
+        data = inspect_project(project, event=event)
         if not data["workflows"]:
             return finalize(
                 "c3_ci", args,
@@ -150,7 +151,7 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
 
         result = cr.run_ci(project, selector=job, allow_foreign=allow_foreign,
                            only=only, timeout=timeout or cr.DEFAULT_STEP_TIMEOUT,
-                           workflow=workflow)
+                           workflow=workflow, event=event)
         run = result.to_dict()
         lines = [_verdict_line(run), f"run {run['run_id']}  host={run['host_os']}"]
         fp = run.get("fingerprint") or {}

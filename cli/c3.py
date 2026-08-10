@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.79.0"
+__version__ = "2.80.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6065,7 +6065,7 @@ def _ci_main(args) -> int:
         from services import ci_runner as cr
         from services.ci_workflow import inspect_project
         if sub == "inspect":
-            payload = inspect_project(project_path)
+            payload = inspect_project(project_path, event=getattr(args, "event", "") or "")
         elif sub in ("run", "rerun"):
             only = None
             if sub == "rerun":
@@ -6078,7 +6078,8 @@ def _ci_main(args) -> int:
                 project_path, selector=getattr(args, "job", ""),
                 allow_foreign=bool(getattr(args, "allow_foreign", False)),
                 only=only, timeout=getattr(args, "timeout", 0) or cr.DEFAULT_STEP_TIMEOUT,
-                workflow=getattr(args, "workflow", "")).to_dict()
+                workflow=getattr(args, "workflow", ""),
+                event=getattr(args, "event", "") or "").to_dict()
         elif sub == "runs":
             payload = {"runs": cr.list_runs(project_path)}
         else:
@@ -6096,7 +6097,8 @@ def _ci_main(args) -> int:
         sub, getattr(args, "job", "") or "", getattr(args, "run_id", "") or "",
         bool(getattr(args, "allow_foreign", False)),
         getattr(args, "workflow", "") or "", getattr(args, "tail", 200) or 200,
-        getattr(args, "timeout", 0) or 0, svc, finalize)
+        getattr(args, "timeout", 0) or 0, svc, finalize,
+        getattr(args, "event", "") or "")
     print(out)
     # Exit code is the finding: a non-full verdict must not read as success to
     # a shell script or a pre-push hook.

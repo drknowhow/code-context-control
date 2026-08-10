@@ -34,11 +34,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services import ci_failures
+from services import ci_expr, ci_failures
 from services.ci_workflow import (
     CycleError,
     build_dag,
     discover_workflows,
+    git_context,
     host_os,
     parse_workflow,
 )
@@ -53,6 +54,7 @@ MAX_LOG_CHARS = 200_000             # per job, on disk
 PASSED = "passed"
 FAILED = "failed"
 SKIPPED = "skipped"                 # a dependency failed
+SKIPPED_IF = "skipped_if"           # its own `if:` said no — faithful, not a gap
 UNSUPPORTED = "unsupported"         # blockers from the parser
 FOREIGN = "foreign"                 # different OS; not attempted
 TIMEOUT = "timeout"
@@ -63,6 +65,11 @@ FULL_PASS = "FULL_CI_PASS"
 PARTIAL_PASS = "PARTIAL_PASS"
 FAIL = "FAIL"
 
+# Statuses that mean coverage was LOST — they block FULL_CI_PASS.
+# SKIPPED_IF is deliberately absent: a job whose own `if:` excluded it was
+# faithfully reproduced by not running, exactly as CI would not run it.
+# Counting it as a gap would make any workflow with a conditional job unable to
+# reach a full pass, which would be wrong rather than merely strict.
 _NOT_RUN = (SKIPPED, UNSUPPORTED, FOREIGN, DESELECTED)
 
 
@@ -136,6 +143,7 @@ class RunResult:
     jobs: list = field(default_factory=list)
     selection: str = ""
     allow_foreign: bool = False
+    event: str = ""
     note: str = ""
 
     # ── Roll-ups the report and the UI both read ──
@@ -160,7 +168,8 @@ class RunResult:
             "started_at": self.started_at, "finished_at": self.finished_at,
             "verdict": self.verdict, "host_os": self.host_os,
             "fingerprint": self.fingerprint, "selection": self.selection,
-            "allow_foreign": self.allow_foreign, "note": self.note,
+            "allow_foreign": self.allow_foreign, "event": self.event,
+            "note": self.note,
             "counts": self.counts,
             "failed": self.failed_keys, "not_run": self.not_run_keys,
             "jobs": [j.to_dict() for j in self.jobs],
@@ -269,7 +278,23 @@ def _job_env(inst, project: Path) -> dict:
     return {str(k): str(v) for k, v in env.items()}
 
 
-def _run_job(inst, project: Path, run_dir: Path, timeout: int) -> JobResult:
+def _eval_values(inst, needs_results: dict, github: dict) -> dict:
+    """The contexts an `if:` may read, built from facts we actually have."""
+    return {
+        "github": dict(github or {}),
+        "env": dict(inst.env or {}),
+        "matrix": dict(inst.matrix or {}),
+        "runner": {"os": host_os()},
+        "job": {"status": "success"},
+        "needs": needs_results,
+        "steps": {},
+        "strategy": {"job-index": 0},
+    }
+
+
+def _run_job(inst, project: Path, run_dir: Path, timeout: int,
+             eval_values: dict = None) -> JobResult:
+    eval_values = eval_values or _eval_values(inst, {}, {})
     result = JobResult(key=inst.key, job_id=inst.job_id, name=inst.name,
                        workflow=inst.workflow, runs_on=inst.runs_on,
                        status=PASSED, cross_os=inst.foreign_runner)
@@ -284,14 +309,50 @@ def _run_job(inst, project: Path, run_dir: Path, timeout: int) -> JobResult:
     started = time.time()
     env = _job_env(inst, project)
 
+    # A failed step no longer ends the job outright: `if: always()` exists
+    # precisely so cleanup and reporting steps run afterwards. The first
+    # failure fixes the job's verdict; later steps run only if their own
+    # condition permits it.
+    job_failed = False
     for step in inst.steps:
+        # A step with no `if:` carries an implicit success() gate, so once the
+        # job has failed it is skipped. Only an explicit condition can opt out
+        # of that, which is the whole reason `if: always()` exists.
+        if not step.if_:
+            if job_failed:
+                result.steps.append(StepResult(
+                    index=step.index, name=step.name, status="skipped",
+                    shim="implicit success() — a previous step failed"))
+                chunks.append(
+                    f"\n[c3:ci] step {step.index} skipped — a previous step failed\n")
+                continue
+        else:
+            try:
+                should_run = ci_expr.evaluate(
+                    step.if_, ci_expr.EvalContext(values=eval_values,
+                                                  failed=job_failed))
+            except (ci_expr.ExprError, ci_expr.UnknownRef) as exc:
+                # Validation passed but the value is unavailable after all.
+                # Refusing beats guessing in either direction.
+                result.status = UNSUPPORTED
+                result.reason = f"step {step.index} `if:` could not be evaluated: {exc}"
+                chunks.append(f"\n[c3:ci] step {step.index} if: {exc}\n")
+                break
+            if not should_run:
+                result.steps.append(StepResult(
+                    index=step.index, name=step.name, status="skipped",
+                    shim=f"if: {step.if_}"))
+                chunks.append(
+                    f"\n[c3:ci] step {step.index} skipped by `if: {step.if_}`\n")
+                continue
+
         sres, output = _run_step(step, project, env, timeout)
         result.steps.append(sres)
         chunks.append(output)
-        if sres.status in (FAILED, TIMEOUT):
+        if sres.status in (FAILED, TIMEOUT) and not job_failed:
+            job_failed = True
             result.status = sres.status
             result.reason = f"step {sres.index} ({sres.name}) exited {sres.exit_code}"
-            break
 
     result.duration_ms = round((time.time() - started) * 1000)
     log = "".join(chunks)
@@ -329,6 +390,12 @@ def compute_verdict(jobs: list) -> tuple:
 
     not_run = [j for j in jobs if j.status in _NOT_RUN]
     cross = [j for j in jobs if j.cross_os and j.ran]
+    if_skipped = [j for j in jobs if j.status == SKIPPED_IF]
+    # Mentioned, never counted against coverage: not running these IS the
+    # faithful reproduction. But the reader should know how many, because the
+    # answer depends on which event was declared.
+    if_note = (f" ({len(if_skipped)} job(s) skipped by their own `if:`)"
+               if if_skipped else "")
 
     if not_run:
         why: dict = {}
@@ -342,14 +409,15 @@ def compute_verdict(jobs: list) -> tuple:
         return PARTIAL_PASS, (
             f"all {len(jobs)} job(s) passed, but {len(cross)} ran on "
             f"{host_os()} against a different target OS — indicative, not equivalent")
-    return FULL_PASS, f"all {len(jobs)} job(s) ran here and passed"
+    ran = len(jobs) - len(if_skipped)
+    return FULL_PASS, f"all {ran} applicable job(s) ran here and passed{if_note}"
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────
 
 def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
            only: list = None, timeout: int = DEFAULT_STEP_TIMEOUT,
-           workflow: str = "") -> RunResult:
+           workflow: str = "", event: str = "") -> RunResult:
     """Plan and execute. `selector` picks jobs; `only` is an explicit key list.
 
     `only` exists for `rerun --failed`: it names exact keys from a prior run,
@@ -367,10 +435,16 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
         allow_foreign=allow_foreign,
     )
 
+    github_ctx = git_context(project)
+    if event:
+        github_ctx["event_name"] = event
+    result.event = event
+
     workflows = [parse_workflow(p) for p in discover_workflows(project)]
     if workflow:
         workflows = [w for w in workflows if w.name == workflow]
-    dag = build_dag([w for w in workflows if not w.error])
+    dag = build_dag([w for w in workflows if not w.error],
+                    event=event, git=github_ctx)
 
     if not dag.instances:
         result.finished_at = _now()
@@ -407,6 +481,20 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
 
     failed_jobs: set = set()        # job_ids whose failure blocks dependents
     results: list = []
+    # (workflow, job_id) -> {"result": "success"|"failure"|"skipped"} so a
+    # downstream `if: needs.build.result == 'success'` reads real outcomes.
+    needs_results: dict = {}
+
+    def _needs_ctx(inst) -> dict:
+        return {jid: needs_results.get((inst.workflow, jid),
+                                       {"result": "skipped"})
+                for jid in inst.needs}
+
+    def _record(inst, status: str) -> None:
+        outcome = {PASSED: "success", SKIPPED_IF: "skipped"}.get(
+            status, "failure" if status in (FAILED, TIMEOUT, UNSUPPORTED)
+            else "skipped")
+        needs_results[(inst.workflow, inst.job_id)] = {"result": outcome}
 
     for inst in ordered:
         if inst.key not in chosen:
@@ -414,6 +502,7 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
                 key=inst.key, job_id=inst.job_id, name=inst.name,
                 workflow=inst.workflow, runs_on=inst.runs_on,
                 status=DESELECTED, reason="not part of this run's selection"))
+            _record(inst, DESELECTED)
             continue
 
         if not inst.supported:
@@ -422,6 +511,7 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
                 workflow=inst.workflow, runs_on=inst.runs_on,
                 status=UNSUPPORTED, reason="; ".join(inst.blockers)))
             failed_jobs.add((inst.workflow, inst.job_id))
+            _record(inst, UNSUPPORTED)
             continue
 
         if inst.foreign_runner and not allow_foreign:
@@ -432,9 +522,45 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
                 reason=f"targets {inst.runs_on}; host is {host_os()}. "
                        "Re-run with allow_foreign to attempt it anyway."))
             failed_jobs.add((inst.workflow, inst.job_id))
+            _record(inst, FOREIGN)
             continue
 
         blocked = [n for n in inst.needs if (inst.workflow, n) in failed_jobs]
+        eval_values = _eval_values(inst, _needs_ctx(inst), github_ctx)
+
+        # A job-level `if:` REPLACES the implicit success() gate on `needs` —
+        # that is exactly what `if: always()` is for. So when a condition is
+        # present it alone decides, and the `blocked` check below applies only
+        # to jobs that declared none. (normalize() injects `success() &&` when
+        # the condition names no status function, so an ordinary `if:` still
+        # skips on a failed dependency — the gate is preserved, not lost.)
+        if inst.if_:
+            try:
+                should_run = ci_expr.evaluate(
+                    inst.if_, ci_expr.EvalContext(values=eval_values,
+                                                  failed=bool(blocked)))
+            except (ci_expr.ExprError, ci_expr.UnknownRef) as exc:
+                results.append(JobResult(
+                    key=inst.key, job_id=inst.job_id, name=inst.name,
+                    workflow=inst.workflow, runs_on=inst.runs_on,
+                    status=UNSUPPORTED,
+                    reason=f"job `if:` could not be evaluated: {exc}"))
+                failed_jobs.add((inst.workflow, inst.job_id))
+                _record(inst, UNSUPPORTED)
+                continue
+            if not should_run:
+                why = (f"dependency did not pass ({', '.join(sorted(set(blocked)))}) "
+                       f"and `if: {inst.if_}` does not override it"
+                       if blocked else
+                       f"`if: {inst.if_}` is false — CI would skip it too")
+                results.append(JobResult(
+                    key=inst.key, job_id=inst.job_id, name=inst.name,
+                    workflow=inst.workflow, runs_on=inst.runs_on,
+                    status=SKIPPED_IF, reason=why))
+                _record(inst, SKIPPED_IF)
+                continue
+            blocked = []        # the condition authorised this run
+
         if blocked:
             results.append(JobResult(
                 key=inst.key, job_id=inst.job_id, name=inst.name,
@@ -442,12 +568,15 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
                 status=SKIPPED,
                 reason=f"dependency did not pass: {', '.join(sorted(set(blocked)))}"))
             failed_jobs.add((inst.workflow, inst.job_id))
+            _record(inst, SKIPPED)
             continue
 
-        job_result = _run_job(inst, project, run_dir, timeout)
+        job_result = _run_job(inst, project, run_dir, timeout,
+                              eval_values=eval_values)
         results.append(job_result)
-        if job_result.status in (FAILED, TIMEOUT):
+        if job_result.status in (FAILED, TIMEOUT, UNSUPPORTED):
             failed_jobs.add((inst.workflow, inst.job_id))
+        _record(inst, job_result.status)
 
     result.jobs = results
     result.finished_at = _now()

@@ -483,6 +483,9 @@ def build_parser(version: str, parse_cli_ide_arg):
         sub.add_argument("--path", dest="project_path", default=".",
                          help="Project directory (default: current)")
         sub.add_argument("--json", action="store_true", help="Machine-readable output")
+        sub.add_argument("--event", default="",
+                         help="GitHub event to simulate (push, pull_request) — "
+                              "only needed when an `if:` reads github.event_name")
         return sub
 
     _ci_common(ci_subs.add_parser(
