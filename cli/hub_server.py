@@ -1293,11 +1293,12 @@ _ci_runs: dict = {}          # project path -> in-flight state
 _ci_lock = threading.Lock()
 
 
-def _ci_worker(project: str, job: str, allow_foreign: bool, workflow: str) -> None:
+def _ci_worker(project: str, job: str, allow_foreign: bool, workflow: str,
+               engine: str = "auto") -> None:
     from services import ci_runner as cr
     try:
         result = cr.run_ci(project, selector=job, allow_foreign=allow_foreign,
-                           workflow=workflow)
+                           workflow=workflow, engine=engine)
         payload = {"running": False, "done": True, "error": None,
                    "run_id": result.run_id, "verdict": result.verdict,
                    "note": result.note}
@@ -1320,7 +1321,12 @@ def api_ci_inspect():
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     try:
-        return jsonify(inspect_project(resolved))
+        from services import ci_act
+        data = inspect_project(resolved)
+        # The UI has to be able to say WHY a job cannot run here, and
+        # "install act" is a different answer from "macOS is impossible".
+        data["engines"] = ci_act.availability()
+        return jsonify(data)
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
@@ -1391,7 +1397,8 @@ def api_ci_run_start():
     threading.Thread(
         target=_ci_worker,
         args=(resolved, str(data.get("job") or ""),
-              bool(data.get("allow_foreign")), str(data.get("workflow") or "")),
+              bool(data.get("allow_foreign")), str(data.get("workflow") or ""),
+              str(data.get("engine") or "auto")),
         daemon=True,
     ).start()
     return jsonify({"started": True})

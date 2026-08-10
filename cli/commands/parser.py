@@ -500,6 +500,16 @@ def build_parser(version: str, parse_cli_ide_arg):
                              "can never yield FULL_CI_PASS)")
     ci_run.add_argument("--timeout", type=int, default=0,
                         help="Per-step timeout in seconds (default 900)")
+    ci_run.add_argument("--engine", choices=["auto", "native", "act"],
+                        default="auto",
+                        help="auto (default) uses act for Linux jobs when act + "
+                             "Docker are present, native otherwise")
+    ci_run.add_argument("--allow-side-effects", action="store_true",
+                        help="Let the act engine run jobs that look like they "
+                             "publish or deploy. Refused by default.")
+    ci_run.add_argument("--network", default="",
+                        help="Container network for the act engine (e.g. `none` "
+                             "to cut egress). Default: act's own.")
 
     ci_rerun = _ci_common(ci_subs.add_parser(
         "rerun", help="Re-run only the jobs that failed in the last run"))
@@ -520,6 +530,8 @@ def build_parser(version: str, parse_cli_ide_arg):
     ci_logs.add_argument("--tail", type=int, default=200)
 
     _ci_common(ci_subs.add_parser("runs", help="Recent local CI runs"))
+    _ci_common(ci_subs.add_parser(
+        "doctor", help="Which execution engines are available on this machine"))
 
     # ── Override Requests (v2.69.0, docs/override-requests.md) ──────────
     # Human-only approval surface. A grant is single-use, session-bound,

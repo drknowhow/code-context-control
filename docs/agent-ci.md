@@ -119,6 +119,75 @@ already holds", so they are no-ops and say so in the log:
 By default it is refused. `--allow-foreign` runs it anyway, labels the result
 `cross-OS`, and caps the verdict at `PARTIAL_PASS` forever.
 
+---
+
+## 4b. Execution engines (v2.81.0+)
+
+Two engines, picked per job. `c3 ci doctor` says which are available.
+
+| engine | runs | fidelity | `uses:` actions |
+|---|---|---|---|
+| `native` | shell steps on this host | `native` when `runs-on` matches, else `cross-os` | shimmed or blocked |
+| `act` | the job in a Linux container via [nektos/act](https://nektosact.com) | `container` | **really executed** |
+
+`--engine auto` (the default) runs a job natively when `runs-on` matches the
+host, hands Linux jobs to `act` when act and Docker are present, and refuses
+otherwise. `--engine act` forces containers and **fails the run** if act is
+unavailable rather than silently falling back — you asked for container
+fidelity and would not have got it.
+
+Measured on this repository from Windows: **3 of 15 jobs runnable natively, 11
+with act.** The remaining four are macOS cells. No engine will ever run those:
+there are no macOS containers, so a matrix containing them cannot reach
+`FULL_CI_PASS` locally. That is a property of the world, not a gap to close.
+
+**A container run counts toward `FULL_CI_PASS`.** A Linux job in a Linux
+container *is* that job. A cross-OS approximation is not, and stays capped.
+
+### Blockers are per engine
+
+An unknown `uses:` is fatal to the native shell and routine for act, so
+`inspect` reports both. A missing `${{ secrets.X }}` blocks on **either** — no
+engine can reproduce a job whose input does not exist.
+
+### Setup
+
+```bash
+winget install nektos.act     # Windows
+brew install act              # macOS
+# plus a running Docker daemon
+```
+
+Images come from `catthehacker/ubuntu:act-*` (~1 GB on first pull), which
+mirror much of the GitHub runner's preinstalled toolchain. A bare `ubuntu:24.04`
+does not, and a job assuming a preinstalled tool would fail locally while
+passing in CI.
+
+### Two things worth knowing
+
+- **`--bind` is always used.** act's default copy-mode workspace arrives empty
+  against a Windows host path and every step then fails on missing files.
+  Binding means the container writes into your real working tree — the same
+  thing the native engine already does.
+- **Network is on** (act's default). Pass `--network none` to cut egress.
+
+### Safety
+
+Running real actions means a publishing job becomes one command from actually
+publishing. Two things stand in the way:
+
+1. **No secrets, ever.** act reads `.secrets` and `.env` from the repository by
+   default; C3 points both at an empty file. A publish step therefore runs and
+   fails at authentication.
+2. **A side-effect gate.** Jobs using known publishing actions
+   (`pypa/gh-action-pypi-publish`, `softprops/action-gh-release`, …) or running
+   publishing commands (`twine upload`, `npm publish`, `docker push`, …) are
+   refused unless you pass `--allow-side-effects`.
+
+The first is a mechanism; the second is a policy. Neither is a sandbox — a
+workflow you have not read can still run arbitrary code in a container with
+network access.
+
 ### `if:` conditions (v2.80.0+)
 
 Job- and step-level `if:` are **evaluated**, with GitHub's semantics:

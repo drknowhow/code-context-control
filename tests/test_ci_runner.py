@@ -138,7 +138,13 @@ jobs:
 
 
 class TestCoverageHonesty(RunnerBase):
-    def test_foreign_runner_is_refused_by_default(self):
+    # These two pin the NATIVE engine deliberately. Since the act engine
+    # landed, a Linux job on a non-Linux host is containerised rather than
+    # refused — correct, and covered in test_ci_act.py. What is asserted here
+    # is the native engine's own refusal semantics, which must not quietly
+    # depend on whether act happens to be installed on the machine running
+    # the suite.
+    def test_foreign_runner_is_refused_by_the_native_engine(self):
         workflow(self.tmp, f"""
 name: CI
 on: [push]
@@ -148,7 +154,7 @@ jobs:
     steps:
       - run: echo hi
 """)
-        res = cr.run_ci(self.tmp)
+        res = cr.run_ci(self.tmp, engine="native")
         self.assertEqual(res.jobs[0].status, cr.FOREIGN)
         # Nothing failed, but nothing ran either — that is NOT a pass.
         self.assertEqual(res.verdict, cr.PARTIAL_PASS)
@@ -164,10 +170,11 @@ jobs:
     steps:
       - run: echo hi
 """)
-        res = cr.run_ci(self.tmp, allow_foreign=True)
+        res = cr.run_ci(self.tmp, engine="native", allow_foreign=True)
         job = res.jobs[0]
         self.assertEqual(job.status, cr.PASSED)
         self.assertTrue(job.cross_os)
+        self.assertEqual(job.fidelity, cr.FIDELITY_CROSS_OS)
         self.assertEqual(res.verdict, cr.PARTIAL_PASS)
         self.assertIn("indicative", res.note)
 

@@ -178,8 +178,10 @@ class JobInstance:
     env: dict = field(default_factory=dict)
     matrix: dict = field(default_factory=dict)
     if_: str = ""
-    blockers: list = field(default_factory=list)   # why this cannot run locally
+    blockers: list = field(default_factory=list)   # why NATIVE cannot run it
+    act_blockers: list = field(default_factory=list)  # why ACT cannot either
     workflow: str = ""
+    workflow_path: str = ""      # act needs -W to disambiguate job names
 
     @property
     def key(self) -> str:
@@ -189,6 +191,15 @@ class JobInstance:
     @property
     def supported(self) -> bool:
         return not self.blockers
+
+    def supported_by(self, engine: str) -> bool:
+        """act runs real actions and honours container:/services:, so those
+        stop being blockers when it is the engine. A missing secret still
+        is one — no engine can reproduce a job whose input does not exist."""
+        return not (self.act_blockers if engine == "act" else self.blockers)
+
+    def blockers_for(self, engine: str) -> list:
+        return list(self.act_blockers if engine == "act" else self.blockers)
 
     @property
     def foreign_runner(self) -> bool:
@@ -201,7 +212,10 @@ class JobInstance:
             "name": self.name,
             "runs_on": self.runs_on, "needs": list(self.needs),
             "matrix": dict(self.matrix), "workflow": self.workflow,
+            "workflow_path": self.workflow_path,
             "supported": self.supported, "blockers": list(self.blockers),
+            "act_blockers": list(self.act_blockers),
+            "act_could_run": not self.act_blockers,
             "foreign_runner": self.foreign_runner,
             "steps": [s.to_dict() for s in self.steps],
         }
@@ -406,6 +420,7 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
                 "github": github_ctx,
             }
             blockers: list = []
+            act_blockers: list = []   # survives even with a real action runner
             github_fields = set(github_ctx)
 
             runs_on_raw = raw.get("runs-on") or ""
@@ -415,18 +430,22 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
                 runs_on_raw = " ".join(str(v) for v in runs_on_raw)
             runs_on = substitute(str(runs_on_raw), ctx)
             if runs_on.unresolved:
-                blockers.append(f"unresolved runs-on expression: {runs_on.unresolved[0]}")
+                msg = f"unresolved runs-on expression: {runs_on.unresolved[0]}"
+                blockers.append(msg)
+                act_blockers.append(msg)
 
             name = substitute(str(raw.get("name") or job_id), ctx).text
 
             if raw.get("uses"):
-                blockers.append(
-                    f"reusable workflow ({raw['uses']}) — not supported locally")
+                msg = f"reusable workflow ({raw['uses']}) — not supported locally"
+                blockers.append(msg)
+                act_blockers.append(msg)
 
+            # container: / services: are native-only limits. act runs both.
             if raw.get("container"):
-                blockers.append("job-level `container:` is not supported locally")
+                blockers.append("job-level `container:` needs the act engine")
             if raw.get("services"):
-                blockers.append("job-level `services:` is not supported locally")
+                blockers.append("job-level `services:` needs the act engine")
 
             # `if:` is validated here and evaluated in the runner: whether it
             # holds depends on results that do not exist yet, but whether it
@@ -441,13 +460,16 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
             steps: list = []
             if not isinstance(steps_raw, list):
                 blockers.append("job has no steps")
+                act_blockers.append("job has no steps")
             else:
                 for idx, sraw in enumerate(steps_raw):
                     if not isinstance(sraw, dict):
                         continue
-                    step, sblockers = _build_step(idx, sraw, ctx, github_fields)
+                    step, sblockers, s_act = _build_step(
+                        idx, sraw, ctx, github_fields)
                     steps.append(step)
                     blockers.extend(sblockers)
+                    act_blockers.extend(s_act)
 
             inst = JobInstance(
                 id=f"{job_id}{_matrix_suffix(combo)}",
@@ -460,7 +482,9 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
                 matrix=dict(combo),
                 if_=str(raw.get("if") or ""),
                 blockers=blockers,
+                act_blockers=act_blockers,
                 workflow=workflow.name,
+                workflow_path=workflow.path,
             )
             instances.append(inst)
     return instances
@@ -468,13 +492,22 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
 
 def _build_step(index: int, raw: dict, ctx: dict,
                 github_fields: set = None) -> tuple:
-    """One step, with expressions resolved. Returns (Step, blockers)."""
+    """One step, with expressions resolved.
+
+    Returns (Step, native_blockers, act_blockers). The two lists differ only
+    where an engine genuinely changes what is reproducible — an unknown
+    `uses:` is fatal to the native shell and routine for act.
+    """
     blockers: list = []
+    act_blockers: list = []
     step_if = str(raw.get("if") or "")
     if step_if:
         problem = ci_expr.validate(step_if, github_fields or set())
         if problem:
+            # act evaluates `if:` itself, but a condition reading a value that
+            # does not exist locally is unjudgeable on any engine.
             blockers.append(f"step {index} {problem}")
+            act_blockers.append(f"step {index} {problem}")
     uses = str(raw.get("uses") or "").strip()
     run_res = substitute(str(raw.get("run") or ""), ctx)
     name = substitute(str(raw.get("name") or ""), ctx).text
@@ -485,24 +518,32 @@ def _build_step(index: int, raw: dict, ctx: dict,
         if base in SHIMMED_ACTIONS:
             shim = SHIMMED_ACTIONS[base]
         else:
-            blockers.append(f"step {index} uses unsupported action `{uses}`")
+            # Native has no way to execute somebody else's action; act does,
+            # which is the single biggest reason that engine exists.
+            blockers.append(
+                f"step {index} uses `{uses}` — the native engine cannot run "
+                "actions (the act engine can)")
     elif not run_res.text.strip():
         blockers.append(f"step {index} has neither `run` nor `uses`")
+        act_blockers.append(f"step {index} has neither `run` nor `uses`")
 
     if run_res.unresolved:
         # Executing a command with a literal ${{ }} in it would run something
-        # other than what CI runs. Refuse the job instead.
-        blockers.append(
-            f"step {index} has unresolved expression(s): "
-            + ", ".join(sorted(set(run_res.unresolved))))
+        # other than what CI runs. Refuse the job instead. act substitutes the
+        # same expressions, but a missing secret is missing on either engine.
+        msg = (f"step {index} has unresolved expression(s): "
+               + ", ".join(sorted(set(run_res.unresolved))))
+        blockers.append(msg)
+        act_blockers.append(msg)
 
     env_res = {}
     for key, value in (raw.get("env") or {}).items():
         sub = substitute(str(value), ctx)
         if sub.unresolved:
-            blockers.append(
-                f"step {index} env {key} has unresolved expression(s): "
-                + ", ".join(sorted(set(sub.unresolved))))
+            msg = (f"step {index} env {key} has unresolved expression(s): "
+                   + ", ".join(sorted(set(sub.unresolved))))
+            blockers.append(msg)
+            act_blockers.append(msg)
         env_res[str(key)] = sub.text
 
     step = Step(
@@ -517,7 +558,7 @@ def _build_step(index: int, raw: dict, ctx: dict,
         with_=dict(raw.get("with") or {}),
         shim=shim,
     )
-    return step, blockers
+    return step, blockers, act_blockers
 
 
 # ── DAG ─────────────────────────────────────────────────────────────────────

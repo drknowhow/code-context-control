@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.80.0"
+__version__ = "2.81.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6079,7 +6079,10 @@ def _ci_main(args) -> int:
                 allow_foreign=bool(getattr(args, "allow_foreign", False)),
                 only=only, timeout=getattr(args, "timeout", 0) or cr.DEFAULT_STEP_TIMEOUT,
                 workflow=getattr(args, "workflow", ""),
-                event=getattr(args, "event", "") or "").to_dict()
+                event=getattr(args, "event", "") or "",
+                engine=getattr(args, "engine", "auto") or "auto",
+                allow_side_effects=bool(getattr(args, "allow_side_effects", False)),
+                network=getattr(args, "network", "") or "").to_dict()
         elif sub == "runs":
             payload = {"runs": cr.list_runs(project_path)}
         else:
@@ -6098,7 +6101,10 @@ def _ci_main(args) -> int:
         bool(getattr(args, "allow_foreign", False)),
         getattr(args, "workflow", "") or "", getattr(args, "tail", 200) or 200,
         getattr(args, "timeout", 0) or 0, svc, finalize,
-        getattr(args, "event", "") or "")
+        getattr(args, "event", "") or "",
+        getattr(args, "engine", "auto") or "auto",
+        bool(getattr(args, "allow_side_effects", False)),
+        getattr(args, "network", "") or "")
     print(out)
     # Exit code is the finding: a non-full verdict must not read as success to
     # a shell script or a pre-push hook.

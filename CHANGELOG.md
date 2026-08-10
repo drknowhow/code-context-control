@@ -4,6 +4,69 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.81.0] - 2026-08-10
+
+### Added — AgentCI runs Linux jobs in real containers via `act`
+
+Until now a job whose `runs-on` did not match the host could only be
+approximated on it, and a `uses:` step that was not on the shim list could not
+run at all. There is now a second execution engine: `nektos/act`, which runs
+the job in a container using GitHub's own semantics — **real actions
+included**.
+
+Measured on this repository from Windows:
+
+| | native only | with act |
+|---|---|---|
+| runnable | **3 of 15** | **11 of 15** |
+
+The remaining four are macOS cells, and no engine will ever run them: there are
+no macOS containers. A matrix containing them cannot reach `FULL_CI_PASS`
+locally, which is a property of the world rather than a gap to close, and
+`c3 ci doctor` says so out loud.
+
+**Fidelity is now part of the verdict.** Each job records how faithfully it was
+reproduced — `native`, `container`, or `cross-os` — and `FULL_CI_PASS` requires
+every job at `native` or `container`. A Linux job in a Linux container *is*
+that job; a cross-OS approximation is not, and still caps the run at
+`PARTIAL_PASS`.
+
+**Blockers became per-engine**, which fixed a bug that had been hiding act's
+entire point: supportability was decided before the engine was chosen, so a job
+using a third-party action stayed refused even when the engine that could run
+it was selected. `inspect` now reports both answers. A missing
+`${{ secrets.X }}` still blocks on either engine — no engine can reproduce a
+job whose input does not exist.
+
+New: `c3 ci doctor`, `--engine auto|native|act`, `--network`, and
+`--allow-side-effects`. `--engine act` **fails** when act is unavailable rather
+than falling back silently: the caller asked for container fidelity and would
+not have got it.
+
+#### Safety
+
+Running real actions means a publishing job goes from unrunnable to one command
+from publishing. Two things stand in the way. C3 **never passes secrets** — act
+reads `.secrets` and `.env` from the repository by default, and both are
+pointed at an empty file, so a publish step runs and fails at authentication.
+And a **side-effect gate** refuses jobs using known publishing actions or
+commands unless `--allow-side-effects` is passed. The first is a mechanism, the
+second a policy; neither is a sandbox.
+
+#### Three things learned by probing rather than by reading
+
+- **`--bind` is mandatory on Windows.** act's default copy-mode workspace
+  arrived *empty* against a Windows host path and every step failed on missing
+  files. With `--bind` it works even on a mapped drive whose path contains
+  spaces and parentheses.
+- **`-P <label>=<image>` must always be passed**, or act prompts interactively
+  on first use and hangs an automated run.
+- **act's log prefix has to come off before parsing.** Feeding the raw log to
+  the failure parsers produced
+  `file='[CI/lint] ⭐ Run Main echo "app/x.py'`. Only the `|` gutter lines are
+  program output; parsing those yields a clean `app/x.py:14 F401` from inside a
+  container.
+
 ## [2.80.0] - 2026-08-10
 
 ### Added — AgentCI evaluates `if:` conditions
