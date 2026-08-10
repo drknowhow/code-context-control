@@ -18,6 +18,11 @@ const CI_STATUS_STYLE = {
   unsupported: ['UNSUP', 'warn'],
   foreign: ['OTHER-OS', 'blue'],
   deselected: ['—', 'textDim'],
+  // capability labels, used by the job graph only
+  cap_native: ['NATIVE', 'accent'],
+  cap_container: ['CONTAINER', 'accent'],
+  cap_unreachable: ['OTHER-OS', 'blue'],
+  cap_unsupported: ['UNSUP', 'warn'],
 };
 
 function CiStatusPill({ status, title }) {
@@ -143,6 +148,9 @@ function HubCI({ projects, onOpenDrill }) {
 
   const jobs = (inspect && inspect.jobs) || [];
   const engines = inspect && inspect.engines;
+  const runnableNative = new Set((inspect && inspect.runnable_native) || []);
+  const runnableContainer = new Set((inspect && inspect.runnable_container) || []);
+  const unsupportedKeys = new Set(((inspect && inspect.unsupported) || []).map(u => u.key));
   const runJobs = ((run && run.jobs) || []).filter(j => j.status !== 'deselected');
 
   return (
@@ -152,7 +160,8 @@ function HubCI({ projects, onOpenDrill }) {
         <span style={{ fontSize: 14, color: T.text }}>Local CI</span>
         <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>
           {inspect
-            ? `${(inspect.runnable || []).length} of ${jobs.length} job(s) runnable on ${inspect.host_os}`
+            ? `${(inspect.runnable || []).length} of ${jobs.length} runnable here`
+              + ` (${runnableNative.size} native, ${runnableContainer.size} container)`
             : 'loading…'}
         </span>
         <div style={{ flex: 1 }} />
@@ -289,13 +298,22 @@ function HubCI({ projects, onOpenDrill }) {
               display: 'flex', alignItems: 'center', gap: 9, padding: '5px 10px',
               borderTop: `1px solid ${T.border}`, fontSize: 11,
             }}>
+              {/* Read the server's partition; never re-derive it here. The
+                  first attempt inferred runnability in JS from act_could_run,
+                  which means "act has no blockers with this job" and NOT "act
+                  can run it here" — act only does Linux. Every macOS cell
+                  rendered as a green PASS it could never earn. */}
               <CiStatusPill
-                status={(!j.supported && !j.act_could_run) ? 'unsupported'
-                  : ((j.foreign_runner && !(j.act_could_run && engines && engines.ok))
-                    ? 'foreign' : 'passed')}
-                title={(!j.supported && !j.act_could_run) ? (j.blockers || []).join('; ')
-                  : (j.act_could_run && !j.supported ? 'the act engine can run this'
-                    : (j.foreign_runner ? `targets ${j.runs_on}` : 'runnable on this host'))} />
+                status={runnableNative.has(j.key) ? 'cap_native'
+                  : runnableContainer.has(j.key) ? 'cap_container'
+                    : unsupportedKeys.has(j.key) ? 'cap_unsupported'
+                      : 'cap_unreachable'}
+                title={runnableNative.has(j.key) ? 'runnable natively on this host'
+                  : runnableContainer.has(j.key)
+                    ? `runs in a container (${j.runs_on}) via act`
+                    : unsupportedKeys.has(j.key)
+                      ? (j.blockers || []).join('; ')
+                      : `targets ${j.runs_on} — no available engine can run it here`} />
               <span className="mono" style={{ color: T.textMuted }}>{j.key}</span>
               {!!(j.needs || []).length && (
                 <span className="mono" style={{ fontSize: 10, color: T.textDim }}>

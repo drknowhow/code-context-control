@@ -282,6 +282,68 @@ jobs:
         self.assertEqual((engine, fidelity), ("native", cr.FIDELITY_CROSS_OS))
 
 
+class TestInspectPartition(ActTempProject):
+    """The partition every surface reads — tool text, --json, and the Hub.
+
+    Regression: the Hub re-derived runnability in JavaScript from
+    `act_could_run`, which means "act has no blockers with this job" and NOT
+    "act can run it here" — act only does Linux. Every macOS cell rendered as a
+    green PASS it could never earn. The fix was to compute this once, here,
+    and have the UI read it; these tests are what keep that true.
+    """
+
+    def _inspect(self, act_ok: bool):
+        workflow(self.tmp, """
+name: CI
+on: [push]
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+  mac:
+    runs-on: macos-latest
+    steps:
+      - run: echo hi
+  broken:
+    runs-on: ubuntu-latest
+    steps:
+      - run: deploy --token ${{ secrets.TOKEN }}
+""")
+        from services.ci_workflow import inspect_project
+        with mock.patch.object(ci_act, "availability",
+                               return_value={"ok": act_ok, "reason": "stubbed"}):
+            return inspect_project(self.tmp)
+
+    def test_macos_is_never_container_runnable_even_with_act(self):
+        data = self._inspect(act_ok=True)
+        mac = "CI::mac"
+        self.assertNotIn(mac, data["runnable_container"])
+        self.assertNotIn(mac, data["runnable"])
+        self.assertIn(mac, [f["key"] for f in data["foreign"]])
+
+    def test_linux_moves_from_foreign_to_container_when_act_appears(self):
+        if host_os() == "Linux":
+            self.skipTest("ubuntu-latest is native on a Linux host")
+        without = self._inspect(act_ok=False)
+        self.assertIn("CI::linux", [f["key"] for f in without["foreign"]])
+        with_act = self._inspect(act_ok=True)
+        self.assertIn("CI::linux", with_act["runnable_container"])
+
+    def test_a_job_blocked_on_every_engine_is_unsupported_not_foreign(self):
+        # A missing secret is not a reachability problem, and sending the
+        # reader to "install act" would be the wrong fix.
+        data = self._inspect(act_ok=True)
+        self.assertIn("CI::broken", [u["key"] for u in data["unsupported"]])
+        self.assertNotIn("CI::broken", [f["key"] for f in data["foreign"]])
+
+    def test_runnable_is_the_union_of_both_engines(self):
+        data = self._inspect(act_ok=True)
+        self.assertEqual(
+            sorted(data["runnable"]),
+            sorted(data["runnable_native"] + data["runnable_container"]))
+
+
 class TestAvailability(unittest.TestCase):
     def test_missing_act_reports_how_to_install_it(self):
         with mock.patch.object(ci_act, "find_act", return_value=""):

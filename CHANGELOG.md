@@ -4,6 +4,60 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.82.0] - 2026-08-10
+
+### Fixed — the engine count was wrong in three places, and the Hub was lying
+
+Three loose ends from the act release, all of the same shape: something knew
+the right answer and something else re-derived a wrong one.
+
+**`c3 ci inspect` reported the native count only.** It printed *"Runnable on
+this host: 3 of 15"* when act made the real answer 11. The partition is now
+computed once in `inspect_project` — which grew an `engine` parameter and
+`runnable_native` / `runnable_container` / `engines` — and the tool text, the
+`--json` output and the Hub all read the same numbers instead of each
+inferring their own:
+
+```
+Runnable here: 11 of 15  (3 native, 8 container)
+  engines: native + act (act version 0.2.89)
+```
+
+**The Hub CI tab showed every job as a green PASS**, including the three macOS
+cells that can never run anywhere on this machine. Found by opening it, which
+had not been done before — the tab had only ever been verified as "bundles and
+the routes answer". The view was inferring runnability in JavaScript from
+`act_could_run`, which means "act has no blockers with this job", *not* "act
+can run it here": act only does Linux. It now reads the server's partition, and
+the job graph uses capability labels (`NATIVE` / `CONTAINER` / `OTHER-OS` /
+`UNSUP`) rather than borrowing run-outcome ones, because a graph describes what
+*can* happen and a run list describes what *did*.
+
+**A job blocked on every engine was classified `foreign`** rather than
+`unsupported` — sending the reader toward "install act" when the real problem
+was a missing secret. Classification now judges the blockers of the engine that
+*would* have been chosen.
+
+Also fixed: an unevaluable **job-level** `if:` was recorded as a native blocker
+but not an act one, so act was wrongly considered able to run it. The
+step-level case was already right; this was the matching half.
+
+### Fixed — the test suite no longer depends on your own C3 settings
+
+`c3 enforce advisory` writes `~/.c3/config.json`, and seventeen tests across
+four files then failed — not because anything was broken, but because they
+resolve enforcement policy from the ambient home directory and were written
+when it was `strict`. CI never saw it (no home config on a fresh runner), so
+the suite was green on the server and red on the machine of whoever had used
+the feature.
+
+A suite that depends on developer settings answers a question about the
+machine, not the code — and worse, it teaches people that some failures are
+normal, which is how a real regression gets waved through. A new
+`tests/conftest.py` points `C3_HOME` at an empty directory for the session, so
+`pytest` now passes locally with no environment fiddling. One fixture, no test
+files touched.
+
 ## [2.81.0] - 2026-08-10
 
 ### Added — AgentCI runs Linux jobs in real containers via `act`

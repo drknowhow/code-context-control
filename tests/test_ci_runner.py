@@ -453,7 +453,7 @@ jobs:
         out, _ = self._call("inspect")
         self.assertIn("CI::lint", out)
         self.assertIn("needs=lint", out)
-        self.assertIn("Runnable on this host: 2 of 2", out)
+        self.assertIn("Runnable here: 2 of 2", out)
 
     def test_run_then_failures_then_rerun(self):
         workflow(self.tmp, f"""

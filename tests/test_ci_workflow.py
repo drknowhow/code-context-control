@@ -279,7 +279,11 @@ class TestInspectProject(CiTempProject):
                        f"    steps:\n      - run: echo ok\n"
                        f"  broken:\n    runs-on: self-hosted-unknown\n"
                        f"    steps:\n      - uses: exotic/thing@v1\n")
-        data = inspect_project(self.tmp)
+        # engine="native" pins the pre-container partition. With act installed
+        # the Linux job would be containerised instead of refused — correct,
+        # and covered in test_ci_act.py — but this test is about the native
+        # split and must not depend on what the machine happens to have.
+        data = inspect_project(self.tmp, engine="native")
         self.assertIn("CI::here", data["runnable"])
         self.assertIn("CI::elsewhere", [f["key"] for f in data["foreign"]])
         self.assertIn("CI::broken", [u["key"] for u in data["unsupported"]])
