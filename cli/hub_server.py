@@ -337,6 +337,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/hub_credentials.js",
     "hub_ui/components/hub_locks.js",
     "hub_ui/components/hub_enforcement.js",
+    "hub_ui/components/hub_ci.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
@@ -1280,6 +1281,134 @@ def api_batch_cancel():
             return jsonify({"cancelled": False, "message": "No batch in progress"})
         _batch_state["cancelled"] = True
         return jsonify({"cancelled": True})
+
+
+# ── AgentCI: local CI execution (docs/agent-ci.md) ────────────────────────
+# A CI run is minutes long, so the POST starts a worker and returns; the UI
+# polls. One run per project at a time — two concurrent runs would interleave
+# their writes into the same .c3/ci run index and neither result would be
+# trustworthy.
+
+_ci_runs: dict = {}          # project path -> in-flight state
+_ci_lock = threading.Lock()
+
+
+def _ci_worker(project: str, job: str, allow_foreign: bool, workflow: str) -> None:
+    from services import ci_runner as cr
+    try:
+        result = cr.run_ci(project, selector=job, allow_foreign=allow_foreign,
+                           workflow=workflow)
+        payload = {"running": False, "done": True, "error": None,
+                   "run_id": result.run_id, "verdict": result.verdict,
+                   "note": result.note}
+    except Exception as exc:            # a crashed worker must not look idle
+        payload = {"running": False, "done": True, "run_id": "",
+                   "error": f"{type(exc).__name__}: {exc}"}
+    with _ci_lock:
+        _ci_runs[project] = payload
+
+
+@app.route("/api/ci/inspect", methods=["GET"])
+def api_ci_inspect():
+    """Workflows, the normalized job DAG, and what is runnable on this host."""
+    from services.ci_workflow import inspect_project
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        return jsonify(inspect_project(resolved))
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/api/ci/runs", methods=["GET"])
+def api_ci_runs():
+    from services import ci_runner as cr
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    limit = max(1, min(100, int(request.args.get("limit") or 20)))
+    return jsonify({"runs": cr.list_runs(resolved, limit=limit)})
+
+
+@app.route("/api/ci/run", methods=["GET"])
+def api_ci_run_detail():
+    from services import ci_runner as cr
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(cr.load_run(resolved, (request.args.get("run_id") or "").strip())
+                   or {})
+
+
+@app.route("/api/ci/logs", methods=["GET"])
+def api_ci_logs():
+    from services import ci_runner as cr
+    path = (request.args.get("path") or "").strip()
+    run_id = (request.args.get("run_id") or "").strip()
+    job = (request.args.get("job") or "").strip()
+    if not (path and run_id and job):
+        return jsonify({"error": "path, run_id and job are required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    tail = max(1, min(2000, int(request.args.get("tail") or 300)))
+    return jsonify({"log": cr.read_log(resolved, run_id, job, tail=tail)})
+
+
+@app.route("/api/ci/run", methods=["POST"])
+def api_ci_run_start():
+    """Start a local CI run in the background. Poll /api/ci/status."""
+    data = request.get_json(force=True) or {}
+    path = str(data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = str(_resolve_project_path(path))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+    with _ci_lock:
+        state = _ci_runs.get(resolved) or {}
+        if state.get("running"):
+            return jsonify({"error": "a CI run is already in progress here"}), 409
+        _ci_runs[resolved] = {"running": True, "done": False, "error": None,
+                              "run_id": "", "verdict": "", "note": ""}
+
+    threading.Thread(
+        target=_ci_worker,
+        args=(resolved, str(data.get("job") or ""),
+              bool(data.get("allow_foreign")), str(data.get("workflow") or "")),
+        daemon=True,
+    ).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/ci/status", methods=["GET"])
+def api_ci_status():
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = str(_resolve_project_path(path))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    with _ci_lock:
+        return jsonify(dict(_ci_runs.get(resolved)
+                            or {"running": False, "done": False}))
 
 
 # ── Sub-projects: linked child .c3 branches (v2.44.0) ─────────────────────

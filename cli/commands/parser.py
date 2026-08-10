@@ -472,6 +472,52 @@ def build_parser(version: str, parse_cli_ide_arg):
     lk_sweep = locks_subs.add_parser("sweep", help="Drop expired leases now")
     lk_sweep.add_argument("--path", dest="project_path", default=".")
 
+    # ── AgentCI — local CI execution (docs/agent-ci.md) ─────────────────
+    # Reads .github/workflows/*.yml as the source of truth. The CLI mirrors
+    # the c3_ci tool so a human can drive the same loop an agent does.
+    p_ci = subparsers.add_parser(
+        "ci", help="Run this repo's real CI locally instead of pushing for feedback")
+    ci_subs = p_ci.add_subparsers(dest="ci_cmd")
+
+    def _ci_common(sub):
+        sub.add_argument("--path", dest="project_path", default=".",
+                         help="Project directory (default: current)")
+        sub.add_argument("--json", action="store_true", help="Machine-readable output")
+        return sub
+
+    _ci_common(ci_subs.add_parser(
+        "inspect", help="Show workflows, the job DAG, and what runs on this host"))
+
+    ci_run = _ci_common(ci_subs.add_parser("run", help="Execute jobs locally"))
+    ci_run.add_argument("--job", default="",
+                        help="Job id, matrix cell, or workflow::job (default: all)")
+    ci_run.add_argument("--workflow", default="", help="Limit to one workflow by name")
+    ci_run.add_argument("--allow-foreign", action="store_true",
+                        help="Also run jobs targeting another OS (labelled cross-OS; "
+                             "can never yield FULL_CI_PASS)")
+    ci_run.add_argument("--timeout", type=int, default=0,
+                        help="Per-step timeout in seconds (default 900)")
+
+    ci_rerun = _ci_common(ci_subs.add_parser(
+        "rerun", help="Re-run only the jobs that failed in the last run"))
+    ci_rerun.add_argument("--run", dest="run_id", default="", help="Run id (default: latest)")
+    ci_rerun.add_argument("--allow-foreign", action="store_true")
+    ci_rerun.add_argument("--timeout", type=int, default=0)
+
+    ci_status = _ci_common(ci_subs.add_parser("status", help="Last run's verdict and jobs"))
+    ci_status.add_argument("--run", dest="run_id", default="")
+
+    ci_fail = _ci_common(ci_subs.add_parser(
+        "failures", help="Structured failures from the last run"))
+    ci_fail.add_argument("--run", dest="run_id", default="")
+
+    ci_logs = _ci_common(ci_subs.add_parser("logs", help="Tail one job's log"))
+    ci_logs.add_argument("job", nargs="?", default="", help="Job key")
+    ci_logs.add_argument("--run", dest="run_id", default="")
+    ci_logs.add_argument("--tail", type=int, default=200)
+
+    _ci_common(ci_subs.add_parser("runs", help="Recent local CI runs"))
+
     # ── Override Requests (v2.69.0, docs/override-requests.md) ──────────
     # Human-only approval surface. A grant is single-use, session-bound,
     # path-exact and TTL-capped, and it never edits policy: the rule that

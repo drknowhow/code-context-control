@@ -767,6 +767,35 @@ async def c3_locks(action: str = "list", paths: str = "", intent: str = "",
 
 
 @mcp.tool()
+async def c3_ci(action: str = "inspect", job: str = "", run_id: str = "",
+                allow_foreign: bool = False, workflow: str = "",
+                tail: int = 200, timeout: int = 0, ctx: Context = None) -> str:
+    """RUN THIS REPO'S REAL CI LOCALLY — before pushing, not after.
+    Reads .github/workflows/*.yml as the source of truth (no second CI config).
+    actions: inspect (default) | run | rerun | status | failures | logs | runs.
+    inspect: workflows, the job DAG, and which jobs are runnable on THIS host.
+    run: execute in dependency order; job='lint' or 'test (ubuntu-latest, 3.12)'
+      selects one (bare job name = all its matrix cells). A job whose dependency
+      failed is SKIPPED, never passed.
+    rerun: re-run only the jobs that failed in the last run — the fix loop.
+    failures: structured {file,line,message} instead of raw logs.
+    VERDICTS: FULL_CI_PASS means every job ran HERE and passed — the only one
+    that means "safe to push". PARTIAL_PASS means something did not run
+    (different OS, unsupported action, or you selected a subset); it is NOT a
+    green light. Jobs targeting another OS are refused unless allow_foreign=true,
+    which runs them and labels the result cross-OS."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.ci import handle_ci
+    return await asyncio.to_thread(handle_ci, action, job, run_id,
+                                   allow_foreign, workflow, tail, timeout,
+                                   svc, finalize)
+
+
+@mcp.tool()
 async def c3_override(action: str = "list", path: str = "", tool: str = "",
                       op: str = "read", why: str = "", request_id: str = "",
                       layer: str = "", timeout_s: int = 60,
