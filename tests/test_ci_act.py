@@ -318,9 +318,15 @@ jobs:
     def test_macos_is_never_container_runnable_even_with_act(self):
         data = self._inspect(act_ok=True)
         mac = "CI::mac"
+        # Host-independent: act has no macOS image, so this can never be
+        # containerised anywhere. This is the claim the Hub bug violated.
         self.assertNotIn(mac, data["runnable_container"])
-        self.assertNotIn(mac, data["runnable"])
-        self.assertIn(mac, [f["key"] for f in data["foreign"]])
+        if host_os() == "Darwin":
+            # On a Mac it is simply native — runnable, just not via a container.
+            self.assertIn(mac, data["runnable_native"])
+        else:
+            self.assertNotIn(mac, data["runnable"])
+            self.assertIn(mac, [f["key"] for f in data["foreign"]])
 
     def test_linux_moves_from_foreign_to_container_when_act_appears(self):
         if host_os() == "Linux":
