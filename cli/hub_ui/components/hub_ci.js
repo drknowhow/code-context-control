@@ -142,6 +142,7 @@ function HubCI({ projects, onOpenDrill }) {
   };
 
   const jobs = (inspect && inspect.jobs) || [];
+  const engines = inspect && inspect.engines;
   const runJobs = ((run && run.jobs) || []).filter(j => j.status !== 'deselected');
 
   return (
@@ -172,8 +173,16 @@ function HubCI({ projects, onOpenDrill }) {
         border: `1px solid ${T.border}`, borderRadius: 6, padding: '8px 10px', lineHeight: 1.5,
       }}>
         Runs the repository's real <span className="mono">.github/workflows</span> here —
-        C3 does not define a second CI config. Jobs targeting another OS are refused
-        unless you opt in, and a cross-OS result is indicative, never equivalent.
+        C3 does not define a second CI config.{' '}
+        {engines && engines.ok ? (
+          <span>Linux jobs run in a container via <span className="mono">act</span>{' '}
+            ({engines.act_version}, docker {engines.docker_version}), real actions included.</span>
+        ) : (
+          <span style={{ color: T.warn }}>
+            Container engine unavailable — {(engines && engines.reason) || 'checking…'}
+          </span>
+        )}{' '}
+        macOS jobs can never run locally: there are no macOS containers.
       </div>
 
       {err && (
@@ -236,8 +245,12 @@ function HubCI({ projects, onOpenDrill }) {
                 <span className="mono" style={{
                   color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{j.key}</span>
-                {j.cross_os && j.status === 'passed' && (
-                  <span className="mono" title={`Ran on this host, but targets ${j.runs_on}.`}
+                {j.status === 'passed' && j.fidelity === 'container' && (
+                  <span className="mono" title={`Ran in a container of ${j.runs_on} via act — real actions included.`}
+                    style={{ fontSize: 10, color: T.accent }}>container</span>
+                )}
+                {j.status === 'passed' && j.fidelity === 'cross-os' && (
+                  <span className="mono" title={`Ran on this host, but targets ${j.runs_on}. Indicative, not equivalent.`}
                     style={{ fontSize: 10, color: T.blue }}>cross-OS</span>
                 )}
                 <div style={{ flex: 1 }} />
@@ -277,9 +290,12 @@ function HubCI({ projects, onOpenDrill }) {
               borderTop: `1px solid ${T.border}`, fontSize: 11,
             }}>
               <CiStatusPill
-                status={!j.supported ? 'unsupported' : (j.foreign_runner ? 'foreign' : 'passed')}
-                title={!j.supported ? (j.blockers || []).join('; ')
-                  : (j.foreign_runner ? `targets ${j.runs_on}` : 'runnable on this host')} />
+                status={(!j.supported && !j.act_could_run) ? 'unsupported'
+                  : ((j.foreign_runner && !(j.act_could_run && engines && engines.ok))
+                    ? 'foreign' : 'passed')}
+                title={(!j.supported && !j.act_could_run) ? (j.blockers || []).join('; ')
+                  : (j.act_could_run && !j.supported ? 'the act engine can run this'
+                    : (j.foreign_runner ? `targets ${j.runs_on}` : 'runnable on this host'))} />
               <span className="mono" style={{ color: T.textMuted }}>{j.key}</span>
               {!!(j.needs || []).length && (
                 <span className="mono" style={{ fontSize: 10, color: T.textDim }}>

@@ -39,7 +39,12 @@ def _job_rows(jobs: list, include_deselected: bool = False) -> list:
         if status == cr.DESELECTED and not include_deselected:
             continue
         mark = _MARK.get(status, status.upper())
-        cross = " [cross-OS]" if job.get("cross_os") and status == cr.PASSED else ""
+        fid = job.get("fidelity", "")
+        cross = ""
+        if status == cr.PASSED and fid == cr.FIDELITY_CONTAINER:
+            cross = " [container]"
+        elif status == cr.PASSED and fid == cr.FIDELITY_CROSS_OS:
+            cross = " [cross-OS]"
         ms = job.get("duration_ms") or 0
         timing = f"  {ms / 1000:.1f}s" if ms else ""
         line = f"  {mark:<9} {job.get('key', '?')}{cross}{timing}"
@@ -75,7 +80,8 @@ def _failure_rows(jobs: list, limit: int = 25) -> list:
 
 def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
               workflow: str, tail: int, timeout: int, svc, finalize,
-              event: str = "") -> str:
+              event: str = "", engine: str = "auto",
+              allow_side_effects: bool = False, network: str = "") -> str:
     """Route c3_ci actions."""
     project = str(svc.project_path)
     action = (action or "inspect").strip().lower()
@@ -151,7 +157,9 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
 
         result = cr.run_ci(project, selector=job, allow_foreign=allow_foreign,
                            only=only, timeout=timeout or cr.DEFAULT_STEP_TIMEOUT,
-                           workflow=workflow, event=event)
+                           workflow=workflow, event=event, engine=engine,
+                           allow_side_effects=allow_side_effects,
+                           network=network)
         run = result.to_dict()
         lines = [_verdict_line(run), f"run {run['run_id']}  host={run['host_os']}"]
         fp = run.get("fingerprint") or {}
@@ -224,6 +232,34 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
                          f"{row.get('started_at', '')[:19]}  {tally}")
         return finalize("c3_ci", args, "\n".join(lines), f"{len(rows)} runs")
 
+    # ── doctor ───────────────────────────────────────────────────────────
+    if action == "doctor":
+        from services import ci_act
+        state = ci_act.availability()
+        lines = [
+            "Local CI execution engines:",
+            "",
+            f"  native    available — runs jobs whose runs-on matches "
+            f"{cr.host_os()}",
+        ]
+        if state["ok"]:
+            lines += [
+                f"  act       available — {state['act_version']}, "
+                f"docker {state['docker_version']}",
+                f"            runs Linux jobs in a container "
+                f"({ci_act.DEFAULT_IMAGE}), real `uses:` actions included",
+            ]
+        else:
+            lines += ["  act       UNAVAILABLE", f"            {state['reason']}"]
+        lines += [
+            "",
+            "macOS jobs cannot run locally on any engine — there are no macOS "
+            "containers, so a matrix containing them can never reach "
+            "FULL_CI_PASS here.",
+        ]
+        return finalize("c3_ci", args, "\n".join(lines),
+                        "act ready" if state["ok"] else "act unavailable")
+
     return finalize("c3_ci", args,
                     f"Unknown action '{action}'. Use: inspect, run, rerun, "
-                    "status, failures, logs, runs.", "unknown action")
+                    "status, failures, logs, runs, doctor.", "unknown action")

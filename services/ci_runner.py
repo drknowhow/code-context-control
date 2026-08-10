@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services import ci_expr, ci_failures
+from services import ci_act, ci_expr, ci_failures
 from services.ci_workflow import (
     CycleError,
     build_dag,
@@ -42,6 +42,7 @@ from services.ci_workflow import (
     git_context,
     host_os,
     parse_workflow,
+    runner_os,
 )
 
 CI_DIR = ".c3/ci"
@@ -99,6 +100,14 @@ class StepResult:
                 "shim": self.shim, "shell": self.shell}
 
 
+# How faithfully a job was reproduced. This is not cosmetic: FULL_CI_PASS
+# requires every job at `native` or `container`, so a cross-OS approximation
+# can never be mistaken for the real thing.
+FIDELITY_NATIVE = "native"        # ran on the OS it targets
+FIDELITY_CONTAINER = "container"  # ran in a container of the OS it targets
+FIDELITY_CROSS_OS = "cross-os"    # ran on a different OS — indicative only
+
+
 @dataclass
 class JobResult:
     key: str
@@ -108,6 +117,8 @@ class JobResult:
     runs_on: str
     status: str
     reason: str = ""
+    engine: str = "native"          # native | act
+    fidelity: str = FIDELITY_NATIVE
     cross_os: bool = False          # ran here despite a foreign `runs-on`
     duration_ms: int = 0
     steps: list = field(default_factory=list)
@@ -124,6 +135,7 @@ class JobResult:
             "key": self.key, "job_id": self.job_id, "name": self.name,
             "workflow": self.workflow, "runs_on": self.runs_on,
             "status": self.status, "reason": self.reason,
+            "engine": self.engine, "fidelity": self.fidelity,
             "cross_os": self.cross_os, "duration_ms": self.duration_ms,
             "steps": [s.to_dict() for s in self.steps],
             "failures": self.failures, "parser": self.parser,
@@ -144,6 +156,7 @@ class RunResult:
     selection: str = ""
     allow_foreign: bool = False
     event: str = ""
+    engine: str = "auto"
     note: str = ""
 
     # ── Roll-ups the report and the UI both read ──
@@ -169,6 +182,7 @@ class RunResult:
             "verdict": self.verdict, "host_os": self.host_os,
             "fingerprint": self.fingerprint, "selection": self.selection,
             "allow_foreign": self.allow_foreign, "event": self.event,
+            "engine": self.engine,
             "note": self.note,
             "counts": self.counts,
             "failed": self.failed_keys, "not_run": self.not_run_keys,
@@ -276,6 +290,96 @@ def _job_env(inst, project: Path) -> dict:
     for key, value in (inst.matrix or {}).items():
         env[f"MATRIX_{str(key).upper().replace('-', '_')}"] = str(value)
     return {str(k): str(v) for k, v in env.items()}
+
+
+def _pick_engine(inst, engine: str, act_state: dict, allow_foreign: bool):
+    """(engine|None, fidelity, reason_if_refused) for one job.
+
+    The ladder, most faithful first: run it on the OS it targets; failing that,
+    run it in a container of that OS; failing that, refuse — unless the caller
+    explicitly accepts a cross-OS approximation.
+    """
+    target = runner_os(inst.runs_on)
+    act_ok = bool(act_state.get("ok"))
+
+    if not inst.foreign_runner:
+        # `engine=act` is honoured even for a matching runner, because running
+        # a Linux job in a container on Linux is closer to CI than the host is.
+        if engine == "act" and act_ok and target == "Linux":
+            return "act", FIDELITY_CONTAINER, ""
+        return "native", FIDELITY_NATIVE, ""
+
+    if target == "Linux" and engine in ("auto", "act") and act_ok:
+        return "act", FIDELITY_CONTAINER, ""
+
+
+    if allow_foreign:
+        return "native", FIDELITY_CROSS_OS, ""
+
+    hint = f"targets {inst.runs_on}; host is {host_os()}. "
+    if target == "Linux" and not act_ok:
+        hint += ("It could run in a container, but the act engine is "
+                 f"unavailable: {act_state.get('reason', 'unknown')} ")
+    elif target == "Darwin":
+        hint += "There are no macOS containers, so this can never run here. "
+    hint += "Pass allow_foreign to attempt it on this OS anyway (cross-OS)."
+    return None, FIDELITY_CROSS_OS, hint
+
+
+def _run_job_act(inst, project: Path, run_dir: Path, event: str,
+                 network: str, fidelity: str) -> JobResult:
+    """Delegate one job to act, then read its result the same way as any other."""
+    result = JobResult(key=inst.key, job_id=inst.job_id, name=inst.name,
+                       workflow=inst.workflow, runs_on=inst.runs_on,
+                       status=PASSED, engine="act", fidelity=fidelity,
+                       cross_os=False)
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    outcome = ci_act.run_job(inst, project, event=event, network=network,
+                             artifact_dir=str(artifacts))
+    header = (f"[c3:ci] job {inst.key} via act "
+              f"(image {ci_act.image_for(inst.runs_on)}, host {host_os()})\n"
+              f"[c3:ci] $ {outcome.get('command', '')}\n\n")
+    log = header + (outcome.get("output") or "")
+
+    result.duration_ms = outcome.get("duration_ms", 0)
+    if outcome.get("timed_out"):
+        result.status = TIMEOUT
+        result.reason = "act exceeded its timeout; the container tree was killed"
+    elif outcome.get("exit_code"):
+        result.status = FAILED
+        result.reason = f"act exited {outcome['exit_code']}"
+
+    # act reports per-step results in its own log format rather than as data,
+    # so the job is recorded as one unit. The failure parsers read the log the
+    # same way they read a native one, which is why pytest/ruff output inside a
+    # container still yields {file,line,message}.
+    result.steps = [StepResult(index=0, name=f"act {inst.job_id}",
+                               status=result.status,
+                               exit_code=outcome.get("exit_code", 0),
+                               duration_ms=result.duration_ms, shell="act")]
+
+    if len(log) > MAX_LOG_CHARS:
+        log = (log[: MAX_LOG_CHARS // 2]
+               + f"\n\n[c3:ci] ... {len(log) - MAX_LOG_CHARS} chars elided ...\n\n"
+               + log[-MAX_LOG_CHARS // 2:])
+    log_path = run_dir / f"{_safe(inst.key)}.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(log, encoding="utf-8")
+        result.log_path = str(log_path)
+    except OSError:
+        pass
+
+    if result.status in (FAILED, TIMEOUT):
+        # Parse what the commands printed, not act's narration around it —
+        # otherwise every file path arrives wearing a `[CI/lint] |` prefix.
+        parsed = ci_failures.parse(
+            ci_act.program_output(outcome.get("output") or ""), exit_code=1)
+        result.failures = [f.to_dict() for f in parsed.failures]
+        result.parser = parsed.parser
+    return result
 
 
 def _eval_values(inst, needs_results: dict, github: dict) -> dict:
@@ -389,7 +493,7 @@ def compute_verdict(jobs: list) -> tuple:
         return FAIL, f"{len(failed)} job(s) failed"
 
     not_run = [j for j in jobs if j.status in _NOT_RUN]
-    cross = [j for j in jobs if j.cross_os and j.ran]
+    cross = [j for j in jobs if j.ran and j.fidelity == FIDELITY_CROSS_OS]
     if_skipped = [j for j in jobs if j.status == SKIPPED_IF]
     # Mentioned, never counted against coverage: not running these IS the
     # faithful reproduction. But the reader should know how many, because the
@@ -408,7 +512,8 @@ def compute_verdict(jobs: list) -> tuple:
     if cross:
         return PARTIAL_PASS, (
             f"all {len(jobs)} job(s) passed, but {len(cross)} ran on "
-            f"{host_os()} against a different target OS — indicative, not equivalent")
+            f"{host_os()} against a different target OS — indicative, not "
+            "equivalent. Install act + Docker to run them in a container instead.")
     ran = len(jobs) - len(if_skipped)
     return FULL_PASS, f"all {ran} applicable job(s) ran here and passed{if_note}"
 
@@ -417,7 +522,8 @@ def compute_verdict(jobs: list) -> tuple:
 
 def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
            only: list = None, timeout: int = DEFAULT_STEP_TIMEOUT,
-           workflow: str = "", event: str = "") -> RunResult:
+           workflow: str = "", event: str = "", engine: str = "auto",
+           allow_side_effects: bool = False, network: str = "") -> RunResult:
     """Plan and execute. `selector` picks jobs; `only` is an explicit key list.
 
     `only` exists for `rerun --failed`: it names exact keys from a prior run,
@@ -439,6 +545,14 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
     if event:
         github_ctx["event_name"] = event
     result.event = event
+    result.engine = engine
+    act_state = ci_act.availability() if engine in ('auto', 'act') else {}
+    if engine == 'act' and not act_state.get('ok'):
+        result.finished_at = _now()
+        result.verdict = FAIL
+        result.note = f"engine='act' requested but unavailable: {act_state.get('reason')}"
+        _persist(project, result, run_dir)
+        return result
 
     workflows = [parse_workflow(p) for p in discover_workflows(project)]
     if workflow:
@@ -505,25 +619,53 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             _record(inst, DESELECTED)
             continue
 
-        if not inst.supported:
+        # Engine first, THEN supportability: "can this job run?" has no answer
+        # until you know what is going to run it. A step using a third-party
+        # action is fatal to the native shell and unremarkable to act, so
+        # asking in the other order permanently hid act's main advantage.
+        chosen_engine, fidelity, why_not = _pick_engine(
+            inst, engine, act_state, allow_foreign)
+
+        if chosen_engine is not None and not inst.supported_by(chosen_engine):
+            reasons = inst.blockers_for(chosen_engine)
             results.append(JobResult(
                 key=inst.key, job_id=inst.job_id, name=inst.name,
                 workflow=inst.workflow, runs_on=inst.runs_on,
-                status=UNSUPPORTED, reason="; ".join(inst.blockers)))
+                status=UNSUPPORTED, engine=chosen_engine, fidelity=fidelity,
+                reason="; ".join(reasons)))
             failed_jobs.add((inst.workflow, inst.job_id))
             _record(inst, UNSUPPORTED)
             continue
-
-        if inst.foreign_runner and not allow_foreign:
+        if chosen_engine is None:
             results.append(JobResult(
                 key=inst.key, job_id=inst.job_id, name=inst.name,
                 workflow=inst.workflow, runs_on=inst.runs_on,
-                status=FOREIGN, cross_os=True,
-                reason=f"targets {inst.runs_on}; host is {host_os()}. "
-                       "Re-run with allow_foreign to attempt it anyway."))
+                status=FOREIGN, cross_os=True, fidelity=FIDELITY_CROSS_OS,
+                reason=why_not))
             failed_jobs.add((inst.workflow, inst.job_id))
             _record(inst, FOREIGN)
             continue
+
+        # With a real action runner, a publishing job stops being unrunnable
+        # and starts being one command away from actually publishing. No
+        # secret is ever passed, so it should fail at auth — but "should" is
+        # not a safety model, so it also needs saying yes on purpose.
+        if chosen_engine == "act" and not allow_side_effects:
+            risks = ci_act.side_effects(inst)
+            if risks:
+                results.append(JobResult(
+                    key=inst.key, job_id=inst.job_id, name=inst.name,
+                    workflow=inst.workflow, runs_on=inst.runs_on,
+                    status=UNSUPPORTED, engine="act", fidelity=fidelity,
+                    reason=("looks like it publishes or deploys ("
+                            + "; ".join(risks[:2]) +
+                            "). Refused by default — C3 passes no secrets, so "
+                            "it would most likely fail at auth, but that is "
+                            "not a guarantee. Pass allow_side_effects to run "
+                            "it anyway.")))
+                failed_jobs.add((inst.workflow, inst.job_id))
+                _record(inst, UNSUPPORTED)
+                continue
 
         blocked = [n for n in inst.needs if (inst.workflow, n) in failed_jobs]
         eval_values = _eval_values(inst, _needs_ctx(inst), github_ctx)
@@ -571,8 +713,13 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             _record(inst, SKIPPED)
             continue
 
-        job_result = _run_job(inst, project, run_dir, timeout,
-                              eval_values=eval_values)
+        if chosen_engine == "act":
+            job_result = _run_job_act(inst, project, run_dir, event, network,
+                                      fidelity)
+        else:
+            job_result = _run_job(inst, project, run_dir, timeout,
+                                  eval_values=eval_values)
+            job_result.fidelity = fidelity
         results.append(job_result)
         if job_result.status in (FAILED, TIMEOUT, UNSUPPORTED):
             failed_jobs.add((inst.workflow, inst.job_id))
