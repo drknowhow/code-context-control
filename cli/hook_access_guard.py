@@ -41,7 +41,24 @@ _MAX_TOKENS = 200
 # "NTFS alternate data stream". The ADS check stays strict for real path
 # arguments (_WRITE_TOOLS/_READ_TOOLS); here it only produced false denies on
 # commit messages, curl, and gh (#50).
-_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+#
+# UNANCHORED, and that is the fix rather than an oversight. `^…://` only ever
+# recognised a token that BEGINS with a scheme, which is the same
+# whitelist-a-shape mistake #50 made and this module's own header calls out —
+# and the `_SYNTAX_CHARS` generalisation does not cover the gap, because a
+# token can carry a URL and no syntax at all. Observed 2026-08-11: the single
+# argument of
+#     printf '\n---\n\nhttps://claude.ai/code/session_01Hs28…\n' >> body.md
+# strips to `\n---\n\nhttps://claude.ai/…`, which has a separator (`\` and
+# `/`), no syntax characters, no `::`, and no leading scheme. It reached
+# ag.check, canonicalised to a residual colon, and hard-denied a command whose
+# only file argument was an ordinary markdown path. Third logged instance of
+# this class in five days (two on 2026-08-07 were Windows paths inside Python
+# string literals).
+#
+# A token containing `://` anywhere is a network literal, not an NTFS stream:
+# a real stream is `file:name:$TYPE`, and no spelling of it contains `//`.
+_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
 # IPv6 literal or CIDR: >=2 colons, hex groups only, optional [] and /prefix.
 # 'C:/x/f.txt:stream' has one colon and non-hex parts, so it never matches.
 _IPV6_RE = re.compile(
@@ -104,8 +121,13 @@ _CD_RE = re.compile(
 
 
 def _is_network_token(tok: str) -> bool:
-    """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling."""
-    return bool(_SCHEME_RE.match(tok) or _IPV6_RE.match(tok))
+    """True for URLs and IPv6 literals/CIDRs — never for an ADS spelling.
+
+    ``search`` for the scheme (a URL anywhere in the token disqualifies it as
+    a path), ``match`` for IPv6 — that pattern is a whole-token shape and
+    anchoring is what keeps `C:/x/f.txt:stream` from matching it.
+    """
+    return bool(_SCHEME_RE.search(tok) or _IPV6_RE.match(tok))
 
 
 def _is_scope_token(tok: str) -> bool:

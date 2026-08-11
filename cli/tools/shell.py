@@ -69,6 +69,45 @@ _SOFT_WARN = re.compile(
 
 _DEFAULT_TIMEOUT = 60
 _MAX_TIMEOUT = 600
+
+# The transport's own ceiling, and the reason _MAX_TIMEOUT alone is a lie.
+#
+# An MCP client kills a tool call at MCP_TOOL_TIMEOUT (Claude Code ships
+# 120_000 ms and the value is set per-environment) — a limit this process does
+# not choose and cannot raise. Until this existed, `c3_shell(timeout=600)` was
+# accepted, clamped to 600, and then killed by the client at 120s with the
+# subprocess still running: the caller saw the call "moved to background" and
+# then fail, with no line anywhere naming the real limit or attributing the
+# kill. The subprocess was NOT reaped by us, because our own deadline never
+# arrived.
+#
+# The cost was not hypothetical. Two Higgsfield image generations (2-4 min
+# each) were requested at timeout=420, killed at 120s, and the remote jobs
+# completed and were BILLED while the local process died before downloading —
+# one image landed, one was paid for and stranded.
+#
+# So: discover the client's ceiling, run just inside it, and SAY SO. Running
+# inside it means OUR deadline fires first, which turns a phantom
+# client-side kill into an ordinary `[c3_shell:TIMEOUT]` with stdout, a
+# duration, and a process tree we actually killed.
+_TRANSPORT_MARGIN_S = 5
+
+
+def _transport_ceiling_s() -> int | None:
+    """Seconds this call may run before the MCP client kills it, if knowable.
+
+    None when the variable is unset or unparseable — then nothing is capped
+    and behaviour is exactly what it was, because a guess here would cap
+    legitimate work on a client with no such limit.
+    """
+    raw = (os.environ.get("MCP_TOOL_TIMEOUT") or "").strip()
+    if not raw:
+        return None
+    try:
+        ceiling = int(float(raw)) // 1000
+    except (TypeError, ValueError):
+        return None
+    return ceiling if ceiling > _TRANSPORT_MARGIN_S else None
 _FILTER_THRESHOLD_LINES = 30
 _JQ_INVOCATION = re.compile(r"(?:^|&&|\|\||[;|(])\s*jq(?:\s|$)", re.IGNORECASE)
 
@@ -468,6 +507,13 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         )
 
     timeout = max(1, min(int(timeout or _DEFAULT_TIMEOUT), _MAX_TIMEOUT))
+    # Cap to what the transport will actually allow, and remember that we did
+    # so — the caller asked for a number, and a number quietly not honoured is
+    # the whole defect (see _transport_ceiling_s).
+    capped_from = 0
+    _ceiling = _transport_ceiling_s()
+    if _ceiling is not None and timeout > _ceiling - _TRANSPORT_MARGIN_S:
+        capped_from, timeout = timeout, _ceiling - _TRANSPORT_MARGIN_S
     work_cwd = cwd or svc.project_path
     work_cwd = str(Path(work_cwd).resolve())
 
@@ -601,6 +647,16 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
     warn = ""
     if _SOFT_WARN.search(cmd):
         warn = "[c3_shell:warn] destructive pattern detected — verify before re-running\n"
+    if capped_from:
+        # Named at the moment of the mistake, not in documentation nobody
+        # reads at the moment they need it. The alternative IS the escape
+        # hatch, so the line says which one.
+        warn += (
+            f"[c3_shell:capped] timeout={capped_from}s was requested but this "
+            f"MCP client kills a tool call at {_ceiling}s; ran with {timeout}s. "
+            f"For longer work use the native Bash tool with "
+            f"run_in_background, which is not bound by this limit.\n"
+        )
 
     if result["timed_out"]:
         status = "TIMEOUT"

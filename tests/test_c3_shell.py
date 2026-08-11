@@ -112,6 +112,107 @@ class TestShellClassification(unittest.TestCase):
         self.assertNotIn("blocked pattern", out)
 
 
+class TestTransportCeiling(unittest.TestCase):
+    """A timeout this process cannot honour must not be silently accepted.
+
+    An MCP client kills a tool call at ``MCP_TOOL_TIMEOUT`` — a limit c3 does
+    not choose and cannot raise. Before this, ``timeout=600`` was accepted,
+    clamped to 600, and killed by the client at 120s with our own deadline
+    never arriving: the caller saw the call "moved to background" and then
+    fail, with nothing naming the real limit. It cost two paid Higgsfield
+    generations, one of which was billed and stranded because the download
+    died at the ceiling.
+    """
+
+    def _ceiling(self, value):
+        return patch.dict(os.environ, {"MCP_TOOL_TIMEOUT": value}, clear=False)
+
+    # ---------------------------------------------------------- discovery
+
+    def test_ms_are_converted_to_seconds(self):
+        with self._ceiling("120000"):
+            self.assertEqual(shell_mod._transport_ceiling_s(), 120)
+
+    def test_an_unset_variable_caps_nothing(self):
+        """A client with no such limit must keep the old behaviour exactly —
+        guessing a ceiling here would cap legitimate long work."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_TOOL_TIMEOUT", None)
+            self.assertIsNone(shell_mod._transport_ceiling_s())
+
+    def test_a_garbage_value_caps_nothing(self):
+        for raw in ("", "  ", "soon", "12x", "-5"):
+            with self.subTest(raw=raw), self._ceiling(raw):
+                self.assertIsNone(shell_mod._transport_ceiling_s())
+
+    # ------------------------------------------------------------ capping
+
+    def _capture_timeout(self, requested, ceiling):
+        """Run handle_shell with _run_sync stubbed; return (timeout, output)."""
+        svc, _, _ = _fake_svc(Path.cwd())
+        seen = {}
+
+        def _fake_run(cmd, cwd, timeout, env=None):
+            seen["timeout"] = timeout
+            return {"stdout": "", "stderr": "", "exit_code": 0,
+                    "duration_ms": 1, "timed_out": False}
+
+        with self._ceiling(ceiling), patch.object(shell_mod, "_run_sync", _fake_run):
+            out = _run(shell_mod.handle_shell(
+                "echo hi", "", requested, False, False, svc,
+                _finalize_passthrough))
+        return seen.get("timeout"), out
+
+    def test_a_request_over_the_ceiling_runs_just_inside_it(self):
+        """Inside, not at: OUR deadline has to fire first, or the client's
+        kill leaves a subprocess we never reaped and a result nobody sees."""
+        timeout, out = self._capture_timeout(600, "120000")
+        self.assertEqual(timeout, 120 - shell_mod._TRANSPORT_MARGIN_S)
+        self.assertIn("[c3_shell:capped]", out)
+        self.assertIn("600s was requested", out)
+        self.assertIn("run_in_background", out)   # names the escape hatch
+
+    def test_a_request_inside_the_ceiling_is_untouched_and_silent(self):
+        timeout, out = self._capture_timeout(30, "120000")
+        self.assertEqual(timeout, 30)
+        self.assertNotIn("capped", out)
+
+    def test_no_ceiling_means_no_cap_and_no_note(self):
+        svc, _, _ = _fake_svc(Path.cwd())
+        seen = {}
+
+        def _fake_run(cmd, cwd, timeout, env=None):
+            seen["timeout"] = timeout
+            return {"stdout": "", "stderr": "", "exit_code": 0,
+                    "duration_ms": 1, "timed_out": False}
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_TOOL_TIMEOUT", None)
+            with patch.object(shell_mod, "_run_sync", _fake_run):
+                out = _run(shell_mod.handle_shell(
+                    "echo hi", "", 600, False, False, svc,
+                    _finalize_passthrough))
+        self.assertEqual(seen["timeout"], 600)
+        self.assertNotIn("capped", out)
+
+    def test_the_documented_max_still_bounds_a_capless_client(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_TOOL_TIMEOUT", None)
+            svc, _, _ = _fake_svc(Path.cwd())
+            seen = {}
+
+            def _fake_run(cmd, cwd, t, env=None):
+                seen["timeout"] = t
+                return {"stdout": "", "stderr": "", "exit_code": 0,
+                        "duration_ms": 1, "timed_out": False}
+
+            with patch.object(shell_mod, "_run_sync", _fake_run):
+                _run(shell_mod.handle_shell(
+                    "echo hi", "", 99999, False, False, svc,
+                    _finalize_passthrough))
+        self.assertEqual(seen["timeout"], shell_mod._MAX_TIMEOUT)
+
+
 class TestShellExecution(unittest.TestCase):
     def test_exit_code_success(self):
         svc, _, _ = _fake_svc(Path.cwd())
