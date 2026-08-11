@@ -4,6 +4,54 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.85.1] - 2026-08-11
+
+### Fixed — three silent failures, all found by using C3 to ship something else
+
+None of these raised an error. Each one cost a caller a working command, and
+two of them made a tool unusable while reporting nothing.
+
+**A linked worktree is another checkout, not more of this project.**
+`SKIP_DIRS` matches directory *names*, and a worktree is named whatever
+somebody called it — its only marker is a `.git` **file** holding
+`gitdir: …` rather than a `.git` directory. So pruning the name `.git`
+skipped a file that was never a directory, and the shared walker descended
+into an entire second copy of the repository. Every index build goes through
+that walker. On one project: 112 worktrees, and **88,015 of 107,729 tracked
+files (81.7%) were duplicate copies of the same repo**. A cross-project exact
+search there took 147.6s against a transport that kills a tool call at 120s —
+it could never return. It was also the wrong *answer*: hits were duplicated up
+to 112 times and the top result was whichever stale copy sorted first.
+`is_nested_checkout()` now prunes any child directory carrying a `.git` entry
+of either kind, catching worktrees and submodules alike at any depth and under
+any name. The project root is never tested, so a project cannot prune itself.
+
+**A URL is not an NTFS alternate data stream.** The shell scan's scheme
+pattern was anchored, so a URL was only recognised when it *began* the token —
+and the `_SYNTAX_CHARS` generalisation could not cover a token carrying a URL
+and no syntax at all. `printf '\n---\n\nhttps://…\n' >> body.md` therefore
+canonicalised to a residual colon and became a hard, unappealable `<ads>` deny
+on a command whose only file argument was an ordinary markdown path. Third
+logged instance of the class. The scheme is now matched anywhere in the token;
+a real stream spelling is `file:name:$TYPE` and can never contain `//`.
+
+**`c3_shell` accepted a timeout it could not deliver.** `_MAX_TIMEOUT` is 600,
+but an MCP client kills the call at `MCP_TOOL_TIMEOUT` — a limit C3 does not
+choose and cannot raise. A 600s request was clamped to 600 and killed at 120s
+with C3's own deadline never arriving, so the caller saw the call "moved to
+background" and then fail, with nothing naming the real limit and a subprocess
+C3 never reaped. It is now discovered from the environment and run just inside,
+so C3's deadline fires first and the result is an ordinary `[c3_shell:TIMEOUT]`
+with output and a killed process tree — plus a `[c3_shell:capped]` line naming
+the requested value, the real limit, and the escape hatch that is not bound by
+it. An unset or unparseable variable caps nothing.
+
+### Note for existing installs
+
+The worktree fix stops those files *entering* the index; it does not evict
+what is already there. **Projects with git worktrees need a reindex** to shed
+the duplicates.
+
 ## [2.85.0] - 2026-08-10
 
 ### Added — run history, flake detection, and a GitHub status bridge
