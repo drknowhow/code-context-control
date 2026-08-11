@@ -239,6 +239,18 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         """python -c "p=pathlib.Path('.claude/x.json')\"""",
         # brace expansion
         "cp {src/a,src/b}/x.txt .",
+        # 2026-08-11, third iteration of this class and the one the
+        # _SYNTAX_CHARS generalisation could not reach: a single-quoted printf
+        # payload that is escape sequences plus a URL. After the tokenizer
+        # strips the quotes it carries a separator (`\` and `/`), NO syntax
+        # character at all, no `::`, and no scheme at position 0 — so every
+        # existing gate passed it through to a residual-colon `<ads>` deny on
+        # a command whose only file argument is an ordinary markdown path.
+        r"printf '\n---\n\nhttps://claude.ai/code/session_01Hs28\n' >> body.md",
+        # The same shape without the escapes, and with the URL last.
+        'echo see-https://example.com/a/b >> notes.md',
+        # A scheme mid-token inside a quoted commit message.
+        'git commit -m "closes https://github.com/o/r/issues/9"',
     )
 
     def test_syntax_tokens_do_not_deny(self):
@@ -270,6 +282,24 @@ class TestShellScanSyntaxTokens(HookGuardBase):
             "type ./secrets/key.txt:hidden", str(self.proj))
         self.assertIsNotNone(denial)
         self.assertEqual(denial.rule, "<ads>")
+
+    def test_the_scheme_search_does_not_swallow_a_stream_spelling(self):
+        """The cost of unanchoring, priced.
+
+        ``search`` means a token is excused for containing `://` ANYWHERE, so
+        the question is whether a real ADS spelling can carry one. It cannot:
+        NTFS spells a stream ``file:name:$TYPE`` and no spelling of it
+        contains ``//``. Pinned so a future 'tighten the regex' change has to
+        argue with a test rather than with a comment."""
+        for tok in ("./secrets/key.txt:hidden", "C:/x/f.txt:stream",
+                    "notes.txt::$DATA", "file:name:$DATA"):
+            with self.subTest(tok=tok):
+                self.assertFalse(hag._is_network_token(tok), tok)
+        for tok in ("https://example.com/a", "[#1](https://example.com/a)",
+                    r"\n---\n\nhttps://claude.ai/code/x",
+                    "see-git+ssh://host/repo.git"):
+            with self.subTest(tok=tok):
+                self.assertTrue(hag._is_network_token(tok), tok)
 
     def test_a_pytest_node_id_is_not_a_stream_spelling(self):
         """`a/b.py::Thing` — one of two path-SHAPED idioms #73 did not cover."""
