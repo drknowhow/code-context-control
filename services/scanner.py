@@ -65,6 +65,39 @@ def gitignore_dir_names(root) -> set:
     return gitignore_dir_patterns(root)[0]
 
 
+def is_nested_checkout(path) -> bool:
+    """True when ``path`` is the root of a DIFFERENT checkout than ours.
+
+    ``SKIP_DIRS`` cannot express this, because it matches directory NAMES and
+    a nested checkout is named whatever somebody called it. A linked git
+    worktree is the case that matters: its marker is a ``.git`` FILE holding
+    ``gitdir: …`` rather than a ``.git`` directory, so pruning the name
+    ``.git`` skips a file that was never a directory and descends into the
+    entire copy of the repository sitting beside it.
+
+    Measured on the Yep project, 2026-08-11 — 112 registered worktrees, most
+    of them agent scratch under ``.claude/worktrees/``:
+
+        .py files in the real tree      1,108
+        .py files under worktree dirs 100,629     (91x amplification)
+
+    A cross-project exact search there took 147.6s, against 0.11s to build
+    the runtime. The MCP transport kills a tool call at 120s, so the search
+    could never return — not slow, unreachable, and the reason
+    ``c3_project`` was unusable against that project at all.
+
+    Indexing them is also wrong on the merits, independent of cost: they are
+    other commits of files this project already has, so every hit is
+    duplicated ~112 times and the top result is whichever stale copy sorted
+    first. The search that exposed this returned a hit inside
+    ``.claude/worktrees/bridge-cse_01MPoh…`` rather than from src/.
+    """
+    try:
+        return os.path.exists(os.path.join(str(path), '.git'))
+    except (OSError, ValueError):
+        return False
+
+
 def make_dir_pruner(root, extra_skip=(), respect_gitignore: bool = True):
     """Predicate ``dirname -> bool`` (True = prune this directory).
 
@@ -177,6 +210,8 @@ def iter_files(
                 continue
             if guard_excluded(os.path.join(dirpath, d)):
                 continue  # denied subtree — never descended, never listed
+            if is_nested_checkout(os.path.join(dirpath, d)):
+                continue  # another checkout's copy of files we already index
             kept.append(d)
         dirnames[:] = kept
         seen += len(filenames) + len(kept)

@@ -26,6 +26,82 @@ class _Tree(unittest.TestCase):
         return p
 
 
+class TestNestedCheckoutPruning(_Tree):
+    """A linked git worktree is another checkout, not more of this project.
+
+    SKIP_DIRS matches directory NAMES, and a worktree is named whatever
+    somebody called it. Its only marker is a ``.git`` FILE (``gitdir: …``)
+    rather than a ``.git`` directory — so pruning the name '.git' skips a
+    file that was never a directory, and the walk descends into a whole
+    second copy of the repository.
+
+    Measured on the Yep project, 2026-08-11: 112 worktrees, 88,015 of the
+    index's 107,729 tracked files (81.7%) were worktree copies, and a
+    cross-project exact search took 147.6s against a 120s transport ceiling
+    — unreachable, not merely slow.
+    """
+
+    def _worktree(self, rel, gitdir="/somewhere/.git/worktrees/wt1"):
+        """A directory carrying the linked-worktree marker."""
+        (self.root / rel).mkdir(parents=True, exist_ok=True)
+        (self.root / rel / ".git").write_text(
+            f"gitdir: {gitdir}\n", encoding="utf-8")
+
+    def test_a_linked_worktree_is_not_walked(self):
+        self.touch("src/real.py")
+        self._worktree(".claude/worktrees/wt1")
+        self.touch(".claude/worktrees/wt1/src/copy.py")
+        found = {p.name for p in iter_files(self.root)}
+        self.assertIn("real.py", found)
+        self.assertNotIn("copy.py", found)
+
+    def test_a_worktree_at_any_depth_or_name_is_pruned(self):
+        """The name carries no signal — only the marker does."""
+        self.touch("src/real.py")
+        for rel in (".wt-feature", "vendor/thing", "deep/a/b/c/scratch"):
+            self._worktree(rel)
+            self.touch(f"{rel}/src/copy.py")
+        found = [p for p in iter_files(self.root)]
+        self.assertEqual({p.name for p in found} & {"copy.py"}, set())
+        self.assertIn("real.py", {p.name for p in found})
+
+    def test_a_submodule_style_git_dir_is_also_pruned(self):
+        """A nested checkout with a real .git DIRECTORY is equally not ours."""
+        self.touch("src/real.py")
+        (self.root / "vendor/lib/.git").mkdir(parents=True, exist_ok=True)
+        self.touch("vendor/lib/src/copy.py")
+        found = {p.name for p in iter_files(self.root)}
+        self.assertNotIn("copy.py", found)
+        self.assertIn("real.py", found)
+
+    def test_the_project_root_is_never_self_pruned(self):
+        """The root's own .git must not make the project prune itself — only
+        CHILD directories are tested for the marker."""
+        (self.root / ".git").mkdir(parents=True, exist_ok=True)
+        self.touch("src/real.py")
+        self.touch("top.py")
+        found = {p.name for p in iter_files(self.root)}
+        self.assertIn("real.py", found)
+        self.assertIn("top.py", found)
+
+    def test_an_ordinary_directory_is_untouched(self):
+        """The cost of the new stat is a prune only when the marker is there."""
+        self.touch("src/real.py")
+        self.touch("docs/guide.md")
+        self.touch("tests/test_x.py")
+        found = {p.name for p in iter_files(self.root)}
+        self.assertEqual(found, {"real.py", "guide.md", "test_x.py"})
+
+    def test_the_predicate_is_directly_testable(self):
+        from services.scanner import is_nested_checkout
+
+        self._worktree("wt")
+        self.assertTrue(is_nested_checkout(self.root / "wt"))
+        (self.root / "plain").mkdir()
+        self.assertFalse(is_nested_checkout(self.root / "plain"))
+        self.assertFalse(is_nested_checkout(self.root / "does-not-exist"))
+
+
 class TestScannerPruning(_Tree):
     def test_skip_dirs_pruned(self):
         self.touch("src/a.py")
