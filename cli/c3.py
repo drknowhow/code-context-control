@@ -5535,6 +5535,14 @@ def cmd_install_mcp(args):
     except Exception as e:
         print(f"Warning: Could not update global CLAUDE.md: {e}")
 
+    # ── Default Access Guard rules (first run only) ─────────────
+    from services import access_guard
+    seeded = access_guard.seed_default_global_rules()
+    if seeded.get("seeded"):
+        rules = ", ".join(seeded["rules"])
+        print(f"Seeded default Access Guard deny rules into global scope: {rules}")
+        print("  (remove with: c3 access remove <glob> --kind deny --global)")
+
     # ── Install /terse skill for supported IDEs ──────────────────
     if profile.name in ("claude-code", "codex"):
         try:
@@ -6603,6 +6611,16 @@ def _override_audit(grant: dict, project_path: str) -> None:
 
 def cmd_access(args):
     """Access Guard rule management — human-only mutation surface (spec §1)."""
+    from services import access_guard
+
+    # First `c3 access` touch seeds the removable defaults (spec §1). A
+    # no-op forever after: any existing access section, even an emptied
+    # one, means the user has taken over the scope.
+    seeded = access_guard.seed_default_global_rules()
+    if seeded.get("seeded"):
+        print(f"[seeded] default global deny rules: {', '.join(seeded['rules'])}")
+        print("  Remove any of them: c3 access remove <glob> --kind deny --global\n")
+
     sub = getattr(args, "access_cmd", None)
     if not sub:
         print("Usage: c3 access {list,add,remove,check,stats,mask,builtin} [args]")
