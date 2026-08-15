@@ -24,6 +24,7 @@ deliberately does not match). Completed milestones are not eligible for
 'milestone_reopen')` and as `{complete: true}` / `{reopen: true}` on the
 milestone PUT of all three REST surfaces (hub, per-project server,
 mobile).
+
 ### Fixed — the default Access Guard rules were documented but never seeded
 
 `docs/access-guard.md` §1 promises `*.pem`, `id_rsa*`, and `*.key` as
