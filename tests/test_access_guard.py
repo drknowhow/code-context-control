@@ -289,5 +289,77 @@ class TestEnforce(GuardBase):
         ag.enforce(str(self.proj / "src/ok.py"), "read", str(self.proj))
 
 
+class TestSeedDefaults(GuardBase):
+    """seed_default_global_rules — spec §1 removable defaults, sticky removal."""
+
+    def setUp(self):
+        super().setUp()
+        import unittest.mock as mock
+        self._home = Path(tempfile.mkdtemp())
+        self._gb = mock.patch.object(ag, "_global_base",
+                                     return_value=self._home)
+        self._gb.start()
+        self.global_cfg = self._home / ".c3" / "config.json"
+
+    def tearDown(self):
+        self._gb.stop()
+        import shutil
+        shutil.rmtree(self._home, ignore_errors=True)
+        super().tearDown()
+
+    def test_seeds_on_first_run(self):
+        res = ag.seed_default_global_rules()
+        self.assertTrue(res["seeded"])
+        data = json.loads(self.global_cfg.read_text(encoding="utf-8"))
+        self.assertEqual(data["access"]["deny"],
+                         list(ag.DEFAULT_GLOBAL_RULES))
+
+    def test_seeded_rules_are_enforced(self):
+        ag.seed_default_global_rules()
+        d = ag.check(str(self.proj / "server.pem"), "read", str(self.proj))
+        self.assertIsNotNone(d)
+        self.assertEqual(d.scope, "global")
+
+    def test_second_run_is_noop(self):
+        ag.seed_default_global_rules()
+        self.assertFalse(ag.seed_default_global_rules()["seeded"])
+
+    def test_removal_stays_sticky(self):
+        ag.seed_default_global_rules()
+        for glob in ag.DEFAULT_GLOBAL_RULES:
+            ag.remove_rule(glob, "deny", "global")
+        self.assertFalse(ag.seed_default_global_rules()["seeded"])
+        data = json.loads(self.global_cfg.read_text(encoding="utf-8"))
+        self.assertEqual(data["access"]["deny"], [])
+
+    def test_existing_access_section_never_touched(self):
+        self._write_access({"deny": ["mine/**"]}, base=self._home)
+        self.assertFalse(ag.seed_default_global_rules()["seeded"])
+        data = json.loads(self.global_cfg.read_text(encoding="utf-8"))
+        self.assertEqual(data["access"]["deny"], ["mine/**"])
+
+    def test_config_without_access_section_preserves_other_keys(self):
+        self.global_cfg.parent.mkdir(parents=True, exist_ok=True)
+        self.global_cfg.write_text(json.dumps({"other": {"k": 1}}),
+                                   encoding="utf-8")
+        res = ag.seed_default_global_rules()
+        self.assertTrue(res["seeded"])
+        data = json.loads(self.global_cfg.read_text(encoding="utf-8"))
+        self.assertEqual(data["other"], {"k": 1})
+        self.assertEqual(data["access"]["deny"],
+                         list(ag.DEFAULT_GLOBAL_RULES))
+
+    def test_corrupt_config_never_rewritten(self):
+        self.global_cfg.parent.mkdir(parents=True, exist_ok=True)
+        self.global_cfg.write_text("{nope", encoding="utf-8")
+        self.assertFalse(ag.seed_default_global_rules()["seeded"])
+        self.assertEqual(self.global_cfg.read_text(encoding="utf-8"), "{nope")
+
+    def test_no_home_is_a_noop(self):
+        import unittest.mock as mock
+        with mock.patch.object(ag, "_global_base", return_value=None):
+            self.assertFalse(ag.seed_default_global_rules()["seeded"])
+
+
 if __name__ == "__main__":
     unittest.main()
