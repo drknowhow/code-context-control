@@ -5,7 +5,8 @@ READ_ACTIONS = {"list", "get", "board", "history", "report",
 
 _TASK_ACTIONS = ("add, update, done, list, get, board, history, report, archive, "
                  "block, unblock, link, unlink, "
-                 "milestone_add, milestone_update, milestone_list, milestone_archive, "
+                 "milestone_add, milestone_update, milestone_list, "
+                 "milestone_complete, milestone_reopen, milestone_archive, "
                  "note_add, note_list, "
                  "time_add, time_update, time_delete, time_list, time_summary")
 
@@ -367,6 +368,26 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
         if "error" in res:
             return done_resp(f"[task:error] {res['error']}", "error")
         return done_resp(f"[milestone:updated] {res['id'][:8]} \"{res['name']}\"", "updated")
+
+    if action == "milestone_complete":
+        if not milestone:
+            return done_resp("[task:error] milestone_complete requires milestone.", "error")
+        ms = store.resolve_milestone(milestone)
+        if ms is None:
+            return done_resp(f"[task:error] no milestone matches: {milestone}", "error")
+        res = store.complete_milestone(ms["id"])
+        if "error" in res:
+            return done_resp(f"[task:error] {res['error']}", "error")
+        return done_resp(f"[milestone:completed] \"{res['name']}\" "
+                         f"(tasks keep their milestone link)", "completed")
+
+    if action == "milestone_reopen":
+        if not milestone:
+            return done_resp("[task:error] milestone_reopen requires milestone.", "error")
+        res = store.reopen_milestone(milestone)
+        if "error" in res:
+            return done_resp(f"[task:error] {res['error']}", "error")
+        return done_resp(f"[milestone:reopened] \"{res['name']}\"", "reopened")
 
     if action == "milestone_archive":
         if not milestone:

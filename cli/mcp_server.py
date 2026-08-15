@@ -1105,7 +1105,9 @@ async def c3_task(
     Time: time_add (minutes 1-1440 [+note/due_date=date/task_id]), time_update / time_delete (ref=entry id),
       time_list (manual entries + recent auto sessions), time_summary (today/7d/30d, auto vs manual).
       Auto-tracking: server startup + tool calls ping .c3/time; idle gaps >15min close a session.
-    Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %), milestone_archive.
+    Milestones: milestone_add (name [+target_date]), milestone_update, milestone_list (with progress %),
+      milestone_complete (close a shipped milestone; refuses while open tasks remain; tasks KEEP their link),
+      milestone_reopen (undo complete), milestone_archive (removal: detaches tasks).
     Notes: note_add (note [+kind=decision] [+task_id]), note_list.
     History: history ([+task_id] [+limit]) — append-only event log (who/what/when, before->after), newest first.
     task_id accepts any unique id prefix (>=4 chars); milestone accepts id or unique name.

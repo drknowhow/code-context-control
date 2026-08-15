@@ -118,6 +118,19 @@ class TestMilestonesAndNotes(TaskToolBase):
         out = self._run("add", title="x", milestone="nope")
         self.assertIn("no milestone matches", out)
 
+    def test_milestone_complete_and_reopen(self):
+        self._run("milestone_add", name="Shipped")
+        out = self._run("add", title="the work", milestone="Shipped")
+        tid = out.split("[task:added] ")[1].split(" ")[0]
+        out = self._run("milestone_complete", milestone="Shipped")
+        self.assertIn("open task(s) block completion", out)
+        self._run("done", task_id=tid)
+        out = self._run("milestone_complete", milestone="Shipped")
+        self.assertIn("[milestone:completed]", out)
+        self.assertIn("keep their milestone link", out)
+        out = self._run("milestone_reopen", milestone="Shipped")
+        self.assertIn("[milestone:reopened]", out)
+
     def test_notes_default_kind_and_unfiltered_list(self):
         self._run("note_add", note="plain note")
         self._run("note_add", note="big decision", kind="decision")

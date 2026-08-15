@@ -204,6 +204,31 @@ class TestMilestoneNoteLink(PmApiBase):
                                   json={"path": str(self.proj), "id": ms["id"]})
         self.assertEqual(resp.get_json()["milestone"]["detached_tasks"], 1)
 
+    def test_milestone_complete_and_reopen(self):
+        resp = self.client.post("/api/projects/pm/milestone", json={
+            "path": str(self.proj), "name": "Ship"})
+        ms = resp.get_json()["milestone"]
+        resp = self.client.post("/api/projects/pm/task", json={
+            "path": str(self.proj), "title": "work", "milestone_id": ms["id"]})
+        task = resp.get_json()["task"]
+        resp = self.client.put("/api/projects/pm/milestone", json={
+            "path": str(self.proj), "id": ms["id"], "complete": True})
+        self.assertEqual(resp.status_code, 400)  # open task blocks it
+        self.client.put("/api/projects/pm/task", json={
+            "path": str(self.proj), "id": task["id"],
+            "fields": {"status": "done"}})
+        resp = self.client.put("/api/projects/pm/milestone", json={
+            "path": str(self.proj), "id": ms["id"], "complete": True})
+        body = resp.get_json()
+        self.assertTrue(body["completed"])
+        self.assertEqual(body["milestone"]["lifecycle"], "completed")
+        # The task keeps its link — completion is not archive.
+        store = TaskStore(str(self.proj))
+        self.assertEqual(store.get_task(task["id"])["milestone_id"], ms["id"])
+        resp = self.client.put("/api/projects/pm/milestone", json={
+            "path": str(self.proj), "id": ms["id"], "reopen": True})
+        self.assertTrue(resp.get_json()["reopened"])
+
     def test_note_and_link(self):
         resp = self.client.post("/api/projects/pm/note", json={
             "path": str(self.proj), "text": "picked floats", "kind": "decision"})

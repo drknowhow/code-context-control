@@ -864,6 +864,69 @@ class TaskStore:
             self._save(doc)
             return {**ms, "detached_tasks": detached}
 
+    def complete_milestone(self, milestone_id) -> dict:
+        """Close a finished milestone; its tasks KEEP their milestone link.
+
+        The happy-path close, distinct from archive_milestone (removal:
+        detaches tasks, eligible for purge). A completed milestone leaves
+        default listings, the board, and the report, but history still
+        records which tasks shipped under it. Refuses while open active
+        tasks remain; undo with reopen_milestone().
+        """
+        with self._guard():
+            doc = self._load()
+            ms = self._resolve(doc["milestones"], milestone_id)
+            if ms is None:
+                return {"error": f"no milestone matches: {milestone_id}"}
+            old = ms.get("lifecycle", "active")
+            if old != "active":
+                return {"error": f"milestone is {old}, not active"}
+            open_tasks = [t for t in doc["tasks"]
+                          if t.get("milestone_id") == ms["id"]
+                          and t.get("lifecycle", "active") == "active"
+                          and t.get("status") != "done"]
+            if open_tasks:
+                names = ", ".join(t["id"][:8] for t in open_tasks[:5])
+                return {"error": f"{len(open_tasks)} open task(s) block "
+                                 f"completion: {names}"}
+            now = _now()
+            ms["lifecycle"] = "completed"
+            ms["completed_at"] = now
+            ms["updated_at"] = now
+            self._event("milestone", "complete", ms["id"],
+                        patch={"lifecycle": [old, "completed"]})
+            self._save(doc)
+            return dict(ms)
+
+    def reopen_milestone(self, milestone_id) -> dict:
+        """Completed -> active again; clears completed_at.
+
+        Accepts id, unique id prefix, or — because resolve_milestone's
+        name matching deliberately covers only ACTIVE milestones — a
+        unique case-insensitive name among the completed ones.
+        """
+        with self._guard():
+            doc = self._load()
+            ms = self._resolve(doc["milestones"], milestone_id)
+            if ms is None:
+                want = (milestone_id or "").strip().lower()
+                matches = [m for m in doc["milestones"]
+                           if m.get("lifecycle") == "completed"
+                           and (m.get("name") or "").lower() == want]
+                ms = matches[0] if len(matches) == 1 else None
+            if ms is None:
+                return {"error": f"no milestone matches: {milestone_id}"}
+            old = ms.get("lifecycle", "active")
+            if old != "completed":
+                return {"error": f"milestone is {old}, not completed"}
+            ms["lifecycle"] = "active"
+            ms["completed_at"] = None
+            ms["updated_at"] = _now()
+            self._event("milestone", "reopen", ms["id"],
+                        patch={"lifecycle": [old, "active"]})
+            self._save(doc)
+            return dict(ms)
+
     def resolve_milestone(self, ref: str):
         """Resolve by id, unique id prefix, or unique case-insensitive name."""
         doc = self._load()
