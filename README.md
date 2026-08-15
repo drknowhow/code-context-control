@@ -115,7 +115,7 @@ Twelve tabs. The dashboard above shows token savings, indexed files, the live se
   <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/2026-07/ui_tasks.png" alt="C3 Tasks" width="900">
 </p>
 
-**Tasks** (v2.45.0, extended v2.53.0) is a durable per-project tracker — dependencies and subtasks, milestones, decision notes, full event history, health reports, and both automatic and manual time tracking. It rolls up into the Hub's cross-project board.
+**Tasks** (v2.45.0, extended v2.53.0) is a durable per-project tracker — dependencies and subtasks, milestones, decision notes, full event history, health reports, and both automatic and manual time tracking. It rolls up into the Hub's cross-project board. Shipped milestones can be **completed** (v2.86.0) — they leave the board while their tasks keep the milestone link, unlike archiving, which detaches them.
 
 **Instructions** keeps your agent-facing docs in sync. C3-generated content sits inside a `<!-- C3:BEGIN … -->` block; anything you write outside it is preserved. Since v2.60.0 generated docs point at `.c3/MAP.md` — a machine-owned, byte-stable repo map C3 refreshes automatically — instead of embedding a tree that goes stale. `AGENTS.md` serves both Codex and Antigravity; `GEMINI.md` is read if present but no longer generated (the Gemini CLI profile was removed in v2.52).
 
@@ -180,6 +180,7 @@ c3 access mask activate                         # purge pre-mask artifacts, buil
 - **`deny` means deny-enumerate too** — denied paths never appear in search results, maps, or the vector index.
 - **Masked means read-only, always.** Cropped rows have no inverse, so an edit in transformed coordinates would corrupt the one file you protected.
 - **Four deterministic presets, no LLM in the read path:** `redact_secrets`, `redact_columns` (salted one-way pseudonyms — joins survive, no reverse dictionary), `sample_rows`, `signatures_only`.
+- **Sensible defaults out of the box** (v2.86.0). A fresh install seeds `*.pem`, `id_rsa*`, and `*.key` as deny rules in global scope — visible in `c3 access list` and removable like any rule you wrote yourself. Delete one and it stays deleted.
 - **Rule changes are human-only** (UI tab or CLI) and ledger-logged. Agents have no mutation surface.
 - **Built-ins can be switched off when you need to** (v2.65.0). `**/.env*`, `**/.c3/**`, `**/.claude/settings*.json` and `**/.git/**` yield to `c3 access builtin disable <glob>`, which makes you retype the glob first. It takes **two keys** — a config entry *and* a keyring attestation — so an agent that manages to write `config.json` still cannot grant itself write access to your settings. The credential vault stays absolute.
 - **Honest coverage.** This guards *cooperative* agents against mistakes and prompt injection. It is not a sandbox — a raw shell outside C3's tools still sees the real bytes.
