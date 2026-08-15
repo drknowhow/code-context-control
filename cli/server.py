@@ -1295,6 +1295,20 @@ def api_pm_milestone():
     if not ms_id:
         return jsonify({"error": "id is required"}), 400
     if request.method == "PUT":
+        # {complete: true} / {reopen: true} switch lifecycle; tasks keep
+        # their milestone link (unlike DELETE = archive + detach).
+        if data.get("complete"):
+            res = store.complete_milestone(ms_id)
+            if "error" in res:
+                return jsonify(res), 400
+            _pm_audit("milestone", "complete", res["id"])
+            return jsonify({"completed": True, "milestone": res})
+        if data.get("reopen"):
+            res = store.reopen_milestone(ms_id)
+            if "error" in res:
+                return jsonify(res), 400
+            _pm_audit("milestone", "reopen", res["id"])
+            return jsonify({"reopened": True, "milestone": res})
         res = store.update_milestone(ms_id, expected_rev=data.get("expected_rev"),
                                      **(data.get("fields") or {}))
         if "error" in res:

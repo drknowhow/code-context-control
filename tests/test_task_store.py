@@ -154,6 +154,51 @@ class TestMilestones(TaskStoreBase):
     def test_create_task_with_unknown_milestone_rejected(self):
         self.assertIn("error", self.store.create_task("x", milestone_id="zzzzzz"))
 
+    def test_complete_keeps_task_links(self):
+        ms = self.store.create_milestone("M1")
+        t = self.store.create_task("a", milestone_id=ms["id"])
+        self.store.update_task(t["id"], status="done")
+        res = self.store.complete_milestone(ms["id"])
+        self.assertEqual(res["lifecycle"], "completed")
+        self.assertTrue(res["completed_at"])
+        # The link survives — the whole point vs archive.
+        self.assertEqual(self.store.get_task(t["id"])["milestone_id"], ms["id"])
+        # Hidden from default listings, board, and report; visible on request.
+        self.assertEqual(self.store.list_milestones(), [])
+        self.assertEqual(len(self.store.list_milestones(include_archived=True)), 1)
+        self.assertEqual(self.store.board()["milestones"], [])
+        self.assertEqual(self.store.report()["milestones"], [])
+
+    def test_complete_refuses_open_tasks(self):
+        ms = self.store.create_milestone("M1")
+        self.store.create_task("open one", milestone_id=ms["id"])
+        res = self.store.complete_milestone(ms["id"])
+        self.assertIn("error", res)
+        self.assertIn("open task", res["error"])
+
+    def test_complete_only_from_active(self):
+        ms = self.store.create_milestone("M1")
+        self.store.archive_milestone(ms["id"])
+        self.assertIn("error", self.store.complete_milestone(ms["id"]))
+
+    def test_complete_is_not_purged(self):
+        ms = self.store.create_milestone("M1")
+        self.store.complete_milestone(ms["id"])
+        self.assertEqual(self.store.purge_archived("milestone")["purged"], 0)
+        self.assertEqual(len(self.store.list_milestones(include_archived=True)), 1)
+
+    def test_reopen_by_id_and_by_name(self):
+        ms = self.store.create_milestone("Big Ship")
+        self.store.complete_milestone(ms["id"])
+        # resolve_milestone name-matching covers active only — reopen has
+        # its own completed-name fallback.
+        self.assertIsNone(self.store.resolve_milestone("big ship"))
+        res = self.store.reopen_milestone("big ship")
+        self.assertEqual(res["lifecycle"], "active")
+        self.assertIsNone(res["completed_at"])
+        self.assertEqual(len(self.store.list_milestones()), 1)
+        self.assertIn("error", self.store.reopen_milestone(ms["id"]))  # active now
+
 
 class TestNotes(TaskStoreBase):
     def test_note_crud(self):

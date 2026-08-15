@@ -4,6 +4,27 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — a milestone can now be completed, not just archived
+
+`archive_milestone` was the only way to close a milestone, and it is a
+removal: every task loses its `milestone_id`, so the record of which tasks
+shipped under which milestone survives only in the event log. Ten fully
+shipped milestones were sitting "active" in this repo's own PM store
+because closing them would have cost that history.
+
+`TaskStore.complete_milestone` closes the happy path: lifecycle flips to
+`completed` (stamping `completed_at`), the milestone leaves default
+listings, the board, and the report — and its tasks keep their link.
+It refuses while open active tasks remain; `reopen_milestone` undoes it
+(accepting a unique completed-milestone name, which `resolve_milestone`
+deliberately does not match). Completed milestones are not eligible for
+`purge_archived`. Exposed as `c3_task(action='milestone_complete' |
+'milestone_reopen')` and as `{complete: true}` / `{reopen: true}` on the
+milestone PUT of all three REST surfaces (hub, per-project server,
+mobile).
+
 ## [2.85.1] - 2026-08-11
 
 ### Fixed — three silent failures, all found by using C3 to ship something else
