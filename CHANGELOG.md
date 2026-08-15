@@ -4,6 +4,19 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — the default Access Guard rules were documented but never seeded
+
+`docs/access-guard.md` §1 promises `*.pem`, `id_rsa*`, and `*.key` as
+visible, removable DEFAULT deny rules in global scope; the constant existed
+in `access_guard.py` since v2.62.0 but nothing ever wrote it — a fresh
+install got zero global rules. `seed_default_global_rules()` now runs on
+`install-mcp` and on the first `c3 access` touch. It seeds only when the
+global config has never carried an `access` section, so deleting a default
+(or all of them) stays sticky forever; a corrupt config is never rewritten,
+and a missing home directory is a silent no-op.
+
 ## [2.85.1] - 2026-08-11
 
 ### Fixed — three silent failures, all found by using C3 to ship something else

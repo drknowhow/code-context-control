@@ -1087,6 +1087,33 @@ def _write_scope_config(cfg: Path, data: dict) -> None:
     os.replace(tmp, cfg)
 
 
+def seed_default_global_rules() -> dict:
+    """Seed DEFAULT_GLOBAL_RULES as deny rules in GLOBAL scope, once ever.
+
+    Spec §1: the defaults ship as visible, removable rules — so they are
+    written to ``~/.c3/config.json`` only when that file has never carried
+    an ``access`` section. Any existing section (even an emptied one) means
+    the user has touched the scope and removal stays sticky. A corrupt or
+    unreadable config is never rewritten. Never raises: install and CLI
+    call this on every run and must not break on a bad home dir.
+
+    Returns {"seeded": bool, "rules": [...]} — ``rules`` only when seeded.
+    """
+    try:
+        cfg = _scope_config_path("global")
+        data = {}
+        if cfg.is_file():
+            data = json.loads(cfg.read_text(encoding="utf-8")) or {}
+            if not isinstance(data, dict) or "access" in data:
+                return {"seeded": False}
+        data["access"] = {_KIND_DENY: [_norm_glob(g)
+                                       for g in DEFAULT_GLOBAL_RULES]}
+        _write_scope_config(cfg, data)
+        return {"seeded": True, "rules": list(DEFAULT_GLOBAL_RULES)}
+    except Exception:
+        return {"seeded": False}
+
+
 def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     """Add one rule to *scope*'s config. Human surfaces only; callers log.
 
