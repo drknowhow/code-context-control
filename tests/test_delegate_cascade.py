@@ -67,12 +67,23 @@ def _trip_breaker(name: str, dcfg: dict):
 
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch):
-    """Isolate module-global breaker/cache/availability state per test."""
+    """Isolate module-global breaker/cache/availability state per test.
+
+    Also pins the Access Guard to inactive: handle_delegate consults
+    has_active_rules() against the REAL filesystem, and a host with seeded
+    global rules (every install since v2.86.0) skips write-capable backends
+    (gemini/claude) unless allow_write_delegation=true — which silently
+    rewrote these tests' expected routes on such hosts while CI's clean
+    home kept passing. The guard posture is a test INPUT, never ambient
+    state; the guard-specific tests below set it explicitly.
+    """
     delegate._backend_breakers.clear()
     delegate._delegate_cache.clear()
     monkeypatch.setattr(delegate, "_codex_available", True, raising=False)
     monkeypatch.setattr(delegate, "_gemini_available", True, raising=False)
     monkeypatch.setattr(delegate, "_claude_available", True, raising=False)
+    monkeypatch.setattr(delegate.access_guard, "has_active_rules",
+                        lambda _path: False)
     yield
     delegate._backend_breakers.clear()
     delegate._delegate_cache.clear()
@@ -244,3 +255,43 @@ def test_explicit_backend_with_open_breaker_errors_without_reroute(monkeypatch):
     assert "Codex skipped after repeated failures" in store["resp"]
     assert "retrying in" in store["resp"]    # cooldown surfaced to the user
     assert "cascade" not in store["meta"]
+
+
+# ---------------------------------------------------------------------------
+# Access Guard posture — the input the autouse fixture pins to inactive.
+# These two tests set it explicitly and assert BOTH sides of the gate, so
+# the host's real rule state can never silently rewrite a route again.
+# ---------------------------------------------------------------------------
+
+def test_auto_guard_active_blocks_gemini_without_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr(delegate, "_handle_codex_delegate", _fake_handler("codex", calls))
+    monkeypatch.setattr(delegate, "_handle_gemini_delegate", _fake_handler("gemini", calls))
+    monkeypatch.setattr(delegate.access_guard, "has_active_rules", lambda _p: True)
+    svc = _FakeSvc(ollama=_FakeOllama(up=True))
+    _trip_breaker("codex", svc.delegate_config)
+    store = {}
+
+    delegate.handle_delegate("t", "review", "", "", svc, _capture_finalize(store),
+                             backend="auto")
+
+    # gemini is write-capable: with rules active and no opt-in the cascade
+    # must fall through to ollama, and say why.
+    assert calls == []
+    assert "Access Guard" in store["meta"]["cascade"]
+    assert "ollama" in store["meta"]["cascade"]
+
+
+def test_auto_guard_active_with_opt_in_routes_to_gemini(monkeypatch):
+    calls = []
+    monkeypatch.setattr(delegate, "_handle_codex_delegate", _fake_handler("codex", calls))
+    monkeypatch.setattr(delegate, "_handle_gemini_delegate", _fake_handler("gemini", calls))
+    monkeypatch.setattr(delegate.access_guard, "has_active_rules", lambda _p: True)
+    svc = _FakeSvc(ollama=_FakeOllama(up=True))
+    _trip_breaker("codex", svc.delegate_config)
+    store = {}
+
+    delegate.handle_delegate("t", "review", "", "", svc, _capture_finalize(store),
+                             backend="auto", allow_write_delegation=True)
+
+    assert calls == ["gemini"]

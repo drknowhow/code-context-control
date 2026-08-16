@@ -4,6 +4,32 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.88.1] - 2026-08-16
+
+### Fixed — the validator called C3's own UI idiom a syntax error, and a test suite that changed verdicts per host
+
+**`node --check` was the only judge of `.js` files, and it cannot read
+JSX** — which C3's own UI (`cli/ui`, `cli/hub_ui`) deliberately ships in
+`.js` files served through Babel. Every validated UI component banked a
+false "has syntax errors" auto-memory fact (`toasts.js` had been flagged
+for days). `_native_js` now detects JSX intent and re-judges under the
+grammar the file is actually written in (the tsc JSX checker): valid JSX
+reports clean, real defects report tsc's positions, and when tsc is not
+installed the verdict is an honest `unsupported` — never a fabricated
+syntax error. Plain-JS checking is unchanged, and a plain-JS defect never
+consults the fallback.
+
+**Three delegate-cascade tests read the host's real Access Guard state as
+if it were part of the test.** `handle_delegate` skips write-capable
+backends (gemini/claude) when guard rules are active and
+`allow_write_delegation` is false — deliberate policy — but the tests
+never pinned that input, so any machine with seeded global rules (every
+install since v2.86.0 seeds them) silently rerouted the expected cascade
+to ollama and failed three tests that CI's clean home kept green. The
+fixture now pins the guard inactive, and two new tests assert both sides
+of the gate explicitly: rules active blocks gemini with the reason in the
+cascade note; the opt-in routes to it.
+
 ## [2.88.0] - 2026-08-16
 
 ### Added — a credential now has a history, not just a counter
