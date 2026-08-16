@@ -266,5 +266,260 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(cs.get_value("FOO", project_path=self.project), "new")
 
 
+PAN = "4242424242424242"          # Luhn-valid visa test number
+PAN_BAD = "4242424242424241"      # fails checksum
+CARD = json.dumps({"cardholder": "D Tselenchuk", "number": PAN,
+                   "expiry": "12/27", "cvc": "123"})
+ADDRESS = json.dumps({"street1": "1 Test Way", "city": "Columbia",
+                      "state": "MD", "zip": "21044"})
+
+
+class TestStructuredKinds(TestCredentialStore):
+    """Structured (address/identity/card) semantics on the same fixture."""
+
+    # ── creation + schema ──
+    def test_card_create_display_and_fields(self):
+        entry = cs.set_credential("VISA", CARD, scope="project",
+                                  project_path=self.project, ctype="card")
+        self.assertEqual(entry["display"], {"brand": "visa", "last4": "4242"})
+        self.assertEqual(entry["fields"],
+                         ["cardholder", "cvc", "expiry", "number"])
+        self.assertEqual(entry["type"], "card")
+
+    def test_schema_rejections_name_fields_only(self):
+        cases = [
+            ({"cardholder": "x", "number": PAN_BAD, "expiry": "12/27"},
+             "checksum"),
+            ({"cardholder": "x", "number": "123", "expiry": "12/27"},
+             "12-19 digits"),
+            ({"cardholder": "x", "number": PAN, "expiry": "13/27"}, "expiry"),
+            ({"cardholder": "x", "number": PAN, "expiry": "12/27",
+              "cvc": "12"}, "cvc"),
+            ({"cardholder": "x", "number": PAN, "expiry": "12/27",
+              "bogus": "y"}, "unknown field"),
+            ({"cardholder": "x", "expiry": "12/27"}, "missing required"),
+        ]
+        for payload, needle in cases:
+            with self.assertRaises(cs.CredentialError) as ctx:
+                cs.set_credential("C", json.dumps(payload), scope="project",
+                                  project_path=self.project, ctype="card")
+            msg = str(ctx.exception)
+            self.assertIn(needle, msg)
+            for secret in (payload.get("number") or "", "12/27"):
+                if secret and secret not in (PAN[-4:],):
+                    self.assertNotIn(secret, msg,
+                                     "error text echoed submitted content")
+
+    def test_expiry_normalized(self):
+        for raw in ("12/2027", "2027-12", "12-27"):
+            cs.set_credential("N", json.dumps(
+                {"cardholder": "x", "number": PAN, "expiry": raw}),
+                scope="project", project_path=self.project, ctype="card")
+            self.assertEqual(
+                cs.get_value("N", project_path=self.project, field="expiry"),
+                "12/27")
+            cs.delete_credential("N", scope="project",
+                                 project_path=self.project)
+
+    def test_number_separators_stripped(self):
+        cs.set_credential("S", json.dumps(
+            {"cardholder": "x", "number": "4242 4242-4242 4242",
+             "expiry": "12/27"}),
+            scope="project", project_path=self.project, ctype="card")
+        self.assertEqual(
+            cs.get_value("S", project_path=self.project, field="number"), PAN)
+
+    # ── the gate (H1) ──
+    def test_whole_value_refused_field_allowed(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        self.assertIsNone(cs.get_value("VISA", project_path=self.project))
+        self.assertEqual(
+            cs.get_value("VISA", project_path=self.project, field="number"),
+            PAN)
+        self.assertIsNone(
+            cs.get_value("VISA", project_path=self.project, field="nope"))
+        # a field ref on a PLAIN cred is also refused
+        cs.set_credential("TOK", "plainvalue", scope="project",
+                          project_path=self.project)
+        self.assertIsNone(
+            cs.get_value("TOK", project_path=self.project, field="number"))
+
+    def test_hostile_registry_type_flip_stays_structured(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cfg_path = Path(self.project) / ".c3" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["credentials"]["entries"]["VISA"]["type"] = "token"
+        cfg["credentials"]["entries"]["VISA"]["inject"] = True
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        # attestation keeps it structured: whole-value stays None
+        self.assertIsNone(cs.get_value("VISA", project_path=self.project))
+        values, missing = cs.resolve(["VISA"], project_path=self.project)
+        self.assertEqual(values, {})
+        self.assertEqual(missing, ["VISA"])
+
+    def test_fingerprint_empty_for_structured(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        self.assertEqual(cs.fingerprint("VISA", project_path=self.project), "")
+
+    # ── exposure flags + boundary ──
+    def test_flags_refused(self):
+        for kwargs in ({"agent_readable": True}, {"inject": True}):
+            with self.assertRaises(cs.CredentialError):
+                cs.set_credential("F", CARD, scope="project",
+                                  project_path=self.project, ctype="card",
+                                  **kwargs)
+        cs.set_credential("F", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        for kwargs in ({"agent_readable": True}, {"inject": True},
+                       {"type": "token"}):
+            with self.assertRaises(cs.CredentialError):
+                cs.update_metadata("F", scope="project",
+                                   project_path=self.project, **kwargs)
+
+    def test_boundary_immutable(self):
+        cs.set_credential("P", "plain", scope="project",
+                          project_path=self.project)
+        with self.assertRaises(cs.CredentialError):
+            cs.set_credential("P", CARD, scope="project",
+                              project_path=self.project, ctype="card")
+        with self.assertRaises(cs.CredentialError):
+            cs.update_metadata("P", scope="project",
+                               project_path=self.project, type="card")
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        with self.assertRaises(cs.CredentialError):
+            cs.set_credential("VISA", "plain", scope="project",
+                              project_path=self.project, ctype="token")
+        with self.assertRaises(cs.CredentialError):
+            cs.set_credential("VISA", ADDRESS, scope="project",
+                              project_path=self.project, ctype="address")
+
+    def test_import_env_never_flattens_structured(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        result = cs.import_env("VISA=oops", scope="project",
+                               project_path=self.project, overwrite=True)
+        self.assertIn("VISA", result["skipped"])
+        self.assertEqual(
+            cs.get_value("VISA", project_path=self.project, field="number"),
+            PAN)
+
+    # ── merge update ──
+    def test_merge_updates_one_field(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        entry = cs.set_credential("VISA", json.dumps({"expiry": "01/30"}),
+                                  scope="project",
+                                  project_path=self.project, ctype="card")
+        self.assertEqual(
+            cs.get_value("VISA", project_path=self.project, field="expiry"),
+            "01/30")
+        self.assertEqual(
+            cs.get_value("VISA", project_path=self.project, field="number"),
+            PAN)
+        self.assertEqual(entry["display"]["last4"], "4242")
+
+    def test_merge_null_deletes_optional_field(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cs.set_credential("VISA", json.dumps({"cvc": None}), scope="project",
+                          project_path=self.project, ctype="card")
+        self.assertIsNone(
+            cs.get_value("VISA", project_path=self.project, field="cvc"))
+        fields = cs.get_structured_fields("VISA", project_path=self.project)
+        self.assertNotIn("cvc", fields)
+
+    # ── templates + redaction ──
+    def test_dotted_template_and_backcompat(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cs.set_credential("TOK", "plaintok", scope="project",
+                          project_path=self.project)
+        cmd = "pay {{cred:VISA.number}} with {{cred:TOK}}"
+        expanded, used, missing = cs.expand_templates(
+            cmd, project_path=self.project)
+        self.assertEqual(expanded, f"pay {PAN} with plaintok")
+        self.assertEqual(sorted(used), ["TOK", "VISA.number"])
+        self.assertEqual(missing, [])
+        # bare structured name is missing, not expanded
+        _, _, missing2 = cs.expand_templates(
+            "x {{cred:VISA}}", project_path=self.project)
+        self.assertEqual(missing2, ["VISA"])
+
+    def test_field_redaction_uses_dotted_ref(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cs.resolve(["VISA.number"], project_path=self.project)
+        self.assertEqual(cs.redact_text(f"saw {PAN} in output"),
+                         "saw [cred:VISA.number] in output")
+
+    def test_describe_missing_reasons(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cs.set_credential("TOK", "plaintok", scope="project",
+                          project_path=self.project)
+        reasons = cs.describe_missing(
+            ["VISA", "VISA.bogus", "TOK.x", "GHOST"],
+            project_path=self.project)
+        self.assertIn("structured (card)", reasons["VISA"])
+        self.assertIn("fields:", reasons["VISA"])
+        self.assertIn("no field 'bogus'", reasons["VISA.bogus"])
+        self.assertIn("not structured", reasons["TOK.x"])
+        self.assertEqual(reasons["GHOST"], "unknown credential")
+        self.assertNotIn(PAN, json.dumps(reasons))
+
+    # ── storage + lifecycle ──
+    def test_large_identity_routes_to_sidecar(self):
+        payload = json.dumps({"full_name": "D T", "ssn": "x" * 250,
+                              "dob": "y" * 250, "phone": "z" * 250,
+                              "email": "e" * 250})
+        entry = cs.set_credential("BIG", payload, scope="project",
+                                  project_path=self.project, ctype="identity")
+        self.assertEqual(entry["storage"], "file")
+        self.assertEqual(
+            cs.get_value("BIG", project_path=self.project, field="ssn"),
+            "x" * 250)
+
+    def test_is_resolvable_structured(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        self.assertTrue(cs.is_resolvable("VISA", project_path=self.project))
+
+    def test_delete_clears_attestation_and_active_refs(self):
+        cs.set_credential("VISA", CARD, scope="project",
+                          project_path=self.project, ctype="card")
+        cs.resolve(["VISA.number"], project_path=self.project)
+        self.assertIn("VISA.number", cs._ACTIVE_SECRETS)
+        cs.delete_credential("VISA", scope="project",
+                             project_path=self.project)
+        self.assertNotIn("VISA.number", cs._ACTIVE_SECRETS)
+        realm_s = cs.realm("project", self.project)
+        self.assertIsNone(self._stub.get_password(
+            cs.KEYRING_SERVICE, cs._struct_account(realm_s, "VISA")))
+        self.assertEqual(
+            cs.structured_type("VISA", project_path=self.project), "")
+
+    def test_get_structured_fields_none_for_plain(self):
+        cs.set_credential("TOK", "plaintok", scope="project",
+                          project_path=self.project)
+        self.assertIsNone(
+            cs.get_structured_fields("TOK", project_path=self.project))
+
+    def test_missing_type_entry_stays_plain(self):
+        cs.set_credential("OLD", "legacyvalue", scope="project",
+                          project_path=self.project)
+        cfg_path = Path(self.project) / ".c3" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        del cfg["credentials"]["entries"]["OLD"]["type"]
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertEqual(cs.get_value("OLD", project_path=self.project),
+                         "legacyvalue")
+        self.assertEqual(
+            cs.structured_type("OLD", project_path=self.project), "")
+
+
 if __name__ == "__main__":
     unittest.main()

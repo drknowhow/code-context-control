@@ -37,12 +37,17 @@ from pathlib import Path
 from typing import Optional
 
 KEYRING_SERVICE = "c3-creds"
-VALID_TYPES = ("token", "env", "multiline")
+# Plain kinds hold one opaque value; structured kinds hold a JSON object of
+# named fields, addressed as NAME.field at the injection boundary and never
+# resolvable whole (get_value without a field returns None for them).
+VALID_TYPES = ("token", "env", "multiline", "address", "identity", "card")
+STRUCTURED_TYPES = frozenset({"address", "identity", "card"})
 VALID_SCOPES = ("project", "global")
 FILE_STORAGE_THRESHOLD = 1024  # bytes; larger values go to the encrypted sidecar
 
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-_TEMPLATE_RE = re.compile(r"\{\{cred:([A-Za-z_][A-Za-z0-9_]*)\}\}")
+_TEMPLATE_RE = re.compile(
+    r"\{\{cred:([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\}\}")
 
 # Process-local plaintext of values injected/revealed this session, so tool
 # output that echoes one back can be scrubbed before it reaches the model.
@@ -139,6 +144,10 @@ def _flag_account(realm_s: str, name: str) -> str:
     return f"{realm_s}|{name}::agent_readable"
 
 
+def _struct_account(realm_s: str, name: str) -> str:
+    return f"{realm_s}|{name}::structured"
+
+
 # Files the agent must never write through c3 tool surfaces: the vault
 # registry (config.json) and its sidecar state. Editing these outside the
 # credentials API is how a prompt-injected agent would grant itself reveal
@@ -183,6 +192,49 @@ def verify_agent_readable(name: str, *, scope: str, project_path: str = ".") -> 
             KEYRING_SERVICE, _flag_account(realm_s, name)) == "1"
     except Exception:
         return False
+
+
+def _write_struct_attestation(realm_s: str, name: str, ctype: str) -> None:
+    """Keyring copy of an entry's structured-ness, mirroring the
+    agent_readable attestation: a registry ``type`` rewritten by editing
+    config.json directly cannot demote a card back to a whole-value token.
+    Plain entries clear the attestation."""
+    keyring = _keyring_module()
+    account = _struct_account(realm_s, name)
+    try:
+        if ctype in STRUCTURED_TYPES:
+            keyring.set_password(KEYRING_SERVICE, account, ctype)
+        else:
+            keyring.delete_password(KEYRING_SERVICE, account)
+    except Exception:
+        pass  # union with the registry below still fails toward restriction
+
+
+def structured_type(name: str, *, project_path: str = ".", scope: str = "") -> str:
+    """The structured ctype of an entry, or "" for plain entries.
+
+    Union of the registry ``type`` and the keyring attestation — if EITHER
+    says structured, the entry is treated as structured. That direction is
+    deliberate: a hostile registry edit can only ADD restrictions (a token
+    rewritten to "card" stops resolving whole, which is a nuisance, not a
+    disclosure), never strip them from a real card.
+    """
+    owning = _norm_scope(scope, project_path) if scope else _owning_scope(name, project_path)
+    if not owning:
+        return ""
+    entry = _read_entries(owning, project_path).get(name)
+    reg_type = entry.get("type", "") if isinstance(entry, dict) else ""
+    att = ""
+    try:
+        att = _keyring_module().get_password(
+            KEYRING_SERVICE, _struct_account(realm(owning, project_path), name)) or ""
+    except Exception:
+        att = ""
+    if att in STRUCTURED_TYPES:
+        return att
+    if reg_type in STRUCTURED_TYPES:
+        return reg_type
+    return ""
 
 
 def _scope_dir(scope: str, project_path: str) -> Optional[Path]:
@@ -356,6 +408,159 @@ def _file_delete(scope: str, project_path: str, name: str) -> bool:
         return False
 
 
+# ── Structured kinds (address / identity / card) ─────────
+# One canonical JSON object per entry, stored through the same
+# keyring/Fernet path as any other value. Validation errors name FIELD
+# NAMES only — never the submitted content, which would put the very
+# values this feature exists to protect into error text, tool output,
+# and the ledger.
+
+_SCHEMAS: dict = {
+    "card": {
+        "required": ("cardholder", "number", "expiry"),
+        "optional": ("cvc", "billing_zip"),
+    },
+    "address": {
+        "required": ("street1", "city", "state", "zip"),
+        "optional": ("recipient", "street2", "country", "phone"),
+    },
+    "identity": {
+        "required": ("full_name",),
+        "optional": ("dob", "ssn", "phone", "email"),
+    },
+}
+
+_STRUCT_FIELD_MAX = 256  # chars per field value
+
+
+def schema_fields(ctype: str) -> tuple:
+    """(required, optional) field names for a structured ctype."""
+    spec = _SCHEMAS.get(ctype) or {}
+    return tuple(spec.get("required", ())), tuple(spec.get("optional", ()))
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _card_brand(number: str) -> str:
+    """Display-only brand from the IIN prefix; never affects validation."""
+    if number.startswith("4"):
+        return "visa"
+    if number[:2] in {"34", "37"}:
+        return "amex"
+    two, four = number[:2], number[:4]
+    if two in {"51", "52", "53", "54", "55"} or (
+            four.isdigit() and 2221 <= int(four) <= 2720):
+        return "mastercard"
+    if four == "6011" or two == "65" or number[:3] in {"644", "645", "646",
+                                                       "647", "648", "649"}:
+        return "discover"
+    return "card"
+
+
+def _normalize_expiry(raw: str) -> str:
+    """Accept MM/YY, M/YY, MM/YYYY, YYYY-MM, MM-YY; return MM/YY or raise."""
+    s = raw.strip().replace("-", "/")
+    parts = s.split("/")
+    if len(parts) == 2:
+        a, b = parts[0].strip(), parts[1].strip()
+        if len(a) == 4 and a.isdigit():  # YYYY/MM
+            year, month = a, b
+        else:  # MM/YY or MM/YYYY
+            month, year = a, b
+        if month.isdigit() and year.isdigit() and 1 <= int(month) <= 12 \
+                and len(year) in (2, 4):
+            return f"{int(month):02d}/{year[-2:]}"
+    raise CredentialError("field 'expiry' must be MM/YY (or MM/YYYY, YYYY-MM)")
+
+
+def parse_structured_value(value) -> dict:
+    """Parse a submitted structured payload (dict or JSON text) into a flat
+    {field: str} dict. Never echoes submitted content in errors."""
+    data = value
+    if isinstance(data, str):
+        try:
+            data = json.loads(data or "{}")
+        except Exception:
+            raise CredentialError(
+                "value must be a JSON object of fields for structured types")
+    if not isinstance(data, dict):
+        raise CredentialError(
+            "value must be a JSON object of fields for structured types")
+    out: dict = {}
+    for key, val in data.items():
+        if val is None:
+            out[str(key)] = None  # explicit deletion marker for merge
+            continue
+        if not isinstance(val, str):
+            raise CredentialError(f"field {key!r} must be a string")
+        out[str(key)] = val.strip()
+    return out
+
+
+def _validate_structured(ctype: str, fields: dict) -> dict:
+    """Validate + normalize a COMPLETE field dict for ctype. Returns the
+    canonical dict. Error text carries field names only."""
+    required, optional = schema_fields(ctype)
+    known = set(required) | set(optional)
+    unknown = sorted(set(fields) - known)
+    if unknown:
+        raise CredentialError(
+            f"unknown field(s) {unknown} for type {ctype!r} — "
+            f"valid: {', '.join(list(required) + list(optional))}")
+    out = {}
+    for key, val in fields.items():
+        if not val:
+            continue  # empty/None optional fields are simply absent
+        if len(val) > _STRUCT_FIELD_MAX:
+            raise CredentialError(
+                f"field {key!r} exceeds {_STRUCT_FIELD_MAX} characters")
+        out[key] = val
+    missing = [f for f in required if not out.get(f)]
+    if missing:
+        raise CredentialError(
+            f"missing required field(s) {missing} for type {ctype!r}")
+    if ctype == "card":
+        number = re.sub(r"[ -]", "", out["number"])
+        if not number.isdigit() or not 12 <= len(number) <= 19:
+            raise CredentialError("field 'number' must be 12-19 digits")
+        if not _luhn_ok(number):
+            raise CredentialError("field 'number' failed checksum")
+        out["number"] = number
+        out["expiry"] = _normalize_expiry(out["expiry"])
+        cvc = out.get("cvc", "")
+        if cvc and (not cvc.isdigit() or not 3 <= len(cvc) <= 4):
+            raise CredentialError("field 'cvc' must be 3-4 digits")
+    return out
+
+
+def _display_projection(ctype: str, fields: dict) -> dict:
+    """Non-sensitive registry metadata, computed server-side ONLY.
+
+    Deliberately thin: a card shows brand + last4 (what a receipt shows) and
+    NOT expiry — PAN+expiry is two of the three card-not-present fields. An
+    address shows city/state, never the street. Identity shows the name as a
+    label, the same sensitivity class as a user-written description.
+    """
+    if ctype == "card":
+        return {"brand": _card_brand(fields["number"]),
+                "last4": fields["number"][-4:]}
+    if ctype == "address":
+        return {"city": fields.get("city", ""), "state": fields.get("state", "")}
+    if ctype == "identity":
+        return {"label": fields.get("full_name", "")}
+    return {}
+
+
 # ── Public API ────────────────────────────────────────────
 
 
@@ -377,6 +582,13 @@ def set_credential(
     name at injection time when empty. Callers enforcing the "agent cannot
     raise agent_readable on an existing entry" rule must check the current
     entry first — this layer stores what it is told.
+
+    Structured types (STRUCTURED_TYPES) take a JSON object of fields as
+    ``value``. They are inject-only: ``agent_readable``/``inject`` are
+    refused, the plain/structured boundary of an existing entry is immutable
+    (delete and re-create to cross it), and a partial field dict MERGES into
+    the existing payload so one field can be updated without resubmitting
+    the rest.
     """
     _validate_name(name)
     if not value:
@@ -390,6 +602,45 @@ def set_credential(
     if base is None:
         raise CredentialError("global scope unavailable: no home directory")
     realm_s = realm(scope, project_path)
+
+    is_structured = ctype in STRUCTURED_TYPES
+    prev_entry = _read_entries(scope, project_path).get(name)
+    prev_struct = structured_type(name, project_path=project_path,
+                                  scope=scope) if prev_entry else ""
+    if prev_entry is not None:
+        if bool(prev_struct) != is_structured or (prev_struct and
+                                                  prev_struct != ctype):
+            raise CredentialError(
+                f"cannot change {name!r} from "
+                f"{prev_struct or prev_entry.get('type', 'plain')!r} to "
+                f"{ctype!r} — delete the entry and re-create it")
+    display: dict = {}
+    field_names: list = []
+    if is_structured:
+        if agent_readable or inject:
+            raise CredentialError(
+                f"{ctype} entries are inject-only: agent_readable and "
+                "inject must stay false")
+        fields = parse_structured_value(value)
+        if prev_entry is not None:
+            existing_raw = _get_raw(name, project_path=project_path, scope=scope)
+            try:
+                existing = json.loads(existing_raw) if existing_raw else {}
+            except Exception:
+                existing = {}
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            for key, val in fields.items():
+                if val is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = val
+            fields = merged
+        else:
+            fields = {k: v for k, v in fields.items() if v is not None}
+        fields = _validate_structured(ctype, fields)
+        display = _display_projection(ctype, fields)
+        field_names = sorted(fields)
+        value = json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
     raw = value.encode("utf-8")
     storage = "file" if len(raw) > FILE_STORAGE_THRESHOLD else "keyring"
@@ -423,10 +674,14 @@ def set_credential(
         "created": created or now,
         "updated": now,
     }
+    if is_structured:
+        entry["display"] = display
+        entry["fields"] = field_names
     section["entries"][name] = entry
     config["credentials"] = section
     _save_config(base, config)
     _write_flag_attestation(realm_s, name, bool(agent_readable))
+    _write_struct_attestation(realm_s, name, ctype)
     return dict(entry)
 
 
@@ -451,6 +706,20 @@ def update_metadata(name: str, *, scope: str, project_path: str = ".", **fields)
     entry = section["entries"].get(name)
     if not isinstance(entry, dict):
         raise CredentialError(f"unknown credential {name!r} in {scope} scope")
+    cur_struct = structured_type(name, project_path=project_path, scope=scope)
+    if cur_struct:
+        if "type" in fields and fields["type"] != cur_struct:
+            raise CredentialError(
+                f"{name!r} is structured ({cur_struct}) — its type is "
+                "immutable; delete the entry and re-create it")
+        if fields.get("agent_readable") or fields.get("inject"):
+            raise CredentialError(
+                f"{cur_struct} entries are inject-only: agent_readable and "
+                "inject must stay false")
+    elif fields.get("type") in STRUCTURED_TYPES:
+        raise CredentialError(
+            "a plain entry cannot become structured via metadata — "
+            "delete it and re-create with a field payload")
     for key in ("agent_readable", "inject"):
         if key in fields:
             fields[key] = bool(fields[key])
@@ -491,7 +760,7 @@ def list_entries(project_path: str = ".") -> dict:
 
 PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
                  "agent_readable", "description", "storage", "created",
-                 "updated")
+                 "updated", "display", "fields")
 
 
 def public_entry(name: str, entry: dict, *, usage=None,
@@ -523,12 +792,20 @@ def is_resolvable(name: str, *, project_path: str = ".", scope: str = "") -> boo
     gateway) can answer "is this credential still good?" without importing
     get_value at all. That absence is what the source-grep invariant test
     asserts, which is a stronger guarantee than reviewing call sites."""
-    return get_value(name, project_path=project_path, scope=scope) is not None
+    raw = _get_raw(name, project_path=project_path, scope=scope)
+    if raw is None:
+        return False
+    if structured_type(name, project_path=project_path, scope=scope):
+        try:
+            return isinstance(json.loads(raw), dict)
+        except Exception:
+            return False
+    return True
 
 
-def get_value(name: str, *, project_path: str = ".", scope: str = "") -> Optional[str]:
-    """Decoded value from the owning realm, or None. Never falls through:
-    a project-registered name resolves in the project realm or not at all."""
+def _get_raw(name: str, *, project_path: str = ".", scope: str = "") -> Optional[str]:
+    """Decoded stored string from the owning realm, WITHOUT the structured
+    gate. Internal: every public value path must go through get_value."""
     owning = _norm_scope(scope, project_path) if scope else _owning_scope(name, project_path)
     if not owning:
         return None
@@ -543,6 +820,56 @@ def get_value(name: str, *, project_path: str = ".", scope: str = "") -> Optiona
         return _keyring_module().get_password(KEYRING_SERVICE, _account(realm_s, name))
     except Exception:
         return None
+
+
+def get_value(name: str, *, project_path: str = ".", scope: str = "",
+              field: Optional[str] = None) -> Optional[str]:
+    """Decoded value from the owning realm, or None. Never falls through:
+    a project-registered name resolves in the project realm or not at all.
+
+    Structured entries resolve per-FIELD only: without ``field`` they return
+    None, so a hostile registry flag (``inject: true`` written into a cloned
+    config.json) lands the name in resolve()'s missing list instead of
+    putting a whole card payload into a subprocess env. A ``field`` on a
+    plain entry also returns None.
+    """
+    stype = structured_type(name, project_path=project_path, scope=scope)
+    if stype:
+        if not field:
+            return None
+        raw = _get_raw(name, project_path=project_path, scope=scope)
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        val = data.get(field) if isinstance(data, dict) else None
+        return val if isinstance(val, str) and val else None
+    if field:
+        return None
+    return _get_raw(name, project_path=project_path, scope=scope)
+
+
+def get_structured_fields(name: str, *, project_path: str = ".",
+                          scope: str = "") -> Optional[dict]:
+    """Full decoded field dict of a structured entry — the human read-back
+    path for ``c3 creds get --show``.
+
+    NEVER import this from an HTTP surface (server/hub/mobile/oracle): the
+    wire is write-only, and the mobile source-grep invariant test asserts
+    this name is absent there. CLI + local tooling only.
+    """
+    if not structured_type(name, project_path=project_path, scope=scope):
+        return None
+    raw = _get_raw(name, project_path=project_path, scope=scope)
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def delete_credential(name: str, *, scope: str, project_path: str = ".") -> bool:
@@ -562,6 +889,10 @@ def delete_credential(name: str, *, scope: str, project_path: str = ".") -> bool
         _keyring_module().delete_password(KEYRING_SERVICE, _flag_account(realm_s, name))
     except Exception:
         pass
+    try:
+        _keyring_module().delete_password(KEYRING_SERVICE, _struct_account(realm_s, name))
+    except Exception:
+        pass
     config = _load_config(base)
     section = _creds_section(config)
     removed_entry = name in section["entries"]
@@ -569,21 +900,29 @@ def delete_credential(name: str, *, scope: str, project_path: str = ".") -> bool
     config["credentials"] = section
     _save_config(base, config)
     _ACTIVE_SECRETS.pop(name, None)
+    for ref in [r for r in _ACTIVE_SECRETS if r.startswith(name + ".")]:
+        _ACTIVE_SECRETS.pop(ref, None)
     return removed_value or removed_entry
 
 
 def resolve(names: list, project_path: str = ".") -> tuple:
-    """``({name: value}, [missing])`` for injection. Registers each resolved
-    value for output redaction."""
+    """``({ref: value}, [missing])`` for injection. Registers each resolved
+    value for output redaction.
+
+    A ref is a plain name (``NPM_TOKEN``) or a dotted field of a structured
+    entry (``CARD.number``). A bare structured name lands in missing —
+    whole-payload resolution is refused at get_value.
+    """
     values: dict[str, str] = {}
     missing: list[str] = []
-    for name in names:
-        val = get_value(name, project_path=project_path)
+    for ref in names:
+        name, _, field = ref.partition(".")
+        val = get_value(name, project_path=project_path, field=field or None)
         if val is None:
-            missing.append(name)
+            missing.append(ref)
         else:
-            values[name] = val
-            register_active_secret(name, val)
+            values[ref] = val
+            register_active_secret(ref, val)
     return values, missing
 
 
@@ -679,6 +1018,11 @@ def import_env(
         if not _NAME_RE.match(key) or not val:
             skipped.append(key or line[:24])
             continue
+        if key in existing and (existing[key].get("type") in STRUCTURED_TYPES):
+            # Never let a .env import silently flatten a card into an env var,
+            # even with overwrite — the boundary is delete-then-recreate.
+            skipped.append(key)
+            continue
         if not overwrite and key in existing:
             skipped.append(key)
             continue
@@ -688,9 +1032,10 @@ def import_env(
 
 
 def expand_templates(cmd: str, project_path: str = ".") -> tuple:
-    """Replace ``{{cred:NAME}}`` with decoded values, server-side only.
+    """Replace ``{{cred:NAME}}`` / ``{{cred:NAME.field}}`` with decoded
+    values, server-side only.
 
-    Returns ``(expanded_cmd, used_names, missing_names)``. Callers must log
+    Returns ``(expanded_cmd, used_refs, missing_refs)``. Callers must log
     the RAW template form, never the expanded string, and must scrub captured
     output with :func:`redact_text`.
     """
@@ -698,16 +1043,42 @@ def expand_templates(cmd: str, project_path: str = ".") -> tuple:
     missing: list[str] = []
 
     def _sub(match: "re.Match[str]") -> str:
-        name = match.group(1)
-        val = get_value(name, project_path=project_path)
+        name, field = match.group(1), match.group(2)
+        ref = f"{name}.{field}" if field else name
+        val = get_value(name, project_path=project_path, field=field)
         if val is None:
-            missing.append(name)
+            missing.append(ref)
             return match.group(0)
-        used.append(name)
-        register_active_secret(name, val)
+        used.append(ref)
+        register_active_secret(ref, val)
         return val
 
     return _TEMPLATE_RE.sub(_sub, cmd or ""), used, missing
+
+
+def describe_missing(refs: list, project_path: str = ".") -> dict:
+    """{ref: reason} for refs that failed to resolve — built from registry
+    metadata only (field NAMES, never values), so error paths stay decode-free."""
+    out: dict = {}
+    for ref in refs:
+        name, _, field = ref.partition(".")
+        entry = get_entry(name, project_path=project_path)
+        if not entry:
+            out[ref] = "unknown credential"
+            continue
+        stype = structured_type(name, project_path=project_path)
+        fields = ", ".join(entry.get("fields") or []) or "none recorded"
+        if stype and not field:
+            out[ref] = (f"structured ({stype}) — address a field, e.g. "
+                        f"{{{{cred:{name}.{(entry.get('fields') or ['field'])[0]}}}}}; "
+                        f"fields: {fields}")
+        elif stype:
+            out[ref] = f"no field {field!r} on {name}; fields: {fields}"
+        elif field:
+            out[ref] = f"{name} is not structured — drop the .{field} suffix"
+        else:
+            out[ref] = "registered but its value is missing from this realm's store"
+    return out
 
 
 def register_active_secret(name: str, value: str) -> None:
