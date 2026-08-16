@@ -2137,8 +2137,8 @@ def api_projects_credentials_usage():
     """Usage history — `path` scopes to a project (merged view); omit it for
     the global vault only. `name` filters to one credential. Names, counts
     and cmd previews only; never values."""
-    from services import credential_store as cred_store
     from services import cred_telemetry as ct
+    from services import credential_store as cred_store
     path = (request.args.get("path") or "").strip()
     if path:
         try:

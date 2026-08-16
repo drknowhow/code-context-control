@@ -2817,8 +2817,8 @@ def api_credentials_usage_overview():
 @app.route('/api/credentials/<name>/usage', methods=['GET'])
 def api_credentials_usage(name):
     """Per-credential usage history — when, where, how often."""
-    from services import credential_store as cred_store
     from services import cred_telemetry as ct
+    from services import credential_store as cred_store
     pp = str(PROJECT_PATH)
     if not cred_store.get_entry(name, project_path=pp):
         return jsonify({"error": f"no credential named '{name}'"}), 404
