@@ -182,8 +182,8 @@ function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal, pro
           </button>
         </div>
         <div style={{
-          display: 'flex', gap: 2, padding: '4px 20px 0',
-          borderBottom: `1px solid ${T.border}`, overflowX: 'auto', flexShrink: 0,
+          display: 'flex', flexWrap: 'wrap', gap: 2, padding: '4px 20px 0',
+          borderBottom: `1px solid ${T.border}`, flexShrink: 0,
         }}>
           {tabs.map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{
