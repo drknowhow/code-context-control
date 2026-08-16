@@ -4,6 +4,33 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.88.2] - 2026-08-16
+
+### Fixed — the Oracle refused its own machine, and the drill panel hid five tabs
+
+**`c3 oracle open` got 403 "loopback only" from a healthy server.** When
+`bind_host` is one specific non-loopback address — the Tailscale
+deployment that lets the phone reach the Oracle — loopback is never
+bound, so every same-machine request arrives with the interface address
+as its source, and the session-bootstrap mint and cookie redeem both
+refused it. That also walled off mobile pairing: no cookie → the
+dashboard never reveals the Discovery token → the QR cannot render.
+`local_session.is_local()` now carries the same-machine proof at both
+gates: loopback always qualifies, and under a single non-wildcard bind a
+source address *equal to the bound address* is accepted — every remote
+peer presents its own address, off-box TCP spoofing of the host's own
+address cannot complete a handshake, and Tailscale pins tailnet source
+IPs to node keys. Wildcard binds (`0.0.0.0`/`::`) never equal a client
+address, so they stay loopback-only by construction, and the owner-only
+bootstrap key is still required — the same-OS-user boundary is
+unchanged. (#106)
+
+**The hub drill panel's 13 tabs sat in a single `nowrap` row** with
+`overflow-x: auto`, so in the 720px drawer the tail tabs (Budget,
+Credentials, Discipline, Config, MCP) were only reachable by dragging a
+thin horizontal scrollbar. The strip now flex-wraps: every tab visible
+at once. (#105)
+
 ## [2.88.1] - 2026-08-16
 
 ### Fixed — the validator called C3's own UI idiom a syntax error, and a test suite that changed verdicts per host
