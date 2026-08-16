@@ -183,6 +183,12 @@ def _act_reveal(name: str, svc, project_path: str) -> str:
         )
     cs.register_active_secret(name, value)
     cs.touch_last_used([name], project_path)
+    try:
+        from services import cred_telemetry as ct
+        ct.record_use([name], project_path=project_path,
+                      action=ct.ACTION_REVEAL, surface="tool")
+    except Exception:
+        pass
     return (
         f"[creds:reveal] {name} (scope={entry['scope']}) — value follows; "
         "it is now part of the conversation context.\n" + value

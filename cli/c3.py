@@ -6007,6 +6007,19 @@ def _creds_cmd_set(args, project_path: str) -> None:
               "into its context and transcripts.")
 
 
+def _creds_count_show(refs, project_path: str) -> None:
+    """Count a terminal --show like any other use: state counter + history."""
+    from services import credential_store as cred_store
+    try:
+        cred_store.touch_last_used(
+            sorted({str(r).partition(".")[0] for r in refs}), project_path)
+        from services import cred_telemetry as ct
+        ct.record_use(refs, project_path=project_path,
+                      action=ct.ACTION_CLI_SHOW, surface="cli")
+    except Exception:
+        pass
+
+
 def _creds_cmd_get(args, project_path: str) -> None:
     from services import credential_store as cred_store
 
@@ -6029,6 +6042,8 @@ def _creds_cmd_get(args, project_path: str) -> None:
             value = cred_store.get_value(args.name, project_path=project_path)
             print(value if value is not None
                   else "[error] value missing from store")
+            if value is not None:
+                _creds_count_show([args.name], project_path)
         return
     print(f"fields: {', '.join(entry.get('fields') or []) or 'none recorded'}")
     if not getattr(args, "show", False):
@@ -6044,6 +6059,7 @@ def _creds_cmd_get(args, project_path: str) -> None:
             print(f"[error] no field '{field}' on '{args.name}'")
             return
         print(value)
+        _creds_count_show([f"{args.name}.{field}"], project_path)
     else:
         fields = cred_store.get_structured_fields(
             args.name, project_path=project_path)
@@ -6053,7 +6069,7 @@ def _creds_cmd_get(args, project_path: str) -> None:
         width = max(len(k) for k in fields)
         for key in sorted(fields):
             print(f"{key:<{width}}  {fields[key]}")
-    cred_store.touch_last_used([args.name], project_path)
+        _creds_count_show([args.name], project_path)
 
 
 def _creds_cmd_list(args, project_path: str) -> None:

@@ -632,6 +632,27 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             _creds.touch_last_used(
                 sorted({r.partition(".")[0] for r in cred_names}),
                 svc.project_path)
+            # Usage HISTORY: one event per ref, split by how the value left
+            # the vault. `cmd` is the raw template form by construction.
+            try:
+                from services import cred_telemetry as _ct
+                tmpl_set = set(tmpl_used)
+                common = dict(project_path=svc.project_path, surface="shell",
+                              session_id=str(getattr(svc, "session_id", "") or ""),
+                              cmd_preview=cmd, exit_code=result["exit_code"])
+                _ct.record_use([r for r in cred_names if r in tmpl_set],
+                               action=_ct.ACTION_TEMPLATE, **common)
+                _ct.record_use([r for r in cred_names if r not in tmpl_set],
+                               action=_ct.ACTION_INJECT, **common)
+            except Exception:
+                pass
+            if getattr(svc, "activity_log", None):
+                try:  # digest integration: one low-volume event per exec
+                    svc.activity_log.log("cred_use", {
+                        "names": cred_names, "count": len(cred_names),
+                    })
+                except Exception:
+                    pass
 
     raw_stdout = result["stdout"]
     filtered_note = ""
@@ -662,6 +683,7 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                     "duration_ms": result["duration_ms"],
                     "timed_out": result["timed_out"],
                     "touched_files": touched_files,
+                    "creds": cred_names,
                 })
             except Exception:
                 pass

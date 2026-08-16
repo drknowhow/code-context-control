@@ -251,6 +251,17 @@ class TestCredentialsTool(unittest.TestCase):
         self.assertNotIn(self.PAN, blob)
         self.assertNotIn("4242424242424241", blob)
 
+    def test_reveal_records_usage_event(self):
+        canary = "reveal-me-zq1"
+        self._call("set", name="R", value=canary, agent_readable=True)
+        self._call("reveal", name="R")
+        log = Path(self.svc.project_path) / ".c3" / "cred_usage.jsonl"
+        text = log.read_text(encoding="utf-8")
+        self.assertNotIn(canary, text)
+        ev = json.loads(text.splitlines()[-1])
+        self.assertEqual((ev["name"], ev["action"], ev["surface"]),
+                         ("R", "reveal", "tool"))
+
     # ── federation exclusion ──────────────────────────────
 
     def test_c3_project_has_no_credentials_verb(self):
