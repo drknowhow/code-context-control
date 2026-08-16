@@ -4,6 +4,22 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.86.1] - 2026-08-16
+
+### Fixed — two credential routes built responses beside the allowlist, not through it
+
+`public_entry()` exists so that a field added to the credential store cannot
+reach the wire until someone allowlists it on purpose — but the per-project
+server's list route and set-response still built their payloads with
+`dict(entry)`, forwarding every key the store carries. Nothing leaked
+*today* (the registry holds no secret fields), so this is the latent class,
+not an incident: any field the store gains next would have shipped to the
+UI by default from those two routes while every other surface withheld it.
+Both now serialize through `public_entry()`, and a new serializer-identity
+test ties every credentials-route response keyset to `PUBLIC_FIELDS`
+itself — so the next `dict(entry)` shortcut fails in CI rather than in
+production.
+
 ## [2.86.0] - 2026-08-15
 
 ### Added — a milestone can now be completed, not just archived

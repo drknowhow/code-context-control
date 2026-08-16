@@ -160,6 +160,28 @@ class TestCredentialsRoutes(unittest.TestCase):
         for resp in responses:
             self.assertNotIn(CANARY, resp.get_data(as_text=True))
 
+    def test_responses_are_public_entry_shaped(self):
+        """Serializer-identity: every entry payload a credentials route emits
+        carries exactly the allowlist keyset.
+
+        The list and set routes used to build responses via ``dict(entry)``,
+        which silently forwards any field ever added to the store. Tying the
+        keyset to ``PUBLIC_FIELDS`` itself kills that bug class: a new store
+        field stays out of the wire until someone allowlists it on purpose."""
+        allowed = {"name", "last_used", "use_count",
+                   "shadows_global", "shadowed_in", *cs.PUBLIC_FIELDS}
+        entries = [
+            self._post({"name": "SHAPE", "value": CANARY,
+                        "description": "d"}).get_json()["entry"],
+            self._post({"name": "SHAPE",
+                        "description": "meta-only"}).get_json()["entry"],
+            *self.client.get("/api/credentials").get_json()["entries"],
+        ]
+        self.assertGreaterEqual(len(entries), 3)
+        for entry in entries:
+            extra = set(entry) - allowed
+            self.assertFalse(extra, f"non-allowlisted keys on the wire: {extra}")
+
     def test_mutations_audited_without_values(self):
         self._post({"name": "AUD", "value": CANARY})
         self.client.delete("/api/credentials/AUD")

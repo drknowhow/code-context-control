@@ -2696,11 +2696,7 @@ def api_credentials_list():
     usage = cred_store.read_usage_state(pp)
     out = []
     for name, entry in cred_store.list_entries(pp).items():
-        rec = dict(entry)
-        rec["name"] = name
-        rec["last_used"] = (usage.get(name) or {}).get("last_used", "")
-        rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
-        out.append(rec)
+        out.append(cred_store.public_entry(name, entry, usage=usage))
     return jsonify({"entries": out})
 
 
@@ -2743,9 +2739,7 @@ def api_credentials_set():
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 500
-    entry = dict(entry)
-    entry["name"] = name
-    entry["scope"] = scope
+    entry = cred_store.public_entry(name, {**entry, "scope": scope})
     _cred_route_audit("set" if value else "update", name, scope)
     return jsonify({"entry": entry})
 
