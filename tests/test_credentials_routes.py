@@ -219,6 +219,10 @@ class TestCredentialsRoutes(unittest.TestCase):
         self.assertEqual(rec["display"], {"brand": "visa", "last4": "1486"})
         self.assertEqual(sorted(rec["fields"]),
                          ["cardholder", "expiry", "number"])
+        # check reports payload health, not whole-value resolvability
+        chk = self.client.post("/api/credentials/SW2/check").get_json()
+        self.assertTrue(chk["resolvable"])
+        self.assertEqual(chk["fingerprint"], "")
 
     def test_mutations_audited_without_values(self):
         self._post({"name": "AUD", "value": CANARY})

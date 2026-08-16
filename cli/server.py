@@ -2796,7 +2796,9 @@ def api_credentials_check(name):
         "name": name,
         "scope": entry["scope"],
         "storage": entry.get("storage", "keyring"),
-        "resolvable": cred_store.get_value(name, project_path=pp) is not None,
+        # is_resolvable, not get_value: a structured entry never resolves
+        # whole, but its payload being decodable is what "check" asks.
+        "resolvable": cred_store.is_resolvable(name, project_path=pp),
         "fingerprint": cred_store.fingerprint(name, project_path=pp),
     })
 
