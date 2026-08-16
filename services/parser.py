@@ -864,6 +864,15 @@ def _native_css(content: str) -> Dict[str, Any]:
         return _result("checker_failed", "tinycss2", detail=str(e))
 
 
+# JSX intent markers: a closing tag, a self-closing tag, or an element
+# opened directly in a return/arrow position. C3's own UI (cli/ui,
+# cli/hub_ui) deliberately ships JSX in .js files served through Babel, so
+# a plain `node --check` verdict on such a file is a claim about the wrong
+# grammar — not evidence of a defect.
+_JSX_MARKER = re.compile(
+    r"</[A-Za-z]|/>|return\s*\(\s*<|=>\s*\(?\s*<|<[A-Z][\w.]*[\s>/]")
+
+
 def _native_js(content: str) -> Dict[str, Any]:
     proc = _subproc_check(["node", "--check"], content, ".js", "node --check")
     if proc["status"] != "ok":
@@ -877,6 +886,21 @@ def _native_js(content: str) -> Dict[str, Any]:
         if m and i + 1 < len(lines):
             errors.append(_err(int(m.group(1)), 0, lines[i + 1].strip()))
     if errors:
+        if _JSX_MARKER.search(content):
+            # Re-judge under the grammar the file is actually written in.
+            jsx = _native_jsx(content)
+            if jsx["status"] == "clean":
+                jsx["detail"] = _clean_text(
+                    "JSX in a .js file (C3's UI idiom): node --check cannot "
+                    "parse it; validated with the tsc JSX checker instead. "
+                    + jsx.get("detail", ""))
+                return jsx
+            if jsx["status"] == "syntax_error":
+                return jsx  # real defects, with tsc's better positions
+            return _result(
+                "unsupported", "node --check + tsc",
+                detail="File contains JSX; node --check cannot parse it and "
+                       "the tsc JSX checker was unavailable to validate it.")
         return _result("syntax_error", "node --check", errors, detail=errors[0]["text"])
     detail = lines[0] if lines else f"node --check returned {proc['returncode']}."
     return _result("checker_failed", "node --check", detail=detail)

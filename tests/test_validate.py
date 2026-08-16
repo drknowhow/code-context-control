@@ -41,6 +41,63 @@ class TestValidate(unittest.TestCase):
         self.assertEqual(result["status"], "checker_failed")
         self.assertIn("access denied", result["detail"])
 
+    # ── JSX-in-.js fallback (C3's UI serves JSX from .js files) ──
+
+    JSX_SNIPPET = 'const App = () => (\n  <div className="x" />\n);\n'
+    _NODE_SYNTAX_ERR = {
+        "status": "ok", "returncode": 1, "stdout": "",
+        "stderr": "file.js:2\n  <div className=\"x\" />\n"
+                  "SyntaxError: Unexpected token '<'\n",
+    }
+
+    def _js_subproc(self, tsc):
+        """side_effect for _subproc_check: node fails, tsc behaves as told."""
+        def fake(cmd, content, ext, checker, timeout=None, **kw):
+            if cmd[0] == "node":
+                return dict(self._NODE_SYNTAX_ERR)
+            if tsc == "unavailable":
+                return parser._result("checker_unavailable", "tsc",
+                                      detail="tsc missing")
+            if tsc == "error":
+                return {"status": "ok", "returncode": 2, "stderr": "",
+                        "stdout": "f.jsx(3,5): error TS1005: '}' expected.\n"}
+            return {"status": "ok", "returncode": 0, "stderr": "", "stdout": ""}
+        return fake
+
+    def test_js_with_jsx_revalidated_clean_by_tsc(self):
+        with patch("services.parser._subproc_check",
+                   side_effect=self._js_subproc(tsc="clean")):
+            result = parser._native_js(self.JSX_SNIPPET)
+        self.assertEqual(result["status"], "clean")
+        self.assertIn("JSX in a .js file", result["detail"])
+
+    def test_js_with_jsx_and_no_tsc_is_unsupported_not_syntax_error(self):
+        # The toasts.js regression: a valid-JSX .js file must never bank a
+        # false "has syntax errors" fact just because tsc is absent.
+        with patch("services.parser._subproc_check",
+                   side_effect=self._js_subproc(tsc="unavailable")):
+            result = parser._native_js(self.JSX_SNIPPET)
+        self.assertEqual(result["status"], "unsupported")
+        self.assertIn("JSX", result["detail"])
+
+    def test_js_with_jsx_and_real_error_reports_tsc_positions(self):
+        with patch("services.parser._subproc_check",
+                   side_effect=self._js_subproc(tsc="error")):
+            result = parser._native_js(self.JSX_SNIPPET)
+        self.assertEqual(result["status"], "syntax_error")
+        self.assertEqual(result["checker"], "tsc")
+
+    def test_plain_js_error_never_consults_the_jsx_fallback(self):
+        calls = []
+        def fake(cmd, content, ext, checker, timeout=None, **kw):
+            calls.append(cmd[0])
+            return dict(self._NODE_SYNTAX_ERR)
+        with patch("services.parser._subproc_check", side_effect=fake):
+            result = parser._native_js("const x = 1;;;function {\n")
+        self.assertEqual(result["status"], "syntax_error")
+        self.assertEqual(result["checker"], "node --check")
+        self.assertEqual(calls, ["node"])
+
     def test_timeout_wrapper_returns_timeout_status(self):
         import time
 
