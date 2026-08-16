@@ -4,6 +4,79 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.88.0] - 2026-08-16
+
+### Added — a credential now has a history, not just a counter
+
+**Every use writes an event: when, where, how often.** Until now the only
+usage record was a `{last_used, use_count}` counter — no way to answer
+"what ran with the deploy token last Tuesday". Now each injection,
+template expansion, reveal, and terminal `--show` (previously invisible to
+usage tracking entirely) appends one line to the owning scope's
+`.c3/cred_usage.jsonl`: name (+field), action, surface, project, exit
+code, and the command in its raw template form capped at 120 chars —
+never an expanded string, never a value, enforced by hygiene canaries.
+The module is a deliberate clone of `access_telemetry`'s shape:
+append-one-line (concurrent processes can't race an append), 512KB
+rotation, read-time coalescing, and telemetry that swallows its own
+errors rather than ever failing a tool call. A global credential's usage
+from every project lands in `~/.c3`, so its history is complete in one
+place; both filenames are vault-write-protected (hook parity-tested) and
+gitignored.
+
+Reading it back: the Credentials tab gained a **usage** sub-view (totals,
+per-credential surface counts, expandable recent events), the hub drawer's
+"Usage & relationships" became a real history, `c3 creds usage [NAME]
+[--json]` prints it at the terminal, and `GET /api/credentials[/<name>]/usage`
+(+ hub and mobile twins) serve it. The agent-facing
+`c3_credentials(action='usage')` is deliberately scoped: full events only
+for the current project, other projects' use of a shared global credential
+reduced to counts — one project's agent cannot read another's command
+lines through the vault. The `shell_exec` activity event now carries the
+injected cred names, and a low-volume `cred_use` event feeds the daily
+digest.
+
+## [2.87.0] - 2026-08-16
+
+### Added — the vault now holds the sensitive data that isn't a secret string: cards, addresses, identity
+
+**Three structured entry types — `card`, `address`, `identity` — store named
+fields the agent can use but never see.** A card is cardholder + number +
+expiry (+ cvc/billing_zip), Luhn-validated, stored as one canonical JSON
+object through the exact keyring/Fernet path every secret already uses. The
+agent addresses a single field at the subprocess boundary —
+`env_creds='CARD.number'` (exported as `$CARD_NUMBER`) or
+`{{cred:CARD.number}}` inline — and echoed values scrub to
+`[cred:NAME.field]`.
+
+Structured entries are inject-only **by construction**, not by flag:
+`agent_readable` and `inject` are refused at every surface, reveal
+short-circuits with `[creds:structured]` before any gate, whole-value
+resolution is refused inside `get_value` itself (so a hostile registry
+edit that flips `inject: true` puts the name in the missing list, not a
+card payload in a subprocess env), and a keyring attestation keeps an
+entry structured even when `.c3/config.json` is rewritten by hand. The
+plain/structured boundary of an existing name is immutable — `set`,
+metadata updates, and `.env` import all refuse to cross it; delete and
+re-create is the only path.
+
+What other surfaces see is a server-computed projection: `visa ••••4242`
+(brand + last4 — deliberately *not* expiry), city/state for an address, the
+name for an identity. Field names are public metadata; field values never
+appear in any HTTP response, enforced by a seeded-PAN sweep over every
+credentials route on the project server, the hub, and the mobile gateway.
+The mobile gateway additionally refuses to *create* structured entries —
+card data never transits the phone channel. Human read-back is
+terminal-only: `c3 creds get NAME --show [--field number]`; both UIs gained
+per-type field forms (partial updates merge, so changing an expiry never
+means retyping the PAN).
+
+Documented decision: the identity display label is the full name, the same
+sensitivity class as a user-written description. Known limit, documented in
+the guide: the echo redactor tracks values of 4+ characters, so a 3-digit
+CVC echoed by a child process cannot be scrubbed after the fact — the
+guarantee is decode-at-the-boundary, and redaction stays the belt over it.
+
 ## [2.86.1] - 2026-08-16
 
 ### Fixed — two credential routes built responses beside the allowlist, not through it

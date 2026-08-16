@@ -239,6 +239,60 @@ class TestHubCredentialsWriteRoutes(unittest.TestCase):
 
     # ── the sweep: no route ever returns a value ──────────────
 
+    PAN = "4539578763621486"
+
+    def test_structured_sweep_no_field_value_on_the_wire(self):
+        """Hub twin of the project-server structured sweep: card fields never
+        reach any hub credentials response; last4 rides only in display."""
+        card = {"cardholder": "D T", "number": self.PAN,
+                "expiry": "12/27", "cvc": "9137"}
+        with self._patched_pm():
+            responses = [
+                self.client.post("/api/projects/credentials", json={
+                    "path": str(self.proj), "scope": "project",
+                    "name": "HW_CARD", "value": card, "type": "card"}),
+                self.client.get(
+                    f"/api/projects/credentials?path={self.proj}"),
+                self.client.post("/api/projects/credentials/HW_CARD/check",
+                                 json={"path": str(self.proj)}),
+                self.client.get("/api/hub/credentials/overview"),
+            ]
+        listing = None
+        for resp in responses:
+            self.assertLess(resp.status_code, 500)
+            body = resp.get_data(as_text=True)
+            for s in (self.PAN, self.PAN[:-4], "9137", "12/27"):
+                self.assertNotIn(s, body)
+            if listing is None and "HW_CARD" in body and "entries" in (
+                    resp.get_json() or {}):
+                listing = resp.get_json()
+        recs = [r for r in (listing or {}).get("entries", [])
+                if r.get("name") == "HW_CARD"]
+        self.assertTrue(recs)
+        self.assertEqual(recs[0].get("display"),
+                         {"brand": "visa", "last4": "1486"})
+
+    def test_usage_route_project_and_global(self):
+        from services import cred_telemetry as ct
+        cs.set_credential("HU_P", CANARY, scope="project",
+                          project_path=str(self.proj))
+        cs.set_credential("HU_G", CANARY, scope="global",
+                          project_path=str(self.proj))
+        ct.record_use(["HU_P", "HU_G"], project_path=str(self.proj),
+                      surface="shell", cmd_preview="run")
+        with self._patched_pm():
+            proj_resp = self.client.get(
+                f"/api/projects/credentials/usage?path={self.proj}")
+            glob_resp = self.client.get("/api/projects/credentials/usage")
+        self.assertEqual(proj_resp.status_code, 200)
+        names = {r["name"] for r in proj_resp.get_json()["aggregate"]["rows"]}
+        self.assertEqual(names, {"HU_P", "HU_G"})  # merged project view
+        glob_names = {r["name"] for r in
+                      glob_resp.get_json()["aggregate"]["rows"]}
+        self.assertEqual(glob_names, {"HU_G"})     # global vault only
+        for resp in (proj_resp, glob_resp):
+            self.assertNotIn(CANARY, resp.get_data(as_text=True))
+
     def test_endpoint_sweep_no_route_ever_returns_value(self):
         cs.set_credential("SWEEP_P", CANARY, scope="project",
                           project_path=str(self.proj))

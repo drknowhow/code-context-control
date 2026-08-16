@@ -2026,7 +2026,9 @@ def api_projects_credentials_set():
         str(data.get("path") or "").strip(), scope, mutation=True)
     if err:
         return err
-    value = str(data.get("value") or "")
+    value = data.get("value")
+    # Structured kinds submit a field OBJECT; the store takes JSON text.
+    value = json.dumps(value) if isinstance(value, dict) else str(value or "")
     ctype = str(data.get("type") or data.get("ctype") or "token")
     try:
         if value:
@@ -2123,8 +2125,37 @@ def api_projects_credentials_check(name):
         "name": name,
         "scope": entry["scope"],
         "storage": entry.get("storage", "keyring"),
-        "resolvable": cred_store.get_value(name, project_path=store_path) is not None,
+        # is_resolvable, not get_value: a structured entry never resolves
+        # whole, but its payload being decodable is what "check" asks.
+        "resolvable": cred_store.is_resolvable(name, project_path=store_path),
         "fingerprint": cred_store.fingerprint(name, project_path=store_path),
+    })
+
+
+@app.route("/api/projects/credentials/usage", methods=["GET"])
+def api_projects_credentials_usage():
+    """Usage history — `path` scopes to a project (merged view); omit it for
+    the global vault only. `name` filters to one credential. Names, counts
+    and cmd previews only; never values."""
+    from services import cred_telemetry as ct
+    from services import credential_store as cred_store
+    path = (request.args.get("path") or "").strip()
+    if path:
+        try:
+            base = str(_resolve_project_path(path))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    else:
+        home = cred_store.global_base()
+        if home is None:
+            return jsonify({"error": "global scope unresolvable"}), 500
+        base = str(home)
+    name = (request.args.get("name") or "").strip()
+    return jsonify({
+        "path": base if path else "",
+        "aggregate": ct.aggregate(base, name=name),
+        "recent": ct.search_events(base, name=name,
+                                   limit=request.args.get("limit", 100)),
     })
 
 

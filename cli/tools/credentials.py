@@ -8,6 +8,10 @@ ledger-logged with identifiers only. The normal way for an agent to USE a
 credential is c3_shell: ``env_creds='NAME1,NAME2'`` (env injection) or
 ``{{cred:NAME}}`` in the command (server-side expansion) — the decoded value
 never enters model context.
+
+Structured kinds (address/identity/card) go further: reveal is permanently
+disabled regardless of flags, and only individual FIELDS are addressable —
+``env_creds='CARD.number'`` or ``{{cred:CARD.number}}``.
 """
 from __future__ import annotations
 
@@ -19,7 +23,8 @@ _TOOL = "c3_credentials"
 
 _MUTATING_ACTIONS = {"set", "delete"}
 _AUDITED_ACTIONS = _MUTATING_ACTIONS | {"reveal"}
-_VALID_ACTIONS = sorted(["list", "describe", "check", "reveal", "set", "delete"])
+_VALID_ACTIONS = sorted(["list", "describe", "check", "reveal", "set",
+                         "delete", "usage"])
 
 _USAGE_FOOTER = (
     "use: c3_shell(env_creds='NAME1,NAME2') or {{cred:NAME}} inside cmd — "
@@ -61,6 +66,9 @@ def _format_entry_line(name: str, entry: dict, usage: dict) -> str:
         f"{name} [{entry.get('scope', '?')}/{entry.get('type', 'token')}]",
         f"len={entry.get('value_len', '?')}",
     ]
+    display = entry.get("display") or {}
+    if display:
+        parts.append(" ".join(str(v) for v in display.values() if v))
     if entry.get("env_var"):
         parts.append(f"env_var={entry['env_var']}")
     if flags:
@@ -91,6 +99,24 @@ def _act_describe(name: str, project_path: str) -> str:
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
     usage = cs.read_usage_state(project_path)
+    stype = cs.structured_type(name, project_path=project_path)
+    if stype:
+        fields = entry.get("fields") or []
+        first = fields[0] if fields else "field"
+        env_base = entry.get("env_var") or name
+        return "\n".join([
+            f"[creds] {_format_entry_line(name, entry, usage)}",
+            f"storage={entry.get('storage', 'keyring')}  "
+            f"created={entry.get('created', '?')}  "
+            f"updated={entry.get('updated', '?')}",
+            f"fields: {', '.join(fields) or 'none recorded'}",
+            f"inject a field: c3_shell(cmd=..., env_creds='{name}.{first}') "
+            f"→ ${env_base}_{first.upper()}",
+            f"inline expansion:  c3_shell(cmd='... "
+            f"{{{{cred:{name}.{first}}}}} ...')",
+            f"{stype} entries are inject-only: reveal is permanently "
+            "disabled; field values decode only at the subprocess boundary.",
+        ])
     env_name = entry.get("env_var") or name
     lines = [
         f"[creds] {_format_entry_line(name, entry, usage)}",
@@ -112,7 +138,9 @@ def _act_check(name: str, project_path: str) -> str:
     entry = cs.get_entry(name, project_path=project_path)
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
-    resolvable = cs.get_value(name, project_path=project_path) is not None
+    # is_resolvable, not get_value: a structured entry never resolves whole,
+    # but its payload being decodable is exactly what "check" asks.
+    resolvable = cs.is_resolvable(name, project_path=project_path)
     return (
         f"[creds:check] {name} scope={entry['scope']} "
         f"storage={entry.get('storage', 'keyring')} resolvable={str(resolvable).lower()}"
@@ -123,6 +151,16 @@ def _act_reveal(name: str, svc, project_path: str) -> str:
     entry = cs.get_entry(name, project_path=project_path)
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
+    stype = cs.structured_type(name, project_path=project_path)
+    if stype:
+        fields = ", ".join(entry.get("fields") or []) or "none recorded"
+        return (
+            f"[creds:structured] {name!r} is a {stype} entry — reveal is "
+            "permanently disabled for structured kinds, for every caller. "
+            f"Use a field at the subprocess boundary instead: "
+            f"c3_shell(env_creds='{name}.<field>') or "
+            f"{{{{cred:{name}.<field>}}}} in cmd. Fields: {fields}."
+        )
     if not entry.get("agent_readable"):
         return (
             f"[creds:not-readable] {name!r} is injection-only — use "
@@ -146,10 +184,71 @@ def _act_reveal(name: str, svc, project_path: str) -> str:
         )
     cs.register_active_secret(name, value)
     cs.touch_last_used([name], project_path)
+    try:
+        from services import cred_telemetry as ct
+        ct.record_use([name], project_path=project_path,
+                      action=ct.ACTION_REVEAL, surface="tool")
+    except Exception:
+        pass
     return (
         f"[creds:reveal] {name} (scope={entry['scope']}) — value follows; "
         "it is now part of the conversation context.\n" + value
     )
+
+
+def _act_usage(name: str, project_path: str) -> str:
+    """Usage history — when/where/how often. Names and metadata only.
+
+    Cross-project scoping is deliberate: for a GLOBAL credential this
+    surface shows full events (incl. cmd previews) only for the CURRENT
+    project; other projects' use is reduced to counts, so one project's
+    agent cannot read another project's command lines through the vault.
+    """
+    from pathlib import Path
+
+    from services import cred_telemetry as ct
+    agg = ct.aggregate(project_path, name=name)
+    if not agg["total"]:
+        target = f" for {name!r}" if name else ""
+        return f"[creds:usage] no recorded uses{target} yet."
+    lines = []
+    if name:
+        row = agg["rows"][0]
+        surfaces = " ".join(f"{s}:{c}" for s, c in
+                            sorted(row["surfaces"].items())) or "-"
+        lines.append(
+            f"[creds:usage] {name} — {row['hits']} use(s) ({surfaces}), "
+            f"first {row['first_ts'] or '?'}, last {row['last_ts'] or '?'}")
+        if row["fields"]:
+            lines.append(f"fields used: {', '.join(row['fields'])}")
+    else:
+        lines.append(
+            f"[creds:usage] {agg['total']} use(s) across "
+            f"{len(agg['rows'])} credential(s); by surface: "
+            + (" ".join(f"{s}:{c}" for s, c in
+                        sorted(agg["by_surface"].items())) or "-"))
+        for row in agg["rows"][:10]:
+            lines.append(f"  {row['name']}: {row['hits']}× last {row['last_ts']}")
+    try:
+        here = str(Path(project_path or ".").resolve())
+    except Exception:
+        here = str(project_path or ".")
+    res = ct.search_events(project_path, name=name, limit=200)
+    local = [e for e in res["events"] if e.get("project") == here]
+    foreign = res["matched"] - len(local)
+    if local:
+        lines.append("recent (this project):")
+        for e in local[:8]:
+            ref = e["name"] + (f".{e['field']}" if e.get("field") else "")
+            exit_part = f" exit={e['exit']}" if "exit" in e else ""
+            cmd_part = f"  cmd: {e['cmd']}" if e.get("cmd") else ""
+            lines.append(f"  {e.get('ts', '?')} {e.get('action', '?')} "
+                         f"{ref} [{e.get('surface', '?')}]{exit_part}{cmd_part}")
+    if foreign > 0:
+        lines.append(
+            f"other projects: {foreign} use(s) — counts only from this "
+            "surface; full history in the Credentials UI or `c3 creds usage`.")
+    return "\n".join(lines)
 
 
 def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
@@ -174,7 +273,7 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
         )
 
     name = (kwargs.get("name") or "").strip()
-    if action != "list" and not name:
+    if action not in ("list", "usage") and not name:
         return finalize(
             _TOOL, args_for_log,
             f"[creds:error] name is required for {action}", "missing-arg",
@@ -184,6 +283,8 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
     try:
         if action == "list":
             resp = _act_list(project_path)
+        elif action == "usage":
+            resp = _act_usage(name, project_path)
         elif action == "describe":
             resp = _act_describe(name, project_path)
         elif action == "check":
@@ -241,7 +342,7 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
 
     if action in _AUDITED_ACTIONS and not resp.startswith((
         "[creds:error]", "[creds:unknown", "[creds:not-allowed]",
-        "[creds:not-readable]", "[creds:no-value]",
+        "[creds:not-readable]", "[creds:no-value]", "[creds:structured]",
     )):
         _log_access(svc, action, name, scope or "", resp)
     return finalize(_TOOL, args_for_log, resp, action)

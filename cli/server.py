@@ -2708,7 +2708,9 @@ def api_credentials_set():
     data = request.get_json() or {}
     name = str(data.get("name") or "").strip()
     scope = str(data.get("scope") or "project").strip()
-    value = str(data.get("value") or "")
+    value = data.get("value")
+    # Structured kinds submit a field OBJECT; the store takes JSON text.
+    value = json.dumps(value) if isinstance(value, dict) else str(value or "")
     ctype = str(data.get("type") or data.get("ctype") or "token")
     meta = {
         "description": str(data.get("description") or ""),
@@ -2794,8 +2796,36 @@ def api_credentials_check(name):
         "name": name,
         "scope": entry["scope"],
         "storage": entry.get("storage", "keyring"),
-        "resolvable": cred_store.get_value(name, project_path=pp) is not None,
+        # is_resolvable, not get_value: a structured entry never resolves
+        # whole, but its payload being decodable is what "check" asks.
+        "resolvable": cred_store.is_resolvable(name, project_path=pp),
         "fingerprint": cred_store.fingerprint(name, project_path=pp),
+    })
+
+
+@app.route('/api/credentials/usage', methods=['GET'])
+def api_credentials_usage_overview():
+    """Usage history overview — names, counts, cmd previews; never values."""
+    from services import cred_telemetry as ct
+    pp = str(PROJECT_PATH)
+    return jsonify({
+        "aggregate": ct.aggregate(pp),
+        "recent": ct.search_events(pp, limit=request.args.get("limit", 100)),
+    })
+
+
+@app.route('/api/credentials/<name>/usage', methods=['GET'])
+def api_credentials_usage(name):
+    """Per-credential usage history — when, where, how often."""
+    from services import cred_telemetry as ct
+    from services import credential_store as cred_store
+    pp = str(PROJECT_PATH)
+    if not cred_store.get_entry(name, project_path=pp):
+        return jsonify({"error": f"no credential named '{name}'"}), 404
+    return jsonify({
+        "aggregate": ct.aggregate(pp, name=name),
+        "recent": ct.search_events(pp, name=name,
+                                   limit=request.args.get("limit", 100)),
     })
 
 

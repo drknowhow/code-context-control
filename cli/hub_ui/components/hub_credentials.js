@@ -12,6 +12,36 @@
 const HUB_CREDS_EMPTY_FORM = {
   name: '', value: '', scope: 'project', type: 'token',
   description: '', env_var: '', agent_readable: false, inject: false,
+  fields: {},
+};
+
+// Structured kinds (v2.87.0): per-type field sets composed into a JSON
+// object client-side. `hidden` fields render as password inputs. These
+// entries are inject-only — the server refuses agent_readable/inject and
+// there is no reveal path anywhere.
+const CREDS_STRUCTURED = {
+  card:     { required: ['cardholder', 'number', 'expiry'],
+              optional: ['cvc', 'billing_zip'], hidden: ['number', 'cvc'] },
+  address:  { required: ['street1', 'city', 'state', 'zip'],
+              optional: ['recipient', 'street2', 'country', 'phone'], hidden: [] },
+  identity: { required: ['full_name'],
+              optional: ['dob', 'ssn', 'phone', 'email'], hidden: ['ssn', 'dob'] },
+};
+
+const credsDisplayText = (entry) => {
+  const d = entry.display || {};
+  if (entry.type === 'card') return `${d.brand || 'card'} ••••${d.last4 || '????'}`;
+  const vals = Object.values(d).filter(Boolean);
+  return vals.length ? vals.join(', ') : '';
+};
+
+// Collect the non-blank fields typed into a structured form/drawer grid.
+const credsTypedFields = (fields) => {
+  const typed = {};
+  Object.entries(fields || {}).forEach(([k, v]) => {
+    if (String(v || '').trim()) typed[k] = String(v).trim();
+  });
+  return typed;
 };
 
 // path falsy everywhere below → the shared global vault (~/.c3).
@@ -348,11 +378,23 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
     inject: !!entry.inject, agent_readable: !!entry.agent_readable,
   });
   const [secret, setSecret] = useState('');
+  const [secretFields, setSecretFields] = useState({});
   const [replaceOpen, setReplaceOpen] = useState(!!initialReplace);
   const [chk, setChk] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null);
+  const [usage, setUsage] = useState(null);   // {aggregate, recent} — names/previews only
+  const structured = CREDS_STRUCTURED[entry.type];
+
+  useEffect(() => {
+    let live = true;
+    api.get('/api/projects/credentials/usage?name=' + encodeURIComponent(entry.name)
+      + (path ? '&path=' + encodeURIComponent(path) : '') + '&limit=25')
+      .then(d => { if (live) setUsage(d); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [entry.name, path]);
 
   const owner = entry.scope === 'global'
     ? 'the global vault (~/.c3)'
@@ -400,19 +442,23 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
 
   // Full re-store: set_credential rewrites the entry, so every field the
   // drawer knows about rides along or it would be silently reset.
+  // Structured entries submit only the TYPED fields — the store merges a
+  // partial payload, so one field can change without retyping the rest.
   const replaceSecret = async () => {
-    if (!secret) return;
+    const value = structured ? credsTypedFields(secretFields) : secret;
+    if (structured ? !Object.keys(value).length : !value) return;
     setBusy(true); setErr('');
     try {
       const resp = await credApi.save(path, {
-        name: entry.name, scope: entry.scope, value: secret, type: meta.type,
+        name: entry.name, scope: entry.scope, value, type: meta.type,
         description: meta.description, env_var: meta.env_var,
-        agent_readable: flags.agent_readable, inject: flags.inject,
+        agent_readable: structured ? false : flags.agent_readable,
+        inject: structured ? false : flags.inject,
       });
       if (resp && resp.error) setErr(resp.error);
-      else { notify(`Replaced the value of '${entry.name}'`); setChk(null); if (onChanged) onChanged(); }
+      else { notify(`Updated the value of '${entry.name}'`); setChk(null); if (onChanged) onChanged(); }
     } catch (e) { setErr(apiErr(e)); }
-    setSecret(''); setReplaceOpen(false); setBusy(false);
+    setSecret(''); setSecretFields({}); setReplaceOpen(false); setBusy(false);
   };
 
   const doDelete = () => setConfirm(credDeleteConfirm(entry, owner, async () => {
@@ -447,6 +493,9 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
               <Badge color={entry.scope === 'global' ? T.accent : T.blue}>{entry.scope}</Badge>
               <Badge color={T.textMuted}>{entry.type || 'token'}</Badge>
               <Badge color={T.textMuted}>{entry.storage || 'keyring'}</Badge>
+              {structured && !!credsDisplayText(entry) && (
+                <Badge color={T.accent}>{credsDisplayText(entry)}</Badge>
+              )}
               {!!entry.inject && <Badge color={T.warn}>inject</Badge>}
               {!!entry.agent_readable && <Badge color={T.error}>agent_readable</Badge>}
             </div>
@@ -473,12 +522,17 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
               <div>
                 <span style={lbl}>Type</span>
-                <select value={meta.type} style={fld}
-                  onChange={e => setMeta(Object.assign({}, meta, { type: e.target.value }))}>
-                  <option value="token">token</option>
-                  <option value="env">env</option>
-                  <option value="multiline">multiline</option>
-                </select>
+                {structured ? (
+                  <input value={entry.type} disabled style={fld}
+                    title="The plain/structured boundary is immutable — delete and re-create to change it" />
+                ) : (
+                  <select value={meta.type} style={fld}
+                    onChange={e => setMeta(Object.assign({}, meta, { type: e.target.value }))}>
+                    <option value="token">token</option>
+                    <option value="env">env</option>
+                    <option value="multiline">multiline</option>
+                  </select>
+                )}
               </div>
               <div>
                 <span style={lbl}>Env var (default: name)</span>
@@ -493,6 +547,18 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
             </div>
           </CredSec>
 
+          {structured ? (
+            <CredSec title="Exposure" tone={T.textMuted}
+              note="Structured entries are inject-only by construction.">
+              <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.55 }}>
+                🔒 The agent can use single fields at the subprocess boundary
+                (<span className="mono">{'{{cred:' + entry.name + '.field}}'}</span> or{' '}
+                <span className="mono">env_creds='{entry.name}.field'</span>) but can
+                never reveal them, and they never auto-inject. These switches do
+                not exist for {entry.type} entries.
+              </div>
+            </CredSec>
+          ) : (
           <CredSec title="Exposure" tone={flags.agent_readable ? T.error : (flags.inject ? T.warn : T.textMuted)}
             note="How far this secret is allowed to travel. Both default to off.">
             <CredSwitch on={flags.inject} tone={T.warn} disabled={busy}
@@ -504,6 +570,7 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
               note="Lets the agent pull the plaintext into its context and transcripts. Injection-only use does not need this."
               onToggle={() => toggle('agent_readable')} />
           </CredSec>
+          )}
 
           <CredSec title="Secret"
             note="Values never leave the host. The check computes a fingerprint server-side; it is not stored.">
@@ -516,13 +583,45 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
                   {chk.resolvable ? `✓ resolves · ${chk.fingerprint}` : '✗ unresolvable'}
                 </span>
               )}
-              <span className="mono" style={{ fontSize: 11, color: T.textDim }}>•••• len={entry.value_len}</span>
+              <span className="mono" style={{ fontSize: 11, color: T.textDim }}>
+                {structured ? credsDisplayText(entry) : `•••• len=${entry.value_len}`}
+              </span>
             </div>
+            {structured && (
+              <div className="mono" style={{ fontSize: 11, color: T.textDim, marginTop: 8 }}>
+                fields: {(entry.fields || []).join(', ') || 'none recorded'}
+              </div>
+            )}
             {!replaceOpen ? (
               <div style={{ marginTop: 10 }}>
                 <Btn variant="ghost" style={{ padding: '6px 12px' }} onClick={() => setReplaceOpen(true)}>
-                  <I name="edit" size={12} /> Replace secret…
+                  <I name="edit" size={12} /> {structured ? 'Update fields…' : 'Replace secret…'}
                 </Btn>
+              </div>
+            ) : structured ? (
+              <div style={{ marginTop: 10 }}>
+                <span style={lbl}>
+                  Type only the fields to change — blank fields keep their stored value.
+                </span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {[...structured.required, ...structured.optional].map(fname => (
+                    <div key={fname}>
+                      <span style={Object.assign({}, lbl, { marginBottom: 2 })}>{fname}</span>
+                      <input
+                        type={structured.hidden.includes(fname) ? 'password' : 'text'}
+                        value={secretFields[fname] || ''}
+                        onChange={e => setSecretFields(Object.assign({}, secretFields, { [fname]: e.target.value }))}
+                        style={fld} autoComplete="new-password" spellCheck={false} />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <Btn color={T.warn}
+                    disabled={busy || !Object.keys(credsTypedFields(secretFields)).length}
+                    style={{ padding: '6px 14px' }} onClick={replaceSecret}>Update</Btn>
+                  <Btn variant="ghost" style={{ padding: '6px 14px' }}
+                    onClick={() => { setSecretFields({}); setReplaceOpen(false); }}>Cancel</Btn>
+                </div>
               </div>
             ) : (
               <div style={{ marginTop: 10 }}>
@@ -554,6 +653,50 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
             <CredKV k="last used" v={credWhen(entry.last_used)} />
             <CredKV k="use count" v={String(entry.use_count || 0)} />
             <CredKV k="storage" v={entry.storage || 'keyring'} />
+            {usage && usage.aggregate && usage.aggregate.total > 0 && (
+              <div style={{ marginTop: 9 }}>
+                <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 5 }}>
+                  History — {usage.aggregate.total} recorded use(s)
+                  {(() => {
+                    const surf = Object.entries(usage.aggregate.by_surface || {})
+                      .map(([s, c]) => `${s}:${c}`).join('  ');
+                    return surf ? ` · ${surf}` : '';
+                  })()}
+                </div>
+                <div style={{
+                  border: `1px solid ${T.border}`, borderRadius: 6,
+                  maxHeight: 180, overflowY: 'auto',
+                }}>
+                  {(usage.recent.events || []).map((e, i) => {
+                    const ref = e.name + (e.field ? `.${e.field}` : '');
+                    return (
+                      <div key={`${e.ts}|${i}`} title={e.cmd || ''} style={{
+                        display: 'flex', gap: 8, alignItems: 'center',
+                        padding: '4px 8px', fontSize: 11,
+                        borderTop: i === 0 ? 'none' : `1px solid ${T.border}`,
+                        background: i % 2 ? `${T.surfaceAlt}70` : T.surface,
+                      }}>
+                        <span className="mono" style={{ color: T.textDim }}>
+                          {credWhen(e.ts)}
+                        </span>
+                        <Badge color={e.action === 'reveal' ? T.error : T.blue}>
+                          {e.action}
+                        </Badge>
+                        <span className="mono" style={{ color: T.text }}>{ref}</span>
+                        <span className="mono" style={{ color: T.textMuted }}>
+                          [{e.surface}]
+                        </span>
+                        {'exit' in e && (
+                          <span className="mono" style={{
+                            color: e.exit === 0 ? T.accent : T.error,
+                          }}>exit={e.exit}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {!!entry.shadows_global && (
               <div style={{
                 marginTop: 9, padding: '7px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
@@ -639,7 +782,11 @@ function CredRow({ entry, striped, owner, onOpen, onMenu, check }) {
           fontSize: 11, color: T.textDim,
         }}>
           {owner && <span>{owner}</span>}
-          <span className="mono">{entry.type || 'token'} · ••••{entry.value_len}</span>
+          <span className="mono">
+            {CREDS_STRUCTURED[entry.type]
+              ? `${entry.type} · ${credsDisplayText(entry)} 🔒`
+              : `${entry.type || 'token'} · ••••${entry.value_len}`}
+          </span>
           {entry.env_var && <span className="mono">→ ${entry.env_var}</span>}
           <span>used {entry.use_count || 0}× · {credWhen(entry.last_used)}</span>
           {entry.description && (
@@ -663,11 +810,16 @@ function CredRow({ entry, striped, owner, onOpen, onMenu, check }) {
 
 // Shared item list for both the row menu and the search-result menu.
 function credMenuItems({ entry, check, cb }) {
+  const structured = !!CREDS_STRUCTURED[entry.type];
   const items = [
     { label: 'Open settings…', icon: 'settings', onClick: cb.open, hint: '↵' },
     { label: 'Check resolution', icon: 'refresh', onClick: cb.check },
-    { label: 'Replace secret…', icon: 'edit', onClick: cb.replace },
+    { label: structured ? 'Update fields…' : 'Replace secret…',
+      icon: 'edit', onClick: cb.replace },
     { separator: true },
+    // Exposure toggles do not exist for structured entries: they are
+    // inject-only by construction and the server refuses the flags.
+    ...(structured ? [] : [
     {
       label: entry.inject ? 'Disable auto-inject' : 'Enable auto-inject…',
       icon: 'zap', onClick: () => cb.toggle('inject'),
@@ -677,6 +829,7 @@ function credMenuItems({ entry, check, cb }) {
       icon: 'eye', danger: !entry.agent_readable, onClick: () => cb.toggle('agent_readable'),
     },
     { separator: true },
+    ]),
     { label: 'Copy name', icon: 'copy', onClick: () => credCopy(entry.name, 'name') },
     {
       label: 'Copy env var', icon: 'copy', disabled: !entry.env_var,
@@ -742,12 +895,17 @@ function CredsManager({ path, projectName, onChanged }) {
     if (!form || !form.name.trim()) return;
     setBusy(true);
     try {
+      const structured = !!CREDS_STRUCTURED[form.type];
       const payload = withPath({
         name: form.name.trim(), scope: isGlobal ? 'global' : form.scope,
         type: form.type, description: form.description, env_var: form.env_var,
-        agent_readable: !!form.agent_readable, inject: !!form.inject,
+        agent_readable: structured ? false : !!form.agent_readable,
+        inject: structured ? false : !!form.inject,
       });
-      if (form.value) payload.value = form.value; // blank on edit = keep stored value
+      if (structured) {
+        const typed = credsTypedFields(form.fields);
+        if (Object.keys(typed).length) payload.value = typed;
+      } else if (form.value) payload.value = form.value; // blank on edit = keep stored value
       const resp = await api.post('/api/projects/credentials', payload);
       if (resp && resp.error) { setError(resp.error); }
       else {
@@ -963,6 +1121,28 @@ function CredsManager({ path, projectName, onChanged }) {
                 </select>
               )}
             </div>
+            {CREDS_STRUCTURED[form.type] ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <span style={labelStyle}>Fields (write-only — never echoed back)</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {[...CREDS_STRUCTURED[form.type].required,
+                    ...CREDS_STRUCTURED[form.type].optional].map(fname => (
+                    <div key={fname}>
+                      <span style={Object.assign({}, labelStyle, { marginBottom: 2 })}>
+                        {fname}
+                        {CREDS_STRUCTURED[form.type].required.includes(fname) ? '' : ' (optional)'}
+                      </span>
+                      <input
+                        type={CREDS_STRUCTURED[form.type].hidden.includes(fname) ? 'password' : 'text'}
+                        value={(form.fields || {})[fname] || ''}
+                        onChange={e => setForm(Object.assign({}, form,
+                          { fields: Object.assign({}, form.fields, { [fname]: e.target.value }) }))}
+                        style={inputStyle} autoComplete="new-password" spellCheck={false} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
             <div style={{ gridColumn: '1 / -1' }}>
               <span style={labelStyle}>Value (write-only — never echoed back)</span>
               {form.type === 'multiline' ? (
@@ -976,6 +1156,7 @@ function CredsManager({ path, projectName, onChanged }) {
                   style={inputStyle} autoComplete="new-password" />
               )}
             </div>
+            )}
             <div>
               <span style={labelStyle}>Type</span>
               <select value={form.type}
@@ -984,6 +1165,9 @@ function CredsManager({ path, projectName, onChanged }) {
                 <option value="token">token — single secret</option>
                 <option value="env">env — env-style value</option>
                 <option value="multiline">multiline — .env blob / PEM</option>
+                <option value="card">card — credit/debit card (inject-only)</option>
+                <option value="address">address — postal address (inject-only)</option>
+                <option value="identity">identity — personal info (inject-only)</option>
               </select>
             </div>
             <div>
@@ -999,6 +1183,17 @@ function CredsManager({ path, projectName, onChanged }) {
                 style={inputStyle} autoComplete="off" />
             </div>
           </div>
+          {CREDS_STRUCTURED[form.type] ? (
+            <div style={{
+              marginTop: 10, padding: '6px 10px', borderRadius: 6, fontSize: 11,
+              background: `${T.accent}15`, color: T.textMuted, border: `1px solid ${T.border}`,
+            }}>
+              🔒 {form.type} entries are inject-only: the agent can use single fields
+              (<span className="mono">{'{{cred:NAME.field}}'}</span> /{' '}
+              <span className="mono">env_creds='NAME.field'</span>) but can never
+              reveal them, and they never auto-inject.
+            </div>
+          ) : (
           <div style={{ display: 'flex', gap: 18, marginTop: 10, fontSize: 12, color: T.text }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={!!form.inject}
@@ -1011,6 +1206,7 @@ function CredsManager({ path, projectName, onChanged }) {
               agent_readable
             </label>
           </div>
+          )}
           {form.agent_readable && (
             <div style={{
               marginTop: 8, padding: '6px 10px', borderRadius: 6, fontSize: 11,
@@ -1021,12 +1217,20 @@ function CredsManager({ path, projectName, onChanged }) {
             </div>
           )}
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            <button className="btn" disabled={busy || !form.name.trim() || !form.value}
-              onClick={saveForm} style={{
-                background: T.accent, color: T.bg, border: 'none', fontWeight: 600,
-                padding: '5px 15px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-                opacity: (busy || !form.name.trim() || !form.value) ? 0.5 : 1,
-              }}>Create</button>
+            {(() => {
+              const hasPayload = CREDS_STRUCTURED[form.type]
+                ? !!Object.keys(credsTypedFields(form.fields)).length
+                : !!form.value;
+              const blocked = busy || !form.name.trim() || !hasPayload;
+              return (
+                <button className="btn" disabled={blocked}
+                  onClick={saveForm} style={{
+                    background: T.accent, color: T.bg, border: 'none', fontWeight: 600,
+                    padding: '5px 15px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    opacity: blocked ? 0.5 : 1,
+                  }}>Create</button>
+              );
+            })()}
             <button className="btn" onClick={() => setForm(null)} style={{
               background: T.surfaceAlt, color: T.text, border: `1px solid ${T.border}`,
               padding: '5px 15px', borderRadius: 6, fontSize: 12, cursor: 'pointer',

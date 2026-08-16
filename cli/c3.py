@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.86.1"
+__version__ = "2.88.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -5899,7 +5899,7 @@ def cmd_creds(args):
     """Credential vault management (global + per-project scopes)."""
     sub = getattr(args, "creds_cmd", None)
     if not sub:
-        print("Usage: c3 creds {set,get,list,rm,import} [args]")
+        print("Usage: c3 creds {set,get,list,rm,import,usage} [args]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -5914,6 +5914,8 @@ def cmd_creds(args):
         _creds_cmd_rm(args, project_path)
     elif sub == "import":
         _creds_cmd_import(args, project_path)
+    elif sub == "usage":
+        _creds_cmd_usage(args, project_path)
     else:
         print(f"Unknown creds subcommand: {sub}")
 
@@ -5928,6 +5930,9 @@ def _creds_entry_line(name: str, entry: dict) -> str:
         f"{name:<24} {entry.get('scope', '?'):<8} {entry.get('type', 'token'):<10}"
         f" len={entry.get('value_len', '?')}",
     ]
+    display = entry.get("display") or {}
+    if display:
+        parts.append(" ".join(str(v) for v in display.values() if v))
     if entry.get("env_var"):
         parts.append(f"env_var={entry['env_var']}")
     if flags:
@@ -5937,16 +5942,49 @@ def _creds_entry_line(name: str, entry: dict) -> str:
     return "  ".join(parts)
 
 
+_CREDS_HIDDEN_FIELDS = {"number", "cvc", "ssn"}  # prompted via getpass
+
+
+def _creds_prompt_structured(name: str, ctype: str) -> str:
+    """Interactive per-field prompt for a structured entry; returns JSON.
+    Sensitive fields use a hidden prompt; empty optional fields are skipped."""
+    import getpass
+    import json as _json
+
+    from services import credential_store as cred_store
+
+    required, optional = cred_store.schema_fields(ctype)
+    print(f"Enter {ctype} fields for '{name}' "
+          "(optional fields: press Enter to skip):")
+    fields: dict = {}
+    for fname in list(required) + list(optional):
+        tag = "" if fname in required else " (optional)"
+        if fname in _CREDS_HIDDEN_FIELDS:
+            raw = getpass.getpass(f"  {fname}{tag}: ")
+        else:
+            raw = input(f"  {fname}{tag}: ")
+        if raw.strip():
+            fields[fname] = raw.strip()
+    return _json.dumps(fields)
+
+
 def _creds_cmd_set(args, project_path: str) -> None:
     import getpass
 
     from services import credential_store as cred_store
 
+    ctype = getattr(args, "ctype", "token") or "token"
     value = getattr(args, "value", "") or ""
     if getattr(args, "stdin", False):
         value = sys.stdin.read().rstrip("\n")
     if not value:
-        value = getpass.getpass(f"Value for {args.name}: ")
+        if ctype in cred_store.STRUCTURED_TYPES:
+            value = _creds_prompt_structured(args.name, ctype)
+            if value == "{}":
+                print("Cancelled -- no fields entered.")
+                return
+        else:
+            value = getpass.getpass(f"Value for {args.name}: ")
     if not value:
         print("Cancelled -- value required.")
         return
@@ -5956,7 +5994,7 @@ def _creds_cmd_set(args, project_path: str) -> None:
             args.name, value,
             scope=scope, project_path=project_path,
             description=getattr(args, "desc", "") or "",
-            ctype=getattr(args, "ctype", "token") or "token",
+            ctype=ctype,
             env_var=getattr(args, "env_var", "") or "",
             agent_readable=bool(getattr(args, "agent_readable", False)),
             inject=bool(getattr(args, "inject", False)),
@@ -5971,6 +6009,19 @@ def _creds_cmd_set(args, project_path: str) -> None:
               "into its context and transcripts.")
 
 
+def _creds_count_show(refs, project_path: str) -> None:
+    """Count a terminal --show like any other use: state counter + history."""
+    from services import credential_store as cred_store
+    try:
+        cred_store.touch_last_used(
+            sorted({str(r).partition(".")[0] for r in refs}), project_path)
+        from services import cred_telemetry as ct
+        ct.record_use(refs, project_path=project_path,
+                      action=ct.ACTION_CLI_SHOW, surface="cli")
+    except Exception:
+        pass
+
+
 def _creds_cmd_get(args, project_path: str) -> None:
     from services import credential_store as cred_store
 
@@ -5981,11 +6032,46 @@ def _creds_cmd_get(args, project_path: str) -> None:
     print(_creds_entry_line(args.name, entry))
     print(f"storage={entry.get('storage', 'keyring')}  "
           f"created={entry.get('created', '?')}  updated={entry.get('updated', '?')}")
-    fp = cred_store.fingerprint(args.name, project_path=project_path)
-    print(f"fingerprint={fp or 'unresolvable'}")
-    if getattr(args, "show", False):
-        value = cred_store.get_value(args.name, project_path=project_path)
-        print(value if value is not None else "[error] value missing from store")
+    stype = cred_store.structured_type(args.name, project_path=project_path)
+    field = (getattr(args, "field", "") or "").strip()
+    if not stype:
+        fp = cred_store.fingerprint(args.name, project_path=project_path)
+        print(f"fingerprint={fp or 'unresolvable'}")
+        if field:
+            print(f"[error] '{args.name}' is not structured -- --field does not apply")
+            return
+        if getattr(args, "show", False):
+            value = cred_store.get_value(args.name, project_path=project_path)
+            print(value if value is not None
+                  else "[error] value missing from store")
+            if value is not None:
+                _creds_count_show([args.name], project_path)
+        return
+    print(f"fields: {', '.join(entry.get('fields') or []) or 'none recorded'}")
+    if not getattr(args, "show", False):
+        if field:
+            print("[hint] add --show to print the field value")
+        return
+    # --show: the deliberate human read-back path (terminal only; the wire
+    # never carries these values). Counted as usage like any other reveal.
+    if field:
+        value = cred_store.get_value(args.name, project_path=project_path,
+                                     field=field)
+        if value is None:
+            print(f"[error] no field '{field}' on '{args.name}'")
+            return
+        print(value)
+        _creds_count_show([f"{args.name}.{field}"], project_path)
+    else:
+        fields = cred_store.get_structured_fields(
+            args.name, project_path=project_path)
+        if fields is None:
+            print("[error] value missing from store")
+            return
+        width = max(len(k) for k in fields)
+        for key in sorted(fields):
+            print(f"{key:<{width}}  {fields[key]}")
+        _creds_count_show([args.name], project_path)
 
 
 def _creds_cmd_list(args, project_path: str) -> None:
@@ -6037,6 +6123,39 @@ def _creds_cmd_import(args, project_path: str) -> None:
     if result["skipped"]:
         print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
               "(use --overwrite to replace)")
+
+
+def _creds_cmd_usage(args, project_path: str) -> None:
+    import json as _json
+
+    from services import cred_telemetry as ct
+
+    name = getattr(args, "name", "") or ""
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+    agg = ct.aggregate(project_path, name=name)
+    recent = ct.search_events(project_path, name=name, limit=limit)
+    if getattr(args, "as_json", False):
+        print(_json.dumps({"aggregate": agg, "recent": recent}, indent=2))
+        return
+    if not agg["total"]:
+        target = f" for '{name}'" if name else ""
+        print(f"No recorded credential uses{target} yet.")
+        return
+    surf = "  ".join(f"{s}:{c}" for s, c in sorted(agg["by_surface"].items()))
+    print(f"{agg['total']} use(s) across {len(agg['rows'])} credential(s)"
+          f"  [{surf}]")
+    for row in agg["rows"]:
+        fields = f"  fields: {', '.join(row['fields'])}" if row["fields"] else ""
+        print(f"  {row['name']:<24} {row['hits']:>4}x  last {row['last_ts'] or '?'}"
+              f"  projects={row['projects']}{fields}")
+    print(f"recent (newest first, {len(recent['events'])}"
+          f"/{recent['matched']}):")
+    for e in recent["events"]:
+        ref = e["name"] + (f".{e['field']}" if e.get("field") else "")
+        exit_part = f" exit={e['exit']}" if "exit" in e else ""
+        cmd_part = f"  {e['cmd']}" if e.get("cmd") else ""
+        print(f"  {e.get('ts', '?')}  {e.get('action', '?'):<10} {ref:<28}"
+              f" [{e.get('surface', '?')}]{exit_part}{cmd_part}")
 
 
 def cmd_ci(args):

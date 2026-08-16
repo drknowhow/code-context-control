@@ -182,6 +182,66 @@ class TestCredentialsRoutes(unittest.TestCase):
             extra = set(entry) - allowed
             self.assertFalse(extra, f"non-allowlisted keys on the wire: {extra}")
 
+    PAN = "4539578763621486"          # Luhn-valid, distinctive middle + last4
+    STREET = "742 Evergreen Terrace zq"
+
+    def test_structured_sweep_no_field_value_on_the_wire(self):
+        """Structured field values never appear in any credentials-route
+        response — full PAN and PAN-middle asserted absent; the 4-char last4
+        is the one allowed projection, checked separately below."""
+        card = {"cardholder": "D T", "number": self.PAN,
+                "expiry": "12/27", "cvc": "9137"}
+        addr = {"street1": self.STREET, "city": "Columbia",
+                "state": "MD", "zip": "21077"}
+        responses = [
+            self._post({"name": "SW_CARD", "value": card, "type": "card"}),
+            self._post({"name": "SW_ADDR", "value": addr, "type": "address"}),
+            self._post({"name": "SW_CARD", "value": {"expiry": "01/30"},
+                        "type": "card"}),  # merge update
+            self.client.get("/api/credentials"),
+            self.client.post("/api/credentials/SW_CARD/check"),
+            self._post({"name": "SW_CARD", "description": "meta"}),
+            self.client.delete("/api/credentials/SW_CARD"),
+            self.client.delete("/api/credentials/SW_ADDR"),
+        ]
+        sentinels = (self.PAN, self.PAN[:-4], self.STREET, "9137",
+                     "12/27", "01/30", "21077")
+        for resp in responses:
+            self.assertLess(resp.status_code, 500)
+            body = resp.get_data(as_text=True)
+            for s in sentinels:
+                self.assertNotIn(s, body)
+
+    def test_structured_display_on_the_wire_is_thin(self):
+        card = {"cardholder": "D T", "number": self.PAN, "expiry": "12/27"}
+        self._post({"name": "SW2", "value": card, "type": "card"})
+        rec = self.client.get("/api/credentials").get_json()["entries"][0]
+        self.assertEqual(rec["display"], {"brand": "visa", "last4": "1486"})
+        self.assertEqual(sorted(rec["fields"]),
+                         ["cardholder", "expiry", "number"])
+        # check reports payload health, not whole-value resolvability
+        chk = self.client.post("/api/credentials/SW2/check").get_json()
+        self.assertTrue(chk["resolvable"])
+        self.assertEqual(chk["fingerprint"], "")
+
+    def test_usage_routes(self):
+        from services import cred_telemetry as ct
+        self._post({"name": "USED", "value": CANARY})
+        ct.record_use(["USED"], project_path=str(self.proj),
+                      surface="shell", cmd_preview="run {{cred:USED}}",
+                      exit_code=0)
+        overview = self.client.get("/api/credentials/usage")
+        self.assertEqual(overview.status_code, 200)
+        body = overview.get_json()
+        self.assertEqual(body["aggregate"]["total"], 1)
+        self.assertEqual(body["recent"]["events"][0]["name"], "USED")
+        one = self.client.get("/api/credentials/USED/usage")
+        self.assertEqual(one.get_json()["aggregate"]["rows"][0]["hits"], 1)
+        self.assertNotIn(CANARY, overview.get_data(as_text=True))
+        self.assertNotIn(CANARY, one.get_data(as_text=True))
+        self.assertEqual(
+            self.client.get("/api/credentials/GHOST/usage").status_code, 404)
+
     def test_mutations_audited_without_values(self):
         self._post({"name": "AUD", "value": CANARY})
         self.client.delete("/api/credentials/AUD")
