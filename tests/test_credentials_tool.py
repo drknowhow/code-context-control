@@ -188,6 +188,69 @@ class TestCredentialsTool(unittest.TestCase):
         self.assertNotIn(canary, json.dumps(self.svc.edit_ledger.edits))
         self.assertNotIn(canary, json.dumps(self.svc.activity_log.events))
 
+    # ── structured kinds ──────────────────────────────────
+
+    PAN = "4242424242424242"
+    CARD = json.dumps({"cardholder": "D T", "number": PAN,
+                       "expiry": "12/27", "cvc": "123"})
+
+    def test_structured_set_describe_and_check(self):
+        resp = self._call("set", name="VISA", value=self.CARD, ctype="card")
+        self.assertIn("[creds:set]", resp)
+        listing = self._call("list")
+        self.assertIn("visa 4242", listing)
+        self.assertNotIn(self.PAN, listing)
+        desc = self._call("describe", name="VISA")
+        self.assertIn("fields: cardholder, cvc, expiry, number", desc)
+        self.assertIn("VISA.cardholder", desc)
+        self.assertIn("inject-only", desc)
+        self.assertNotIn(self.PAN, desc)
+        check = self._call("check", name="VISA")
+        self.assertIn("resolvable=true", check)
+
+    def test_structured_reveal_permanently_refused(self):
+        self._call("set", name="VISA", value=self.CARD, ctype="card")
+        resp = self._call("reveal", name="VISA")
+        self.assertTrue(resp.startswith("[creds:structured]"))
+        self.assertNotIn(self.PAN, resp)
+        # not ledger-logged as a reveal
+        self.assertFalse([e for e in self.svc.edit_ledger.edits
+                          if e.get("change_type") == "cred_reveal"])
+
+    def test_structured_reveal_refused_even_with_hostile_flag(self):
+        self._call("set", name="VISA", value=self.CARD, ctype="card")
+        cfg_path = Path(self.svc.project_path) / ".c3" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["credentials"]["entries"]["VISA"]["agent_readable"] = True
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        resp = self._call("reveal", name="VISA")
+        self.assertTrue(resp.startswith("[creds:structured]"))
+        self.assertNotIn(self.PAN, resp)
+
+    def test_structured_flags_refused_at_set(self):
+        resp = self._call("set", name="VISA", value=self.CARD, ctype="card",
+                          inject=True)
+        self.assertIn("[creds:error]", resp)
+        self.assertIn("inject-only", resp)
+
+    def test_structured_payload_never_in_finalize_or_ledger(self):
+        self._call("set", name="VISA", value=self.CARD, ctype="card")
+        self._call("list")
+        self._call("describe", name="VISA")
+        self._call("check", name="VISA")
+        self._call("reveal", name="VISA")
+        # invalid payload too: error path must not echo submitted content
+        bad = json.dumps({"cardholder": "x", "number": "4242424242424241",
+                          "expiry": "12/27"})
+        self._call("set", name="V2", value=bad, ctype="card")
+        blob = json.dumps([r["args"] for r in self.finalized]) + \
+            json.dumps([r["resp"] for r in self.finalized
+                        if "[creds:error]" in r["resp"]]) + \
+            json.dumps(self.svc.edit_ledger.edits) + \
+            json.dumps(self.svc.activity_log.events)
+        self.assertNotIn(self.PAN, blob)
+        self.assertNotIn("4242424242424241", blob)
+
     # ── federation exclusion ──────────────────────────────
 
     def test_c3_project_has_no_credentials_verb(self):

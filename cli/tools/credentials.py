@@ -8,6 +8,10 @@ ledger-logged with identifiers only. The normal way for an agent to USE a
 credential is c3_shell: ``env_creds='NAME1,NAME2'`` (env injection) or
 ``{{cred:NAME}}`` in the command (server-side expansion) — the decoded value
 never enters model context.
+
+Structured kinds (address/identity/card) go further: reveal is permanently
+disabled regardless of flags, and only individual FIELDS are addressable —
+``env_creds='CARD.number'`` or ``{{cred:CARD.number}}``.
 """
 from __future__ import annotations
 
@@ -61,6 +65,9 @@ def _format_entry_line(name: str, entry: dict, usage: dict) -> str:
         f"{name} [{entry.get('scope', '?')}/{entry.get('type', 'token')}]",
         f"len={entry.get('value_len', '?')}",
     ]
+    display = entry.get("display") or {}
+    if display:
+        parts.append(" ".join(str(v) for v in display.values() if v))
     if entry.get("env_var"):
         parts.append(f"env_var={entry['env_var']}")
     if flags:
@@ -91,6 +98,24 @@ def _act_describe(name: str, project_path: str) -> str:
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
     usage = cs.read_usage_state(project_path)
+    stype = cs.structured_type(name, project_path=project_path)
+    if stype:
+        fields = entry.get("fields") or []
+        first = fields[0] if fields else "field"
+        env_base = entry.get("env_var") or name
+        return "\n".join([
+            f"[creds] {_format_entry_line(name, entry, usage)}",
+            f"storage={entry.get('storage', 'keyring')}  "
+            f"created={entry.get('created', '?')}  "
+            f"updated={entry.get('updated', '?')}",
+            f"fields: {', '.join(fields) or 'none recorded'}",
+            f"inject a field: c3_shell(cmd=..., env_creds='{name}.{first}') "
+            f"→ ${env_base}_{first.upper()}",
+            f"inline expansion:  c3_shell(cmd='... "
+            f"{{{{cred:{name}.{first}}}}} ...')",
+            f"{stype} entries are inject-only: reveal is permanently "
+            "disabled; field values decode only at the subprocess boundary.",
+        ])
     env_name = entry.get("env_var") or name
     lines = [
         f"[creds] {_format_entry_line(name, entry, usage)}",
@@ -112,7 +137,9 @@ def _act_check(name: str, project_path: str) -> str:
     entry = cs.get_entry(name, project_path=project_path)
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
-    resolvable = cs.get_value(name, project_path=project_path) is not None
+    # is_resolvable, not get_value: a structured entry never resolves whole,
+    # but its payload being decodable is exactly what "check" asks.
+    resolvable = cs.is_resolvable(name, project_path=project_path)
     return (
         f"[creds:check] {name} scope={entry['scope']} "
         f"storage={entry.get('storage', 'keyring')} resolvable={str(resolvable).lower()}"
@@ -123,6 +150,16 @@ def _act_reveal(name: str, svc, project_path: str) -> str:
     entry = cs.get_entry(name, project_path=project_path)
     if not entry:
         return f"[creds:unknown] no credential named {name!r}"
+    stype = cs.structured_type(name, project_path=project_path)
+    if stype:
+        fields = ", ".join(entry.get("fields") or []) or "none recorded"
+        return (
+            f"[creds:structured] {name!r} is a {stype} entry — reveal is "
+            "permanently disabled for structured kinds, for every caller. "
+            f"Use a field at the subprocess boundary instead: "
+            f"c3_shell(env_creds='{name}.<field>') or "
+            f"{{{{cred:{name}.<field>}}}} in cmd. Fields: {fields}."
+        )
     if not entry.get("agent_readable"):
         return (
             f"[creds:not-readable] {name!r} is injection-only — use "
@@ -241,7 +278,7 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
 
     if action in _AUDITED_ACTIONS and not resp.startswith((
         "[creds:error]", "[creds:unknown", "[creds:not-allowed]",
-        "[creds:not-readable]", "[creds:no-value]",
+        "[creds:not-readable]", "[creds:no-value]", "[creds:structured]",
     )):
         _log_access(svc, action, name, scope or "", resp)
     return finalize(_TOOL, args_for_log, resp, action)

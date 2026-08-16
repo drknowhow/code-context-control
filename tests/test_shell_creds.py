@@ -124,12 +124,14 @@ class TestShellCreds(unittest.TestCase):
 
     def test_missing_requested_cred_fails_fast(self):
         out = self._run("python -c \"print('never runs')\"", env_creds="GHOST")
-        self.assertIn("[c3_shell:error] unknown credential(s): GHOST", out)
+        self.assertIn("[c3_shell:error] unresolvable credential ref(s):", out)
+        self.assertIn("GHOST: unknown credential", out)
         self.assertNotIn("never runs", out)
 
     def test_missing_template_cred_fails_fast(self):
         out = self._run('python -c "print(\'{{cred:GHOST}}\')"')
-        self.assertIn("[c3_shell:error] unknown credential(s): GHOST", out)
+        self.assertIn("[c3_shell:error] unresolvable credential ref(s):", out)
+        self.assertIn("GHOST: unknown credential", out)
 
     def test_inject_flag_auto_injects(self):
         cs.update_metadata("MY_TOKEN", scope="project",
@@ -156,6 +158,69 @@ class TestShellCreds(unittest.TestCase):
         )
         self.assertIn("v=ABSENT", out)
         self.assertNotIn("glob-value-987", out)
+
+    # ── structured kinds ──────────────────────────────────
+
+    PAN = "4242424242424242"
+
+    def _make_card(self):
+        cs.set_credential("VISA", json.dumps(
+            {"cardholder": "D T", "number": self.PAN, "expiry": "12/27"}),
+            project_path=self.svc.project_path, ctype="card")
+
+    def test_dotted_env_injection_and_redaction(self):
+        self._make_card()
+        out = self._run(
+            'python -c "import os; print(\'n=\' + os.environ.get(\'VISA_NUMBER\', \'ABSENT\'))"',
+            env_creds="VISA.number",
+        )
+        self.assertIn("n=[cred:VISA.number]", out)
+        self.assertNotIn(self.PAN, out)
+        self.assertIn("injected: VISA.number", out)
+
+    def test_dotted_template_keeps_raw_form(self):
+        self._make_card()
+        out = self._run('python -c "print(\'x{{cred:VISA.number}}x\')"')
+        self.assertIn("x[cred:VISA.number]x", out)
+        self.assertIn("{{cred:VISA.number}}", out.split("--- stdout ---")[0])
+        self.assertNotIn(self.PAN, out)
+
+    def test_bare_structured_ref_fails_listing_fields(self):
+        self._make_card()
+        out = self._run("python -c \"print('never runs')\"", env_creds="VISA")
+        self.assertIn("[c3_shell:error] unresolvable credential ref(s):", out)
+        self.assertIn("structured (card)", out)
+        self.assertIn("fields:", out)
+        self.assertNotIn(self.PAN, out)
+        self.assertNotIn("never runs", out)
+
+    def test_hostile_inject_flip_on_structured_is_inert(self):
+        self._make_card()
+        cfg_path = Path(self.svc.project_path) / ".c3" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["credentials"]["entries"]["VISA"]["inject"] = True
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        out = self._run(
+            'python -c "import os; '
+            "print('v=' + os.environ.get('VISA', 'ABSENT')); "
+            "print('n=' + os.environ.get('VISA_NUMBER', 'ABSENT'))\""
+        )
+        self.assertIn("v=ABSENT", out)
+        self.assertIn("n=ABSENT", out)
+        self.assertNotIn(self.PAN, out)
+
+    def test_env_name_collision_is_a_hard_error(self):
+        self._make_card()
+        cs.set_credential("VISA_NUMBER", "plain-collider",
+                          project_path=self.svc.project_path)
+        out = self._run(
+            "python -c \"print('never runs')\"",
+            env_creds="VISA_NUMBER,VISA.number",
+        )
+        self.assertIn("[c3_shell:error] env-var collision", out)
+        self.assertIn("VISA.number", out)
+        self.assertIn("VISA_NUMBER", out)
+        self.assertNotIn("never runs", out)
 
     def test_enable_creds_false_disables_expansion_and_injection(self):
         out = self._run(

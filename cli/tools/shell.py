@@ -545,21 +545,40 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             exec_cmd, tmpl_used, tmpl_missing = _creds.expand_templates(
                 cmd, svc.project_path)
             requested = [n.strip() for n in (env_creds or "").split(",") if n.strip()]
+            # Structured entries are excluded from auto-injection even when a
+            # (possibly hostile) registry says inject:true — belt over the
+            # get_value gate that already refuses their whole payload.
             auto = [n for n, e in _creds.list_entries(svc.project_path).items()
-                    if e.get("inject") and n not in requested]
+                    if e.get("inject") and n not in requested
+                    and e.get("type") not in _creds.STRUCTURED_TYPES]
             values, missing = _creds.resolve(requested + auto, svc.project_path)
-            # Explicitly requested / templated names must resolve; inject:true
+            # Explicitly requested / templated refs must resolve; inject:true
             # entries that don't resolve are silently inert (see the
             # no-fall-through invariant in services/credential_store.py).
             hard_missing = sorted(set(tmpl_missing) | (set(missing) & set(requested)))
             if hard_missing:
+                reasons = _creds.describe_missing(hard_missing, svc.project_path)
+                detail = "\n".join(
+                    f"  {r}: {reasons.get(r, 'unresolvable')}" for r in hard_missing)
                 return (
-                    f"[c3_shell:error] unknown credential(s): "
-                    f"{', '.join(hard_missing)} — see c3_credentials(action='list')"
+                    "[c3_shell:error] unresolvable credential ref(s):\n"
+                    f"{detail}\nsee c3_credentials(action='list')"
                 )
-            for cname, cval in values.items():
-                entry = _creds.get_entry(cname, project_path=svc.project_path)
-                extra_env[entry.get("env_var") or cname] = cval
+            env_owner: dict[str, str] = {}
+            for ref, cval in values.items():
+                base_name, _, field = ref.partition(".")
+                entry = _creds.get_entry(base_name, project_path=svc.project_path)
+                env_name = entry.get("env_var") or base_name
+                if field:
+                    env_name = f"{env_name}_{field.upper()}"
+                if env_name in env_owner and env_owner[env_name] != ref:
+                    return (
+                        f"[c3_shell:error] env-var collision: {env_owner[env_name]} "
+                        f"and {ref} both map to ${env_name} — set a distinct "
+                        "env_var on one of the entries"
+                    )
+                env_owner[env_name] = ref
+                extra_env[env_name] = cval
             cred_names = sorted(set(tmpl_used) | set(values))
         except RuntimeError as exc:  # keyring/crypto unavailable
             return f"[c3_shell:error] credential store unavailable: {exc}"
@@ -609,7 +628,10 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         result["stdout"] = _creds.redact_text(result["stdout"])
         result["stderr"] = _creds.redact_text(result["stderr"])
         if cred_names:
-            _creds.touch_last_used(cred_names, svc.project_path)
+            # Usage state is keyed by entry NAME; collapse dotted field refs.
+            _creds.touch_last_used(
+                sorted({r.partition(".")[0] for r in cred_names}),
+                svc.project_path)
 
     raw_stdout = result["stdout"]
     filtered_note = ""
