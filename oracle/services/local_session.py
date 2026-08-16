@@ -51,6 +51,10 @@ _codes_lock = threading.Lock()
 
 _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
+# Binds that accept connections from anywhere; a client's source address can
+# never equal these, so is_local() degrades to loopback-only under them.
+_WILDCARD_HOSTS = {"", "0.0.0.0", "::"}
+
 
 def write_bootstrap_key(oracle_dir: Path) -> Path:
     """Persist the per-boot bootstrap key with owner-only permissions.
@@ -123,6 +127,30 @@ def consume_code(code: str | None) -> bool:
 def is_loopback(remote_addr: str | None) -> bool:
     """True when the request came from this machine's loopback interface."""
     return (remote_addr or "") in _LOOPBACK
+
+
+def is_local(remote_addr: str | None, bind_host: str | None = None) -> bool:
+    """True when the request originated on this machine.
+
+    Loopback always qualifies. When the server is bound to ONE specific
+    non-wildcard address (e.g. a Tailscale interface, where loopback is not
+    bound at all), a locally-dialed connection presents that same address as
+    its source — while every remote peer presents its own — so source ==
+    bound address also proves same-machine. Completing a TCP handshake with
+    a spoofed source equal to the host's own address is not possible off-box
+    (the SYN-ACK routes back to the host itself), and Tailscale additionally
+    pins each tailnet source IP to a node key. Wildcard binds never equal a
+    client address, so they stay loopback-only by construction.
+    """
+    if is_loopback(remote_addr):
+        return True
+    host = (bind_host or "").strip()
+    if host in _WILDCARD_HOSTS or host in _LOOPBACK:
+        return False
+    addr = (remote_addr or "").strip()
+    if addr.startswith("::ffff:"):
+        addr = addr[len("::ffff:"):]
+    return addr == host
 
 
 def attach_cookie(response):
