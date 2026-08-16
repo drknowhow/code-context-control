@@ -28,11 +28,130 @@ const credsDisplayText = (entry) => {
   return vals.length ? vals.join(", ") : "";
 };
 
+// Usage history sub-view — when/where/how often. Names, counts and raw
+// template previews only; the API never returns a value.
+const CredsUsageView = () => {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try {
+        const d = await api.get("/api/credentials/usage?limit=100");
+        if (live) { setData(d); setError(""); }
+      } catch (e) { if (live) setError(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 15000);
+    return () => { live = false; clearInterval(t); };
+  }, []);
+
+  const fmtWhen = (iso) => iso ? String(iso).replace("T", " ").replace(/\+.*$/, "") : "—";
+  if (error) return <div style={{ color: T.error, fontSize: 12 }}>{error}</div>;
+  if (!data) return <div style={{ color: T.textMuted, fontSize: 13 }}>Loading…</div>;
+  const agg = data.aggregate || { total: 0, rows: [], by_surface: {} };
+  const events = (data.recent && data.recent.events) || [];
+  if (!agg.total) {
+    return (
+      <div style={{
+        border: `1px dashed ${T.border}`, borderRadius: 8, padding: 30,
+        textAlign: "center", color: T.textMuted, fontSize: 13,
+      }}>
+        No recorded uses yet. Injections via <span className="mono">c3_shell</span>,
+        reveals, and <span className="mono">c3 creds get --show</span> all land here.
+      </div>
+    );
+  }
+  const topSurface = Object.entries(agg.by_surface || {})
+    .sort((a, b) => b[1] - a[1])[0];
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <StatBox label="total uses" value={agg.total} />
+        <StatBox label="credentials used" value={agg.rows.length} />
+        <StatBox label="top surface"
+          value={topSurface ? `${topSurface[0]} (${topSurface[1]})` : "—"} />
+        <StatBox label="last use"
+          value={fmtWhen((agg.rows[0] || {}).last_ts)} />
+      </div>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 8,
+                    overflow: "hidden", marginBottom: 14 }}>
+        {agg.rows.map((row, i) => (
+          <div key={row.name} style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "7px 14px",
+            borderTop: i === 0 ? "none" : `1px solid ${T.border}`,
+            background: i % 2 ? T.surfaceAlt : T.surface, fontSize: 12,
+          }}>
+            <span className="mono" style={{ fontWeight: 600, color: T.text, minWidth: 160 }}>
+              {row.name}
+            </span>
+            <Badge color={T.accent}>{row.hits}×</Badge>
+            {Object.entries(row.surfaces || {}).map(([s, c]) => (
+              <span key={s} className="mono" style={{ color: T.textMuted, fontSize: 11 }}>
+                {s}:{c}
+              </span>
+            ))}
+            {row.fields.length > 0 && (
+              <span className="mono" style={{ color: T.textMuted, fontSize: 11 }}>
+                fields: {row.fields.join(", ")}
+              </span>
+            )}
+            <div style={{ flex: 1 }} />
+            <span style={{ color: T.textMuted, fontSize: 11 }}>
+              last {fmtWhen(row.last_ts)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 6 }}>
+        Recent events
+      </div>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        {events.map((e, i) => {
+          const ref = e.name + (e.field ? `.${e.field}` : "");
+          const key = `${e.ts}|${ref}|${i}`;
+          return (
+            <div key={key} onClick={() => setExpanded(expanded === key ? null : key)}
+              style={{
+                padding: "6px 14px", cursor: e.cmd ? "pointer" : "default",
+                borderTop: i === 0 ? "none" : `1px solid ${T.border}`,
+                background: i % 2 ? T.surfaceAlt : T.surface, fontSize: 12,
+              }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="mono" style={{ color: T.textMuted, fontSize: 11 }}>
+                  {fmtWhen(e.ts)}
+                </span>
+                <Badge color={e.action === "reveal" ? T.error : T.blue}>{e.action}</Badge>
+                <span className="mono" style={{ fontWeight: 600, color: T.text }}>{ref}</span>
+                <Badge color={T.textMuted}>{e.surface}</Badge>
+                {"exit" in e && (
+                  <span className="mono" style={{
+                    color: e.exit === 0 ? T.accent : T.error, fontSize: 11,
+                  }}>exit={e.exit}</span>
+                )}
+              </div>
+              {expanded === key && e.cmd && (
+                <div className="mono" style={{
+                  marginTop: 5, padding: "5px 8px", borderRadius: 5, fontSize: 11,
+                  background: T.surfaceAlt, color: T.textMuted, wordBreak: "break-all",
+                }}>{e.cmd}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const CredentialsPanel = () => {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [subView, setSubView] = useState("entries"); // entries | usage
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState(null);        // null = closed; {…} = create/edit
   const [editing, setEditing] = useState(false); // true when form edits an existing entry
@@ -161,6 +280,16 @@ const CredentialsPanel = () => {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
         <I name="lock" size={18} color={T.accent} />
         <span style={{ fontSize: 15, fontWeight: 600, color: T.text }}>Credentials</span>
+        <div style={{ display: "flex", gap: 4, marginLeft: 10 }}>
+          {["entries", "usage"].map(v => (
+            <button key={v} className="btn" onClick={() => setSubView(v)} style={{
+              background: subView === v ? T.accent : T.surfaceAlt,
+              color: subView === v ? "#fff" : T.text,
+              border: `1px solid ${subView === v ? T.accent : T.border}`,
+              padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+            }}>{v}</button>
+          ))}
+        </div>
         <div style={{ flex: 1 }} />
         <button className="btn" onClick={() => setImportOpen(!importOpen)} style={{
           background: T.surfaceAlt, color: T.text, border: `1px solid ${T.border}`,
@@ -192,6 +321,8 @@ const CredentialsPanel = () => {
           background: `${T.accent}22`, color: T.accent, border: `1px solid ${T.accent}55`,
         }}>{notice}</div>
       )}
+
+      {subView === "usage" ? <CredsUsageView /> : <React.Fragment>
 
       {/* .env import */}
       {importOpen && (
@@ -455,6 +586,8 @@ const CredentialsPanel = () => {
           })}
         </div>
       )}
+
+      </React.Fragment>}
     </div>
   );
 };

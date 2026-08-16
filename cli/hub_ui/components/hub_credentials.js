@@ -384,7 +384,17 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null);
+  const [usage, setUsage] = useState(null);   // {aggregate, recent} — names/previews only
   const structured = CREDS_STRUCTURED[entry.type];
+
+  useEffect(() => {
+    let live = true;
+    api.get('/api/projects/credentials/usage?name=' + encodeURIComponent(entry.name)
+      + (path ? '&path=' + encodeURIComponent(path) : '') + '&limit=25')
+      .then(d => { if (live) setUsage(d); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [entry.name, path]);
 
   const owner = entry.scope === 'global'
     ? 'the global vault (~/.c3)'
@@ -643,6 +653,50 @@ function CredDrawer({ entry, path, projectName, onClose, onChanged, initialRepla
             <CredKV k="last used" v={credWhen(entry.last_used)} />
             <CredKV k="use count" v={String(entry.use_count || 0)} />
             <CredKV k="storage" v={entry.storage || 'keyring'} />
+            {usage && usage.aggregate && usage.aggregate.total > 0 && (
+              <div style={{ marginTop: 9 }}>
+                <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 5 }}>
+                  History — {usage.aggregate.total} recorded use(s)
+                  {(() => {
+                    const surf = Object.entries(usage.aggregate.by_surface || {})
+                      .map(([s, c]) => `${s}:${c}`).join('  ');
+                    return surf ? ` · ${surf}` : '';
+                  })()}
+                </div>
+                <div style={{
+                  border: `1px solid ${T.border}`, borderRadius: 6,
+                  maxHeight: 180, overflowY: 'auto',
+                }}>
+                  {(usage.recent.events || []).map((e, i) => {
+                    const ref = e.name + (e.field ? `.${e.field}` : '');
+                    return (
+                      <div key={`${e.ts}|${i}`} title={e.cmd || ''} style={{
+                        display: 'flex', gap: 8, alignItems: 'center',
+                        padding: '4px 8px', fontSize: 11,
+                        borderTop: i === 0 ? 'none' : `1px solid ${T.border}`,
+                        background: i % 2 ? `${T.surfaceAlt}70` : T.surface,
+                      }}>
+                        <span className="mono" style={{ color: T.textDim }}>
+                          {credWhen(e.ts)}
+                        </span>
+                        <Badge color={e.action === 'reveal' ? T.error : T.blue}>
+                          {e.action}
+                        </Badge>
+                        <span className="mono" style={{ color: T.text }}>{ref}</span>
+                        <span className="mono" style={{ color: T.textMuted }}>
+                          [{e.surface}]
+                        </span>
+                        {'exit' in e && (
+                          <span className="mono" style={{
+                            color: e.exit === 0 ? T.accent : T.error,
+                          }}>exit={e.exit}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {!!entry.shadows_global && (
               <div style={{
                 marginTop: 9, padding: '7px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
