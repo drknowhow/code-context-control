@@ -2026,7 +2026,9 @@ def api_projects_credentials_set():
         str(data.get("path") or "").strip(), scope, mutation=True)
     if err:
         return err
-    value = str(data.get("value") or "")
+    value = data.get("value")
+    # Structured kinds submit a field OBJECT; the store takes JSON text.
+    value = json.dumps(value) if isinstance(value, dict) else str(value or "")
     ctype = str(data.get("type") or data.get("ctype") or "token")
     try:
         if value:

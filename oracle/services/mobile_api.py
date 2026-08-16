@@ -1212,6 +1212,15 @@ def mobile_credentials_set():
 
     value = str(data.get("value") or "")
     ctype = str(data.get("type") or data.get("ctype") or "token")
+    if ctype in cred_store.STRUCTURED_TYPES:
+        # Structured payloads (card/identity/address) never transit the
+        # phone→gateway channel: creating them is a desktop operation.
+        return jsonify({
+            "error": f"structured type {ctype!r} cannot be created from "
+                     "the mobile gateway",
+            "detail": "enter card/identity/address data via the Credentials "
+                      "UI or `c3 creds set` on the desktop.",
+        }), 400
     wants_readable = bool(data.get("agent_readable"))
     existing = cred_store.get_entry(name, project_path=store_path)
     raising = wants_readable and not (existing or {}).get("agent_readable")

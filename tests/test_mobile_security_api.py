@@ -199,6 +199,25 @@ class TestMobileCredentials(_MobileSecurityBase):
         self.assertTrue(gone.get_json()["removed"])
         self.assertIsNone(cs.get_value("API_KEY", project_path=str(self.proj)))
 
+    def test_structured_create_refused(self):
+        """Card/identity/address payloads never transit the mobile channel:
+        creating a structured entry from the gateway is a 400, and nothing
+        lands in the store."""
+        pan = "4539578763621486"
+        for ctype in ("card", "identity", "address"):
+            resp = self.post("/api/mobile/credentials", {
+                "project": str(self.proj), "scope": "project",
+                "name": "MOB_STRUCT", "type": ctype,
+                "value": json.dumps({"number": pan, "full_name": "x",
+                                     "street1": "x"}),
+            })
+            self.assertEqual(resp.status_code, 400,
+                             resp.get_data(as_text=True))
+            self.assertIn("structured", resp.get_json()["error"])
+            self.assertNotIn(pan, resp.get_data(as_text=True))
+        self.assertEqual(
+            cs.get_entry("MOB_STRUCT", project_path=str(self.proj)), {})
+
     def test_metadata_only_update_does_not_clobber_siblings(self):
         self.seed("PART", CANARY)
         cs.update_metadata("PART", scope="project", project_path=str(self.proj),
@@ -681,7 +700,7 @@ class TestMobileSurfaceInvariants(unittest.TestCase):
         # level. get_value is the accessor it would have to go through anyway.
         for banned in ("get_value", "expand_templates",
                        "register_active_secret", "_ACTIVE_SECRETS",
-                       "mask_mirror"):
+                       "mask_mirror", "get_structured_fields", "_get_raw"):
             self.assertNotIn(banned, self.IDENTS,
                              f"{banned} gives this module access to plaintext")
 

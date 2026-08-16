@@ -2708,7 +2708,9 @@ def api_credentials_set():
     data = request.get_json() or {}
     name = str(data.get("name") or "").strip()
     scope = str(data.get("scope") or "project").strip()
-    value = str(data.get("value") or "")
+    value = data.get("value")
+    # Structured kinds submit a field OBJECT; the store takes JSON text.
+    value = json.dumps(value) if isinstance(value, dict) else str(value or "")
     ctype = str(data.get("type") or data.get("ctype") or "token")
     meta = {
         "description": str(data.get("description") or ""),
