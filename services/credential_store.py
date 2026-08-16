@@ -152,7 +152,12 @@ def _struct_account(realm_s: str, name: str) -> str:
 # registry (config.json) and its sidecar state. Editing these outside the
 # credentials API is how a prompt-injected agent would grant itself reveal
 # access. Mirrored in cli/hook_pretool_enforce.py (parity-tested).
-VAULT_PROTECTED_FILES = frozenset({"config.json", "secrets.enc", "cred_state.json"})
+VAULT_PROTECTED_FILES = frozenset({
+    "config.json", "secrets.enc", "cred_state.json",
+    # Usage telemetry (services/cred_telemetry.py) — matching is exact
+    # filename, so the rotation file needs its own entry.
+    "cred_usage.jsonl", "cred_usage.jsonl.1",
+})
 
 
 def vault_guard_reason(path) -> str:
@@ -327,7 +332,7 @@ def _secrets_path(scope: str, project_path: str) -> Optional[Path]:
     return None if base is None else base / ".c3" / "secrets.enc"
 
 
-_GITIGNORE_ENTRIES = ("secrets.enc", "cred_state.json")
+_GITIGNORE_ENTRIES = ("secrets.enc", "cred_state.json", "cred_usage.jsonl*")
 
 
 def _ensure_c3_gitignore(base: Path) -> None:

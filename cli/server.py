@@ -2803,6 +2803,32 @@ def api_credentials_check(name):
     })
 
 
+@app.route('/api/credentials/usage', methods=['GET'])
+def api_credentials_usage_overview():
+    """Usage history overview — names, counts, cmd previews; never values."""
+    from services import cred_telemetry as ct
+    pp = str(PROJECT_PATH)
+    return jsonify({
+        "aggregate": ct.aggregate(pp),
+        "recent": ct.search_events(pp, limit=request.args.get("limit", 100)),
+    })
+
+
+@app.route('/api/credentials/<name>/usage', methods=['GET'])
+def api_credentials_usage(name):
+    """Per-credential usage history — when, where, how often."""
+    from services import credential_store as cred_store
+    from services import cred_telemetry as ct
+    pp = str(PROJECT_PATH)
+    if not cred_store.get_entry(name, project_path=pp):
+        return jsonify({"error": f"no credential named '{name}'"}), 404
+    return jsonify({
+        "aggregate": ct.aggregate(pp, name=name),
+        "recent": ct.search_events(pp, name=name,
+                                   limit=request.args.get("limit", 100)),
+    })
+
+
 # ── Access Guard (v2.62.0) ──────────────────────────────
 # Human-only rule management: ALL mutations arrive from this UI (or the
 # `c3 access` CLI) and are ledger/activity-logged. No agent-facing mutation

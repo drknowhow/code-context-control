@@ -454,6 +454,13 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
     cr_import.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
+    cr_usage = creds_subs.add_parser(
+        "usage", help="Usage history — when, where, and how often credentials were used")
+    cr_usage.add_argument("name", nargs="?", default="", help="Limit to one credential (default: all)")
+    cr_usage.add_argument("--limit", type=int, default=20, help="Recent events to show (default: 20)")
+    cr_usage.add_argument("--json", dest="as_json", action="store_true", help="Emit raw JSON")
+    cr_usage.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
     # ── Agent Locks (docs/agent-locks.md) ───────────────────────────────
     # force-release is human-only: it bumps the fencing counter so a holder
     # that comes back is stale by construction. Agents get c3_locks instead,

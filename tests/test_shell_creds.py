@@ -222,6 +222,24 @@ class TestShellCreds(unittest.TestCase):
         self.assertIn("VISA_NUMBER", out)
         self.assertNotIn("never runs", out)
 
+    def test_usage_events_recorded_per_ref_without_values(self):
+        self._make_card()
+        self._run('python -c "print(\'{{cred:VISA.number}}\')"',
+                  env_creds="MY_TOKEN")
+        log = Path(self.svc.project_path) / ".c3" / "cred_usage.jsonl"
+        text = log.read_text(encoding="utf-8")
+        # telemetry hygiene: decoded values never in the usage log
+        self.assertNotIn(self.PAN, text)
+        self.assertNotIn(self.VALUE, text)
+        events = [json.loads(x) for x in text.splitlines()]
+        shapes = {(e["name"], e["field"], e["action"]) for e in events}
+        self.assertIn(("VISA", "number", "template"), shapes)
+        self.assertIn(("MY_TOKEN", "", "inject_env"), shapes)
+        for e in events:
+            self.assertIn("{{cred:VISA.number}}", e["cmd"])  # raw template form
+            self.assertEqual(e["surface"], "shell")
+            self.assertEqual(e["exit"], 0)
+
     def test_enable_creds_false_disables_expansion_and_injection(self):
         out = self._run(
             'python -c "import os; print(os.environ.get(\'MY_TOKEN\', \'ABSENT\'))"',

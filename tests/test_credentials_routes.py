@@ -224,6 +224,24 @@ class TestCredentialsRoutes(unittest.TestCase):
         self.assertTrue(chk["resolvable"])
         self.assertEqual(chk["fingerprint"], "")
 
+    def test_usage_routes(self):
+        from services import cred_telemetry as ct
+        self._post({"name": "USED", "value": CANARY})
+        ct.record_use(["USED"], project_path=str(self.proj),
+                      surface="shell", cmd_preview="run {{cred:USED}}",
+                      exit_code=0)
+        overview = self.client.get("/api/credentials/usage")
+        self.assertEqual(overview.status_code, 200)
+        body = overview.get_json()
+        self.assertEqual(body["aggregate"]["total"], 1)
+        self.assertEqual(body["recent"]["events"][0]["name"], "USED")
+        one = self.client.get("/api/credentials/USED/usage")
+        self.assertEqual(one.get_json()["aggregate"]["rows"][0]["hits"], 1)
+        self.assertNotIn(CANARY, overview.get_data(as_text=True))
+        self.assertNotIn(CANARY, one.get_data(as_text=True))
+        self.assertEqual(
+            self.client.get("/api/credentials/GHOST/usage").status_code, 404)
+
     def test_mutations_audited_without_values(self):
         self._post({"name": "AUD", "value": CANARY})
         self.client.delete("/api/credentials/AUD")

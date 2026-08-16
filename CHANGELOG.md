@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.88.0] - 2026-08-16
+
+### Added — a credential now has a history, not just a counter
+
+**Every use writes an event: when, where, how often.** Until now the only
+usage record was a `{last_used, use_count}` counter — no way to answer
+"what ran with the deploy token last Tuesday". Now each injection,
+template expansion, reveal, and terminal `--show` (previously invisible to
+usage tracking entirely) appends one line to the owning scope's
+`.c3/cred_usage.jsonl`: name (+field), action, surface, project, exit
+code, and the command in its raw template form capped at 120 chars —
+never an expanded string, never a value, enforced by hygiene canaries.
+The module is a deliberate clone of `access_telemetry`'s shape:
+append-one-line (concurrent processes can't race an append), 512KB
+rotation, read-time coalescing, and telemetry that swallows its own
+errors rather than ever failing a tool call. A global credential's usage
+from every project lands in `~/.c3`, so its history is complete in one
+place; both filenames are vault-write-protected (hook parity-tested) and
+gitignored.
+
+Reading it back: the Credentials tab gained a **usage** sub-view (totals,
+per-credential surface counts, expandable recent events), the hub drawer's
+"Usage & relationships" became a real history, `c3 creds usage [NAME]
+[--json]` prints it at the terminal, and `GET /api/credentials[/<name>]/usage`
+(+ hub and mobile twins) serve it. The agent-facing
+`c3_credentials(action='usage')` is deliberately scoped: full events only
+for the current project, other projects' use of a shared global credential
+reduced to counts — one project's agent cannot read another's command
+lines through the vault. The `shell_exec` activity event now carries the
+injected cred names, and a low-volume `cred_use` event feeds the daily
+digest.
+
 ## [2.87.0] - 2026-08-16
 
 ### Added — the vault now holds the sensitive data that isn't a secret string: cards, addresses, identity

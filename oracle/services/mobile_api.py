@@ -1075,6 +1075,26 @@ def mobile_credentials_list():
     })
 
 
+@bp.route("/credentials/<name>/usage", methods=["GET"])
+def mobile_credentials_usage(name):
+    """Per-credential usage history — names, counts, previews; never values."""
+    gate = _feature_or_404("credentials")
+    if gate:
+        return gate
+    from services import cred_telemetry as ct
+    raw_project, scope = _cred_scope_args(request.args)
+    project, store_path, err = _resolve_cred_target(
+        raw_project, scope, mutation=False)
+    if err:
+        return err
+    return jsonify({
+        "name": name,
+        "aggregate": ct.aggregate(store_path, name=name),
+        "recent": ct.search_events(store_path, name=name,
+                                   limit=request.args.get("limit", 50)),
+    })
+
+
 @bp.route("/credentials-overview", methods=["GET"])
 def mobile_credentials_overview():
     """Cross-project inventory: the global vault plus each registered

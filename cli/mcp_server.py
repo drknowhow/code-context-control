@@ -990,8 +990,10 @@ async def c3_credentials(
 ) -> str:
     """CREDENTIAL VAULT — named secrets + sensitive personal data the user manages
     (global + per-project), injection-first.
-    actions: list, describe (name), check (name), reveal (name — only entries the
-    user marked agent_readable), set (name, value [scope=project|global]
+    actions: list, describe (name), check (name), usage ([name] — when/where/how
+    often it was used: counts by surface, recent events for THIS project, other
+    projects reduced to counts), reveal (name — only entries the user marked
+    agent_readable), set (name, value [scope=project|global]
     [ctype=token|env|multiline|address|identity|card] [description] [env_var] [inject]),
     delete (name [scope]).
     To USE a credential, do NOT reveal it — pass env_creds='NAME1,NAME2' to c3_shell
