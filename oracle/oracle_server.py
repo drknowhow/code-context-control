@@ -224,7 +224,7 @@ def _local_write_guard():
     """Auth gate for mutating local API calls (everything except Discovery).
 
     Requires either the per-boot dashboard session cookie (issued on ``GET /``
-    to loopback browsers) or the Discovery Bearer token. Default-deny: any
+    to same-machine browsers) or the Discovery Bearer token. Default-deny: any
     future mutating ``/api/*`` endpoint is covered automatically. Closes the
     rotate-then-read kill chain — previously any local process could POST
     /api/apikey/rotate unauthenticated and read the fresh token, defeating
@@ -318,7 +318,7 @@ def index():
     # not linger in the address bar, browser history, or a Referer header.
     code = request.args.get(local_session.BOOTSTRAP_PARAM)
     if code:
-        if local_session.is_loopback(request.remote_addr) and \
+        if local_session.is_local(request.remote_addr, _cfg.get("bind_host")) and \
                 local_session.consume_code(code):
             resp = redirect(url_for("index"))
             local_session.attach_cookie(resp)
@@ -340,8 +340,8 @@ def api_session_bootstrap():
     Bearer token — both prove same-OS-user access, which is the boundary
     this feature enforces.
     """
-    if not local_session.is_loopback(request.remote_addr):
-        return jsonify({"error": "loopback only"}), 403
+    if not local_session.is_local(request.remote_addr, _cfg.get("bind_host")):
+        return jsonify({"error": "local requests only"}), 403
     data = request.get_json(silent=True) or {}
     presented = (data.get("key") or "").strip() or \
         request.headers.get("X-C3-Bootstrap-Key", "")

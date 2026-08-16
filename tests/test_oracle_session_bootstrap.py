@@ -84,6 +84,45 @@ class TestBootstrapKeyFile(unittest.TestCase):
         self.assertFalse(ls.verify(ls.read_bootstrap_key(self.dir)))
 
 
+class TestIsLocal(unittest.TestCase):
+    """``is_local()``: same-machine detection under single-interface binds.
+
+    The Oracle can bind ONE specific non-loopback address (e.g. a Tailscale
+    interface) with loopback not bound at all. There, a locally-dialed
+    connection presents the bound address as its source, while every remote
+    peer presents its own — so source == bind proves same-machine. Wildcard
+    binds must stay loopback-only.
+    """
+
+    def test_loopback_always_local_whatever_the_bind(self):
+        for addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            self.assertTrue(ls.is_local(addr))
+            self.assertTrue(ls.is_local(addr, "0.0.0.0"))
+            self.assertTrue(ls.is_local(addr, "100.77.40.101"))
+
+    def test_source_equal_to_specific_bind_is_local(self):
+        self.assertTrue(ls.is_local("100.77.40.101", "100.77.40.101"))
+
+    def test_ipv6_mapped_source_matches_specific_bind(self):
+        self.assertTrue(ls.is_local("::ffff:100.77.40.101", "100.77.40.101"))
+
+    def test_other_peer_on_same_interface_is_not_local(self):
+        self.assertFalse(ls.is_local("100.91.238.65", "100.77.40.101"))
+
+    def test_wildcard_bind_stays_loopback_only(self):
+        self.assertFalse(ls.is_local("100.77.40.101", "0.0.0.0"))
+        self.assertFalse(ls.is_local("192.168.1.50", "::"))
+        self.assertFalse(ls.is_local("100.77.40.101", ""))
+        self.assertFalse(ls.is_local("100.77.40.101", None))
+
+    def test_loopback_bind_grants_nothing_extra(self):
+        self.assertFalse(ls.is_local("100.77.40.101", "127.0.0.1"))
+
+    def test_empty_remote_rejected(self):
+        self.assertFalse(ls.is_local(None, "100.77.40.101"))
+        self.assertFalse(ls.is_local("", "100.77.40.101"))
+
+
 class TestServerRoutes(unittest.TestCase):
     """End-to-end through the real Flask app."""
 
@@ -154,6 +193,68 @@ class TestServerRoutes(unittest.TestCase):
         self.client.get(f"/?{ls.BOOTSTRAP_PARAM}={code}")  # client keeps cookie
         resp = self.client.post("/api/apikey/rotate")
         self.assertNotEqual(resp.status_code, 401)
+
+
+class TestTailnetBindRoutes(unittest.TestCase):
+    """End-to-end under a single non-loopback bind (the Tailscale deployment).
+
+    The machine's own bound address must be able to mint and redeem (there is
+    no loopback listener to use instead); every other peer on that interface
+    must be refused even when presenting a valid bootstrap key.
+    """
+
+    BIND = "100.64.0.10"
+    PEER = "100.64.0.99"
+
+    @classmethod
+    def setUpClass(cls):
+        from oracle import oracle_server
+        cls.mod = oracle_server
+        oracle_server.app.config["TESTING"] = True
+        cls.client = oracle_server.app.test_client()
+
+    def setUp(self):
+        ls._codes.clear()
+        self.client.delete_cookie(ls.COOKIE_NAME)
+        self._had_bind = "bind_host" in self.mod._cfg
+        self._prev_bind = self.mod._cfg.get("bind_host")
+        self.mod._cfg["bind_host"] = self.BIND
+
+    def tearDown(self):
+        if self._had_bind:
+            self.mod._cfg["bind_host"] = self._prev_bind
+        else:
+            self.mod._cfg.pop("bind_host", None)
+
+    def _cookie(self, resp):
+        return "\n".join(resp.headers.getlist("Set-Cookie"))
+
+    def _mint_from(self, addr):
+        return self.client.post("/api/session/bootstrap",
+                                json={"key": ls._BOOTSTRAP_KEY},
+                                environ_overrides={"REMOTE_ADDR": addr})
+
+    def test_mint_allowed_from_own_bound_address(self):
+        self.assertEqual(self._mint_from(self.BIND).status_code, 200)
+
+    def test_mint_refused_from_other_peer_even_with_valid_key(self):
+        self.assertEqual(self._mint_from(self.PEER).status_code, 403)
+
+    def test_redeem_sets_cookie_from_own_bound_address(self):
+        code = ls.mint_code()
+        resp = self.client.get(f"/?{ls.BOOTSTRAP_PARAM}={code}",
+                               environ_overrides={"REMOTE_ADDR": self.BIND})
+        self.assertIn(ls.COOKIE_NAME, self._cookie(resp))
+
+    def test_redeem_from_other_peer_does_not_set_cookie(self):
+        code = ls.mint_code()
+        resp = self.client.get(f"/?{ls.BOOTSTRAP_PARAM}={code}",
+                               environ_overrides={"REMOTE_ADDR": self.PEER})
+        self.assertNotIn(ls.COOKIE_NAME, self._cookie(resp))
+
+    def test_wildcard_bind_still_refuses_non_loopback_mint(self):
+        self.mod._cfg["bind_host"] = "0.0.0.0"
+        self.assertEqual(self._mint_from(self.BIND).status_code, 403)
 
 
 if __name__ == "__main__":
