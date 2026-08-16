@@ -272,6 +272,27 @@ class TestHubCredentialsWriteRoutes(unittest.TestCase):
         self.assertEqual(recs[0].get("display"),
                          {"brand": "visa", "last4": "1486"})
 
+    def test_usage_route_project_and_global(self):
+        from services import cred_telemetry as ct
+        cs.set_credential("HU_P", CANARY, scope="project",
+                          project_path=str(self.proj))
+        cs.set_credential("HU_G", CANARY, scope="global",
+                          project_path=str(self.proj))
+        ct.record_use(["HU_P", "HU_G"], project_path=str(self.proj),
+                      surface="shell", cmd_preview="run")
+        with self._patched_pm():
+            proj_resp = self.client.get(
+                f"/api/projects/credentials/usage?path={self.proj}")
+            glob_resp = self.client.get("/api/projects/credentials/usage")
+        self.assertEqual(proj_resp.status_code, 200)
+        names = {r["name"] for r in proj_resp.get_json()["aggregate"]["rows"]}
+        self.assertEqual(names, {"HU_P", "HU_G"})  # merged project view
+        glob_names = {r["name"] for r in
+                      glob_resp.get_json()["aggregate"]["rows"]}
+        self.assertEqual(glob_names, {"HU_G"})     # global vault only
+        for resp in (proj_resp, glob_resp):
+            self.assertNotIn(CANARY, resp.get_data(as_text=True))
+
     def test_endpoint_sweep_no_route_ever_returns_value(self):
         cs.set_credential("SWEEP_P", CANARY, scope="project",
                           project_path=str(self.proj))

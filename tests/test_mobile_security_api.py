@@ -199,6 +199,18 @@ class TestMobileCredentials(_MobileSecurityBase):
         self.assertTrue(gone.get_json()["removed"])
         self.assertIsNone(cs.get_value("API_KEY", project_path=str(self.proj)))
 
+    def test_usage_route_names_only(self):
+        from services import cred_telemetry as ct
+        self.seed("MOB_USED", CANARY)
+        ct.record_use(["MOB_USED"], project_path=str(self.proj),
+                      surface="shell", cmd_preview="run {{cred:MOB_USED}}")
+        resp = self.get(
+            f"/api/mobile/credentials/MOB_USED/usage?project={self.proj}")
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        body = resp.get_json()
+        self.assertEqual(body["aggregate"]["rows"][0]["hits"], 1)
+        self.assertNotIn(CANARY, resp.get_data(as_text=True))
+
     def test_structured_create_refused(self):
         """Card/identity/address payloads never transit the mobile channel:
         creating a structured entry from the gateway is a 400, and nothing

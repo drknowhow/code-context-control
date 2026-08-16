@@ -2132,6 +2132,33 @@ def api_projects_credentials_check(name):
     })
 
 
+@app.route("/api/projects/credentials/usage", methods=["GET"])
+def api_projects_credentials_usage():
+    """Usage history — `path` scopes to a project (merged view); omit it for
+    the global vault only. `name` filters to one credential. Names, counts
+    and cmd previews only; never values."""
+    from services import credential_store as cred_store
+    from services import cred_telemetry as ct
+    path = (request.args.get("path") or "").strip()
+    if path:
+        try:
+            base = str(_resolve_project_path(path))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    else:
+        home = cred_store.global_base()
+        if home is None:
+            return jsonify({"error": "global scope unresolvable"}), 500
+        base = str(home)
+    name = (request.args.get("name") or "").strip()
+    return jsonify({
+        "path": base if path else "",
+        "aggregate": ct.aggregate(base, name=name),
+        "recent": ct.search_events(base, name=name,
+                                   limit=request.args.get("limit", 100)),
+    })
+
+
 @app.route("/api/hub/credentials/overview", methods=["GET"])
 def api_hub_credentials_overview():
     """Cross-project credential inventory: the global vault plus each

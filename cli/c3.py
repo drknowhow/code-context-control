@@ -5899,7 +5899,7 @@ def cmd_creds(args):
     """Credential vault management (global + per-project scopes)."""
     sub = getattr(args, "creds_cmd", None)
     if not sub:
-        print("Usage: c3 creds {set,get,list,rm,import} [args]")
+        print("Usage: c3 creds {set,get,list,rm,import,usage} [args]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -5914,6 +5914,8 @@ def cmd_creds(args):
         _creds_cmd_rm(args, project_path)
     elif sub == "import":
         _creds_cmd_import(args, project_path)
+    elif sub == "usage":
+        _creds_cmd_usage(args, project_path)
     else:
         print(f"Unknown creds subcommand: {sub}")
 
@@ -6121,6 +6123,39 @@ def _creds_cmd_import(args, project_path: str) -> None:
     if result["skipped"]:
         print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
               "(use --overwrite to replace)")
+
+
+def _creds_cmd_usage(args, project_path: str) -> None:
+    import json as _json
+
+    from services import cred_telemetry as ct
+
+    name = getattr(args, "name", "") or ""
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+    agg = ct.aggregate(project_path, name=name)
+    recent = ct.search_events(project_path, name=name, limit=limit)
+    if getattr(args, "as_json", False):
+        print(_json.dumps({"aggregate": agg, "recent": recent}, indent=2))
+        return
+    if not agg["total"]:
+        target = f" for '{name}'" if name else ""
+        print(f"No recorded credential uses{target} yet.")
+        return
+    surf = "  ".join(f"{s}:{c}" for s, c in sorted(agg["by_surface"].items()))
+    print(f"{agg['total']} use(s) across {len(agg['rows'])} credential(s)"
+          f"  [{surf}]")
+    for row in agg["rows"]:
+        fields = f"  fields: {', '.join(row['fields'])}" if row["fields"] else ""
+        print(f"  {row['name']:<24} {row['hits']:>4}x  last {row['last_ts'] or '?'}"
+              f"  projects={row['projects']}{fields}")
+    print(f"recent (newest first, {len(recent['events'])}"
+          f"/{recent['matched']}):")
+    for e in recent["events"]:
+        ref = e["name"] + (f".{e['field']}" if e.get("field") else "")
+        exit_part = f" exit={e['exit']}" if "exit" in e else ""
+        cmd_part = f"  {e['cmd']}" if e.get("cmd") else ""
+        print(f"  {e.get('ts', '?')}  {e.get('action', '?'):<10} {ref:<28}"
+              f" [{e.get('surface', '?')}]{exit_part}{cmd_part}")
 
 
 def cmd_ci(args):

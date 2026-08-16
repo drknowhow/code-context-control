@@ -262,6 +262,28 @@ class TestCredentialsTool(unittest.TestCase):
         self.assertEqual((ev["name"], ev["action"], ev["surface"]),
                          ("R", "reveal", "tool"))
 
+    # ── usage action ──────────────────────────────────────
+
+    def test_usage_action_reports_and_scopes_foreign_projects(self):
+        from services import cred_telemetry as ct
+        self._call("set", name="G", value="glob-v", scope="global")
+        # a use from THIS project, and one from another project (global
+        # creds share ~/.c3, so both land in the same log)
+        ct.record_use(["G"], project_path=self.svc.project_path,
+                      surface="shell", cmd_preview="local {{cred:G}}")
+        with tempfile.TemporaryDirectory() as other:
+            ct.record_use(["G"], project_path=other, surface="shell",
+                          cmd_preview="foreign-secret-workflow {{cred:G}}")
+        resp = self._call("usage", name="G")
+        self.assertIn("[creds:usage] G — 2 use(s)", resp)
+        self.assertIn("local {{cred:G}}", resp)
+        # H15: another project's cmd previews never reach this surface
+        self.assertNotIn("foreign-secret-workflow", resp)
+        self.assertIn("other projects: 1 use(s)", resp)
+        # empty case + overview form
+        self.assertIn("no recorded uses", self._call("usage", name="NOPE"))
+        self.assertIn("use(s) across", self._call("usage"))
+
     # ── federation exclusion ──────────────────────────────
 
     def test_c3_project_has_no_credentials_verb(self):
