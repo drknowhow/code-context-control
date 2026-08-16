@@ -4,6 +4,47 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.87.0] - 2026-08-16
+
+### Added — the vault now holds the sensitive data that isn't a secret string: cards, addresses, identity
+
+**Three structured entry types — `card`, `address`, `identity` — store named
+fields the agent can use but never see.** A card is cardholder + number +
+expiry (+ cvc/billing_zip), Luhn-validated, stored as one canonical JSON
+object through the exact keyring/Fernet path every secret already uses. The
+agent addresses a single field at the subprocess boundary —
+`env_creds='CARD.number'` (exported as `$CARD_NUMBER`) or
+`{{cred:CARD.number}}` inline — and echoed values scrub to
+`[cred:NAME.field]`.
+
+Structured entries are inject-only **by construction**, not by flag:
+`agent_readable` and `inject` are refused at every surface, reveal
+short-circuits with `[creds:structured]` before any gate, whole-value
+resolution is refused inside `get_value` itself (so a hostile registry
+edit that flips `inject: true` puts the name in the missing list, not a
+card payload in a subprocess env), and a keyring attestation keeps an
+entry structured even when `.c3/config.json` is rewritten by hand. The
+plain/structured boundary of an existing name is immutable — `set`,
+metadata updates, and `.env` import all refuse to cross it; delete and
+re-create is the only path.
+
+What other surfaces see is a server-computed projection: `visa ••••4242`
+(brand + last4 — deliberately *not* expiry), city/state for an address, the
+name for an identity. Field names are public metadata; field values never
+appear in any HTTP response, enforced by a seeded-PAN sweep over every
+credentials route on the project server, the hub, and the mobile gateway.
+The mobile gateway additionally refuses to *create* structured entries —
+card data never transits the phone channel. Human read-back is
+terminal-only: `c3 creds get NAME --show [--field number]`; both UIs gained
+per-type field forms (partial updates merge, so changing an expiry never
+means retyping the PAN).
+
+Documented decision: the identity display label is the full name, the same
+sensitivity class as a user-written description. Known limit, documented in
+the guide: the echo redactor tracks values of 4+ characters, so a 3-digit
+CVC echoed by a child process cannot be scrubbed after the fact — the
+guarantee is decode-at-the-boundary, and redaction stays the belt over it.
+
 ## [2.86.1] - 2026-08-16
 
 ### Fixed — two credential routes built responses beside the allowlist, not through it

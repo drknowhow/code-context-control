@@ -417,9 +417,14 @@ def build_parser(version: str, parse_cli_ide_arg):
         "set", help="Create or update a credential (value via hidden prompt)"
     )
     cr_set.add_argument("name", help="Entry name (env-var safe: [A-Za-z_][A-Za-z0-9_]*)")
-    cr_set.add_argument("--value", default="", help="Secret value (prompted via getpass if omitted — preferred)")
+    cr_set.add_argument("--value", default="", help="Secret value (prompted via getpass if omitted — preferred). Structured types take a JSON object of fields")
     cr_set.add_argument("--stdin", action="store_true", help="Read the value from stdin (piped/multiline values)")
-    cr_set.add_argument("--type", dest="ctype", choices=["token", "env", "multiline"], default="token", help="Entry type")
+    cr_set.add_argument("--type", dest="ctype",
+                        choices=["token", "env", "multiline",
+                                 "address", "identity", "card"],
+                        default="token",
+                        help="Entry type; address/identity/card are structured "
+                             "(field payload, inject-only, never revealable to the agent)")
     cr_set.add_argument("--desc", default="", help="Human description shown in list/UI")
     cr_set.add_argument("--env-var", default="", help="Env var name used at injection (default: entry name)")
     cr_set.add_argument("--agent-readable", action="store_true", help="Allow the agent to reveal the decoded value into its context (default: injection-only)")
@@ -432,6 +437,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_get = creds_subs.add_parser("get", help="Show entry metadata (masked; --show prints the value)")
     cr_get.add_argument("name")
     cr_get.add_argument("--show", action="store_true", help="Print the decoded value to the terminal")
+    cr_get.add_argument("--field", default="", help="For structured entries: limit --show to one field (e.g. number)")
     cr_get.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_list = creds_subs.add_parser("list", help="List credentials visible to this project")
