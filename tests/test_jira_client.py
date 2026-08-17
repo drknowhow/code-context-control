@@ -303,6 +303,37 @@ class TestActions(unittest.TestCase):
         added = body["update"]["comment"][0]["add"]["body"]
         self.assertEqual(added["type"], "doc")
 
+    def test_update_issue_cloud_puts_fields_with_adf_description(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().update_issue(
+                "PROJ-1", summary="New title", description="a\nb",
+                fields={"customfield_10014": "PROJ-42"},
+            )
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "PUT")
+        self.assertIn("/rest/api/3/issue/PROJ-1", req.get_full_url())
+        fields = json.loads(req.data.decode())["fields"]
+        self.assertEqual(fields["summary"], "New title")
+        self.assertEqual(fields["description"]["type"], "doc")
+        self.assertEqual(fields["customfield_10014"], "PROJ-42")
+
+    def test_update_issue_dc_keeps_plain_description(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _dc().update_issue("PROJ-1", description="plain text")
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "PUT")
+        self.assertIn("/rest/api/2/issue/PROJ-1", req.get_full_url())
+        body = json.loads(req.data.decode())
+        self.assertEqual(body["fields"], {"description": "plain text"})
+
+    def test_update_issue_429_never_retried(self):
+        with mock.patch(_URLOPEN, side_effect=[_http_error(429)]) as m, \
+                mock.patch(_SLEEP) as slept:
+            with self.assertRaises(JiraError):
+                _cloud().update_issue("PROJ-1", summary="x")
+        self.assertEqual(m.call_count, 1)
+        slept.assert_not_called()
+
 
 class TestDataCenterCreateMeta(unittest.TestCase):
     """Jira DC 9.0 split createmeta in two; 11.x removed the original, which
@@ -325,7 +356,11 @@ class TestDataCenterCreateMeta(unittest.TestCase):
         self.assertIn("/issue/createmeta/RNDA/issuetypes", urls[0])
         self.assertIn("/issue/createmeta/RNDA/issuetypes/10004", urls[1])
         self.assertEqual([f["id"] for f in meta["required_fields"]], ["summary"])
-        self.assertEqual(meta["optional_fields"], ["Squad"])
+        # Optional fields keep their ids — the create/update fields JSON is
+        # keyed by field id, so a name-only listing would be unusable.
+        self.assertEqual(meta["optional_fields"], [
+            {"id": "customfield_1", "name": "Squad", "type": "option"},
+        ])
 
     def test_falls_back_to_legacy_on_404(self):
         legacy = {"projects": [{"issuetypes": [{"fields": {

@@ -85,6 +85,10 @@ class _StubClient:
         self._record("create_issue", project, issue_type, summary, **kw)
         return {"key": "PROJ-9"}
 
+    def update_issue(self, key, **kw):
+        self._record("update_issue", key, **kw)
+        return {}
+
     def add_comment(self, key, body, **kw):
         self._record("add_comment", key, body, **kw)
         return {"id": "5", "author": "Alice", "created": "", "body": str(body)}
@@ -240,6 +244,68 @@ class TestJiraTool(unittest.TestCase):
         resp = self._run("create_issue", issue_type="Bug", summary="x",
                          fields="{not json")
         self.assertIn("fields must be a JSON object", resp)
+
+    def test_create_metadata_response_carries_screen_caveat(self):
+        resp = self._run("get_create_metadata", issue_type="Bug")
+        self.assertIn("[jira:create_metadata]", resp)
+        self.assertIn("create screen may accept fewer", resp)
+        self.assertIn("update_issue", resp)
+
+    def test_create_issue_screen_rejection_hints_at_update_issue(self):
+        self.client.fail_with = JiraError(
+            "HTTP 400: customfield_10014: Field 'customfield_10014' cannot be "
+            "set. It is not on the appropriate screen, or unknown.",
+            status=400,
+        )
+        resp = self._run("create_issue", issue_type="Bug", summary="Boom")
+        self.assertIn("[jira:api-error]", resp)
+        self.assertIn("update_issue", resp)
+        self.assertIn("not the create screen", resp)
+
+    def test_update_issue_requires_key(self):
+        resp = self._run("update_issue", summary="New")
+        self.assertIn("issue key is required", resp)
+
+    def test_update_issue_requires_a_change(self):
+        resp = self._run("update_issue", issue="PROJ-1")
+        self.assertIn("at least one of summary", resp)
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(self.svc.edit_ledger.entries, [])
+
+    def test_update_issue_rejects_bad_fields_json(self):
+        resp = self._run("update_issue", issue="PROJ-1", fields="{not json")
+        self.assertIn("fields must be a JSON object", resp)
+
+    def test_update_issue_passes_changes_and_logs(self):
+        resp = self._run(
+            "update_issue", issue="PROJ-1", summary="New",
+            fields='{"customfield_10014": "PROJ-42"}',
+        )
+        self.assertIn("[jira:updated] PROJ-1", resp)
+        self.assertIn("customfield_10014", resp)
+        call = [c for c in self.client.calls if c[0] == "update_issue"][0]
+        self.assertEqual(call[1], ("PROJ-1",))
+        self.assertEqual(call[2]["summary"], "New")
+        self.assertEqual(call[2]["fields"], {"customfield_10014": "PROJ-42"})
+        entry = self.svc.edit_ledger.entries[0]
+        self.assertEqual(entry["change_type"], "update_issue")
+
+    def test_update_issue_ledger_never_contains_field_values(self):
+        self._run("update_issue", issue="PROJ-1",
+                  fields='{"customfield_10014": "SECRET-EPIC-KEY"}')
+        entry = self.svc.edit_ledger.entries[0]
+        self.assertNotIn("SECRET-EPIC-KEY", str(entry["detail"]))
+
+    def test_update_issue_screen_rejection_hints_at_admin(self):
+        self.client.fail_with = JiraError(
+            "HTTP 400: Field 'customfield_10014' cannot be set. It is not on "
+            "the appropriate screen, or unknown.",
+            status=400,
+        )
+        resp = self._run("update_issue", issue="PROJ-1",
+                         fields='{"customfield_10014": "PROJ-42"}')
+        self.assertIn("[jira:api-error]", resp)
+        self.assertIn("not on the edit screen either", resp)
 
     def test_comment_requires_body_and_logs(self):
         resp = self._run("comment", issue="PROJ-1")

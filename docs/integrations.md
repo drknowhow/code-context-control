@@ -122,9 +122,21 @@ c3 jira status
 **Read:** raw-JQL `search`, `my_issues`, `get_issue`, `list_transitions`,
 `get_create_metadata`, `search_users`.
 **Write (ledger-logged, identifiers only — never bodies):** `create_issue`,
-`comment`, `transition`, `assign`. `create_issue` is pre-validated against
-create metadata and returns machine-readable missing required fields;
-`transition` accepts an id or a name.
+`update_issue`, `comment`, `transition`, `assign`. `create_issue` is
+pre-validated against create metadata and returns machine-readable missing
+required fields; `update_issue` edits an existing issue (summary,
+description, or a `fields` JSON of field ids → values); `transition`
+accepts an id or a name.
+
+A caveat worth knowing: `get_create_metadata` returns Jira's createmeta,
+which is the **field configuration** for the project + issue type — not the
+create screen. Jira can list a field (Epic Link is the classic case) that
+`create_issue` then rejects with *"cannot be set. It is not on the
+appropriate screen"*. The tool says so in its response; when it happens,
+create the issue without the field and set it afterwards with
+`update_issue` — the edit screen is configured separately from the create
+screen. Field entries carry both `id` and `name`; the `fields` JSON on
+create/update takes **ids** (`customfield_…`), not display names.
 
 The per-project UI gains a **Jira** tab: a My Work board grouped by status
 category, JQL search, an issue drawer with transitions and comments, and an
