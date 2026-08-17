@@ -952,11 +952,15 @@ async def c3_jira(
     limit: int = 25,
     ctx: Context = None,
 ) -> str:
-    """JIRA (Cloud + Data Center) — search, read, create, comment, transition, assign issues.
+    """JIRA (Cloud + Data Center) — search, read, create, update, comment, transition, assign issues.
     actions: status, whoami, search (jql), get_issue (issue), my_issues,
     list_projects, list_transitions (issue), get_create_metadata (project, issue_type),
     search_users (query), create_issue (project, issue_type, summary [description] [fields=JSON]),
+    update_issue (issue [summary] [description] [fields=JSON: field ids -> values]),
     comment (issue, body), transition (issue, transition=id|name [body]), assign (issue, user).
+    get_create_metadata reflects Jira's field configuration, not the create screen — if
+    create_issue rejects a listed field ('not on the appropriate screen'), create without
+    it and set it via update_issue (the edit screen is configured separately).
     project falls back to the account's default_project; account to jira.default_account.
     Mutating actions are ledger-logged. Tokens live in the OS keyring — `c3 jira login` first."""
     svc = _svc(ctx)

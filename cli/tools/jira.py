@@ -17,13 +17,13 @@ _TOOL = "c3_jira"
 _RESPONSE_TOKEN_CAP = 2400
 
 # Actions that change Jira state — flagged for ledger logging.
-_MUTATING_ACTIONS = {"create_issue", "comment", "transition", "assign"}
+_MUTATING_ACTIONS = {"create_issue", "update_issue", "comment", "transition", "assign"}
 
 _VALID_ACTIONS = sorted([
     "status", "whoami", "search", "get_issue", "my_issues",
     "list_projects", "list_transitions", "get_create_metadata",
     "search_users",
-    "create_issue", "comment", "transition", "assign",
+    "create_issue", "update_issue", "comment", "transition", "assign",
 ])
 
 # Required-field ids Jira satisfies from the create payload / auth context.
@@ -218,13 +218,30 @@ def _act_list_transitions(client: JiraClient, issue: str) -> str:
     return "\n".join(lines)
 
 
+# Jira's createmeta reports the field CONFIGURATION for a project + issue
+# type, not the create screen — it can list fields (Epic Link is the classic
+# case) that POST /issue rejects with "cannot be set. It is not on the
+# appropriate screen". The caveat travels with every metadata response so an
+# agent doesn't read "optional" as "settable on create".
+_CREATEMETA_CAVEAT = (
+    "Note: fields come from Jira's createmeta (the issue type's field "
+    "configuration); the create screen may accept fewer. If create_issue "
+    "rejects one with 'It is not on the appropriate screen', create without "
+    "it, then set it via update_issue — the edit screen is configured "
+    "separately. Pass field ids (not names) in the fields JSON."
+)
+
+
 def _act_create_metadata(client: JiraClient, entry: dict, kwargs: dict) -> str:
     project = (kwargs.get("project") or "").strip() or entry.get("default_project", "")
     issue_type = (kwargs.get("issue_type") or "").strip()
     if not project or not issue_type:
         return "[jira:error] project and issue_type are required for get_create_metadata"
     meta = client.get_create_metadata(project, issue_type)
-    return f"[jira:create_metadata] {json.dumps(meta, indent=1)}"
+    resp = f"[jira:create_metadata] {json.dumps(meta, indent=1)}"
+    if not meta.get("error"):
+        resp += f"\n{_CREATEMETA_CAVEAT}"
+    return resp
 
 
 def _act_search_users(client: JiraClient, kwargs: dict) -> str:
@@ -291,6 +308,26 @@ def _act_create_issue(client: JiraClient, entry: dict, kwargs: dict) -> str:
         project, issue_type, summary, description=description, fields=extra
     )
     return f"[jira:created] {created.get('key', '?')} — {summary}"
+
+
+def _act_update_issue(client: JiraClient, issue: str, kwargs: dict) -> str:
+    extra, err = _parse_extra_fields(kwargs)
+    if err:
+        return err
+    summary = (kwargs.get("summary") or "").strip()
+    description = kwargs.get("description") or ""
+    if not summary and not description and not extra:
+        return (
+            "[jira:error] update_issue needs at least one of summary, "
+            "description, or fields JSON (field ids -> values)"
+        )
+    client.update_issue(
+        issue, summary=summary, description=description, fields=extra
+    )
+    changed = [name for name, value in
+               (("summary", summary), ("description", description)) if value]
+    changed.extend(sorted(extra or {}))
+    return f"[jira:updated] {issue} — {', '.join(changed)}"
 
 
 def _act_comment(client: JiraClient, issue: str, kwargs: dict) -> str:
@@ -410,7 +447,8 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
         )
 
     issue = (kwargs.get("issue") or "").strip()
-    if action in {"get_issue", "list_transitions", "comment", "transition", "assign"} \
+    if action in {"get_issue", "list_transitions", "update_issue",
+                  "comment", "transition", "assign"} \
             and not issue:
         return finalize(
             _TOOL, args_for_log,
@@ -438,6 +476,8 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
             resp = _act_search_users(client, kwargs)
         elif action == "create_issue":
             resp = _act_create_issue(client, entry, kwargs)
+        elif action == "update_issue":
+            resp = _act_update_issue(client, issue, kwargs)
         elif action == "comment":
             resp = _act_comment(client, issue, kwargs)
         elif action == "transition":
@@ -445,10 +485,22 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
         else:  # assign — action set is closed by the _VALID_ACTIONS gate above
             resp = _act_assign(client, issue, kwargs)
     except JiraError as exc:
-        return finalize(
-            _TOOL, args_for_log,
-            f"[jira:api-error] {exc}", f"http-{exc.status}",
-        )
+        msg = f"[jira:api-error] {exc}"
+        if "appropriate screen" in str(exc):
+            if action == "create_issue":
+                msg += (
+                    "\nHint: createmeta lists the issue type's field "
+                    "configuration, not the create screen. Retry without the "
+                    "rejected field, then set it via update_issue — the edit "
+                    "screen is configured separately."
+                )
+            elif action == "update_issue":
+                msg += (
+                    "\nHint: the field is not on the edit screen either — a "
+                    "Jira admin must add it to the screen before the API can "
+                    "set it."
+                )
+        return finalize(_TOOL, args_for_log, msg, f"http-{exc.status}")
     except Exception as exc:  # pragma: no cover — defensive
         return finalize(
             _TOOL, args_for_log,

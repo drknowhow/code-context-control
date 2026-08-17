@@ -156,7 +156,7 @@ class CloudBackend:
             "project": project,
             "issue_type": issue_type,
             "required_fields": required,
-            "optional_fields": [f["name"] for f in optional],
+            "optional_fields": optional,
         }
 
     def search_users(self, query: str, *, limit: int = 10) -> list[dict]:
@@ -194,6 +194,26 @@ class CloudBackend:
             payload_fields.update(fields)
         return self._t.request(
             "POST", f"{_API}/issue", body={"fields": payload_fields}, is_mutation=True
+        )
+
+    def update_issue(
+        self,
+        key: str,
+        *,
+        summary: str = "",
+        description: str = "",
+        fields: dict | None = None,
+    ) -> dict:
+        payload_fields: dict[str, Any] = {}
+        if summary:
+            payload_fields["summary"] = summary
+        if description:
+            payload_fields["description"] = adf_from_text(description)
+        if fields:
+            payload_fields.update(fields)
+        return self._t.request(
+            "PUT", f"{_API}/issue/{key}",
+            body={"fields": payload_fields}, is_mutation=True,
         )
 
     def add_comment(self, key: str, body: Any, *, body_format: str = "text") -> dict:

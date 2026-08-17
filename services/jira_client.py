@@ -303,6 +303,21 @@ class JiraClient:
             project, issue_type, summary, description=description, fields=fields
         )
 
+    def update_issue(
+        self,
+        key: str,
+        *,
+        summary: str = "",
+        description: str = "",
+        fields: dict | None = None,
+    ) -> dict:
+        """Edit fields on an existing issue via ``PUT /issue/{key}``. The
+        edit screen is configured separately from the create screen, so a
+        field the create endpoint rejected may still be settable here."""
+        return self._backend.update_issue(
+            key, summary=summary, description=description, fields=fields
+        )
+
     def add_comment(self, key: str, body: Any, *, body_format: str = "text") -> dict:
         return self._backend.add_comment(key, body, body_format=body_format)
 

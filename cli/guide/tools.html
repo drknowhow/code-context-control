@@ -1311,8 +1311,9 @@ c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}"
               <tr><td class="param-name">search</td><td>Read</td><td class="param-desc">Raw JQL, paginated (helper-built JQL elsewhere is always quoted)</td></tr>
               <tr><td class="param-name">my_issues</td><td>Read</td><td class="param-desc">Open issues assigned to the token's user (statusCategory-aware)</td></tr>
               <tr><td class="param-name">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments / project discovery / legal transitions for an issue</td></tr>
-              <tr><td class="param-name">get_create_metadata, search_users</td><td>Read</td><td class="param-desc">Required + allowed fields per project/type; user lookup for assignment</td></tr>
+              <tr><td class="param-name">get_create_metadata, search_users</td><td>Read</td><td class="param-desc">Field configuration per project/type (ids + names; the create screen may accept fewer — Jira over-reports, Epic Link is the classic case); user lookup for assignment</td></tr>
               <tr><td class="param-name">create_issue</td><td>Write</td><td class="param-desc">Pre-validates against create metadata and returns machine-readable missing required fields instead of guessing defaults</td></tr>
+              <tr><td class="param-name">update_issue</td><td>Write</td><td class="param-desc">Edit an existing issue: summary, description, or a fields JSON of field ids &rarr; values — the fallback when the create screen rejects a field ("not on the appropriate screen")</td></tr>
               <tr><td class="param-name">comment, transition, assign</td><td>Write</td><td class="param-desc">Comment on / move (accepts transition id <em>or</em> name) / assign an issue</td></tr>
             </tbody>
           </table>
@@ -1329,6 +1330,9 @@ c3_jira(action=<span class="str">'search'</span>, jql=<span class="str">'project
 c3_jira(action=<span class="str">'get_create_metadata'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Task'</span>)
 c3_jira(action=<span class="str">'create_issue'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Task'</span>,
         summary=<span class="str">'Fix login flow'</span>, description=<span class="str">'Steps in thread'</span>)
+
+<span class="com"># Field rejected on create ("not on the appropriate screen")? Set it post-create</span>
+c3_jira(action=<span class="str">'update_issue'</span>, issue=<span class="str">'PROJ-124'</span>, fields=<span class="str">'{"customfield_10014": "PROJ-42"}'</span>)
 
 <span class="com"># Move it along — id or name both work</span>
 c3_jira(action=<span class="str">'list_transitions'</span>, issue=<span class="str">'PROJ-123'</span>)
