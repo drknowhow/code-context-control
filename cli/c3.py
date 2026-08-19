@@ -4555,14 +4555,22 @@ def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None 
             print(f"Warning: Could not update {antigravity_path} (global fallback skipped)")
 
 
-def _uninstall_mcp_all(project_path: str):
-    """Remove C3 MCP server configurations from all supported IDEs."""
+def _uninstall_mcp_all(project_path: str, include_global: bool = True):
+    """Remove C3 MCP server configurations from all supported IDEs.
+
+    ``include_global=False`` restricts removal to PROJECT-scoped config files
+    (the project's .mcp.json, .codex/config.toml, settings/hooks). Home-level
+    configs (~/.codex, Antigravity's mcp_config.json) are machine-wide and
+    shared by every C3 project, so per-project cleanup — the merge action's
+    ``cleanup='clear'`` — must never touch them; only a real machine
+    uninstall (the default) may."""
     import shutil
     from pathlib import Path
 
     from core.ide import PROFILES
 
-    print("\nRemoving C3 MCP server configurations...")
+    scope = "" if include_global else " (project-scoped only)"
+    print(f"\nRemoving C3 MCP server configurations...{scope}")
     target = Path(project_path).resolve()
 
     # Remove .mcp.json if it exists (standard MCP config file)
@@ -4587,11 +4595,12 @@ def _uninstall_mcp_all(project_path: str):
         # MCP Config paths to check
         config_paths = []
         if profile.config_path_global:
-            config_paths.append(Path.home() / profile.config_path)
+            if include_global:
+                config_paths.append(Path.home() / profile.config_path)
         else:
             config_paths.append(target / profile.config_path)
             # For Codex, also check the global fallback in home dir
-            if ide_name == "codex":
+            if ide_name == "codex" and include_global:
                 config_paths.append(Path.home() / profile.config_path)
 
         for mcp_config_path in config_paths:
@@ -4714,8 +4723,10 @@ def _uninstall_mcp_all(project_path: str):
                     print(f"  Warning: Could not update {vscode_settings_path}: {e}")
 
     # Legacy Gemini CLI configs (profile removed in v2.52) — still strip the c3 entry.
-    for legacy_cfg in (target / ".gemini" / "settings.json",
-                       Path.home() / ".gemini" / "settings.json"):
+    legacy_cfgs = [target / ".gemini" / "settings.json"]
+    if include_global:
+        legacy_cfgs.append(Path.home() / ".gemini" / "settings.json")
+    for legacy_cfg in legacy_cfgs:
         if not legacy_cfg.exists():
             continue
         try:

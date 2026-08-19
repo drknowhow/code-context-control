@@ -819,7 +819,9 @@ class ProjectManager:
                 # Lazy import to avoid services -> cli circular import at module load.
                 from cli.c3 import _instruction_documents_for_project, _uninstall_mcp_all
                 try:
-                    _uninstall_mcp_all(str(src))
+                    # Project cleanup only — the machine-wide IDE registrations
+                    # (~/.codex, Antigravity) serve every other C3 project.
+                    _uninstall_mcp_all(str(src), include_global=False)
                 except Exception as e:
                     warnings.append(f"uninstall_mcp failed: {e}")
                 c3_dir = src / ".c3"

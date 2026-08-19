@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -187,6 +188,73 @@ class TestMergeClear(_SandboxedRegistry):
                          msg="source registry entry should be dropped")
         # Source directory itself still exists.
         self.assertTrue(src.is_dir())
+
+    def test_merge_clear_never_touches_machine_global_ide_configs(self):
+        # Regression: cleanup='clear' once ran the full machine uninstall,
+        # stripping C3 from the REAL ~/.codex/config.toml and deleting
+        # Antigravity's mcp_config.json — configs shared by every project.
+        fake_home = self.tmp_root / "home"
+        codex_cfg = fake_home / ".codex" / "config.toml"
+        codex_cfg.parent.mkdir(parents=True)
+        codex_body = '[mcp_servers.c3]\ncommand = "c3-mcp"\nenabled = true\n'
+        codex_cfg.write_text(codex_body, encoding="utf-8")
+        ag_cfg = fake_home / ".gemini" / "antigravity" / "mcp_config.json"
+        ag_cfg.parent.mkdir(parents=True)
+        ag_body = json.dumps({"mcpServers": {"c3": {"command": "c3-mcp"}}})
+        ag_cfg.write_text(ag_body, encoding="utf-8")
+
+        pm = ProjectManager()
+        src = _seed_project(self.tmp_root, "src3")
+        tgt = _seed_project(self.tmp_root, "tgt3")
+        pm.add_project(str(src))
+        pm.add_project(str(tgt))
+
+        with mock.patch("pathlib.Path.home", return_value=fake_home):
+            result = pm.merge_projects(str(src), str(tgt), cleanup="clear")
+        self.assertTrue(result.get("merged"), msg=result)
+        self.assertEqual(codex_cfg.read_text(encoding="utf-8"), codex_body,
+                         msg="~/.codex/config.toml must survive a project merge")
+        self.assertTrue(ag_cfg.exists(),
+                        msg="Antigravity mcp_config.json must survive a project merge")
+        self.assertEqual(ag_cfg.read_text(encoding="utf-8"), ag_body)
+
+
+class TestUninstallScope(_SandboxedRegistry):
+    """_uninstall_mcp_all: include_global gates every Path.home() touch."""
+
+    def _fixture(self):
+        fake_home = self.tmp_root / "home2"
+        codex_cfg = fake_home / ".codex" / "config.toml"
+        codex_cfg.parent.mkdir(parents=True)
+        codex_cfg.write_text('[mcp_servers.c3]\ncommand = "c3-mcp"\n',
+                             encoding="utf-8")
+        ag_cfg = fake_home / ".gemini" / "antigravity" / "mcp_config.json"
+        ag_cfg.parent.mkdir(parents=True)
+        ag_cfg.write_text(json.dumps({"mcpServers": {"c3": {"command": "x"}}}),
+                          encoding="utf-8")
+        proj = _seed_project(self.tmp_root, "scoped")
+        return fake_home, codex_cfg, ag_cfg, proj
+
+    def test_project_scope_leaves_home_configs_alone(self):
+        from cli.c3 import _uninstall_mcp_all
+        fake_home, codex_cfg, ag_cfg, proj = self._fixture()
+        with mock.patch("pathlib.Path.home", return_value=fake_home):
+            _uninstall_mcp_all(str(proj), include_global=False)
+        self.assertIn("[mcp_servers.c3]", codex_cfg.read_text(encoding="utf-8"))
+        self.assertTrue(ag_cfg.exists())
+
+    def test_global_scope_still_cleans_home_configs(self):
+        from cli.c3 import _uninstall_mcp_all
+        fake_home, codex_cfg, ag_cfg, proj = self._fixture()
+        with mock.patch("pathlib.Path.home", return_value=fake_home):
+            _uninstall_mcp_all(str(proj), include_global=True)
+        self.assertNotIn(
+            "[mcp_servers.c3]",
+            codex_cfg.read_text(encoding="utf-8") if codex_cfg.exists() else "",
+        )
+        if ag_cfg.exists():
+            cfg = json.loads(ag_cfg.read_text(encoding="utf-8"))
+            self.assertNotIn("c3", cfg.get("mcpServers", {}))
 
 
 class TestMergeValidation(_SandboxedRegistry):
