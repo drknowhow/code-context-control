@@ -1217,8 +1217,10 @@ c3_artifacts(action=<span class="str">'show'</span>, artifact=<span class="str">
               <tr><td class="param-name">status</td><td>Read</td><td class="param-desc">Active account, accounts list, defaults, server-version probe</td></tr>
               <tr><td class="param-name">whoami</td><td>Read</td><td class="param-desc">Current authenticated user (PAT owner)</td></tr>
               <tr><td class="param-name">list_projects, list_repos, get_repo</td><td>Read</td><td class="param-desc">Project / repository discovery</td></tr>
-              <tr><td class="param-name">list_prs, get_pr, get_pr_diff, get_pr_activities</td><td>Read</td><td class="param-desc">PR browsing + diff + activity feed</td></tr>
-              <tr><td class="param-name">create_pr, comment_pr, approve_pr, unapprove_pr, decline_pr, merge_pr</td><td>Write</td><td class="param-desc">PR write actions. <code>merge_pr</code> and <code>decline_pr</code> auto-fetch the PR's current version</td></tr>
+              <tr><td class="param-name">list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits</td><td>Read</td><td class="param-desc">PR browsing + diff + activity feed + commit list</td></tr>
+              <tr><td class="param-name">create_pr, update_pr, comment_pr, approve_pr, unapprove_pr, needs_work_pr, decline_pr, merge_pr</td><td>Write</td><td class="param-desc">PR write actions. <code>update_pr</code> edits title/description/reviewers/to_branch (unchanged fields preserved); <code>merge_pr</code>, <code>decline_pr</code>, and <code>update_pr</code> auto-fetch the PR's current version; <code>needs_work_pr</code> marks "needs work" as the current user</td></tr>
+              <tr><td class="param-name">update_pr_comment, delete_pr_comment</td><td>Write</td><td class="param-desc">Edit or remove a PR comment by <code>comment_id</code> — the comment's current version is fetched automatically</td></tr>
+              <tr><td class="param-name">list_pr_tasks, create_pr_task, resolve_pr_task</td><td>Tasks</td><td class="param-desc">PR tasks (Bitbucket 7.2+ model: a task is a BLOCKER-severity comment). <code>list_pr_tasks</code> filters by <code>state=OPEN|RESOLVED</code>; resolve takes the task's <code>comment_id</code></td></tr>
               <tr><td class="param-name">list_branches, create_branch, delete_branch</td><td>Branch</td><td class="param-desc">Branch listing and admin (uses the <code>branch-utils</code> API)</td></tr>
               <tr><td class="param-name">list_commits, list_activity, build_status</td><td>Read</td><td class="param-desc">Recent commits, activity, build/CI status (defaults to default-branch HEAD)</td></tr>
               <tr><td class="param-name">repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook, list_permissions</td><td>Admin</td><td class="param-desc">Repository administration</td></tr>
@@ -1310,10 +1312,15 @@ c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}"
               <tr><td class="param-name">status, whoami</td><td>Read</td><td class="param-desc">Active account, deployment, defaults, server probe / authenticated user</td></tr>
               <tr><td class="param-name">search</td><td>Read</td><td class="param-desc">Raw JQL, paginated (helper-built JQL elsewhere is always quoted)</td></tr>
               <tr><td class="param-name">my_issues</td><td>Read</td><td class="param-desc">Open issues assigned to the token's user (statusCategory-aware)</td></tr>
-              <tr><td class="param-name">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments / project discovery / legal transitions for an issue</td></tr>
-              <tr><td class="param-name">get_create_metadata, search_users</td><td>Read</td><td class="param-desc">Field configuration per project/type (ids + names; the create screen may accept fewer — Jira over-reports, Epic Link is the classic case); user lookup for assignment</td></tr>
-              <tr><td class="param-name">create_issue</td><td>Write</td><td class="param-desc">Pre-validates against create metadata and returns machine-readable missing required fields instead of guessing defaults</td></tr>
-              <tr><td class="param-name">update_issue</td><td>Write</td><td class="param-desc">Edit an existing issue: summary, description, or a fields JSON of field ids &rarr; values — the fallback when the create screen rejects a field ("not on the appropriate screen")</td></tr>
+              <tr><td class="param-name">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments, parent, and typed links / project discovery / legal transitions for an issue</td></tr>
+              <tr><td class="param-name">get_create_metadata, search_users, list_link_types</td><td>Read</td><td class="param-desc">Field configuration per project/type (ids + names; the create screen may accept fewer — Jira over-reports, Epic Link is the classic case); user lookup for assignment; the server's issue-link type catalog</td></tr>
+              <tr><td class="param-name">list_boards, list_sprints, list_worklogs</td><td>Read</td><td class="param-desc">Agile boards (project fallback applies) &rarr; sprints per board (<code>sprint_state=active|future|closed</code>); an issue's logged time</td></tr>
+              <tr><td class="param-name">move_to_sprint, move_to_backlog</td><td>Write</td><td class="param-desc">Sprint assignment via the Agile API — <code>issue</code> takes one key or a comma-list; <code>sprint_id</code> comes from <code>list_sprints</code></td></tr>
+              <tr><td class="param-name">add_worklog, attach_file</td><td>Write</td><td class="param-desc">Log time (<code>time_spent='2h 30m'</code>, optional <code>body</code> comment); upload one local file as an attachment (20MB local cap)</td></tr>
+              <tr><td class="param-name">unlink_issues, delete_issue</td><td>Write</td><td class="param-desc">Remove a typed link by <code>link_id</code> (shown on get_issue); permanently delete an issue — refuses one with subtasks unless <code>delete_subtasks=true</code></td></tr>
+              <tr><td class="param-name">create_issue</td><td>Write</td><td class="param-desc">Pre-validates against create metadata and returns machine-readable missing required fields instead of guessing defaults. <code>parent=EPIC-KEY</code> files the new issue under an epic (deployment-mapped)</td></tr>
+              <tr><td class="param-name">update_issue</td><td>Write</td><td class="param-desc">Edit an existing issue: summary, description, <code>parent</code> (epic/parent key; <code>'none'</code> clears), or a fields JSON of field ids &rarr; values — the fallback when the create screen rejects a field ("not on the appropriate screen")</td></tr>
+              <tr><td class="param-name">link_issues</td><td>Write</td><td class="param-desc">Typed link reading <code>&lt;issue&gt; &lt;link_type&gt; &lt;target&gt;</code> — accepts a type name or either directional phrasing (an inward match flips the pair); unknown types answer with the catalog</td></tr>
               <tr><td class="param-name">comment, transition, assign</td><td>Write</td><td class="param-desc">Comment on / move (accepts transition id <em>or</em> name) / assign an issue</td></tr>
             </tbody>
           </table>
@@ -1334,12 +1341,28 @@ c3_jira(action=<span class="str">'create_issue'</span>, project=<span class="str
 <span class="com"># Field rejected on create ("not on the appropriate screen")? Set it post-create</span>
 c3_jira(action=<span class="str">'update_issue'</span>, issue=<span class="str">'PROJ-124'</span>, fields=<span class="str">'{"customfield_10014": "PROJ-42"}'</span>)
 
+<span class="com"># Put an issue under an epic — no customfield hunting (Cloud parent field
+# vs Data Center Epic Link customfield is resolved for you)</span>
+c3_jira(action=<span class="str">'update_issue'</span>, issue=<span class="str">'PROJ-124'</span>, parent=<span class="str">'PROJ-42'</span>)
+
+<span class="com"># Typed links: reads "PROJ-1 blocks PROJ-2"</span>
+c3_jira(action=<span class="str">'link_issues'</span>, issue=<span class="str">'PROJ-1'</span>, link_type=<span class="str">'blocks'</span>, target=<span class="str">'PROJ-2'</span>)
+
+<span class="com"># Sprint flow: board -> sprint -> assign</span>
+c3_jira(action=<span class="str">'list_boards'</span>)
+c3_jira(action=<span class="str">'list_sprints'</span>, board_id=<span class="num">7</span>, sprint_state=<span class="str">'active'</span>)
+c3_jira(action=<span class="str">'move_to_sprint'</span>, issue=<span class="str">'PROJ-1, PROJ-2'</span>, sprint_id=<span class="num">42</span>)
+
+<span class="com"># Time + evidence</span>
+c3_jira(action=<span class="str">'add_worklog'</span>, issue=<span class="str">'PROJ-1'</span>, time_spent=<span class="str">'2h 30m'</span>, body=<span class="str">'pairing'</span>)
+c3_jira(action=<span class="str">'attach_file'</span>, issue=<span class="str">'PROJ-1'</span>, file_path=<span class="str">'logs/build.log'</span>)
+
 <span class="com"># Move it along — id or name both work</span>
 c3_jira(action=<span class="str">'list_transitions'</span>, issue=<span class="str">'PROJ-123'</span>)
 c3_jira(action=<span class="str">'transition'</span>, issue=<span class="str">'PROJ-123'</span>, transition=<span class="str">'In Progress'</span>)
 c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ-123'</span>, body=<span class="str">'Deployed to staging'</span>)</code></pre>
 
-          <p class="tool-desc"><strong>Surfaces &amp; audit:</strong> the per-project dashboard gets a <strong>Jira tab</strong> (My Work board grouped by statusCategory, JQL search, an issue drawer with transition buttons + comments, and an Activity view) backed by <code>/api/jira/*</code> routes. Issue keys like <code>PROJ-123</code> are auto-linked from branch names and edit-ledger entries (acronym denylist, so UTF-8 / SHA-256 / CVE-2024 never match), and the issue drawer shows the local ledger activity for the open issue — that Activity view works with no account configured. Mutations (<code>create_issue</code>, <code>comment</code>, <code>transition</code>, <code>assign</code>) are edit-ledger-logged with identifiers only — bodies are never logged. Read actions are safe in plan mode.</p>
+          <p class="tool-desc"><strong>Surfaces &amp; audit:</strong> the per-project dashboard gets a <strong>Jira tab</strong> (My Work board grouped by statusCategory, JQL search, an issue drawer with transition buttons + comments, and an Activity view) backed by <code>/api/jira/*</code> routes. Issue keys like <code>PROJ-123</code> are auto-linked from branch names and edit-ledger entries (acronym denylist, so UTF-8 / SHA-256 / CVE-2024 never match), and the issue drawer shows the local ledger activity for the open issue — that Activity view works with no account configured. Mutations (<code>create_issue</code>, <code>update_issue</code>, <code>comment</code>, <code>transition</code>, <code>assign</code>, <code>link_issues</code>, <code>unlink_issues</code>, <code>move_to_sprint</code>, <code>move_to_backlog</code>, <code>add_worklog</code>, <code>attach_file</code>, <code>delete_issue</code>) are edit-ledger-logged with identifiers only — bodies are never logged. Read actions are safe in plan mode.</p>
         </div>
       </div>
     </div>

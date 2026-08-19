@@ -266,6 +266,8 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
           <tr><td class="grp-read"><code>get_pr</code></td>       <td><code>project, repo, pr_id</code></td><td>Full PR detail incl. version, reviewers, description, open-tasks</td></tr>
           <tr><td class="grp-read"><code>get_pr_diff</code></td>  <td><code>project, repo, pr_id, context_lines?</code></td><td>Unified diff (truncated to 6000 chars in the response)</td></tr>
           <tr><td class="grp-read"><code>get_pr_activities</code></td><td><code>project, repo, pr_id</code></td><td>PR event timeline (comments, approvals, reviewer changes)</td></tr>
+          <tr><td class="grp-read"><code>get_pr_commits</code></td><td><code>project, repo, pr_id</code></td><td>Commits on the PR, newest first</td></tr>
+          <tr><td class="grp-read"><code>list_pr_tasks</code></td><td><code>project, repo, pr_id, state?</code></td><td>PR tasks (BLOCKER-severity comments); <code>state=OPEN|RESOLVED</code> filters</td></tr>
           <tr><td class="grp-read"><code>list_branches</code></td><td><code>project, repo, filter?</code></td><td>Branches with ahead/behind counts and default-branch flag</td></tr>
           <tr><td class="grp-read"><code>list_commits</code></td> <td><code>project, repo, branch?, path?, limit?</code></td><td>Commit log on a branch / path</td></tr>
           <tr><td class="grp-read"><code>list_activity</code></td><td><code>project, repo, limit?</code></td><td>Repo activity feed (commit-based)</td></tr>
@@ -278,9 +280,15 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
         <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td class="grp-write"><code>create_pr</code></td>   <td><code>title, from_branch, to_branch, description?, reviewers?</code></td><td>Open a new PR. <code>reviewers</code> may be a list or comma-separated string.</td></tr>
+          <tr><td class="grp-write"><code>update_pr</code></td>   <td><code>pr_id, title?, description?, to_branch?, reviewers?</code></td><td>Edit an open PR. Unchanged fields are merged from the live PR; the current version is auto-fetched. <code>reviewers</code> is the full replacement set.</td></tr>
           <tr><td class="grp-write"><code>comment_pr</code></td>  <td><code>pr_id, body</code></td>            <td>Add a top-level comment</td></tr>
+          <tr><td class="grp-write"><code>update_pr_comment</code></td><td><code>pr_id, comment_id, body</code></td><td>Edit a comment's text. The comment's current version is auto-fetched.</td></tr>
+          <tr><td class="grp-write"><code>delete_pr_comment</code></td><td><code>pr_id, comment_id</code></td> <td>Delete a comment (version auto-fetched)</td></tr>
+          <tr><td class="grp-write"><code>create_pr_task</code></td><td><code>pr_id, body</code></td>          <td>Open a task on the PR — a BLOCKER-severity comment that gates merge</td></tr>
+          <tr><td class="grp-write"><code>resolve_pr_task</code></td><td><code>pr_id, comment_id</code></td>   <td>Resolve a task by its id (from <code>list_pr_tasks</code>)</td></tr>
           <tr><td class="grp-write"><code>approve_pr</code></td>  <td><code>pr_id</code></td>                  <td>Mark the PR approved as the current user</td></tr>
           <tr><td class="grp-write"><code>unapprove_pr</code></td><td><code>pr_id</code></td>                  <td>Withdraw approval</td></tr>
+          <tr><td class="grp-write"><code>needs_work_pr</code></td><td><code>pr_id</code></td>                 <td>Mark the PR "needs work" as the current user (the third reviewer verdict)</td></tr>
           <tr><td class="grp-write"><code>decline_pr</code></td>  <td><code>pr_id</code></td>                  <td>Decline the PR. Auto-fetches the current PR version first.</td></tr>
           <tr><td class="grp-write"><code>merge_pr</code></td>    <td><code>pr_id, message?</code></td>        <td>Merge the PR. Auto-fetches the current PR version first; logs to the C3 edit ledger.</td></tr>
         </tbody>
@@ -365,9 +373,10 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
       <table class="params-table">
         <thead><tr><th>Action</th><th>Why it's logged</th></tr></thead>
         <tbody>
-          <tr><td><code>create_pr</code></td>            <td>New PR opened — relevant for review timeline</td></tr>
-          <tr><td><code>comment_pr</code></td>           <td>Discussion contribution worth recovering on / clear</td></tr>
-          <tr><td><code>approve_pr</code> / <code>unapprove_pr</code></td><td>Reviewer state changes</td></tr>
+          <tr><td><code>create_pr</code> / <code>update_pr</code></td><td>PR opened or its title/description/reviewers/target edited — relevant for review timeline</td></tr>
+          <tr><td><code>comment_pr</code> / <code>update_pr_comment</code> / <code>delete_pr_comment</code></td><td>Discussion contributions worth recovering on / clear</td></tr>
+          <tr><td><code>create_pr_task</code> / <code>resolve_pr_task</code></td><td>Merge-gating task opened or closed</td></tr>
+          <tr><td><code>approve_pr</code> / <code>unapprove_pr</code> / <code>needs_work_pr</code></td><td>Reviewer state changes</td></tr>
           <tr><td><code>decline_pr</code></td>           <td>PR closed without merge</td></tr>
           <tr><td><code>merge_pr</code></td>             <td>Code now lives in the target branch — high-impact</td></tr>
           <tr><td><code>create_branch</code> / <code>delete_branch</code></td><td>Branch topology changed</td></tr>
