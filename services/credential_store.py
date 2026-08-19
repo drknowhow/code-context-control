@@ -601,7 +601,13 @@ def _validate_structured(ctype: str, fields: dict) -> dict:
                 "field 'site_id' must be lowercase alphanumeric with "
                 "'.', '_' or '-' (max 64 chars)")
         out["canonical_origin"] = _normalize_origin(out["canonical_origin"])
-        seed = re.sub(r"[ -]", "", out.get("totp_secret", "")).upper()
+        # `[\s\-]`, NOT `[ -]`: the latter is a character RANGE from space
+        # (0x20) to hyphen (0x2D) and therefore swallows the digits 2-7 that
+        # base32 is built from. A seed pasted in the usual spaced form would
+        # have its digits silently deleted, still pass the base32 check, and
+        # then generate wrong codes forever — indistinguishable from a wrong
+        # password. Found by the broker's RFC 6238 vectors after this shipped.
+        seed = re.sub(r"[\s\-]", "", out.get("totp_secret", "")).upper()
         if seed:
             # base32 alphabet only; a malformed seed silently producing wrong
             # codes looks like a password failure and sends you debugging the
