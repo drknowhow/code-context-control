@@ -9,9 +9,17 @@ credential is c3_shell: ``env_creds='NAME1,NAME2'`` (env injection) or
 ``{{cred:NAME}}`` in the command (server-side expansion) — the decoded value
 never enters model context.
 
-Structured kinds (address/identity/card) go further: reveal is permanently
+Structured kinds (address/identity/card/login) go further: reveal is permanently
 disabled regardless of flags, and only individual FIELDS are addressable —
 ``env_creds='CARD.number'`` or ``{{cred:CARD.number}}``.
+
+``login`` is storage only. C3 has no browser surface and must not grow one:
+a login runner in which the AGENT chooses the destination URL turns page-content
+prompt injection into credential exfiltration, and a guard written into a script
+that already holds the plaintext is not a boundary. The ``canonical_origin``
+field is stored (https-only, normalized) so that a separate, out-of-process
+runner can pin the credential to one origin and validate the live top-level
+frame before typing. That runner is deliberately somebody else's package.
 """
 from __future__ import annotations
 

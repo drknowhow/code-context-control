@@ -4,6 +4,45 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — the vault can hold a website login, and C3 still refuses to use one
+
+**New structured kind: `login`.** Fields are `site_id`,
+`canonical_origin`, `username`, `password` and an optional
+`totp_secret`. It inherits the existing inject-only machinery
+unchanged: `agent_readable` and `inject` are refused, `reveal` is
+permanently disabled, the whole payload is never resolvable, and only
+individual fields are addressable (`env_creds='GH.password'` →
+`$GH_PASSWORD`, or `{{cred:GH.password}}`).
+
+The reason this is worth a type of its own rather than a `token` entry
+holding a password: on a `token`, `agent_readable` and `reveal` *can*
+be turned on. On a structured kind they cannot be, by construction.
+
+**`canonical_origin` is validated and stored normalized** — https only,
+`scheme://host[:port]`, no path, query, fragment or userinfo, host
+lowercased. A stored origin carrying a path makes prefix comparison
+ambiguous downstream, and ambiguity in an origin check is the whole
+attack. `totp_secret` must be base32; a malformed seed produces wrong
+codes that look like password failures.
+
+**C3 does not log in to anything, and must not learn how.** There is no
+browser surface in this package and this change does not add one. A
+login runner in which the *agent* chooses the destination URL converts
+page-content prompt injection into credential exfiltration, and a guard
+written into a script that already holds the plaintext in its own
+environment is not a boundary — the script can simply not call it.
+`canonical_origin` is stored so that a separate, out-of-process runner
+that the agent does not author can pin a credential to exactly one
+origin and validate the live top-level frame before typing. That runner
+is deliberately not shipped here.
+
+Registry projection for a `login` entry is `{site_id, origin,
+has_totp}`. The username is withheld on purpose: username + origin is
+half the credential, and the registry is the part of the record that
+non-secret surfaces are allowed to render.
+
 ## [2.89.1] - 2026-08-19
 
 ### Fixed — a project merge uninstalled C3 from the whole machine, and the JSX checker could never start on Windows

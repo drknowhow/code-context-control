@@ -40,8 +40,9 @@ KEYRING_SERVICE = "c3-creds"
 # Plain kinds hold one opaque value; structured kinds hold a JSON object of
 # named fields, addressed as NAME.field at the injection boundary and never
 # resolvable whole (get_value without a field returns None for them).
-VALID_TYPES = ("token", "env", "multiline", "address", "identity", "card")
-STRUCTURED_TYPES = frozenset({"address", "identity", "card"})
+VALID_TYPES = ("token", "env", "multiline", "address", "identity", "card",
+               "login")
+STRUCTURED_TYPES = frozenset({"address", "identity", "card", "login"})
 VALID_SCOPES = ("project", "global")
 FILE_STORAGE_THRESHOLD = 1024  # bytes; larger values go to the encrypted sidecar
 
@@ -413,7 +414,7 @@ def _file_delete(scope: str, project_path: str, name: str) -> bool:
         return False
 
 
-# ── Structured kinds (address / identity / card) ─────────
+# ── Structured kinds (address / identity / card / login) ─
 # One canonical JSON object per entry, stored through the same
 # keyring/Fernet path as any other value. Validation errors name FIELD
 # NAMES only — never the submitted content, which would put the very
@@ -432,6 +433,16 @@ _SCHEMAS: dict = {
     "identity": {
         "required": ("full_name",),
         "optional": ("dob", "ssn", "phone", "email"),
+    },
+    # A website login. STORAGE ONLY — C3 never drives a browser and never
+    # types these anywhere. `canonical_origin` is the binding that a external
+    # runner (BrowControl's out-of-process auth broker) is required to check
+    # against the live top-level frame BEFORE typing, which is why it lives in
+    # the record rather than being passed in by the caller: an agent that can
+    # choose the destination can exfiltrate the password to it.
+    "login": {
+        "required": ("site_id", "canonical_origin", "username", "password"),
+        "optional": ("totp_secret",),
     },
 }
 
@@ -486,6 +497,45 @@ def _normalize_expiry(raw: str) -> str:
                 and len(year) in (2, 4):
             return f"{int(month):02d}/{year[-2:]}"
     raise CredentialError("field 'expiry' must be MM/YY (or MM/YYYY, YYYY-MM)")
+
+
+_SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def _normalize_origin(raw: str) -> str:
+    """Accept an https origin; return scheme://host[:port] lowercased.
+
+    Rejects anything that is not a bare origin. A path, query or fragment in
+    a stored origin would make prefix-style comparison in a downstream runner
+    ambiguous, and ambiguity in an origin check is the whole attack. http:// is
+    refused outright — typing a password over cleartext is never correct, and
+    an attacker who can force a downgrade should not also inherit a match.
+    """
+    s = (raw or "").strip().rstrip("/")
+    if "://" not in s:
+        raise CredentialError(
+            "field 'canonical_origin' must be a full origin, e.g. "
+            "https://example.com")
+    scheme, _, rest = s.partition("://")
+    scheme = scheme.lower()
+    if scheme != "https":
+        raise CredentialError("field 'canonical_origin' must use https")
+    if any(ch in rest for ch in "/?#"):
+        raise CredentialError(
+            "field 'canonical_origin' must be scheme://host[:port] only — "
+            "no path, query or fragment")
+    if "@" in rest:
+        raise CredentialError(
+            "field 'canonical_origin' must not contain userinfo")
+    host, _, port = rest.partition(":")
+    host = host.lower()
+    if not host or not re.match(r"^[a-z0-9.-]+$", host) or ".." in host:
+        raise CredentialError("field 'canonical_origin' has an invalid host")
+    if port:
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            raise CredentialError("field 'canonical_origin' has an invalid port")
+        return f"https://{host}:{int(port)}"
+    return f"https://{host}"
 
 
 def parse_structured_value(value) -> dict:
@@ -545,6 +595,21 @@ def _validate_structured(ctype: str, fields: dict) -> dict:
         cvc = out.get("cvc", "")
         if cvc and (not cvc.isdigit() or not 3 <= len(cvc) <= 4):
             raise CredentialError("field 'cvc' must be 3-4 digits")
+    if ctype == "login":
+        if not _SITE_ID_RE.match(out["site_id"]):
+            raise CredentialError(
+                "field 'site_id' must be lowercase alphanumeric with "
+                "'.', '_' or '-' (max 64 chars)")
+        out["canonical_origin"] = _normalize_origin(out["canonical_origin"])
+        seed = re.sub(r"[ -]", "", out.get("totp_secret", "")).upper()
+        if seed:
+            # base32 alphabet only; a malformed seed silently producing wrong
+            # codes looks like a password failure and sends you debugging the
+            # wrong half of the login.
+            if not re.match(r"^[A-Z2-7]+=*$", seed):
+                raise CredentialError(
+                    "field 'totp_secret' must be base32 (A-Z, 2-7)")
+            out["totp_secret"] = seed
     return out
 
 
@@ -563,6 +628,15 @@ def _display_projection(ctype: str, fields: dict) -> dict:
         return {"city": fields.get("city", ""), "state": fields.get("state", "")}
     if ctype == "identity":
         return {"label": fields.get("full_name", "")}
+    if ctype == "login":
+        # site_id and origin only. The username is deliberately withheld:
+        # username + origin is half the credential, and the registry is the
+        # one part of this record that non-secret surfaces are allowed to
+        # render. `has_totp` is a boolean so the UI can show a 2FA badge
+        # without the seed going anywhere near a projection.
+        return {"site_id": fields.get("site_id", ""),
+                "origin": fields.get("canonical_origin", ""),
+                "has_totp": bool(fields.get("totp_secret"))}
     return {}
 
 
