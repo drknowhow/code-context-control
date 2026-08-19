@@ -364,6 +364,44 @@ class BitbucketDataCenterClient:
             body=body,
         )
 
+    def update_pull_request(
+        self,
+        project_key: str,
+        repo_slug: str,
+        pr_id: int,
+        *,
+        version: int,
+        title: str,
+        description: str = "",
+        to_branch: str = "",
+        reviewers: list[str] | None = None,
+    ) -> dict:
+        """Edit an open PR (title/description/reviewers/target branch).
+
+        Bitbucket's PUT replaces the record, so callers pass the FULL desired
+        state — title is always required, and ``reviewers`` is the complete
+        reviewer set (``None`` = field omitted entirely, which Bitbucket
+        treats as "leave unchanged" only for toRef, not reviewers — the tool
+        layer merges current values before calling). ``version`` is the PR's
+        current version for optimistic locking."""
+        body: dict[str, Any] = {
+            "version": version,
+            "title": title,
+            "description": description,
+        }
+        if reviewers is not None:
+            body["reviewers"] = [{"user": {"name": u}} for u in reviewers]
+        if to_branch:
+            body["toRef"] = {
+                "id": to_branch if to_branch.startswith("refs/") else f"refs/heads/{to_branch}",
+                "repository": {"slug": repo_slug, "project": {"key": project_key}},
+            }
+        return self._request(
+            "PUT",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}",
+            body=body,
+        )
+
     def comment_on_pr(
         self, project_key: str, repo_slug: str, pr_id: int, *, text: str
     ) -> dict:
@@ -371,6 +409,81 @@ class BitbucketDataCenterClient:
             "POST",
             f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/comments",
             body={"text": text},
+        )
+
+    def get_pr_commits(
+        self, project_key: str, repo_slug: str, pr_id: int
+    ) -> list[dict]:
+        return list(self._paged(
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/commits"
+        ))
+
+    def get_pr_comment(
+        self, project_key: str, repo_slug: str, pr_id: int, comment_id: int
+    ) -> dict:
+        return self._request(
+            "GET",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/comments/{comment_id}",
+        )
+
+    def update_pr_comment(
+        self, project_key: str, repo_slug: str, pr_id: int, comment_id: int, *,
+        version: int, text: str,
+    ) -> dict:
+        """Edit a comment's text. ``version`` is the comment's current
+        version (optimistic locking, same scheme as PRs)."""
+        return self._request(
+            "PUT",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/comments/{comment_id}",
+            body={"text": text, "version": version},
+        )
+
+    def delete_pr_comment(
+        self, project_key: str, repo_slug: str, pr_id: int, comment_id: int, *,
+        version: int,
+    ) -> dict:
+        return self._request(
+            "DELETE",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/comments/{comment_id}",
+            params={"version": version},
+        )
+
+    # PR tasks. Since Bitbucket 7.2 a task IS a comment with severity
+    # BLOCKER; the standalone /tasks API was removed. Listing uses the
+    # dedicated blocker-comments endpoint, resolution is a comment-state
+    # transition.
+    def list_pr_tasks(
+        self, project_key: str, repo_slug: str, pr_id: int, *, state: str = ""
+    ) -> list[dict]:
+        params = {"state": state} if state else None
+        return list(self._paged(
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/blocker-comments",
+            params=params,
+        ))
+
+    def create_pr_task(
+        self, project_key: str, repo_slug: str, pr_id: int, *, text: str
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/comments",
+            body={"text": text, "severity": "BLOCKER"},
+        )
+
+    def set_pr_task_state(
+        self, project_key: str, repo_slug: str, pr_id: int, comment_id: int, *,
+        version: int, state: str,
+    ) -> dict:
+        """``state`` is ``RESOLVED`` or ``OPEN``."""
+        return self._request(
+            "PUT",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/comments/{comment_id}",
+            body={"state": state, "version": version},
         )
 
     def approve_pr(
@@ -387,6 +500,20 @@ class BitbucketDataCenterClient:
         return self._request(
             "DELETE",
             f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/approve",
+        )
+
+    def set_pr_reviewer_status(
+        self, project_key: str, repo_slug: str, pr_id: int, *,
+        user_slug: str, status: str,
+    ) -> dict:
+        """Set the AUTHENTICATED user's review verdict on a PR —
+        ``UNAPPROVED`` / ``NEEDS_WORK`` / ``APPROVED``. Bitbucket only lets a
+        user set their own status, so ``user_slug`` must be the caller's."""
+        return self._request(
+            "PUT",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
+            f"/participants/{urllib.parse.quote(user_slug)}",
+            body={"status": status},
         )
 
     def decline_pr(

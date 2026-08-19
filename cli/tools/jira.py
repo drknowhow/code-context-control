@@ -6,6 +6,7 @@ OS keyring, mutating actions logged to the edit ledger, responses capped.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from core import count_tokens
@@ -17,14 +18,26 @@ _TOOL = "c3_jira"
 _RESPONSE_TOKEN_CAP = 2400
 
 # Actions that change Jira state — flagged for ledger logging.
-_MUTATING_ACTIONS = {"create_issue", "update_issue", "comment", "transition", "assign"}
+_MUTATING_ACTIONS = {
+    "create_issue", "update_issue", "comment", "transition", "assign",
+    "link_issues", "unlink_issues", "delete_issue",
+    "move_to_sprint", "move_to_backlog", "add_worklog", "attach_file",
+}
 
 _VALID_ACTIONS = sorted([
     "status", "whoami", "search", "get_issue", "my_issues",
     "list_projects", "list_transitions", "get_create_metadata",
-    "search_users",
+    "search_users", "list_link_types",
+    "list_boards", "list_sprints", "list_worklogs",
     "create_issue", "update_issue", "comment", "transition", "assign",
+    "link_issues", "unlink_issues", "delete_issue",
+    "move_to_sprint", "move_to_backlog", "add_worklog", "attach_file",
 ])
+
+# Attachment uploads are read fully into memory before the multipart POST;
+# Jira's own default cap is 10MB — this local guard just prevents runaway
+# reads before the server would reject the file anyway.
+_ATTACH_MAX_BYTES = 20 * 1024 * 1024
 
 # Required-field ids Jira satisfies from the create payload / auth context.
 _AUTO_FIELD_IDS = {"project", "issuetype", "summary", "reporter"}
@@ -109,6 +122,19 @@ def _format_issue_full(i: dict) -> str:
     ]
     if i.get("labels"):
         lines.append(f"  labels: {', '.join(i['labels'])}")
+    if i.get("parent"):
+        lines.append(f"  parent: {i['parent']}")
+    for link in i.get("links", []):
+        status = f" [{link['status']}]" if link.get("status") else ""
+        lines.append(
+            f"  link: {link.get('description')} {link.get('issue')}{status} "
+            f"(id={link.get('id')})"
+        )
+    for a in i.get("attachments", []):
+        lines.append(
+            f"  attachment: {a.get('filename')} ({a.get('size')} bytes, "
+            f"{a.get('author')}) id={a.get('id')}"
+        )
     if i.get("description"):
         lines.append("  description:")
         lines.extend(f"    {ln}" for ln in i["description"].splitlines())
@@ -305,7 +331,8 @@ def _act_create_issue(client: JiraClient, entry: dict, kwargs: dict) -> str:
             )
 
     created = client.create_issue(
-        project, issue_type, summary, description=description, fields=extra
+        project, issue_type, summary, description=description, fields=extra,
+        parent=(kwargs.get("parent") or "").strip(),
     )
     return f"[jira:created] {created.get('key', '?')} — {summary}"
 
@@ -316,18 +343,204 @@ def _act_update_issue(client: JiraClient, issue: str, kwargs: dict) -> str:
         return err
     summary = (kwargs.get("summary") or "").strip()
     description = kwargs.get("description") or ""
-    if not summary and not description and not extra:
+    parent = (kwargs.get("parent") or "").strip()
+    if not summary and not description and not extra and not parent:
         return (
             "[jira:error] update_issue needs at least one of summary, "
-            "description, or fields JSON (field ids -> values)"
+            "description, parent (epic/parent key, 'none' clears), or "
+            "fields JSON (field ids -> values)"
         )
-    client.update_issue(
-        issue, summary=summary, description=description, fields=extra
-    )
+    if summary or description or extra:
+        client.update_issue(
+            issue, summary=summary, description=description, fields=extra
+        )
+    if parent:
+        # Separate call: the deployment backend maps `parent` to its native
+        # field (Cloud parent field vs Data Center Epic Link customfield).
+        client.set_parent(issue, parent)
     changed = [name for name, value in
                (("summary", summary), ("description", description)) if value]
     changed.extend(sorted(extra or {}))
+    if parent:
+        changed.append("parent" if parent.lower() not in {"none", "clear"}
+                       else "parent (cleared)")
     return f"[jira:updated] {issue} — {', '.join(changed)}"
+
+
+def _act_list_link_types(client: JiraClient) -> str:
+    types = client.list_link_types()
+    if not types:
+        return "[jira:list_link_types] 0 link types"
+    lines = [f"[jira:list_link_types] {len(types)} type(s)"]
+    lines.extend(
+        f"  {t['name']}: outward={t['outward']!r} inward={t['inward']!r}"
+        for t in types
+    )
+    return "\n".join(lines)
+
+
+def _act_link_issues(client: JiraClient, issue: str, kwargs: dict) -> str:
+    link_type = (kwargs.get("link_type") or "").strip()
+    target = (kwargs.get("target") or "").strip()
+    if not link_type or not target:
+        return (
+            "[jira:error] link_type and target are required for link_issues — "
+            "the link reads '<issue> <link_type> <target>' "
+            "(e.g. issue=PROJ-1 link_type=blocks target=PROJ-2)"
+        )
+    # Resolve against the server's catalog: accept the type name or either
+    # directional phrasing; an inward match ("is blocked by") flips the pair.
+    inward, outward, name, description = issue, target, link_type, link_type
+    try:
+        types = client.list_link_types()
+    except JiraError:
+        types = []  # catalog unavailable — pass the raw name through
+    if types:
+        needle = link_type.lower()
+        match = next(
+            (t for t in types
+             if needle in {t["name"].lower(), t["outward"].lower()}), None
+        )
+        if match is None:
+            match = next(
+                (t for t in types if needle == t["inward"].lower()), None
+            )
+            if match is not None:
+                inward, outward = target, issue
+        if match is None:
+            catalog = "\n".join(
+                f"  {t['name']}: outward={t['outward']!r} inward={t['inward']!r}"
+                for t in types
+            )
+            return (
+                f"[jira:error] unknown link type {link_type!r}. "
+                f"Available:\n{catalog}"
+            )
+        name, description = match["name"], match["outward"]
+    client.link_issues(name, inward, outward)
+    return f"[jira:linked] {inward} {description} {outward}"
+
+
+def _act_unlink_issues(client: JiraClient, kwargs: dict) -> str:
+    link_id = str(kwargs.get("link_id") or "").strip()
+    if not link_id:
+        return (
+            "[jira:error] link_id is required for unlink_issues — "
+            "link ids appear on get_issue's link lines"
+        )
+    client.unlink_issues(link_id)
+    return f"[jira:unlinked] link {link_id} removed"
+
+
+def _act_delete_issue(client: JiraClient, issue: str, kwargs: dict) -> str:
+    delete_subtasks = bool(kwargs.get("delete_subtasks"))
+    client.delete_issue(issue, delete_subtasks=delete_subtasks)
+    suffix = " (with subtasks)" if delete_subtasks else ""
+    return f"[jira:deleted] {issue}{suffix} — permanent, not recoverable via the API"
+
+
+def _split_issue_keys(issue: str) -> list[str]:
+    return [k.strip() for k in issue.split(",") if k.strip()]
+
+
+def _act_list_boards(client: JiraClient, entry: dict, kwargs: dict) -> str:
+    project = (kwargs.get("project") or "").strip() or entry.get("default_project", "")
+    boards = client.list_boards(
+        project=project, limit=int(kwargs.get("limit") or 50)
+    )
+    if not boards:
+        scope = f" for {project}" if project else ""
+        return f"[jira:list_boards] 0 boards{scope}"
+    lines = [f"[jira:list_boards] {len(boards)} board(s)"]
+    lines.extend(
+        f"  {b['id']}: {b['name']} ({b['type']}) {b.get('project', '')}".rstrip()
+        for b in boards
+    )
+    return "\n".join(lines)
+
+
+def _act_list_sprints(client: JiraClient, kwargs: dict) -> str:
+    board_id = int(kwargs.get("board_id") or 0)
+    if not board_id:
+        return (
+            "[jira:error] board_id is required for list_sprints — "
+            "find it via list_boards"
+        )
+    sprints = client.list_sprints(
+        board_id,
+        state=(kwargs.get("sprint_state") or "").strip(),
+        limit=int(kwargs.get("limit") or 50),
+    )
+    if not sprints:
+        return f"[jira:list_sprints] board {board_id}: 0 sprints"
+    lines = [f"[jira:list_sprints] board {board_id}: {len(sprints)} sprint(s)"]
+    for s in sprints:
+        window = f" {s['start'][:10]}..{s['end'][:10]}" \
+            if s.get("start") or s.get("end") else ""
+        goal = f" — {s['goal']}" if s.get("goal") else ""
+        lines.append(f"  {s['id']}: {s['name']} [{s['state']}]{window}{goal}")
+    return "\n".join(lines)
+
+
+def _act_move_to_sprint(client: JiraClient, issue: str, kwargs: dict) -> str:
+    sprint_id = int(kwargs.get("sprint_id") or 0)
+    if not sprint_id:
+        return (
+            "[jira:error] sprint_id is required for move_to_sprint — "
+            "find it via list_sprints"
+        )
+    keys = _split_issue_keys(issue)
+    client.move_to_sprint(sprint_id, keys)
+    return f"[jira:moved] {', '.join(keys)} -> sprint {sprint_id}"
+
+
+def _act_move_to_backlog(client: JiraClient, issue: str) -> str:
+    keys = _split_issue_keys(issue)
+    client.move_to_backlog(keys)
+    return f"[jira:moved] {', '.join(keys)} -> backlog"
+
+
+def _act_add_worklog(client: JiraClient, issue: str, kwargs: dict) -> str:
+    time_spent = (kwargs.get("time_spent") or "").strip()
+    if not time_spent:
+        return (
+            "[jira:error] time_spent is required for add_worklog — "
+            "Jira duration syntax, e.g. '2h 30m' or '1d'"
+        )
+    worklog = client.add_worklog(issue, time_spent, comment=kwargs.get("body") or "")
+    return f"[jira:worklog-added] {issue} {time_spent} (id={worklog.get('id', '?')})"
+
+
+def _act_list_worklogs(client: JiraClient, issue: str) -> str:
+    logs = client.list_worklogs(issue)
+    if not logs:
+        return f"[jira:list_worklogs] {issue}: 0 worklogs"
+    lines = [f"[jira:list_worklogs] {issue}: {len(logs)} worklog(s)"]
+    for w in logs:
+        comment = f" — {w['comment']}" if w.get("comment") else ""
+        lines.append(
+            f"  {w['id']}: {w['time_spent']} by {w['author']} "
+            f"{(w.get('started') or '')[:16]}{comment}"
+        )
+    return "\n".join(lines)
+
+
+def _act_attach_file(client: JiraClient, issue: str, kwargs: dict) -> str:
+    file_path = (kwargs.get("file_path") or "").strip()
+    if not file_path:
+        return "[jira:error] file_path is required for attach_file"
+    path = Path(file_path)
+    if not path.is_file():
+        return f"[jira:error] file not found: {file_path}"
+    size = path.stat().st_size
+    if size > _ATTACH_MAX_BYTES:
+        return (
+            f"[jira:error] {path.name} is {size} bytes — attach_file caps at "
+            f"{_ATTACH_MAX_BYTES} bytes (Jira's own default limit is lower still)"
+        )
+    created = client.attach_file(issue, path.name, path.read_bytes())
+    names = ", ".join(a.get("filename", "?") for a in created) or path.name
+    return f"[jira:attached] {issue} <- {names} ({size} bytes)"
 
 
 def _act_comment(client: JiraClient, issue: str, kwargs: dict) -> str:
@@ -448,7 +661,9 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
 
     issue = (kwargs.get("issue") or "").strip()
     if action in {"get_issue", "list_transitions", "update_issue",
-                  "comment", "transition", "assign"} \
+                  "comment", "transition", "assign", "link_issues",
+                  "delete_issue", "move_to_sprint", "move_to_backlog",
+                  "add_worklog", "list_worklogs", "attach_file"} \
             and not issue:
         return finalize(
             _TOOL, args_for_log,
@@ -474,6 +689,28 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
             resp = _act_create_metadata(client, entry, kwargs)
         elif action == "search_users":
             resp = _act_search_users(client, kwargs)
+        elif action == "list_link_types":
+            resp = _act_list_link_types(client)
+        elif action == "link_issues":
+            resp = _act_link_issues(client, issue, kwargs)
+        elif action == "unlink_issues":
+            resp = _act_unlink_issues(client, kwargs)
+        elif action == "delete_issue":
+            resp = _act_delete_issue(client, issue, kwargs)
+        elif action == "list_boards":
+            resp = _act_list_boards(client, entry, kwargs)
+        elif action == "list_sprints":
+            resp = _act_list_sprints(client, kwargs)
+        elif action == "move_to_sprint":
+            resp = _act_move_to_sprint(client, issue, kwargs)
+        elif action == "move_to_backlog":
+            resp = _act_move_to_backlog(client, issue)
+        elif action == "add_worklog":
+            resp = _act_add_worklog(client, issue, kwargs)
+        elif action == "list_worklogs":
+            resp = _act_list_worklogs(client, issue)
+        elif action == "attach_file":
+            resp = _act_attach_file(client, issue, kwargs)
         elif action == "create_issue":
             resp = _act_create_issue(client, entry, kwargs)
         elif action == "update_issue":

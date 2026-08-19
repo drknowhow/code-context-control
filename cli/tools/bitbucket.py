@@ -23,8 +23,10 @@ _DIFF_PREVIEW_CHARS = 6000  # diffs above this are truncated
 
 # Actions that change repo state — flagged for ledger logging.
 _MUTATING_ACTIONS = {
-    "create_pr", "comment_pr", "approve_pr", "unapprove_pr",
-    "decline_pr", "merge_pr",
+    "create_pr", "update_pr", "comment_pr", "approve_pr", "unapprove_pr",
+    "needs_work_pr", "decline_pr", "merge_pr",
+    "update_pr_comment", "delete_pr_comment",
+    "create_pr_task", "resolve_pr_task",
     "create_branch", "delete_branch",
     "update_repo_settings", "create_webhook", "delete_webhook",
 }
@@ -32,8 +34,10 @@ _MUTATING_ACTIONS = {
 # Actions that can fall back to default_project/default_repo from config.
 _REPO_SCOPED = {
     "list_repos", "get_repo", "list_prs", "get_pr", "get_pr_diff",
-    "get_pr_activities", "create_pr", "comment_pr", "approve_pr",
-    "unapprove_pr", "decline_pr", "merge_pr", "list_branches",
+    "get_pr_activities", "get_pr_commits", "create_pr", "update_pr",
+    "comment_pr", "update_pr_comment", "delete_pr_comment", "approve_pr",
+    "unapprove_pr", "needs_work_pr", "decline_pr", "merge_pr",
+    "list_pr_tasks", "create_pr_task", "resolve_pr_task", "list_branches",
     "create_branch", "delete_branch", "list_commits", "list_activity",
     "repo_settings", "update_repo_settings", "list_webhooks",
     "create_webhook", "delete_webhook", "list_permissions",
@@ -303,6 +307,40 @@ def _act_create_pr(client, project: str, repo: str, kwargs: dict) -> str:
     return f"[bitbucket:created]\n{_format_pr_full(pr)}"
 
 
+def _act_update_pr(client, project: str, repo: str, pr_id: int, kwargs: dict) -> str:
+    title = kwargs.get("title") or ""
+    description = kwargs.get("description", "") or kwargs.get("body", "")
+    to_b = kwargs.get("to_branch") or kwargs.get("target") or ""
+    reviewers_raw = kwargs.get("reviewers")
+    if not title and not description and not to_b and not reviewers_raw:
+        return (
+            "[bitbucket:update_pr:error] nothing to change — pass at least one "
+            "of title, description, to_branch, reviewers"
+        )
+    # PUT replaces the PR record, so merge unchanged fields from the live PR.
+    pr = client.get_pull_request(project, repo, pr_id)
+    reviewers: list[str] | None = None
+    if isinstance(reviewers_raw, str) and reviewers_raw.strip():
+        reviewers = [r.strip() for r in reviewers_raw.split(",") if r.strip()]
+    elif isinstance(reviewers_raw, list) and reviewers_raw:
+        reviewers = [str(r) for r in reviewers_raw]
+    else:
+        reviewers = [
+            ((r.get("user") or {}).get("name") or "")
+            for r in pr.get("reviewers") or []
+        ]
+        reviewers = [r for r in reviewers if r]
+    updated = client.update_pull_request(
+        project, repo, pr_id,
+        version=pr.get("version", 0),
+        title=title or pr.get("title", ""),
+        description=description or pr.get("description", ""),
+        to_branch=to_b,
+        reviewers=reviewers,
+    )
+    return f"[bitbucket:updated]\n{_format_pr_full(updated)}"
+
+
 def _act_comment_pr(client, project: str, repo: str, pr_id: int, kwargs: dict) -> str:
     text = kwargs.get("body") or kwargs.get("text") or ""
     if not text:
@@ -319,6 +357,115 @@ def _act_approve_pr(client, project: str, repo: str, pr_id: int) -> str:
 def _act_unapprove_pr(client, project: str, repo: str, pr_id: int) -> str:
     client.unapprove_pr(project, repo, pr_id)
     return f"[bitbucket:unapproved] {project}/{repo}#{pr_id}"
+
+
+def _act_get_pr_commits(client, project: str, repo: str, pr_id: int) -> str:
+    commits = client.get_pr_commits(project, repo, pr_id)
+    if not commits:
+        return f"[bitbucket:pr_commits] {project}/{repo}#{pr_id}: 0 commits"
+    lines = [
+        f"[bitbucket:pr_commits] {project}/{repo}#{pr_id}: "
+        f"{len(commits)} commit(s)"
+    ]
+    lines.extend(f"  {_format_commit(c)}" for c in commits)
+    return "\n".join(lines)
+
+
+def _act_update_pr_comment(client, project: str, repo: str, pr_id: int,
+                           kwargs: dict) -> str:
+    comment_id = int(kwargs.get("comment_id") or 0)
+    text = kwargs.get("body") or kwargs.get("text") or ""
+    if not comment_id or not text:
+        return "[bitbucket:update_pr_comment:error] comment_id and body are required"
+    current = client.get_pr_comment(project, repo, pr_id, comment_id)
+    res = client.update_pr_comment(
+        project, repo, pr_id, comment_id,
+        version=current.get("version", 0), text=text,
+    )
+    return (
+        f"[bitbucket:comment-updated] {project}/{repo}#{pr_id} "
+        f"comment-id={res.get('id', comment_id)}"
+    )
+
+
+def _act_delete_pr_comment(client, project: str, repo: str, pr_id: int,
+                           kwargs: dict) -> str:
+    comment_id = int(kwargs.get("comment_id") or 0)
+    if not comment_id:
+        return "[bitbucket:delete_pr_comment:error] comment_id is required"
+    current = client.get_pr_comment(project, repo, pr_id, comment_id)
+    client.delete_pr_comment(
+        project, repo, pr_id, comment_id, version=current.get("version", 0)
+    )
+    return (
+        f"[bitbucket:comment-deleted] {project}/{repo}#{pr_id} "
+        f"comment-id={comment_id}"
+    )
+
+
+def _format_task(c: dict) -> str:
+    author = ((c.get("author") or {}).get("displayName")
+              or (c.get("author") or {}).get("name") or "?")
+    first_line = (c.get("text") or "").splitlines()[0][:120] \
+        if c.get("text") else ""
+    return f"[{c.get('state', 'OPEN')}] id={c.get('id', '?')} ({author}) {first_line}"
+
+
+def _act_list_pr_tasks(client, project: str, repo: str, pr_id: int,
+                       kwargs: dict) -> str:
+    state = (kwargs.get("state") or "").strip()
+    tasks = client.list_pr_tasks(project, repo, pr_id, state=state)
+    label = f" (state={state})" if state else ""
+    if not tasks:
+        return f"[bitbucket:pr_tasks] {project}/{repo}#{pr_id}: 0 task(s){label}"
+    lines = [
+        f"[bitbucket:pr_tasks] {project}/{repo}#{pr_id}: "
+        f"{len(tasks)} task(s){label}"
+    ]
+    lines.extend(f"  {_format_task(t)}" for t in tasks)
+    return "\n".join(lines)
+
+
+def _act_create_pr_task(client, project: str, repo: str, pr_id: int,
+                        kwargs: dict) -> str:
+    text = kwargs.get("body") or kwargs.get("text") or ""
+    if not text:
+        return "[bitbucket:create_pr_task:error] body is required"
+    res = client.create_pr_task(project, repo, pr_id, text=text)
+    return (
+        f"[bitbucket:task-created] {project}/{repo}#{pr_id} "
+        f"task-id={res.get('id', '?')}"
+    )
+
+
+def _act_resolve_pr_task(client, project: str, repo: str, pr_id: int,
+                         kwargs: dict) -> str:
+    comment_id = int(kwargs.get("comment_id") or 0)
+    if not comment_id:
+        return (
+            "[bitbucket:resolve_pr_task:error] comment_id (the task id from "
+            "list_pr_tasks) is required"
+        )
+    current = client.get_pr_comment(project, repo, pr_id, comment_id)
+    client.set_pr_task_state(
+        project, repo, pr_id, comment_id,
+        version=current.get("version", 0), state="RESOLVED",
+    )
+    return f"[bitbucket:task-resolved] {project}/{repo}#{pr_id} task-id={comment_id}"
+
+
+def _act_needs_work_pr(client, project: str, repo: str, pr_id: int) -> str:
+    me = client.whoami()
+    slug = me.get("slug") or me.get("name") or ""
+    if not slug:
+        return (
+            "[bitbucket:needs_work_pr:error] could not resolve the "
+            "authenticated user's slug (whoami returned no identity)"
+        )
+    client.set_pr_reviewer_status(
+        project, repo, pr_id, user_slug=slug, status="NEEDS_WORK"
+    )
+    return f"[bitbucket:needs-work] {project}/{repo}#{pr_id} marked by {slug}"
 
 
 def _act_decline_pr(client, project: str, repo: str, pr_id: int) -> str:
@@ -493,6 +640,8 @@ def _log_mutation(svc, action: str, project: str, repo: str, kwargs: dict, respo
     reflects platform-side state changes too. Never raises."""
     if action not in _MUTATING_ACTIONS:
         return
+    if ":error]" in response.split("\n", 1)[0]:
+        return  # validation failed — nothing actually mutated (matches jira)
     if not getattr(svc, "edit_ledger", None):
         return
     detail: dict[str, Any] = {
@@ -580,12 +729,40 @@ def handle_bitbucket(action: str, svc, finalize, **kwargs) -> str:
             if not pr_id:
                 return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
             resp = _act_get_pr_activities(client, project, repo, pr_id)
+        elif action == "get_pr_commits":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_get_pr_commits(client, project, repo, pr_id)
         elif action == "create_pr":
             resp = _act_create_pr(client, project, repo, kwargs)
+        elif action == "update_pr":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_update_pr(client, project, repo, pr_id, kwargs)
         elif action == "comment_pr":
             if not pr_id:
                 return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
             resp = _act_comment_pr(client, project, repo, pr_id, kwargs)
+        elif action == "update_pr_comment":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_update_pr_comment(client, project, repo, pr_id, kwargs)
+        elif action == "delete_pr_comment":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_delete_pr_comment(client, project, repo, pr_id, kwargs)
+        elif action == "list_pr_tasks":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_list_pr_tasks(client, project, repo, pr_id, kwargs)
+        elif action == "create_pr_task":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_create_pr_task(client, project, repo, pr_id, kwargs)
+        elif action == "resolve_pr_task":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_resolve_pr_task(client, project, repo, pr_id, kwargs)
         elif action == "approve_pr":
             if not pr_id:
                 return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
@@ -594,6 +771,10 @@ def handle_bitbucket(action: str, svc, finalize, **kwargs) -> str:
             if not pr_id:
                 return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
             resp = _act_unapprove_pr(client, project, repo, pr_id)
+        elif action == "needs_work_pr":
+            if not pr_id:
+                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
+            resp = _act_needs_work_pr(client, project, repo, pr_id)
         elif action == "decline_pr":
             if not pr_id:
                 return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
@@ -631,8 +812,11 @@ def handle_bitbucket(action: str, svc, finalize, **kwargs) -> str:
                 "status", "whoami",
                 "list_projects", "list_repos", "get_repo",
                 "list_prs", "get_pr", "get_pr_diff", "get_pr_activities",
-                "create_pr", "comment_pr", "approve_pr", "unapprove_pr",
-                "decline_pr", "merge_pr",
+                "get_pr_commits",
+                "create_pr", "update_pr", "comment_pr", "update_pr_comment",
+                "delete_pr_comment", "approve_pr",
+                "unapprove_pr", "needs_work_pr", "decline_pr", "merge_pr",
+                "list_pr_tasks", "create_pr_task", "resolve_pr_task",
                 "list_branches", "create_branch", "delete_branch",
                 "list_commits", "list_activity", "build_status",
                 "repo_settings", "update_repo_settings",

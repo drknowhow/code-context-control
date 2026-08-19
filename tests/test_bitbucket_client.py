@@ -257,6 +257,147 @@ class TestBitbucketClient(unittest.TestCase):
         self.assertTrue(captured["ua"].startswith("c3-bitbucket/"))
         self.assertNotEqual(captured["ua"], "c3-bitbucket/2.30.0")
 
+    def test_update_pull_request_puts_full_state(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"id": 42, "version": 8, "title": "New title"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.update_pull_request(
+                "PROJ", "repo", 42,
+                version=7, title="New title", description="Body",
+                to_branch="develop", reviewers=["bob"],
+            )
+
+        self.assertEqual(captured["method"], "PUT")
+        self.assertIn("/pull-requests/42", captured["url"])
+        body = captured["body"]
+        self.assertEqual(body["version"], 7)
+        self.assertEqual(body["title"], "New title")
+        self.assertEqual(body["toRef"]["id"], "refs/heads/develop")
+        self.assertEqual(body["reviewers"], [{"user": {"name": "bob"}}])
+
+    def test_update_pull_request_omits_absent_toref_and_reviewers(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"id": 42})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.update_pull_request(
+                "PROJ", "repo", 42, version=7, title="T", reviewers=None
+            )
+        self.assertNotIn("toRef", captured["body"])
+        self.assertNotIn("reviewers", captured["body"])
+
+    def test_get_pr_commits_pages_the_commits_endpoint(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            return _ok({"values": [{"id": "abc", "displayId": "abc"}],
+                        "isLastPage": True})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            commits = self.client.get_pr_commits("PROJ", "repo", 42)
+        self.assertEqual(len(commits), 1)
+        self.assertIn("/pull-requests/42/commits", captured["url"])
+
+    def test_update_pr_comment_puts_text_and_version(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"id": 17, "version": 4})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.update_pr_comment(
+                "PROJ", "repo", 42, 17, version=3, text="edited"
+            )
+        self.assertEqual(captured["method"], "PUT")
+        self.assertIn("/pull-requests/42/comments/17", captured["url"])
+        self.assertEqual(captured["body"], {"text": "edited", "version": 3})
+
+    def test_delete_pr_comment_sends_version_param(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            return _ok({})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.delete_pr_comment("PROJ", "repo", 42, 17, version=3)
+        self.assertEqual(captured["method"], "DELETE")
+        self.assertIn("/comments/17", captured["url"])
+        self.assertIn("version=3", captured["url"])
+
+    def test_create_pr_task_posts_blocker_comment(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"id": 92})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.create_pr_task("PROJ", "repo", 42, text="Fix it")
+        self.assertIn("/pull-requests/42/comments", captured["url"])
+        self.assertEqual(captured["body"],
+                         {"text": "Fix it", "severity": "BLOCKER"})
+
+    def test_list_pr_tasks_uses_blocker_comments_endpoint(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            return _ok({"values": [{"id": 91, "state": "OPEN"}],
+                        "isLastPage": True})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            tasks = self.client.list_pr_tasks("PROJ", "repo", 42, state="OPEN")
+        self.assertEqual(len(tasks), 1)
+        self.assertIn("/pull-requests/42/blocker-comments", captured["url"])
+        self.assertIn("state=OPEN", captured["url"])
+
+    def test_set_pr_task_state_puts_state_and_version(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"id": 91, "state": "RESOLVED"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.set_pr_task_state(
+                "PROJ", "repo", 42, 91, version=3, state="RESOLVED"
+            )
+        self.assertEqual(captured["body"], {"state": "RESOLVED", "version": 3})
+
+    def test_set_pr_reviewer_status_puts_participant(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _ok({"status": "NEEDS_WORK"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.set_pr_reviewer_status(
+                "PROJ", "repo", 42, user_slug="jane doe", status="NEEDS_WORK"
+            )
+
+        self.assertEqual(captured["method"], "PUT")
+        self.assertIn("/pull-requests/42/participants/jane%20doe", captured["url"])
+        self.assertEqual(captured["body"], {"status": "NEEDS_WORK"})
+
 
 if __name__ == "__main__":
     unittest.main()

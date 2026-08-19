@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable
 
 from services.jira_credentials import VALID_DEPLOYMENTS
@@ -97,9 +98,14 @@ class JiraTransport:
         body: Any = None,
         params: dict | None = None,
         is_mutation: bool | None = None,
+        raw_data: bytes | None = None,
+        content_type: str = "",
+        extra_headers: dict | None = None,
     ) -> Any:
         """One HTTP round-trip. ``is_mutation`` defaults to ``method != GET``;
-        non-mutating requests get one bounded retry on 429."""
+        non-mutating requests get one bounded retry on 429. ``raw_data`` +
+        ``content_type`` send a pre-encoded body (multipart uploads) instead
+        of JSON-encoding ``body``."""
         if is_mutation is None:
             is_mutation = method.upper() != "GET"
         full_path = path
@@ -116,8 +122,14 @@ class JiraTransport:
             "Accept": "application/json",
             "User-Agent": _USER_AGENT,
         }
+        if extra_headers:
+            headers.update(extra_headers)
         data: bytes | None = None
-        if body is not None:
+        if raw_data is not None:
+            data = raw_data
+            if content_type:
+                headers["Content-Type"] = content_type
+        elif body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
@@ -190,6 +202,17 @@ def normalize_issue(raw: dict, text_of: Callable[[Any], str]) -> dict:
         "updated": f.get("updated", ""),
         "labels": f.get("labels") or [],
     }
+    parent = f.get("parent")
+    if isinstance(parent, dict) and parent.get("key"):
+        dto["parent"] = parent["key"]
+    links = f.get("issuelinks")
+    if isinstance(links, list) and links:
+        dto["links"] = [
+            link for link in (normalize_issue_link(l) for l in links) if link
+        ]
+    attachments = f.get("attachment")
+    if isinstance(attachments, list) and attachments:
+        dto["attachments"] = [normalize_attachment(a) for a in attachments]
     if "description" in f:
         dto["description"] = text_of(f.get("description"))
     comment_block = f.get("comment")
@@ -200,6 +223,27 @@ def normalize_issue(raw: dict, text_of: Callable[[Any], str]) -> dict:
     return dto
 
 
+def normalize_issue_link(raw: dict) -> dict:
+    """Flatten one ``issuelinks`` entry to ``{id, description, issue, status}``
+    read from THIS issue's perspective — e.g. ``blocks PROJ-9`` — using the
+    link type's directional phrasing. Returns ``{}`` on a malformed entry."""
+    if not isinstance(raw, dict):
+        return {}
+    link_type = raw.get("type") or {}
+    if isinstance(raw.get("outwardIssue"), dict):
+        other, description = raw["outwardIssue"], link_type.get("outward", "")
+    elif isinstance(raw.get("inwardIssue"), dict):
+        other, description = raw["inwardIssue"], link_type.get("inward", "")
+    else:
+        return {}
+    return {
+        "id": raw.get("id", ""),
+        "description": description or link_type.get("name", "link"),
+        "issue": other.get("key", ""),
+        "status": ((other.get("fields") or {}).get("status") or {}).get("name", ""),
+    }
+
+
 def normalize_comment(raw: dict, text_of: Callable[[Any], str]) -> dict:
     return {
         "id": raw.get("id", ""),
@@ -207,6 +251,60 @@ def normalize_comment(raw: dict, text_of: Callable[[Any], str]) -> dict:
         "created": raw.get("created", ""),
         "body": text_of(raw.get("body")),
     }
+
+
+def normalize_attachment(raw: dict) -> dict:
+    return {
+        "id": raw.get("id", ""),
+        "filename": raw.get("filename", ""),
+        "size": raw.get("size", 0),
+        "author": (raw.get("author") or {}).get("displayName", ""),
+        "created": raw.get("created", ""),
+    }
+
+
+def normalize_board(raw: dict) -> dict:
+    return {
+        "id": raw.get("id", 0),
+        "name": raw.get("name", ""),
+        "type": raw.get("type", ""),
+        "project": ((raw.get("location") or {}).get("projectKey", "")),
+    }
+
+
+def normalize_sprint(raw: dict) -> dict:
+    return {
+        "id": raw.get("id", 0),
+        "name": raw.get("name", ""),
+        "state": raw.get("state", ""),
+        "start": raw.get("startDate", ""),
+        "end": raw.get("endDate", ""),
+        "goal": raw.get("goal", ""),
+    }
+
+
+def normalize_worklog(raw: dict, text_of: Callable[[Any], str]) -> dict:
+    return {
+        "id": raw.get("id", ""),
+        "author": (raw.get("author") or {}).get("displayName", ""),
+        "time_spent": raw.get("timeSpent", ""),
+        "started": raw.get("started", ""),
+        "comment": text_of(raw.get("comment")) if raw.get("comment") else "",
+    }
+
+
+def encode_multipart_file(filename: str, content: bytes) -> tuple[bytes, str]:
+    """RFC 2388 body for Jira's single-field attachment upload. Returns
+    ``(body_bytes, content_type_header_value)``."""
+    boundary = "c3-attachment-" + uuid.uuid4().hex
+    safe_name = filename.replace('"', "_").replace("\r", "_").replace("\n", "_")
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8")
+    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    return head + content + tail, f"multipart/form-data; boundary={boundary}"
 
 
 def normalize_transition(raw: dict) -> dict:
@@ -298,9 +396,13 @@ class JiraClient:
         *,
         description: str = "",
         fields: dict | None = None,
+        parent: str = "",
     ) -> dict:
+        """``parent`` is the epic (or subtask parent) issue key — mapped to
+        the deployment's native representation by the backend."""
         return self._backend.create_issue(
-            project, issue_type, summary, description=description, fields=fields
+            project, issue_type, summary,
+            description=description, fields=fields, parent=parent,
         )
 
     def update_issue(
@@ -332,3 +434,57 @@ class JiraClient:
         """Assign by the deployment-native id: ``accountId`` on Cloud,
         username on Data Center."""
         return self._backend.assign_issue(key, user_id)
+
+    def list_link_types(self) -> list[dict]:
+        """Available issue-link types as ``[{id, name, inward, outward}]``."""
+        return self._backend.list_link_types()
+
+    def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> dict:
+        """Create a link so that *inward_key* <outward-description> *outward_key*
+        (Jira renders the OUTWARD phrasing on the inward issue's panel)."""
+        return self._backend.link_issues(link_type, inward_key, outward_key)
+
+    def set_parent(self, key: str, parent: str) -> dict:
+        """Set (or with ``parent='none'`` clear) the issue's parent — the epic
+        it belongs to, or the parent of a subtask. Cloud uses the ``parent``
+        field for both; Data Center routes epics through the discovered
+        Epic Link custom field."""
+        return self._backend.set_parent(key, parent)
+
+    def unlink_issues(self, link_id: str) -> dict:
+        """Delete one issue link by id (ids appear on ``get_issue`` links)."""
+        return self._backend.unlink_issues(link_id)
+
+    def delete_issue(self, key: str, *, delete_subtasks: bool = False) -> dict:
+        """Permanently delete an issue. Jira refuses an issue that has
+        subtasks unless ``delete_subtasks`` is set."""
+        return self._backend.delete_issue(key, delete_subtasks=delete_subtasks)
+
+    # Worklogs
+    def add_worklog(self, key: str, time_spent: str, *, comment: str = "") -> dict:
+        """Log time in Jira duration syntax (``2h 30m``, ``1d``)."""
+        return self._backend.add_worklog(key, time_spent, comment=comment)
+
+    def list_worklogs(self, key: str) -> list[dict]:
+        return self._backend.list_worklogs(key)
+
+    # Attachments
+    def attach_file(self, key: str, filename: str, content: bytes) -> list[dict]:
+        """Upload one attachment; returns the created attachment DTOs."""
+        return self._backend.attach_file(key, filename, content)
+
+    # Agile (boards + sprints) — same /rest/agile/1.0 root on both deployments
+    def list_boards(self, *, project: str = "", limit: int = 50) -> list[dict]:
+        return self._backend.list_boards(project=project, limit=limit)
+
+    def list_sprints(self, board_id: int, *, state: str = "",
+                     limit: int = 50) -> list[dict]:
+        """``state`` filters (``active``, ``future``, ``closed``, or a
+        comma-list); empty returns all."""
+        return self._backend.list_sprints(board_id, state=state, limit=limit)
+
+    def move_to_sprint(self, sprint_id: int, issue_keys: list[str]) -> dict:
+        return self._backend.move_to_sprint(sprint_id, issue_keys)
+
+    def move_to_backlog(self, issue_keys: list[str]) -> dict:
+        return self._backend.move_to_backlog(issue_keys)

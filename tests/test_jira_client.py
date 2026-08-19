@@ -417,5 +417,264 @@ class TestDataCenterCreateMeta(unittest.TestCase):
         self.assertEqual([f["id"] for f in meta["required_fields"]], ["summary"])
 
 
+_FIELD_LIST = [
+    {"id": "summary", "name": "Summary"},
+    {"id": "customfield_10008", "name": "Epic Link"},
+]
+
+_LINK_TYPES = {"issueLinkTypes": [
+    {"id": "10000", "name": "Blocks",
+     "inward": "is blocked by", "outward": "blocks"},
+]}
+
+
+def _issue_of_type(type_name: str) -> dict:
+    issue = json.loads(json.dumps(_ISSUE))
+    issue["fields"]["issuetype"] = {"name": type_name}
+    return issue
+
+
+class TestLinksAndParent(unittest.TestCase):
+    def setUp(self):
+        from services import jira_data_center
+        jira_data_center._EPIC_FIELD_CACHE.clear()
+
+    # ── normalization ─────────────────────────────────────
+
+    def test_get_issue_surfaces_parent_and_links(self):
+        issue = json.loads(json.dumps(_ISSUE))
+        issue["fields"]["parent"] = {"key": "PROJ-42"}
+        issue["fields"]["issuelinks"] = [
+            {"id": "77",
+             "type": {"name": "Blocks", "inward": "is blocked by",
+                      "outward": "blocks"},
+             "outwardIssue": {"key": "PROJ-9",
+                              "fields": {"status": {"name": "Open"}}}},
+            {"id": "78",
+             "type": {"name": "Blocks", "inward": "is blocked by",
+                      "outward": "blocks"},
+             "inwardIssue": {"key": "PROJ-3", "fields": {}}},
+            {"id": "79", "type": {}},  # malformed: neither side present
+        ]
+        with mock.patch(_URLOPEN, return_value=_ok(issue)) as m:
+            dto = _cloud().get_issue("PROJ-1")
+        self.assertEqual(dto["parent"], "PROJ-42")
+        self.assertEqual(dto["links"], [
+            {"id": "77", "description": "blocks", "issue": "PROJ-9",
+             "status": "Open"},
+            {"id": "78", "description": "is blocked by", "issue": "PROJ-3",
+             "status": ""},
+        ])
+        # The narrowed field list must actually request the new fields.
+        url = m.call_args[0][0].get_full_url()
+        self.assertIn("parent", url)
+        self.assertIn("issuelinks", url)
+
+    # ── link types + linking ──────────────────────────────
+
+    def test_list_link_types_normalized_both_deployments(self):
+        for client in (_cloud(), _dc()):
+            with mock.patch(_URLOPEN, return_value=_ok(_LINK_TYPES)):
+                types = client.list_link_types()
+            self.assertEqual(types, [
+                {"id": "10000", "name": "Blocks",
+                 "inward": "is blocked by", "outward": "blocks"},
+            ])
+
+    def test_link_issues_posts_type_and_pair(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().link_issues("Blocks", "PROJ-1", "PROJ-2")
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "POST")
+        self.assertIn("/rest/api/3/issueLink", req.get_full_url())
+        self.assertEqual(json.loads(req.data.decode()), {
+            "type": {"name": "Blocks"},
+            "inwardIssue": {"key": "PROJ-1"},
+            "outwardIssue": {"key": "PROJ-2"},
+        })
+
+    # ── parent: Cloud ─────────────────────────────────────
+
+    def test_cloud_set_parent_uses_parent_field(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().set_parent("PROJ-1", "EPIC-7")
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body, {"fields": {"parent": {"key": "EPIC-7"}}})
+
+    def test_cloud_set_parent_none_clears(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().set_parent("PROJ-1", "none")
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body, {"fields": {"parent": None}})
+
+    def test_cloud_create_issue_passes_parent(self):
+        with mock.patch(_URLOPEN, return_value=_ok({"key": "PROJ-9"})) as m:
+            _cloud().create_issue("PROJ", "Task", "Child", parent="EPIC-7")
+        fields = json.loads(m.call_args[0][0].data.decode())["fields"]
+        self.assertEqual(fields["parent"], {"key": "EPIC-7"})
+
+    # ── parent: Data Center (Epic Link discovery) ─────────
+
+    def test_dc_set_parent_epic_routes_through_epic_link_field(self):
+        # GET /field (discovery) → GET parent issue → PUT with customfield.
+        with mock.patch(_URLOPEN, side_effect=[
+            _ok(_FIELD_LIST), _ok(_issue_of_type("Epic")), _ok({}),
+        ]) as m:
+            _dc().set_parent("PROJ-1", "EPIC-7")
+        put = m.call_args_list[-1][0][0]
+        self.assertEqual(put.get_method(), "PUT")
+        self.assertIn("/rest/api/2/issue/PROJ-1", put.get_full_url())
+        self.assertEqual(json.loads(put.data.decode()),
+                         {"fields": {"customfield_10008": "EPIC-7"}})
+
+    def test_dc_set_parent_non_epic_uses_parent_field(self):
+        with mock.patch(_URLOPEN, side_effect=[
+            _ok(_FIELD_LIST), _ok(_issue_of_type("Story")), _ok({}),
+        ]) as m:
+            _dc().set_parent("PROJ-2", "PROJ-1")
+        body = json.loads(m.call_args_list[-1][0][0].data.decode())
+        self.assertEqual(body, {"fields": {"parent": {"key": "PROJ-1"}}})
+
+    def test_dc_set_parent_none_clears_epic_field(self):
+        with mock.patch(_URLOPEN, side_effect=[_ok(_FIELD_LIST), _ok({})]) as m:
+            _dc().set_parent("PROJ-1", "none")
+        body = json.loads(m.call_args_list[-1][0][0].data.decode())
+        self.assertEqual(body, {"fields": {"customfield_10008": None}})
+
+    def test_dc_get_issue_maps_epic_link_to_parent(self):
+        issue = json.loads(json.dumps(_ISSUE))
+        issue["fields"]["customfield_10008"] = "EPIC-7"
+        with mock.patch(_URLOPEN, side_effect=[_ok(_FIELD_LIST), _ok(issue)]) as m:
+            dto = _dc().get_issue("PROJ-1")
+        self.assertEqual(dto["parent"], "EPIC-7")
+        # The epic field is requested explicitly (DC narrows fields).
+        url = m.call_args_list[-1][0][0].get_full_url()
+        self.assertIn("customfield_10008", url)
+
+    def test_dc_field_discovery_is_cached_per_server(self):
+        with mock.patch(_URLOPEN, side_effect=[
+            _ok(_FIELD_LIST), _ok(_ISSUE), _ok(_ISSUE),
+        ]) as m:
+            client = _dc()
+            client.get_issue("PROJ-1")
+            client.get_issue("PROJ-2")
+        # Three requests total: one /field, two /issue — not four.
+        urls = [c[0][0].get_full_url() for c in m.call_args_list]
+        self.assertEqual(sum("/field" in u for u in urls), 1)
+
+
+class TestAgileWorklogAttach(unittest.TestCase):
+    def test_cloud_add_worklog_wraps_comment_in_adf(self):
+        with mock.patch(_URLOPEN, return_value=_ok({"id": "301"})) as m:
+            _cloud().add_worklog("PROJ-1", "2h 30m", comment="pairing")
+        req = m.call_args[0][0]
+        self.assertIn("/rest/api/3/issue/PROJ-1/worklog", req.get_full_url())
+        body = json.loads(req.data.decode())
+        self.assertEqual(body["timeSpent"], "2h 30m")
+        self.assertEqual(body["comment"]["type"], "doc")
+
+    def test_dc_add_worklog_keeps_plain_comment(self):
+        with mock.patch(_URLOPEN, return_value=_ok({"id": "301"})) as m:
+            _dc().add_worklog("PROJ-1", "1d", comment="plain")
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body, {"timeSpent": "1d", "comment": "plain"})
+
+    def test_list_worklogs_normalized(self):
+        raw = {"worklogs": [{
+            "id": "301", "author": {"displayName": "Alice"},
+            "timeSpent": "2h", "started": "2026-08-18T09:00:00.000+0000",
+            "comment": adf_from_text("pairing"),
+        }]}
+        with mock.patch(_URLOPEN, return_value=_ok(raw)):
+            logs = _cloud().list_worklogs("PROJ-1")
+        self.assertEqual(logs[0]["time_spent"], "2h")
+        self.assertEqual(logs[0]["author"], "Alice")
+        self.assertEqual(logs[0]["comment"], "pairing")
+
+    def test_attach_file_sends_multipart_with_nocheck_token(self):
+        with mock.patch(_URLOPEN,
+                        return_value=_ok([{"id": "501",
+                                           "filename": "build.log",
+                                           "size": 10,
+                                           "author": {"displayName": "Alice"},
+                                           "created": ""}])) as m:
+            created = _cloud().attach_file("PROJ-1", "build.log", b"boom trace")
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "POST")
+        self.assertIn("/rest/api/3/issue/PROJ-1/attachments", req.get_full_url())
+        self.assertEqual(req.get_header("X-atlassian-token"), "no-check")
+        self.assertIn("multipart/form-data; boundary=",
+                      req.get_header("Content-type"))
+        self.assertIn(b'filename="build.log"', req.data)
+        self.assertIn(b"boom trace", req.data)
+        self.assertEqual(created, [{"id": "501", "filename": "build.log",
+                                    "size": 10, "author": "Alice",
+                                    "created": ""}])
+
+    def test_list_boards_passes_project_filter(self):
+        raw = {"values": [{"id": 7, "name": "PROJ board", "type": "scrum",
+                           "location": {"projectKey": "PROJ"}}]}
+        with mock.patch(_URLOPEN, return_value=_ok(raw)) as m:
+            boards = _cloud().list_boards(project="PROJ")
+        url = m.call_args[0][0].get_full_url()
+        self.assertIn("/rest/agile/1.0/board", url)
+        self.assertIn("projectKeyOrId=PROJ", url)
+        self.assertEqual(boards[0], {"id": 7, "name": "PROJ board",
+                                     "type": "scrum", "project": "PROJ"})
+
+    def test_list_sprints_hits_board_scoped_endpoint(self):
+        raw = {"values": [{"id": 42, "name": "Sprint 9", "state": "active",
+                           "startDate": "2026-08-10", "endDate": "2026-08-24",
+                           "goal": "Ship"}]}
+        with mock.patch(_URLOPEN, return_value=_ok(raw)) as m:
+            sprints = _dc().list_sprints(7, state="active")
+        url = m.call_args[0][0].get_full_url()
+        self.assertIn("/rest/agile/1.0/board/7/sprint", url)
+        self.assertIn("state=active", url)
+        self.assertEqual(sprints[0]["id"], 42)
+        self.assertEqual(sprints[0]["goal"], "Ship")
+
+    def test_move_to_sprint_posts_issue_list(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().move_to_sprint(42, ["PROJ-1", "PROJ-2"])
+        req = m.call_args[0][0]
+        self.assertIn("/rest/agile/1.0/sprint/42/issue", req.get_full_url())
+        self.assertEqual(json.loads(req.data.decode()),
+                         {"issues": ["PROJ-1", "PROJ-2"]})
+
+    def test_move_to_backlog_posts_issue_list(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _dc().move_to_backlog(["PROJ-1"])
+        req = m.call_args[0][0]
+        self.assertIn("/rest/agile/1.0/backlog/issue", req.get_full_url())
+        self.assertEqual(json.loads(req.data.decode()), {"issues": ["PROJ-1"]})
+
+    def test_delete_issue_sends_subtask_flag(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _cloud().delete_issue("PROJ-1", delete_subtasks=True)
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "DELETE")
+        self.assertIn("/rest/api/3/issue/PROJ-1", req.get_full_url())
+        self.assertIn("deleteSubtasks=true", req.get_full_url())
+
+    def test_unlink_issues_deletes_by_link_id(self):
+        with mock.patch(_URLOPEN, return_value=_ok({})) as m:
+            _dc().unlink_issues("77")
+        req = m.call_args[0][0]
+        self.assertEqual(req.get_method(), "DELETE")
+        self.assertIn("/rest/api/2/issueLink/77", req.get_full_url())
+
+    def test_get_issue_surfaces_attachments(self):
+        issue = json.loads(json.dumps(_ISSUE))
+        issue["fields"]["attachment"] = [{
+            "id": "501", "filename": "build.log", "size": 10,
+            "author": {"displayName": "Alice"}, "created": "2026-08-18",
+        }]
+        with mock.patch(_URLOPEN, return_value=_ok(issue)) as m:
+            dto = _cloud().get_issue("PROJ-1")
+        self.assertEqual(dto["attachments"][0]["filename"], "build.log")
+        self.assertIn("attachment", m.call_args[0][0].get_full_url())
+
+
 if __name__ == "__main__":
     unittest.main()

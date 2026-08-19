@@ -11,12 +11,18 @@ from typing import Any
 from services.jira_client import (
     JiraError,
     JiraTransport,
+    encode_multipart_file,
+    normalize_attachment,
+    normalize_board,
     normalize_comment,
     normalize_issue,
+    normalize_sprint,
     normalize_transition,
+    normalize_worklog,
 )
 
 _API = "/rest/api/2"
+_AGILE = "/rest/agile/1.0"
 
 _DEFAULT_FIELDS = (
     "summary,status,issuetype,priority,assignee,reporter,project,"
@@ -27,6 +33,12 @@ _DEFAULT_FIELDS = (
 # guard, not an expected ceiling.
 _PAGE_SIZE = 100
 _MAX_PAGES = 20
+
+# Epic Link custom-field id per base_url. DC has no first-class epic parent —
+# the link lives in a per-instance custom field ("Epic Link") whose id only
+# GET /field reveals. Discovered once per server per process; "" (no such
+# field) is a valid cached answer.
+_EPIC_FIELD_CACHE: dict[str, str] = {}
 
 
 def _text_of(value: Any) -> str:
@@ -78,10 +90,44 @@ class DataCenterBackend:
         ca_bundle: str = "",
     ):
         self._username = username
+        self._base_url = base_url
         self._t = JiraTransport(
             base_url, f"Bearer {token}",
             timeout=timeout, verify_tls=verify_tls, ca_bundle=ca_bundle,
         )
+
+    def _epic_link_field_id(self) -> str:
+        cached = _EPIC_FIELD_CACHE.get(self._base_url)
+        if cached is not None:
+            return cached
+        try:
+            fields = self._t.request("GET", f"{_API}/field")
+        except JiraError:
+            return ""  # transient failure — retry on the next call
+        field_id = next(
+            (f.get("id", "") for f in (fields if isinstance(fields, list) else [])
+             if (f.get("name") or "").strip().lower() == "epic link"),
+            "",
+        )
+        _EPIC_FIELD_CACHE[self._base_url] = field_id
+        return field_id
+
+    def _parent_fields(self, parent: str) -> dict:
+        """Field payload linking an issue under *parent*: the Epic Link
+        custom field when the parent is an Epic, the ``parent`` field
+        (subtasks) otherwise."""
+        parent_type = ""
+        try:
+            parent_type = self.get_issue(
+                parent, include_comments=False
+            ).get("issue_type", "")
+        except JiraError:
+            pass  # bad key — the write's own error is authoritative
+        if parent_type.lower() == "epic":
+            field_id = self._epic_link_field_id()
+            if field_id:
+                return {field_id: parent}
+        return {"parent": {"key": parent}}
 
     # Health / identity
     def server_info(self) -> dict:
@@ -112,11 +158,19 @@ class DataCenterBackend:
         return {"issues": issues, "next_cursor": next_cursor}
 
     def get_issue(self, key: str, *, include_comments: bool = True) -> dict:
-        fields = _DEFAULT_FIELDS + ",description"
+        fields = _DEFAULT_FIELDS + ",description,parent,issuelinks,attachment"
+        epic_field = self._epic_link_field_id()
+        if epic_field:
+            fields += f",{epic_field}"
         if include_comments:
             fields += ",comment"
         raw = self._t.request("GET", f"{_API}/issue/{key}", params={"fields": fields})
-        return normalize_issue(raw, _text_of)
+        dto = normalize_issue(raw, _text_of)
+        if epic_field and not dto.get("parent"):
+            epic_key = (raw.get("fields") or {}).get(epic_field)
+            if isinstance(epic_key, str) and epic_key:
+                dto["parent"] = epic_key
+        return dto
 
     def list_projects(self, *, query: str = "", limit: int = 50) -> list[dict]:
         projects = self._t.request("GET", f"{_API}/project")
@@ -266,6 +320,7 @@ class DataCenterBackend:
         *,
         description: str = "",
         fields: dict | None = None,
+        parent: str = "",
     ) -> dict:
         payload_fields: dict[str, Any] = {
             "project": {"key": project},
@@ -274,6 +329,8 @@ class DataCenterBackend:
         }
         if description:
             payload_fields["description"] = description
+        if parent:
+            payload_fields.update(self._parent_fields(parent))
         if fields:
             payload_fields.update(fields)
         return self._t.request(
@@ -323,4 +380,103 @@ class DataCenterBackend:
         return self._t.request(
             "PUT", f"{_API}/issue/{key}/assignee",
             body={"name": user_id}, is_mutation=True,
+        )
+
+    def list_link_types(self) -> list[dict]:
+        raw = self._t.request("GET", f"{_API}/issueLinkType")
+        return [
+            {
+                "id": t.get("id", ""),
+                "name": t.get("name", ""),
+                "inward": t.get("inward", ""),
+                "outward": t.get("outward", ""),
+            }
+            for t in raw.get("issueLinkTypes", [])
+        ]
+
+    def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> dict:
+        return self._t.request(
+            "POST", f"{_API}/issueLink",
+            body={
+                "type": {"name": link_type},
+                "inwardIssue": {"key": inward_key},
+                "outwardIssue": {"key": outward_key},
+            },
+            is_mutation=True,
+        )
+
+    def set_parent(self, key: str, parent: str) -> dict:
+        if parent.lower() in {"none", "clear"}:
+            field_id = self._epic_link_field_id()
+            cleared = {field_id: None} if field_id else {"parent": None}
+            return self._t.request(
+                "PUT", f"{_API}/issue/{key}",
+                body={"fields": cleared}, is_mutation=True,
+            )
+        return self._t.request(
+            "PUT", f"{_API}/issue/{key}",
+            body={"fields": self._parent_fields(parent)}, is_mutation=True,
+        )
+
+    def unlink_issues(self, link_id: str) -> dict:
+        return self._t.request(
+            "DELETE", f"{_API}/issueLink/{link_id}", is_mutation=True
+        )
+
+    def delete_issue(self, key: str, *, delete_subtasks: bool = False) -> dict:
+        return self._t.request(
+            "DELETE", f"{_API}/issue/{key}",
+            params={"deleteSubtasks": "true" if delete_subtasks else "false"},
+            is_mutation=True,
+        )
+
+    def add_worklog(self, key: str, time_spent: str, *, comment: str = "") -> dict:
+        body: dict[str, Any] = {"timeSpent": time_spent}
+        if comment:
+            body["comment"] = comment
+        raw = self._t.request(
+            "POST", f"{_API}/issue/{key}/worklog", body=body, is_mutation=True
+        )
+        return normalize_worklog(raw, _text_of)
+
+    def list_worklogs(self, key: str) -> list[dict]:
+        raw = self._t.request("GET", f"{_API}/issue/{key}/worklog")
+        return [normalize_worklog(w, _text_of) for w in raw.get("worklogs", [])]
+
+    def attach_file(self, key: str, filename: str, content: bytes) -> list[dict]:
+        data, content_type = encode_multipart_file(filename, content)
+        raw = self._t.request(
+            "POST", f"{_API}/issue/{key}/attachments",
+            raw_data=data, content_type=content_type,
+            extra_headers={"X-Atlassian-Token": "no-check"},
+            is_mutation=True,
+        )
+        return [normalize_attachment(a)
+                for a in (raw if isinstance(raw, list) else [])]
+
+    def list_boards(self, *, project: str = "", limit: int = 50) -> list[dict]:
+        raw = self._t.request(
+            "GET", f"{_AGILE}/board",
+            params={"projectKeyOrId": project, "maxResults": limit},
+        )
+        return [normalize_board(b) for b in raw.get("values", [])]
+
+    def list_sprints(self, board_id: int, *, state: str = "",
+                     limit: int = 50) -> list[dict]:
+        raw = self._t.request(
+            "GET", f"{_AGILE}/board/{board_id}/sprint",
+            params={"state": state, "maxResults": limit},
+        )
+        return [normalize_sprint(s) for s in raw.get("values", [])]
+
+    def move_to_sprint(self, sprint_id: int, issue_keys: list[str]) -> dict:
+        return self._t.request(
+            "POST", f"{_AGILE}/sprint/{sprint_id}/issue",
+            body={"issues": issue_keys}, is_mutation=True,
+        )
+
+    def move_to_backlog(self, issue_keys: list[str]) -> dict:
+        return self._t.request(
+            "POST", f"{_AGILE}/backlog/issue",
+            body={"issues": issue_keys}, is_mutation=True,
         )

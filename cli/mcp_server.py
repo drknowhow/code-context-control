@@ -902,13 +902,24 @@ async def c3_bitbucket(
     commit: str = "",
     settings: str = "",
     webhook_id: int = 0,
+    comment_id: int = 0,
     limit: int = 50,
     ctx: Context = None,
 ) -> str:
     """BITBUCKET (Data Center / Server) — see and act on PRs, branches, builds, repo admin.
     actions: status, whoami, list_projects, list_repos, get_repo,
-    list_prs, get_pr, get_pr_diff, get_pr_activities,
-    create_pr, comment_pr, approve_pr, unapprove_pr, decline_pr, merge_pr,
+    list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits,
+    create_pr, update_pr (pr_id + any of title/description/reviewers/to_branch —
+    unchanged fields are preserved; reviewers is the FULL comma-separated
+    replacement set), comment_pr,
+    update_pr_comment / delete_pr_comment (pr_id, comment_id [body] — the
+    comment's current version is fetched automatically),
+    approve_pr, unapprove_pr,
+    needs_work_pr (mark 'needs work' as the authenticated reviewer),
+    decline_pr, merge_pr,
+    list_pr_tasks (state filters OPEN/RESOLVED), create_pr_task (pr_id, body —
+    a blocker task on the PR), resolve_pr_task (pr_id, comment_id from
+    list_pr_tasks),
     list_branches, create_branch, delete_branch,
     list_commits, list_activity, build_status,
     repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook,
@@ -927,7 +938,8 @@ async def c3_bitbucket(
         title=title, body=body, from_branch=from_branch, to_branch=to_branch,
         description=description, reviewers=reviewers, name=name, url=url,
         events=events, start_point=start_point, commit=commit,
-        settings=settings, webhook_id=webhook_id, limit=limit,
+        settings=settings, webhook_id=webhook_id, comment_id=comment_id,
+        limit=limit,
     )
 
 
@@ -949,15 +961,40 @@ async def c3_jira(
     status_category: str = "",
     account: str = "",
     cursor: str = "",
+    target: str = "",
+    link_type: str = "",
+    parent: str = "",
+    link_id: str = "",
+    board_id: int = 0,
+    sprint_id: int = 0,
+    sprint_state: str = "",
+    time_spent: str = "",
+    file_path: str = "",
+    delete_subtasks: bool = False,
     limit: int = 25,
     ctx: Context = None,
 ) -> str:
-    """JIRA (Cloud + Data Center) — search, read, create, update, comment, transition, assign issues.
-    actions: status, whoami, search (jql), get_issue (issue), my_issues,
-    list_projects, list_transitions (issue), get_create_metadata (project, issue_type),
-    search_users (query), create_issue (project, issue_type, summary [description] [fields=JSON]),
-    update_issue (issue [summary] [description] [fields=JSON: field ids -> values]),
-    comment (issue, body), transition (issue, transition=id|name [body]), assign (issue, user).
+    """JIRA (Cloud + Data Center) — search, read, create, update, link, sprint, comment, transition, assign issues.
+    actions: status, whoami, search (jql), get_issue (issue — shows parent, links, attachments),
+    my_issues, list_projects, list_transitions (issue), get_create_metadata (project, issue_type),
+    search_users (query), list_link_types,
+    list_boards ([project]), list_sprints (board_id [sprint_state=active|future|closed]),
+    list_worklogs (issue),
+    create_issue (project, issue_type, summary [description] [parent=epic/parent key] [fields=JSON]),
+    update_issue (issue [summary] [description] [parent=epic/parent key, 'none' clears]
+    [fields=JSON: field ids -> values]),
+    link_issues (issue, link_type, target — reads '<issue> <link_type> <target>', e.g.
+    issue=PROJ-1 link_type=blocks target=PROJ-2; link_type takes a type name or either
+    directional phrasing from list_link_types),
+    unlink_issues (link_id — from get_issue's link lines),
+    move_to_sprint (issue [comma-list], sprint_id), move_to_backlog (issue [comma-list]),
+    add_worklog (issue, time_spent='2h 30m' [body=comment]),
+    attach_file (issue, file_path — uploads one local file, 20MB local cap),
+    comment (issue, body), transition (issue, transition=id|name [body]), assign (issue, user),
+    delete_issue (issue [delete_subtasks] — PERMANENT; Jira refuses an issue with
+    subtasks unless delete_subtasks=true).
+    To put an issue under an epic, pass parent=<EPIC-KEY> to create_issue/update_issue —
+    C3 maps it per deployment (Cloud parent field vs Data Center Epic Link custom field).
     get_create_metadata reflects Jira's field configuration, not the create screen — if
     create_issue rejects a listed field ('not on the appropriate screen'), create without
     it and set it via update_issue (the edit screen is configured separately).
@@ -975,7 +1012,11 @@ async def c3_jira(
         summary=summary, description=description, body=body,
         body_format=body_format, transition=transition, user=user,
         query=query, fields=fields, status_category=status_category,
-        account=account, cursor=cursor, limit=limit,
+        account=account, cursor=cursor, target=target, link_type=link_type,
+        parent=parent, link_id=link_id, board_id=board_id,
+        sprint_id=sprint_id, sprint_state=sprint_state,
+        time_spent=time_spent, file_path=file_path,
+        delete_subtasks=delete_subtasks, limit=limit,
     )
 
 

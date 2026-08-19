@@ -12,12 +12,18 @@ from typing import Any
 
 from services.jira_client import (
     JiraTransport,
+    encode_multipart_file,
+    normalize_attachment,
+    normalize_board,
     normalize_comment,
     normalize_issue,
+    normalize_sprint,
     normalize_transition,
+    normalize_worklog,
 )
 
 _API = "/rest/api/3"
+_AGILE = "/rest/agile/1.0"
 
 _DEFAULT_FIELDS = (
     "summary,status,issuetype,priority,assignee,reporter,project,"
@@ -104,7 +110,7 @@ class CloudBackend:
         return {"issues": issues, "next_cursor": page.get("nextPageToken", "") or ""}
 
     def get_issue(self, key: str, *, include_comments: bool = True) -> dict:
-        fields = _DEFAULT_FIELDS + ",description"
+        fields = _DEFAULT_FIELDS + ",description,parent,issuelinks,attachment"
         if include_comments:
             fields += ",comment"
         raw = self._t.request("GET", f"{_API}/issue/{key}", params={"fields": fields})
@@ -182,6 +188,7 @@ class CloudBackend:
         *,
         description: str = "",
         fields: dict | None = None,
+        parent: str = "",
     ) -> dict:
         payload_fields: dict[str, Any] = {
             "project": {"key": project},
@@ -190,6 +197,8 @@ class CloudBackend:
         }
         if description:
             payload_fields["description"] = adf_from_text(description)
+        if parent:
+            payload_fields["parent"] = {"key": parent}
         if fields:
             payload_fields.update(fields)
         return self._t.request(
@@ -239,4 +248,99 @@ class CloudBackend:
         return self._t.request(
             "PUT", f"{_API}/issue/{key}/assignee",
             body={"accountId": user_id}, is_mutation=True,
+        )
+
+    def list_link_types(self) -> list[dict]:
+        raw = self._t.request("GET", f"{_API}/issueLinkType")
+        return [
+            {
+                "id": t.get("id", ""),
+                "name": t.get("name", ""),
+                "inward": t.get("inward", ""),
+                "outward": t.get("outward", ""),
+            }
+            for t in raw.get("issueLinkTypes", [])
+        ]
+
+    def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> dict:
+        return self._t.request(
+            "POST", f"{_API}/issueLink",
+            body={
+                "type": {"name": link_type},
+                "inwardIssue": {"key": inward_key},
+                "outwardIssue": {"key": outward_key},
+            },
+            is_mutation=True,
+        )
+
+    def set_parent(self, key: str, parent: str) -> dict:
+        # Cloud's `parent` field covers epics and subtasks alike; null clears.
+        value = None if parent.lower() in {"none", "clear"} else {"key": parent}
+        return self._t.request(
+            "PUT", f"{_API}/issue/{key}",
+            body={"fields": {"parent": value}}, is_mutation=True,
+        )
+
+    def unlink_issues(self, link_id: str) -> dict:
+        return self._t.request(
+            "DELETE", f"{_API}/issueLink/{link_id}", is_mutation=True
+        )
+
+    def delete_issue(self, key: str, *, delete_subtasks: bool = False) -> dict:
+        return self._t.request(
+            "DELETE", f"{_API}/issue/{key}",
+            params={"deleteSubtasks": "true" if delete_subtasks else "false"},
+            is_mutation=True,
+        )
+
+    def add_worklog(self, key: str, time_spent: str, *, comment: str = "") -> dict:
+        body: dict[str, Any] = {"timeSpent": time_spent}
+        if comment:
+            body["comment"] = adf_from_text(comment)
+        raw = self._t.request(
+            "POST", f"{_API}/issue/{key}/worklog", body=body, is_mutation=True
+        )
+        return normalize_worklog(raw, text_from_adf)
+
+    def list_worklogs(self, key: str) -> list[dict]:
+        raw = self._t.request("GET", f"{_API}/issue/{key}/worklog")
+        return [normalize_worklog(w, text_from_adf)
+                for w in raw.get("worklogs", [])]
+
+    def attach_file(self, key: str, filename: str, content: bytes) -> list[dict]:
+        data, content_type = encode_multipart_file(filename, content)
+        raw = self._t.request(
+            "POST", f"{_API}/issue/{key}/attachments",
+            raw_data=data, content_type=content_type,
+            extra_headers={"X-Atlassian-Token": "no-check"},
+            is_mutation=True,
+        )
+        return [normalize_attachment(a)
+                for a in (raw if isinstance(raw, list) else [])]
+
+    def list_boards(self, *, project: str = "", limit: int = 50) -> list[dict]:
+        raw = self._t.request(
+            "GET", f"{_AGILE}/board",
+            params={"projectKeyOrId": project, "maxResults": limit},
+        )
+        return [normalize_board(b) for b in raw.get("values", [])]
+
+    def list_sprints(self, board_id: int, *, state: str = "",
+                     limit: int = 50) -> list[dict]:
+        raw = self._t.request(
+            "GET", f"{_AGILE}/board/{board_id}/sprint",
+            params={"state": state, "maxResults": limit},
+        )
+        return [normalize_sprint(s) for s in raw.get("values", [])]
+
+    def move_to_sprint(self, sprint_id: int, issue_keys: list[str]) -> dict:
+        return self._t.request(
+            "POST", f"{_AGILE}/sprint/{sprint_id}/issue",
+            body={"issues": issue_keys}, is_mutation=True,
+        )
+
+    def move_to_backlog(self, issue_keys: list[str]) -> dict:
+        return self._t.request(
+            "POST", f"{_AGILE}/backlog/issue",
+            body={"issues": issue_keys}, is_mutation=True,
         )

@@ -85,13 +85,26 @@ c3 bitbucket status
 The MCP tool dispatches by `action`.
 
 **Read:** `status`, `whoami`, `list_projects`, `list_repos`, `get_repo`,
-`list_prs`, `get_pr`, `get_pr_diff`, `get_pr_activities`, `list_branches`,
-`list_commits`, `list_activity`, `build_status`, `repo_settings`,
-`list_webhooks`, `list_permissions`.
+`list_prs`, `get_pr`, `get_pr_diff`, `get_pr_activities`, `get_pr_commits`,
+`list_pr_tasks`, `list_branches`, `list_commits`, `list_activity`,
+`build_status`, `repo_settings`, `list_webhooks`, `list_permissions`.
 
-**Write:** `create_pr`, `comment_pr`, `approve_pr`, `unapprove_pr`,
-`decline_pr`, `merge_pr`, `create_branch`, `delete_branch`,
-`update_repo_settings`, `create_webhook`, `delete_webhook`.
+**Write:** `create_pr`, `update_pr`, `comment_pr`, `update_pr_comment`,
+`delete_pr_comment`, `approve_pr`, `unapprove_pr`, `needs_work_pr`,
+`decline_pr`, `merge_pr`, `create_pr_task`, `resolve_pr_task`,
+`create_branch`, `delete_branch`, `update_repo_settings`, `create_webhook`,
+`delete_webhook`.
+
+`update_pr` edits an open PR — any of `title`, `description`, `to_branch`,
+`reviewers` (the full comma-separated replacement set); unchanged fields are
+merged from the live PR, and the current `version` is fetched automatically
+for Bitbucket's optimistic locking. `needs_work_pr` records the third
+reviewer verdict alongside approve/unapprove, as the authenticated user.
+`update_pr_comment` / `delete_pr_comment` take `comment_id` and fetch the
+comment's current version for you. PR **tasks** use the modern Bitbucket
+model (a task *is* a `BLOCKER`-severity comment): `create_pr_task` opens
+one, `list_pr_tasks` shows them (`state=OPEN|RESOLVED` filter), and
+`resolve_pr_task` closes one by its id.
 
 PR merges and branch deletes are recorded to the C3 edit ledger, so the audit
 trail covers platform-side changes too.
@@ -119,14 +132,47 @@ c3 jira set-default --project PROJ
 c3 jira status
 ```
 
-**Read:** raw-JQL `search`, `my_issues`, `get_issue`, `list_transitions`,
-`get_create_metadata`, `search_users`.
+**Read:** raw-JQL `search`, `my_issues`, `get_issue` (renders parent,
+issue links, and attachments), `list_transitions`, `get_create_metadata`,
+`search_users`, `list_link_types`, `list_boards`, `list_sprints`,
+`list_worklogs`.
 **Write (ledger-logged, identifiers only — never bodies):** `create_issue`,
-`update_issue`, `comment`, `transition`, `assign`. `create_issue` is
-pre-validated against create metadata and returns machine-readable missing
-required fields; `update_issue` edits an existing issue (summary,
-description, or a `fields` JSON of field ids → values); `transition`
-accepts an id or a name.
+`update_issue`, `comment`, `transition`, `assign`, `link_issues`,
+`unlink_issues`, `move_to_sprint`, `move_to_backlog`, `add_worklog`,
+`attach_file`, `delete_issue`.
+`create_issue` is pre-validated against create metadata and returns
+machine-readable missing required fields; `update_issue` edits an existing
+issue (summary, description, or a `fields` JSON of field ids → values);
+`transition` accepts an id or a name.
+
+**Sprints.** The Agile API (`/rest/agile/1.0`, identical on Cloud and Data
+Center) backs `list_boards` (project fallback applies) → `list_sprints`
+(`board_id`, optional `sprint_state=active|future|closed`) →
+`move_to_sprint` (`sprint_id` + one issue key or a comma-list) and
+`move_to_backlog`.
+
+**Worklogs and attachments.** `add_worklog(issue, time_spent='2h 30m'
+[, body=comment])` logs time in Jira duration syntax; `list_worklogs` reads
+it back. `attach_file(issue, file_path)` uploads one local file (multipart,
+20MB local cap — Jira's own server cap still applies) and `get_issue` shows
+attachments with ids and sizes.
+
+**Deleting.** `delete_issue` is permanent and ledger-logged; Jira refuses
+an issue that still has subtasks unless `delete_subtasks=true` is passed —
+a natural guard against accidental cascades. `unlink_issues(link_id)`
+removes one typed link (ids appear on `get_issue`'s link lines).
+
+**Epics and links.** Pass `parent=<EPIC-KEY>` to `create_issue` or
+`update_issue` to put an issue under an epic (or a subtask under its
+parent); `parent='none'` clears it. C3 maps the request to the deployment's
+native shape — the `parent` field on Cloud, the discovered *Epic Link*
+custom field on Data Center — so the caller never hunts for
+`customfield_…` ids. `link_issues(issue, link_type, target)` creates a
+typed link that reads `<issue> <link_type> <target>` (e.g. `PROJ-1 blocks
+PROJ-2`); `link_type` accepts a type name or either directional phrasing
+(`blocks` / `is blocked by` — the pair is flipped for you), and an unknown
+type answers with the server's catalog, also available via
+`list_link_types`.
 
 A caveat worth knowing: `get_create_metadata` returns Jira's createmeta,
 which is the **field configuration** for the project + issue type — not the

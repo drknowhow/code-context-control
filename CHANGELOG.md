@@ -4,6 +4,47 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.89.0] - 2026-08-19
+
+### Added — Jira and Bitbucket stop being read-mostly: epics, links, sprints, worklogs, attachments, PR edits and tasks
+
+**`c3_jira` had no way to put an issue under an epic** — the classic
+"customfield hunt". Both `create_issue` and `update_issue` now take
+`parent=<EPIC-KEY>` (`'none'` clears): on Cloud it maps to the `parent`
+field; on Data Center C3 discovers the per-instance *Epic Link* custom
+field from `GET /field` (cached per server per process) and routes epic
+parents through it, falling back to the `parent` field for subtasks.
+Typed issue links landed with it: `link_issues(issue, link_type, target)`
+reads `PROJ-1 blocks PROJ-2`, accepts a type name or either directional
+phrasing (an inward phrase flips the pair), and answers an unknown type
+with the server's catalog (`list_link_types`); `unlink_issues(link_id)`
+removes one. `get_issue` now renders parent, links (with ids), and
+attachments, so every one of these writes is verifiable in the same tool.
+
+**The Agile surface existed only in the browser.** `list_boards` →
+`list_sprints(board_id)` → `move_to_sprint(issue, sprint_id)` /
+`move_to_backlog` run against `/rest/agile/1.0`, which is identical on
+Cloud and Data Center. `add_worklog(issue, time_spent='2h 30m')` and
+`list_worklogs` cover time tracking; `attach_file(issue, file_path)`
+uploads one local file (multipart with `X-Atlassian-Token: no-check`,
+20MB local cap). `delete_issue` is deliberately last: permanent,
+ledger-logged, and it refuses an issue that still has subtasks unless
+`delete_subtasks=true` — Jira's own cascade check doubles as the guard.
+
+**A Bitbucket PR was immutable the moment `create_pr` returned.**
+`update_pr` edits title/description/reviewers/target on an open PR —
+unchanged fields are merged from the live PR and the `version` for
+Bitbucket's optimistic locking is fetched automatically, the same
+get-then-write shape `merge_pr` and `decline_pr` already used.
+`needs_work_pr` completes the reviewer-verdict triad, `get_pr_commits`
+lists the PR's commits, and comments got a lifecycle
+(`update_pr_comment` / `delete_pr_comment`, version auto-fetched).
+PR **tasks** use the modern model where a task *is* a BLOCKER-severity
+comment: `create_pr_task`, `list_pr_tasks` (state filter), and
+`resolve_pr_task`. One latent bug fixed on the way: Bitbucket's ledger
+logger recorded mutating actions even when validation failed before any
+API call — it now skips error responses, matching Jira's logger.
+
 ## [2.88.2] - 2026-08-16
 
 ### Fixed — the Oracle refused its own machine, and the drill panel hid five tabs
