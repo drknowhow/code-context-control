@@ -98,6 +98,34 @@ class TestValidate(unittest.TestCase):
         self.assertEqual(result["checker"], "node --check")
         self.assertEqual(calls, ["node"])
 
+    def test_subproc_check_resolves_checker_through_which(self):
+        # npm-global tools on Windows are .cmd shims that a bare-name Popen
+        # cannot start — the checker must be launched by its resolved path.
+        seen = {}
+
+        class _FakeProc:
+            returncode = 0
+            def communicate(self, timeout=None):
+                return "", ""
+
+        def fake_popen(argv, **kw):
+            seen["argv0"] = argv[0]
+            return _FakeProc()
+
+        with patch("services.parser._shutil.which",
+                   return_value=r"C:\Users\u\AppData\Roaming\npm\tsc.CMD"), \
+             patch("services.parser._subprocess.Popen", side_effect=fake_popen):
+            result = parser._subproc_check(["tsc", "--noEmit"], "x", ".jsx", "tsc")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(seen["argv0"], r"C:\Users\u\AppData\Roaming\npm\tsc.CMD")
+
+    def test_subproc_check_unresolved_checker_is_unavailable_without_popen(self):
+        with patch("services.parser._shutil.which", return_value=None), \
+             patch("services.parser._subprocess.Popen") as popen:
+            result = parser._subproc_check(["tsc", "--noEmit"], "x", ".jsx", "tsc")
+        self.assertEqual(result["status"], "checker_unavailable")
+        popen.assert_not_called()
+
     def test_timeout_wrapper_returns_timeout_status(self):
         import time
 
