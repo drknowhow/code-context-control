@@ -166,6 +166,18 @@ class TestLoginKind(TestCredentialStore):
             cs.get_value("T", project_path=self.project, field="totp_secret"),
             "JBSWY3DPEHPK3PXP")
 
+    def test_totp_digits_survive_normalization(self):
+        """Regression: `[ -]` is a character RANGE covering the digits 2-7,
+        so the first version of this normalizer deleted them. The seed still
+        passed the base32 check afterwards — it was all letters by then — and
+        would have generated wrong codes forever."""
+        cs.set_credential("D", _login(totp_secret="234567 234567 AB"),
+                          scope="project", project_path=self.project,
+                          ctype="login")
+        self.assertEqual(
+            cs.get_value("D", project_path=self.project, field="totp_secret"),
+            "234567234567AB")
+
     def test_cannot_flip_a_plain_entry_into_a_login(self):
         cs.set_credential("P", "plain-token", scope="project",
                           project_path=self.project, ctype="token")
