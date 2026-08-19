@@ -1039,15 +1039,19 @@ async def c3_credentials(
     often it was used: counts by surface, recent events for THIS project, other
     projects reduced to counts), reveal (name — only entries the user marked
     agent_readable), set (name, value [scope=project|global]
-    [ctype=token|env|multiline|address|identity|card] [description] [env_var] [inject]),
-    delete (name [scope]).
+    [ctype=token|env|multiline|address|identity|card|login] [description] [env_var]
+    [inject]), delete (name [scope]).
     To USE a credential, do NOT reveal it — pass env_creds='NAME1,NAME2' to c3_shell
     (injected as env vars) or write {{cred:NAME}} inside the cmd (expanded server-side);
     the decoded value never enters model context.
-    STRUCTURED kinds (address/identity/card) hold named fields: set takes value as a
-    JSON object (card: cardholder/number/expiry[/cvc/billing_zip]; address:
+    STRUCTURED kinds (address/identity/card/login) hold named fields: set takes value
+    as a JSON object (card: cardholder/number/expiry[/cvc/billing_zip]; address:
     street1/city/state/zip[/recipient/street2/country/phone]; identity:
-    full_name[/dob/ssn/phone/email]). Address a FIELD at the boundary —
+    full_name[/dob/ssn/phone/email]; login: site_id/canonical_origin/username/password
+    [/totp_secret]). `login` is STORAGE ONLY — C3 has no browser and never types a
+    password anywhere. canonical_origin is https-only and stored normalized so an
+    external runner can bind the credential to one origin; do NOT build a browser
+    login runner in this package. Address a FIELD at the boundary —
     env_creds='CARD.number' (env $CARD_NUMBER) or {{cred:CARD.number}} in cmd. Reveal
     is permanently disabled for them and they never auto-inject; have the user enter
     the values via the Credentials UI or `c3 creds set` so they never enter the chat.

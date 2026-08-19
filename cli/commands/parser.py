@@ -421,9 +421,9 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_set.add_argument("--stdin", action="store_true", help="Read the value from stdin (piped/multiline values)")
     cr_set.add_argument("--type", dest="ctype",
                         choices=["token", "env", "multiline",
-                                 "address", "identity", "card"],
+                                 "address", "identity", "card", "login"],
                         default="token",
-                        help="Entry type; address/identity/card are structured "
+                        help="Entry type; address/identity/card/login are structured "
                              "(field payload, inject-only, never revealable to the agent)")
     cr_set.add_argument("--desc", default="", help="Human description shown in list/UI")
     cr_set.add_argument("--env-var", default="", help="Env var name used at injection (default: entry name)")
