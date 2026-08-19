@@ -4,6 +4,36 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.89.1] - 2026-08-19
+
+### Fixed — a project merge uninstalled C3 from the whole machine, and the JSX checker could never start on Windows
+
+**The Hub Merge action's `cleanup='clear'` deregistered C3 from every
+IDE on the box.** Source cleanup called `_uninstall_mcp_all(src)` —
+which is the machine uninstall: beyond the source project's own files
+it walks `Path.home()` and strips the C3 entry from
+`~/.codex/config.toml`, deletes Antigravity's `mcp_config.json`, and
+cleans the legacy `~/.gemini/settings.json`. Those configs are shared
+by every C3 project, so merging one project silently broke all of
+them. Found the hard way: the merge test suite exercised this path
+without home sandboxing and did exactly that to a real development
+machine. `_uninstall_mcp_all` now takes `include_global` (default
+true — the real `c3 uninstall` is unchanged), every home-config touch
+is gated on it, and merge cleanup passes `include_global=false`. The
+regression test runs merge-clear under a sandboxed home and asserts
+the global configs survive byte-identical. (#111)
+
+**`node --check`'s JSX fallback reported "tsc not installed" on
+Windows even with TypeScript installed and on PATH.** Checkers were
+launched by bare name, and npm-global tools on Windows are `.cmd`
+batch shims that `CreateProcess` cannot resolve — so the tsc verdict
+the 2.88.1 JSX-idiom fix was built around could never actually engage
+on Windows. `_subproc_check` now resolves the checker through
+`shutil.which` (whose resolved shim path Popen *can* execute) and
+short-circuits a genuinely missing checker without spawning anything.
+UI `.js` files now validate `clean (tsc)` instead of degrading to the
+"unsupported" advisory forever. (#110)
+
 ## [2.89.0] - 2026-08-19
 
 ### Added — Jira and Bitbucket stop being read-mostly: epics, links, sprints, worklogs, attachments, PR edits and tasks
