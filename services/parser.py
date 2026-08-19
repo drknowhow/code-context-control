@@ -642,6 +642,7 @@ def check_syntax_ast(content: str, ext: str) -> List[Dict[str, Any]]:
 
 # ── Native syntax checking (no tree-sitter, no AI) ──────────────────
 import os as _os
+import shutil as _shutil
 import subprocess as _subprocess
 import sys as _sys
 import tempfile as _tempfile
@@ -715,6 +716,15 @@ def _result(status: str, checker: str, errors: List[Dict[str, Any]] | None = Non
 
 def _subproc_check(cmd: List[str], content: str, suffix: str, checker: str, timeout: int = 8) -> Dict[str, Any]:
     """Write content to a temp file and run a checker subprocess."""
+    # Resolve the checker through PATH before Popen: npm-global tools on
+    # Windows are .cmd batch shims (tsc.cmd, eslint.cmd) that CreateProcess
+    # will not find by bare name — shutil.which returns the full shim path,
+    # which Popen can execute. Bare-name Popen made every npm checker report
+    # "not installed" on Windows even when it was on PATH.
+    exe = _shutil.which(cmd[0])
+    if exe is None:
+        return _result("checker_unavailable", checker,
+                       detail=f"{cmd[0]} is not installed or not on PATH.")
     fd, tmp = _tempfile.mkstemp(suffix=suffix)
     try:
         with _os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -728,7 +738,7 @@ def _subproc_check(cmd: List[str], content: str, suffix: str, checker: str, time
         # the direct child, leaving any grandchild processes (e.g. Rscript -> R)
         # running. encoding/errors avoid UnicodeDecodeError on non-UTF-8 output.
         proc = _subprocess.Popen(
-            cmd + [tmp], stdin=_subprocess.DEVNULL,
+            [exe] + cmd[1:] + [tmp], stdin=_subprocess.DEVNULL,
             stdout=_subprocess.PIPE, stderr=_subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", **kwargs,
         )
