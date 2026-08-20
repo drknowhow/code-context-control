@@ -4,7 +4,11 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.90.0] - 2026-08-20
+
+Ships the `login` structured credential kind end to end: the store and
+CLI (#113), the TOTP seed normalizer fix found while cross-implementing
+RFC 6238 (#114), and the two web UIs that had no way to enter one (#115).
 
 ### Added — the vault can hold a website login, and C3 still refuses to use one
 
@@ -42,6 +46,20 @@ Registry projection for a `login` entry is `{site_id, origin,
 has_totp}`. The username is withheld on purpose: username + origin is
 half the credential, and the registry is the part of the record that
 non-secret surfaces are allowed to render.
+
+### Fixed — a character *range* deleted the digits out of every TOTP seed
+
+`re.sub(r"[ -]", "", seed)` was meant as "strip spaces and hyphens". It
+is a character RANGE from space (0x20) to hyphen (0x2D), so it also
+swallowed `2-7` — half the base32 alphabet. A seed pasted in the usual
+spaced form (`jbsw y3dp ehpk 3pxp`) silently lost its digits, still
+passed the `^[A-Z2-7]+=*$` shape check, and stored short and wrong. The
+only symptom would have been 2FA codes that never work, which is
+indistinguishable from a wrong password — you would have spent the
+debugging session on the wrong half of the credential. Now `[\s\-]`,
+with a regression test that asserts the digits survive normalization.
+Found by cross-implementing TOTP against RFC 6238's published vectors
+rather than by re-reading the line. (#114)
 
 ### Fixed — the `login` kind shipped without a way to enter one
 
