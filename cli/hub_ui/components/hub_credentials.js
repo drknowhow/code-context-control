@@ -15,10 +15,14 @@ const HUB_CREDS_EMPTY_FORM = {
   fields: {},
 };
 
-// Structured kinds (v2.87.0): per-type field sets composed into a JSON
-// object client-side. `hidden` fields render as password inputs. These
-// entries are inject-only — the server refuses agent_readable/inject and
+// Structured kinds (v2.87.0; `login` v2.90.0): per-type field sets composed
+// into a JSON object client-side. `hidden` fields render as password inputs.
+// These entries are inject-only — the server refuses agent_readable/inject and
 // there is no reveal path anywhere.
+// This table MUST mirror services/credential_store._SCHEMAS — a kind the store
+// accepts and this table omits is unreachable from the browser and, worse,
+// renders as a plain secret with exposure toggles the server will refuse.
+// tests/test_credential_ui_parity.py asserts the two stay in step.
 const CREDS_STRUCTURED = {
   card:     { required: ['cardholder', 'number', 'expiry'],
               optional: ['cvc', 'billing_zip'], hidden: ['number', 'cvc'] },
@@ -26,11 +30,20 @@ const CREDS_STRUCTURED = {
               optional: ['recipient', 'street2', 'country', 'phone'], hidden: [] },
   identity: { required: ['full_name'],
               optional: ['dob', 'ssn', 'phone', 'email'], hidden: ['ssn', 'dob'] },
+  login:    { required: ['site_id', 'canonical_origin', 'username', 'password'],
+              optional: ['totp_secret'], hidden: ['password', 'totp_secret'] },
 };
 
 const credsDisplayText = (entry) => {
   const d = entry.display || {};
   if (entry.type === 'card') return `${d.brand || 'card'} ••••${d.last4 || '????'}`;
+  // login's projection carries has_totp as a BOOLEAN — the generic join below
+  // would render it as the word "true". Username is absent by design.
+  if (entry.type === 'login') {
+    const bits = [d.site_id, d.origin].filter(Boolean);
+    if (d.has_totp) bits.push('2FA');
+    return bits.join(' · ');
+  }
   const vals = Object.values(d).filter(Boolean);
   return vals.length ? vals.join(', ') : '';
 };
@@ -1168,6 +1181,7 @@ function CredsManager({ path, projectName, onChanged }) {
                 <option value="card">card — credit/debit card (inject-only)</option>
                 <option value="address">address — postal address (inject-only)</option>
                 <option value="identity">identity — personal info (inject-only)</option>
+                <option value="login">login — website login (inject-only, storage only)</option>
               </select>
             </div>
             <div>
@@ -1192,6 +1206,15 @@ function CredsManager({ path, projectName, onChanged }) {
               (<span className="mono">{'{{cred:NAME.field}}'}</span> /{' '}
               <span className="mono">env_creds='NAME.field'</span>) but can never
               reveal them, and they never auto-inject.
+              {form.type === 'login' && (
+                <div style={{ marginTop: 4 }}>
+                  Storage only — C3 has no browser and does not log in to anything.{' '}
+                  <span className="mono">canonical_origin</span> is https-only and
+                  stored normalized so a separate out-of-process runner can pin this
+                  credential to exactly one origin before typing it.{' '}
+                  <span className="mono">totp_secret</span> is base32.
+                </div>
+              )}
             </div>
           ) : (
           <div style={{ display: 'flex', gap: 18, marginTop: 10, fontSize: 12, color: T.text }}>

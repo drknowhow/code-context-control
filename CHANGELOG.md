@@ -43,6 +43,39 @@ has_totp}`. The username is withheld on purpose: username + origin is
 half the credential, and the registry is the part of the record that
 non-secret surfaces are allowed to render.
 
+### Fixed — the `login` kind shipped without a way to enter one
+
+**Neither web UI knew the kind existed.** The store, `c3_credentials`
+and `c3 creds` all took `login` from the day it landed; the Credentials
+tab and the Hub's credential manager are driven off a *hardcoded*
+`CREDS_STRUCTURED` table that had three entries. Nothing failed loudly:
+the store is type-agnostic and `POST /api/credentials` passes `type`
+straight through, so the kind was simply unreachable from the browser —
+while the guide told the user to enter these through the UI precisely so
+a password never has to be typed into a chat. Worse, an entry created
+from the terminal rendered in the browser as a *plain* secret: one
+"Replace secret…" password box (which would have written the whole
+payload as an opaque string) and agent_readable / inject toggles the
+server refuses with a 400.
+
+Both UIs now carry `login` in the field table (password and
+`totp_secret` render masked), in the Type dropdown, and in
+`credsDisplayText` — the last one because the projection contains a
+*boolean*, so the generic `Object.values(...).join(', ')` fallback would
+have printed the literal word `true` next to the site. The structured
+banner gains a login-specific line stating that C3 stores these and does
+not log in to anything.
+
+**The guard is a parity test, not the fix.**
+`tests/test_credential_ui_parity.py` parses `CREDS_STRUCTURED` and the
+Type `<option>` list out of both JS files and asserts them against
+`credential_store.STRUCTURED_TYPES` / `schema_fields()` / `VALID_TYPES`.
+It reads the real source rather than restating the field lists in
+Python, because a test that duplicated them would pass while the browser
+stayed wrong — which is exactly what happened here. The next kind added
+to the store fails this file until both UIs carry it. Verified against
+the pre-fix tree: 5 of 7 fail.
+
 ## [2.89.1] - 2026-08-19
 
 ### Fixed — a project merge uninstalled C3 from the whole machine, and the JSX checker could never start on Windows
