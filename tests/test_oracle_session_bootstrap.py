@@ -245,6 +245,18 @@ class TestServerRoutes(unittest.TestCase):
         resp = self.client.post("/api/apikey/rotate")
         self.assertEqual(resp.status_code, 401)
 
+    def test_health_reports_no_session_without_a_cookie(self):
+        """The page cannot read an HttpOnly cookie, so the server has to say.
+
+        Without this the header polled green on a dashboard where every write
+        answered 401, and the user found out by spending a chat message.
+        """
+        self.assertIs(self.client.get("/api/health?probe=1").get_json()["session"], False)
+
+    def test_health_reports_a_session_after_redeeming_a_code(self):
+        self.client.get(f"/?{ls.BOOTSTRAP_PARAM}={ls.mint_code()}")   # keeps the cookie
+        self.assertIs(self.client.get("/api/health?probe=1").get_json()["session"], True)
+
     def test_cookie_from_bootstrap_unlocks_mutating_api(self):
         code = ls.mint_code()
         self.client.get(f"/?{ls.BOOTSTRAP_PARAM}={code}")  # client keeps cookie

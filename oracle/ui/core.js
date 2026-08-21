@@ -39,12 +39,32 @@ function toast(title, msg, type = 'info', duration = 4000) {
 // "unauthorized" on a chat send used to read as an Ollama outage.
 const SIGNED_OUT_MSG = 'Signed out — this dashboard is read-only. Reopen it with the '
   + 'hub’s Open Oracle button, or run  c3 oracle open  and follow the link it prints.';
+const SIGNED_OUT_BANNER = 'Signed out — this dashboard is read-only. Chat, Save '
+  + 'and Test Ollama will keep failing until you sign in.';
 let _oracleSignedOut = false;
 
-function oracleSignedOut() {
+async function oracleSignedOut() {
   if (_oracleSignedOut) return;   // one banner per page load, not one per call
   _oracleSignedOut = true;
-  toast('Signed out', SIGNED_OUT_MSG, 'error', 0);
+  const bar = document.getElementById('signedOutBar');
+  if (!bar) { toast('Signed out', SIGNED_OUT_MSG, 'error', 0); return; }
+  document.getElementById('signedOutText').textContent = SIGNED_OUT_BANNER;
+  bar.classList.add('open');
+  // Carry the way out, not just the diagnosis. Only the hub can mint a code —
+  // it reads the Oracle's owner-only bootstrap key, which page JS cannot — and
+  // hub_url lives in the Oracle's own config. That read is a GET, so it still
+  // works in exactly the state where every write does not.
+  let hub = '';
+  try {
+    hub = ((await api('/api/config')).hub_url || '').trim().replace(/\/+$/, '');
+  } catch (e) { /* fall through to the CLI hint */ }
+  if (hub) {
+    const btn = document.getElementById('signedOutBtn');
+    btn.href = hub + '/api/oracle/open';
+    btn.style.display = '';
+  } else {
+    document.getElementById('signedOutCmd').style.display = '';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
