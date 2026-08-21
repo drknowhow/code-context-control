@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — the Oracle dashboard was signed out, and said the model was down
+
+**The Open Oracle button now signs you in.** Since the Oracle became a
+login service, the only thing that ever handed the dashboard a session
+was `c3 oracle open` — and nothing on the login path runs it. A dashboard
+opened from the hub's top bar, or from a bookmark, holds no session
+cookie. Only *mutating* calls are gated, so the page rendered, the header
+went green, `/api/health` reported `ollama_available: true` — and chat,
+Save settings and Test Ollama all answered `401 unauthorized`. The top
+bar link now goes through `GET /api/oracle/open` on the hub, which
+redeems the Oracle's owner-only bootstrap key on the browser's behalf and
+redirects to a signed-in dashboard. It reaches no further than `c3 oracle
+open` already did; if the Oracle is down or the key is missing, it falls
+back to the plain URL exactly as before.
+
+**A session now survives a restart.** The cookie secret was regenerated
+per process and never written down, so every login — every Oracle restart
+— silently invalidated it. It is now stored in `~/.c3/oracle/session.key`
+under the same owner-only ACL as `bootstrap.key`, and the cookie carries a
+30-day age instead of dying with the browser. This grants nothing new:
+`bootstrap.key` on disk already mints a session, so a readable file in
+that directory was always equivalent to one. `rotate_session_secret()`
+signs every browser out.
+
+**The chat stopped blaming the model for an auth failure.** A 401 on send
+surfaced as `Connection error: unauthorized` *and* `No response received —
+the model may be unavailable`, which reads as an Ollama outage. The UI now
+recognizes 401 anywhere (chat and every `api()` caller), says *signed out —
+this dashboard is read-only* with the way back, and no longer appends the
+"model may be unavailable" line after a transport error that already
+printed its own cause.
+
+**The startup URL respects `bind_host`.** The Oracle printed and opened
+`http://localhost:<port>` even when bound to one specific interface — a
+LAN or Tailscale address, where loopback is not listening at all.
+
 ## [2.91.0] - 2026-08-21
 
 ### Added — the Oracle starts from the hub, and comes back on its own at login

@@ -1133,11 +1133,15 @@ def run_oracle(port: int = None, open_browser: bool = None):
     dedicated_port = port if port is not None else cfg.get("port", 3331)
     if open_browser is None:
         open_browser = cfg.get("auto_open_browser", True)
+    # A bind to one specific interface (LAN / VPN address) does not answer on
+    # loopback at all, so the URL we print and open has to name that address.
+    bind_host = str(cfg.get("bind_host", "127.0.0.1") or "127.0.0.1").strip()
+    disp_host = "localhost" if bind_host in ("", "0.0.0.0", "::", "127.0.0.1") else bind_host
 
     # Single-instance check
     if not _port_free(dedicated_port):
         if _is_oracle_running(dedicated_port):
-            url = f"http://localhost:{dedicated_port}"
+            url = f"http://{disp_host}:{dedicated_port}"
             print(f"Oracle already running at {url}")
             if open_browser:
                 webbrowser.open(url)
@@ -1160,9 +1164,12 @@ def run_oracle(port: int = None, open_browser: bool = None):
     )
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-    url = f"http://localhost:{actual_port}"
+    url = f"http://{disp_host}:{actual_port}"
     print(f"Oracle Memory Agent  →  {url}  (model: {cfg.get('model', 'gemma4:31b-cloud')})")
 
+    # Load the durable session secret BEFORE serving, so cookies issued this
+    # run verify against the same value a previous run handed out.
+    local_session.load_session_secret(ORACLE_DIR)
     # Publish the bootstrap key so a same-user `c3 oracle open` can mint a
     # sign-in link. Loading the URL above shows the dashboard read-only (#31).
     local_session.write_bootstrap_key(ORACLE_DIR)

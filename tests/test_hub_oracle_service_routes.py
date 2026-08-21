@@ -144,3 +144,59 @@ class TestCliParser(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOracleOpen(_RouteCase):
+    """/api/oracle/open — the hub redeems the Oracle's bootstrap key.
+
+    Without it the top-bar link opens a dashboard with no session cookie:
+    reads render fine and every write (chat, Save settings, Test Ollama)
+    answers 401, which reads as a model outage rather than a sign-out.
+    """
+
+    ORACLE = "http://100.77.40.101:3331"
+
+    def setUp(self):
+        super().setUp()
+        self.set_hub_cfg(oracle_url=self.ORACLE + "/")
+
+    @staticmethod
+    def _minted(url):
+        resp = mock.MagicMock()
+        resp.read.return_value = json.dumps({"url": url}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: False
+        return resp
+
+    def test_redirects_to_signed_in_url(self):
+        signed_in = f"{self.ORACLE}/?bootstrap=abc123"
+        with mock.patch("oracle.services.local_session.read_bootstrap_key",
+                        return_value="the-key"), \
+                mock.patch("urllib.request.urlopen",
+                           return_value=self._minted(signed_in)):
+            resp = self.client.get("/api/oracle/open")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["Location"], signed_in)
+
+    def test_no_key_falls_back_to_the_plain_url(self):
+        with mock.patch("oracle.services.local_session.read_bootstrap_key",
+                        return_value=""):
+            resp = self.client.get("/api/oracle/open")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["Location"], self.ORACLE)
+
+    def test_unreachable_oracle_still_redirects(self):
+        with mock.patch("oracle.services.local_session.read_bootstrap_key",
+                        return_value="the-key"), \
+                mock.patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            resp = self.client.get("/api/oracle/open")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["Location"], self.ORACLE)
+
+    def test_unset_oracle_url_uses_the_service_address(self):
+        self.set_hub_cfg()
+        with mock.patch.object(OracleService, "url", return_value="http://localhost:3331"), \
+                mock.patch("oracle.services.local_session.read_bootstrap_key",
+                           return_value=""):
+            resp = self.client.get("/api/oracle/open")
+        self.assertEqual(resp.headers["Location"], "http://localhost:3331")
