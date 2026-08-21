@@ -824,6 +824,13 @@ def build_parser(version: str, parse_cli_ide_arg):
                           help="Server port (default: config 'port', 3331)")
     or_serve.add_argument("--no-browser", action="store_true",
                           help="Don't open the browser")
+    or_serve.add_argument("--install", action="store_true",
+                          help="Register the Oracle as a login/startup service "
+                               "(no terminal window) and start it now")
+    or_serve.add_argument("--uninstall", action="store_true",
+                          help="Remove the Oracle's startup service registration")
+    or_serve.add_argument("--status", action="store_true",
+                          help="Show the Oracle's startup service status")
     or_open = or_subs.add_parser(
         "open",
         help="Sign in to a running dashboard via a single-use URL",

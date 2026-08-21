@@ -4,6 +4,72 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — the Oracle starts from the hub, and comes back on its own at login
+
+**Hub → Settings → Oracle service.** A second service block beside the
+hub's own: Install / Uninstall / Start / Stop / Open for `c3 oracle
+serve`. *Start* launches the Oracle as a detached background process —
+no terminal window to keep open — and *Install* registers it to start
+at login through the same mechanism the hub uses (Task Scheduler with a
+Run-key fallback on Windows, a LaunchAgent on macOS, a systemd user unit
+on Linux). `c3 oracle serve --install | --uninstall | --status` is the
+CLI form. New routes: `GET /api/oracle/service`, `POST
+/api/oracle/service/{install,uninstall,start,stop}`.
+
+**An empty Oracle URL fills itself.** When the hub's `oracle_url` is
+blank, a successful install or start writes the Oracle's address into
+it, so the Open Oracle button appears in the top bar without a second
+trip to settings. A value the user set is never overwritten. (The
+Oracle was once healthy for days while the hub showed no way to reach
+it, for exactly this reason.) Saving settings now also refreshes the
+top bar, so a hand-typed URL shows up without a reload.
+
+**The Oracle's service knows where the Oracle lives.** Port and bind
+host come from `~/.c3/oracle/config.json`, not the hub config, and
+"running" is a `/api/health?probe=1` check on the configured bind host
+that must answer `service: c3-oracle` — a loopback probe never sees an
+Oracle bound to a LAN or VPN address, and an open port is not proof the
+Oracle owns it. `probe=1` is new: it answers with identity only, skipping
+the Ollama and hub round-trips that make the full health check take
+four seconds or more (an Oracle without the flag still answers the slow
+way, and the probe waits for it). The launcher waits up to 120 s for a non-loopback bind
+host to come up before starting: at logon a VPN address can appear
+late, and binding before it exists is a fatal error that a one-shot
+logon task would never retry. And it refuses to start a second Oracle:
+Windows lets two listeners share a port, so a duplicate at logon does
+not fail — it silently splits the traffic, loses the MCP port, and can
+take the first instance down with it. The launcher asks
+`/api/health?probe=1` first and exits cleanly if an Oracle answers.
+
+### Changed — one service machinery, two services
+
+`services/hub_service.py` is now a thin subclass of the new
+`services/background_service.py`; `OracleService` is its sibling. The
+hub's install/uninstall/start/stop behave as before, and both services
+inherit four fixes:
+
+- The launcher redirects stdout/stderr to its log *before* the server
+  is imported. Under `pythonw.exe` both streams are `None`, and
+  uvicorn's log formatter calls `sys.stdout.isatty()` — this is how the
+  Oracle's MCP listener once died at startup while its REST port stayed
+  up and every liveness probe passed. The order of those two lines is
+  pinned by a test.
+- *Start* no longer launches a second copy of a service that is already
+  answering; it says so instead.
+- Task Scheduler registrations carry restart-on-failure (three tries, a
+  minute apart), and the launcher exits non-zero on a startup exception
+  so that policy can fire. Previously a crash at logon — repo drive not
+  mounted yet, say — exited 0 and stayed dead until the next reboot.
+- The Windows port killer matches the port as a whole token (`:3331`
+  used to also match `:33310`) and no longer goes through `shell=True`.
+
+The launcher log for the Oracle is `~/.c3/oracle/service.log`; the
+server's own log stays `~/.c3/oracle/oracle.log`. They are separate on
+purpose — the server also logs to stderr, and sharing the file would
+print every line twice.
+
 ## [2.90.0] - 2026-08-20
 
 Ships the `login` structured credential kind end to end: the store and

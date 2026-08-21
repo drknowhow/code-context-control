@@ -360,15 +360,22 @@ def api_session_bootstrap():
 # ── Health ────────────────────────────────────────────────
 @app.route("/api/health")
 def api_health():
-    ollama_ok = _bridge.is_available(timeout=3) if _bridge else False
-    hub_ok = False
-    try:
-        hub_url = _cfg.get("hub_url", "http://localhost:3330").rstrip("/")
-        req = urllib.request.Request(f"{hub_url}/api/health")
-        with urllib.request.urlopen(req, timeout=2) as r:
-            hub_ok = json.loads(r.read()).get("service") == "c3-hub"
-    except Exception:
-        pass
+    # ?probe=1 is the liveness form: identity only, no upstream checks. The
+    # full check reaches out to Ollama (3 s) and the hub (2 s), which is far
+    # too slow for a service-status poll that only asks "is this the Oracle?".
+    probe = request.args.get("probe") not in (None, "", "0", "false")
+    ollama_ok = None
+    hub_ok = None
+    if not probe:
+        ollama_ok = _bridge.is_available(timeout=3) if _bridge else False
+        hub_ok = False
+        try:
+            hub_url = _cfg.get("hub_url", "http://localhost:3330").rstrip("/")
+            req = urllib.request.Request(f"{hub_url}/api/health")
+            with urllib.request.urlopen(req, timeout=2) as r:
+                hub_ok = json.loads(r.read()).get("service") == "c3-hub"
+        except Exception:
+            pass
     return jsonify({
         "status": "ok",
         "service": "c3-oracle",
@@ -377,6 +384,7 @@ def api_health():
         "ollama_available": ollama_ok,
         "model_verified": _model_verified,
         "hub_available": hub_ok,
+        "probe": probe,
     })
 
 
