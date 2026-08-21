@@ -70,6 +70,7 @@ async function chatSendMessage() {
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
+      if (resp.status === 401) { oracleSignedOut(); throw new Error(SIGNED_OUT_MSG); }
       throw new Error(err.error || `Server error: HTTP ${resp.status}`);
     }
 
@@ -229,7 +230,11 @@ async function chatSendMessage() {
     chatRemoveTypingIndicator();
     _stopStreamTicker();
     if (e.name !== 'AbortError') {
-      chatAppendError('Connection error: ' + e.message);
+      chatAppendError(e.message === SIGNED_OUT_MSG ? e.message : 'Connection error: ' + e.message);
+      // The turn already has its real explanation on screen. Without this the
+      // "no response" branch below fires too and blames the model for what is
+      // an auth or transport failure.
+      gotResponse = true;
     }
   }
 

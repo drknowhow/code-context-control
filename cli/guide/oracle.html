@@ -330,10 +330,10 @@ curl -X POST \
           <tr><td><code>c3 oracle serve --install</code></td>   <td>Register the Oracle as a login/startup service — no terminal window — and start it now. Windows: Task Scheduler (Run-key fallback); macOS: launchd; Linux: systemd user unit</td></tr>
           <tr><td><code>c3 oracle serve --uninstall</code></td> <td>Remove the startup registration (a running Oracle keeps running)</td></tr>
           <tr><td><code>c3 oracle serve --status</code></td>    <td>Installed? Running? Port, bind host, URL, and the launcher log path</td></tr>
-          <tr><td><code>c3 oracle open</code></td>       <td>Sign in to a running dashboard via a single-use URL</td></tr>
+          <tr><td><code>c3 oracle open</code></td>       <td>Sign in to a running dashboard via a single-use URL (the hub's <strong>Open Oracle</strong> button does the same thing)</td></tr>
         </tbody>
       </table>
-      <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">The Hub exposes the same controls under <strong>Settings → Oracle service</strong> (Install / Uninstall / Start / Stop / Open). Starting the Oracle from there also fills in the Hub's <em>Oracle URL</em> when it is empty, so the Open Oracle button appears in the top bar.</p>
+      <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">The Hub exposes the same controls under <strong>Settings → Oracle service</strong> (Install / Uninstall / Start / Stop / Open). Starting the Oracle from there also fills in the Hub's <em>Oracle URL</em> when it is empty, so the Open Oracle button appears in the top bar. That button opens a <strong>signed-in</strong> dashboard: it redeems the Oracle's owner-only bootstrap key for you. Reaching the dashboard by pasting its URL instead leaves it read-only — the page renders and the header looks healthy, but chat, Save and Test Ollama answer <code>401 unauthorized</code>.</p>
     </section>
 
     <hr class="divider">

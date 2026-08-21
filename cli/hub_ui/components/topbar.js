@@ -68,7 +68,10 @@ function TopBar({ version, activeCount, darkMode, hubConfig, mainView, setMainVi
           <I name="heart" size={13} color="#EA4AAA" />
         </a>
         {hubConfig && hubConfig.oracle_url && (
-          <a href={hubConfig.oracle_url} target="_blank" rel="noopener" title="Open Oracle" style={ctrl}>
+          {/* Goes through the hub, not straight at oracle_url: the hub redeems
+              the Oracle's owner-only bootstrap key so the tab lands signed in.
+              A raw link opens a read-only dashboard where every write 401s. */}
+          <a href="/api/oracle/open" target="_blank" rel="noopener" title="Open Oracle (signed in)" style={ctrl}>
             <I name="external" size={13} color={T.textMuted} />
           </a>
         )}

@@ -25,7 +25,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -3462,6 +3462,48 @@ def api_oracle_service_start():
 def api_oracle_service_stop():
     """Kill the Oracle process listening on its configured port."""
     return jsonify(_oracle_service().stop())
+
+
+@app.route("/api/oracle/open")
+def api_oracle_open():
+    """Redirect the browser to a *signed-in* Oracle dashboard.
+
+    Plain ``GET /`` on the Oracle is read-only by design (#31): the session
+    cookie is only issued in exchange for a single-use bootstrap code, and the
+    owner-only ``bootstrap.key`` is what proves the caller is the same OS user
+    as the server. Since the Oracle became a login service nothing redeems
+    that key for the browser, so the top-bar link landed on a dashboard where
+    every read looked healthy and every write — chat, Save settings, Test
+    Ollama — answered ``401 unauthorized``.
+
+    The hub runs as the owning user, so it can redeem the key on the browser's
+    behalf. It reaches no further than ``c3 oracle open`` already does. Any
+    failure falls back to the plain URL, i.e. the previous behavior.
+    """
+    base = (_read_hub_config().get("oracle_url") or "").strip().rstrip("/")
+    if not base:
+        base = _oracle_service().url()
+    try:
+        from oracle.config import ORACLE_DIR
+        from oracle.services import local_session
+        key = local_session.read_bootstrap_key(ORACLE_DIR)
+    except Exception:
+        key = ""
+    if not key:
+        return redirect(base)  # Oracle not running, or key not published yet
+    try:
+        req = urllib.request.Request(
+            f"{base}/api/session/bootstrap",
+            data=json.dumps({"key": key}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+        return redirect(payload.get("url") or base)
+    except Exception as e:
+        logging.getLogger("c3.hub").warning("oracle sign-in mint failed: %s", e)
+        return redirect(base)
 
 
 # ─── Routes: sessions ────────────────────────────────────────────────────────

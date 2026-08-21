@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +122,62 @@ class TestIsLocal(unittest.TestCase):
     def test_empty_remote_rejected(self):
         self.assertFalse(ls.is_local(None, "100.77.40.101"))
         self.assertFalse(ls.is_local("", "100.77.40.101"))
+
+
+class TestDurableSessionSecret(unittest.TestCase):
+    """The secret outlives the process.
+
+    The Oracle runs as a login service, so a per-process secret invalidated
+    every issued cookie at each login. Only mutating calls are gated, so the
+    dashboard still rendered and only chat / Save / Test Ollama answered 401 —
+    a sign-out that looked like a model outage.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._restart)   # never leak state into other tests
+        self._restart()
+
+    def _restart(self):
+        """Simulate the process going away: forget the in-memory secret."""
+        ls._session_secret = None
+
+    def test_import_alone_writes_nothing(self):
+        self.assertFalse((self.dir / ls.SESSION_KEY_FILENAME).exists())
+        self.assertTrue(ls.verify(ls._EPHEMERAL_SECRET),
+                        "uninitialized module must still sign cookies")
+
+    def test_load_persists_the_secret(self):
+        value = ls.load_session_secret(self.dir)
+        self.assertGreaterEqual(len(value), 32)
+        self.assertEqual((self.dir / ls.SESSION_KEY_FILENAME).read_text("utf-8"), value)
+
+    def test_secret_survives_a_restart(self):
+        first = ls.load_session_secret(self.dir)
+        self._restart()
+        self.assertEqual(ls.load_session_secret(self.dir), first)
+
+    def test_cookie_issued_before_a_restart_still_verifies(self):
+        cookie = ls.load_session_secret(self.dir)
+        self._restart()
+        ls.load_session_secret(self.dir)
+        self.assertTrue(ls.verify(cookie))
+
+    def test_rotate_signs_everyone_out(self):
+        old = ls.load_session_secret(self.dir)
+        new = ls.rotate_session_secret(self.dir)
+        self.assertNotEqual(old, new)
+        self.assertFalse(ls.verify(old))
+        self.assertTrue(ls.verify(new))
+
+    def test_unwritable_dir_falls_back_to_memory(self):
+        missing = self.dir / "nope" / "deeper"
+        with unittest.mock.patch.object(Path, "mkdir", side_effect=OSError):
+            value = ls.load_session_secret(missing)
+        self.assertGreaterEqual(len(value), 32)
+        self.assertTrue(ls.verify(value))
 
 
 class TestServerRoutes(unittest.TestCase):

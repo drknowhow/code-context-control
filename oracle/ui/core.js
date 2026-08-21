@@ -30,6 +30,24 @@ function toast(title, msg, type = 'info', duration = 4000) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// ── Session state ──
+// ═══════════════════════════════════════════════════════════
+// A dashboard opened by pasting the URL never redeemed a bootstrap code, so
+// it holds no session cookie. Reads are ungated and keep working, which is
+// why the header stays green while chat, Save and Test Ollama all answer 401.
+// Name that state once, here, instead of letting each caller guess at it —
+// "unauthorized" on a chat send used to read as an Ollama outage.
+const SIGNED_OUT_MSG = 'Signed out — this dashboard is read-only. Reopen it with the '
+  + 'hub’s Open Oracle button, or run  c3 oracle open  and follow the link it prints.';
+let _oracleSignedOut = false;
+
+function oracleSignedOut() {
+  if (_oracleSignedOut) return;   // one banner per page load, not one per call
+  _oracleSignedOut = true;
+  toast('Signed out', SIGNED_OUT_MSG, 'error', 0);
+}
+
+// ═══════════════════════════════════════════════════════════
 // ── API helpers ──
 // ═══════════════════════════════════════════════════════════
 async function api(path, opts = {}) {
@@ -40,6 +58,7 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 401) { oracleSignedOut(); throw new Error(SIGNED_OUT_MSG); }
     throw new Error(err.error || `HTTP ${res.status}`);
   }
   return res.json();

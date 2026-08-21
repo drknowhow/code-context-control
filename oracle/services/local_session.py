@@ -4,8 +4,10 @@ The Oracle dashboard (oracle_ui.html bundle) runs in a local browser and calls m
 ``/api/*`` endpoints without a Bearer token. Rather than injecting the durable
 Discovery token into page JS (readable by any XSS) or trusting every loopback
 process (exactly the attacker the write gate exists to stop), the server
-issues a per-boot HttpOnly cookie. The secret lives in process memory, is
-never persisted, and rotates on restart.
+issues an HttpOnly cookie. The secret is stored in ``~/.c3/oracle`` under the
+same owner-only ACL as the bootstrap key, so a signed-in dashboard survives
+the Oracle restarting — it runs as a login service, and a per-process secret
+signed the user out every morning with no in-page way to sign back in.
 
 Bootstrap (#31). ``GET /`` alone does NOT issue a cookie: a local process
 running as a *different* OS user could otherwise fetch the page and obtain
@@ -34,9 +36,27 @@ from pathlib import Path
 COOKIE_NAME = "c3_oracle_session"
 BOOTSTRAP_PARAM = "bootstrap"
 BOOTSTRAP_KEY_FILENAME = "bootstrap.key"
+SESSION_KEY_FILENAME = "session.key"
 
-# Regenerated on every server start; never written to disk.
-_BOOT_SECRET = secrets.token_urlsafe(32)
+# How long a redeemed session stays valid in the browser. Without an explicit
+# age the cookie dies when the browser closes, which put the user back through
+# a sign-in they have no on-screen way to perform.
+COOKIE_MAX_AGE_SECONDS = 30 * 24 * 3600
+
+# Fallback secret when nobody called ``load_session_secret``: per-process and
+# never written to disk, which is what tests and any embedded use of this
+# module get.
+_EPHEMERAL_SECRET = secrets.token_urlsafe(32)
+
+# The live session secret. ``run_oracle`` persists it under the same
+# owner-only ACL as bootstrap.key, because the Oracle now runs as a login
+# service: a per-process secret silently invalidated every issued cookie at
+# each login, and since the write gate only covers mutating calls, the
+# dashboard kept rendering while chat, Save and Test Ollama answered 401.
+# Persisting grants nothing new — bootstrap.key on disk already mints a
+# session, so a readable file in ~/.c3/oracle was always equivalent to one.
+_session_secret: str | None = None
+_secret_lock = threading.Lock()
 
 # Authorizes minting a one-time code. Written to disk (owner-only) so a
 # same-user CLI can read it; a different OS user cannot.
@@ -72,6 +92,49 @@ def write_bootstrap_key(oracle_dir: Path) -> Path:
     except OSError:
         pass
     return path
+
+
+def load_session_secret(oracle_dir: Path) -> str:
+    """Load — or create — the persisted session secret in *oracle_dir*.
+
+    Called once at server start. Until it is called, cookies are signed with
+    the per-process fallback, so importing this module never touches disk.
+    """
+    global _session_secret
+    with _secret_lock:
+        if _session_secret is not None:
+            return _session_secret
+        path = oracle_dir / SESSION_KEY_FILENAME
+        try:
+            value = path.read_text("utf-8").strip()
+        except OSError:
+            value = ""
+        if len(value) < 32:
+            value = secrets.token_urlsafe(32)
+            try:
+                oracle_dir.mkdir(parents=True, exist_ok=True)
+                path.write_text(value, encoding="utf-8")
+                os.chmod(path, 0o600)
+            except OSError:
+                pass  # unwritable: stay in memory, sessions end with the process
+        _session_secret = value
+        return value
+
+
+def rotate_session_secret(oracle_dir: Path) -> str:
+    """Sign every browser out by discarding the stored secret."""
+    global _session_secret
+    with _secret_lock:
+        _session_secret = None
+        try:
+            (oracle_dir / SESSION_KEY_FILENAME).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return load_session_secret(oracle_dir)
+
+
+def _current_secret() -> str:
+    return _session_secret or _EPHEMERAL_SECRET
 
 
 def read_bootstrap_key(oracle_dir: Path) -> str:
@@ -162,16 +225,17 @@ def attach_cookie(response):
     """
     response.set_cookie(
         COOKIE_NAME,
-        _BOOT_SECRET,
+        _current_secret(),
         httponly=True,
         samesite="Strict",
         path="/",
+        max_age=COOKIE_MAX_AGE_SECONDS,
     )
     return response
 
 
 def verify(cookie_value: str | None) -> bool:
-    """Constant-time check of a presented cookie against the boot secret."""
+    """Constant-time check of a presented cookie against the session secret."""
     if not cookie_value:
         return False
-    return secrets.compare_digest(cookie_value, _BOOT_SECRET)
+    return secrets.compare_digest(cookie_value, _current_secret())
