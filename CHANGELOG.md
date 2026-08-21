@@ -4,7 +4,7 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.91.0] - 2026-08-21
 
 ### Added — the Oracle starts from the hub, and comes back on its own at login
 
