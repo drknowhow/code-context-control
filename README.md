@@ -74,7 +74,7 @@ Full notes: [Upgrading](https://github.com/drknowhow/code-context-control/blob/m
 
 ## The UI
 
-Three local web apps, no Electron — pure Flask + vanilla JS: the **Hub** (`c3 hub`, port 3330), the **per-project UI** (`c3 ui`), and the optional **Oracle** (`c3 oracle serve`).
+Three local web apps, no Electron — pure Flask + vanilla JS: the **Hub** (`c3 hub`, port 3330), the **per-project UI** (`c3 ui`), and the optional **Oracle** (`c3 oracle serve`). Both servers can run as windowless login services — `c3 hub --install`, `c3 oracle serve --install`, or the buttons in Hub → Settings.
 
 ### Project Hub — multi-project mission control
 

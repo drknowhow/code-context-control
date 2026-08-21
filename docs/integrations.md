@@ -214,6 +214,7 @@ Two transports share one tool core:
 
 ```bash
 c3 oracle serve --no-browser     # serves the dashboard + discovery endpoints
+c3 oracle serve --install        # ...or run it at login, no terminal window (Hub → Settings → Oracle service)
 c3 oracle api info               # Bearer token + a paste-ready .mcp.json snippet
 ```
 

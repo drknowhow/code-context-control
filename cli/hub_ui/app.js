@@ -142,7 +142,8 @@ function App() {
         onOpenProject={(p, tab) => { setSearchOpen(false); openDrill(p, tab || 'overview'); }} />
       {modal &&
         <HubModals modal={modal} projects={projects}
-          onClose={() => setModal(null)} onChanged={loadProjects} />}
+          onClose={() => setModal(null)}
+          onChanged={() => { loadConfig(); loadProjects(); }} />}
       <ToastHost />
     </div>
   );

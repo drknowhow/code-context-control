@@ -3407,6 +3407,63 @@ def api_hub_restart():
     return jsonify({"restarting": True})
 
 
+# ─── Routes: oracle service (background daemon for `c3 oracle serve`) ───────
+#
+# Same shape as the hub's own service routes above. Port and bind host come
+# from ~/.c3/oracle/config.json, not from the hub config. A successful
+# install/start fills an EMPTY hub `oracle_url` with the Oracle's address so
+# the top bar's Open Oracle link appears without a second trip to settings.
+
+def _oracle_service():
+    from services.oracle_service import OracleService
+    return OracleService()
+
+
+def _adopt_oracle_url(svc, result: dict) -> dict:
+    result = dict(result or {})
+    if not result.get("success"):
+        return result
+    cfg = _read_hub_config()
+    if not (cfg.get("oracle_url") or "").strip():
+        cfg["oracle_url"] = svc.url()
+        _write_hub_config(cfg)
+        result["oracle_url_set"] = True
+    result["oracle_url"] = cfg["oracle_url"]
+    return result
+
+
+@app.route("/api/oracle/service", methods=["GET"])
+def api_oracle_service_status():
+    """Whether the Oracle is registered as a startup service / currently up."""
+    return jsonify(_oracle_service().status())
+
+
+@app.route("/api/oracle/service/install", methods=["POST"])
+def api_oracle_service_install():
+    """Register the Oracle to start at login (windowless) and start it now."""
+    svc = _oracle_service()
+    return jsonify(_adopt_oracle_url(svc, svc.install()))
+
+
+@app.route("/api/oracle/service/uninstall", methods=["POST"])
+def api_oracle_service_uninstall():
+    """Remove the Oracle's startup registration (does not stop a running one)."""
+    return jsonify(_oracle_service().uninstall())
+
+
+@app.route("/api/oracle/service/start", methods=["POST"])
+def api_oracle_service_start():
+    """Start the Oracle as a detached background process (no terminal)."""
+    svc = _oracle_service()
+    return jsonify(_adopt_oracle_url(svc, svc.start()))
+
+
+@app.route("/api/oracle/service/stop", methods=["POST"])
+def api_oracle_service_stop():
+    """Kill the Oracle process listening on its configured port."""
+    return jsonify(_oracle_service().stop())
+
+
 # ─── Routes: sessions ────────────────────────────────────────────────────────
 
 @app.route("/api/sessions/start", methods=["POST"])

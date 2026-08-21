@@ -7426,10 +7426,39 @@ def _oracle_open(args):
         webbrowser.open(url)
 
 
+def _oracle_service_cmd(args):
+    """`c3 oracle serve --install | --uninstall | --status` — mirrors `c3 hub`."""
+    from services.oracle_service import OracleService
+    svc = OracleService()
+    port = getattr(args, "port", None) or svc.default_port()
+
+    if getattr(args, "install", False):
+        res = svc.install(port)
+        print(res.get("output", "Service installed."))
+        if res.get("success"):
+            print(f"Oracle will start at login (no terminal window); log: {svc.LOG_FILE}")
+        return
+    if getattr(args, "uninstall", False):
+        res = svc.uninstall()
+        print(res.get("output", "Service uninstalled."))
+        return
+    res = svc.status()
+    print(f"Oracle Service Status ({res.get('platform', 'unknown')}):")
+    print(f"  Installed: {res.get('installed')}")
+    print(f"  Running  : {res.get('running')}")
+    print(f"  Port     : {res.get('port')}  (bind {res.get('bind_host')}, MCP {res.get('mcp_port')})")
+    print(f"  URL      : {res.get('url')}")
+    print(f"  Method   : {res.get('method')}")
+    print(f"  Log      : {res.get('log_path')}")
+
+
 def cmd_oracle(args):
     """Oracle dashboard server + Discovery API key management."""
     sub = getattr(args, "oracle_cmd", None)
     if sub in ("serve", "start"):
+        if any(getattr(args, f, False) for f in ("install", "uninstall", "status")):
+            _oracle_service_cmd(args)
+            return
         # Lazy import: run_oracle builds all Oracle services (matches
         # cmd_hub's deferred-import style so bare `c3` stays fast).
         from oracle.oracle_server import run_oracle
