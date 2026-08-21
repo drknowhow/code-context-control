@@ -15,6 +15,7 @@ document.addEventListener('click', (e) => {
 async function refreshHeader() {
   let ollamaOk = false, reviewOk = false, hubOk = false;
   let model = '?', modelVerified = false;
+  let signedIn = true;   // assume yes until /api/health says otherwise
 
   // Fetch all status from Oracle's own endpoints (no cross-origin)
   try {
@@ -50,6 +51,12 @@ async function refreshHeader() {
       ? 'Last run: ' + timeAgo(new Date(review.last_run).getTime()) + ' \u00b7 ' + (review.projects_tracked||0) + ' project(s)'
       : 'No review yet';
 
+    // Session — a read-only dashboard is not a healthy one. Surfaced here
+    // because this poll is the very thing that used to show green while
+    // every write answered 401.
+    signedIn = health.session !== false;
+    if (!signedIn) oracleSignedOut();
+
     // Hub (checked server-side by Oracle, no CORS issue)
     hubOk = !!health.hub_available;
     document.getElementById('ddHubDot').className = 'dot ' + (hubOk ? 'dot-ok' : 'dot-err');
@@ -60,7 +67,12 @@ async function refreshHeader() {
   const okCount = [ollamaOk, reviewOk, hubOk].filter(Boolean).length;
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
-  if (okCount === 3) {
+  if (!signedIn) {
+    // Never claim "All systems OK" for a dashboard that cannot write. That
+    // reading is the whole reason the sign-out went undiagnosed.
+    dot.className = 'dot dot-warn';
+    label.textContent = 'Read-only — signed out';
+  } else if (okCount === 3) {
     dot.className = 'dot dot-ok';
     label.textContent = 'All systems OK';
   } else if (okCount === 0) {

@@ -384,6 +384,12 @@ def api_health():
         "ollama_available": ollama_ok,
         "model_verified": _model_verified,
         "hub_available": hub_ok,
+        # Whether the caller holds a dashboard session. The page has no other
+        # way to know: the cookie is HttpOnly, and reads are ungated, so a
+        # signed-out dashboard looked identical to a working one until the
+        # user spent a chat message finding out. Reveals nothing — the caller
+        # already knows what it sent.
+        "session": local_session.verify(request.cookies.get(local_session.COOKIE_NAME)),
         "probe": probe,
     })
 

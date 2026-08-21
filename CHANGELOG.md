@@ -38,6 +38,17 @@ this dashboard is read-only* with the way back, and no longer appends the
 "model may be unavailable" line after a transport error that already
 printed its own cause.
 
+**The dashboard says so on arrival, and offers the way in.** The previous
+pass named the state but only after a write had already failed, and it
+pointed at a button on another page — a dead end for the tab that was
+telling you about it. `GET /api/health` now reports whether the caller
+holds a session (the cookie is `HttpOnly`, so the page has no other way to
+know), the header poll raises a banner on load, and the banner carries a
+**Sign in** button built from the Oracle's own `hub_url`. The status pill
+no longer reads *All systems OK* on a dashboard that cannot write — it
+reads *Read-only — signed out*, which is the reading whose absence let
+this go undiagnosed.
+
 **The startup URL respects `bind_host`.** The Oracle printed and opened
 `http://localhost:<port>` even when bound to one specific interface — a
 LAN or Tailscale address, where loopback is not listening at all.
