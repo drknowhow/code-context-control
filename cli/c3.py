@@ -845,7 +845,8 @@ def _prompt_memory_llm(project_path: str) -> None:
           + ("cloud + local fallback." if section["cloud_enabled"] else "local only (private)."))
 
 
-def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "direct") -> tuple[str, bool]:
+def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "direct",
+                       shape=None) -> tuple[str, bool]:
     """Run guided post-init setup steps for Git and MCP."""
     chosen_ide = _select_init_ide(ide_name or "auto")
     save_config({"ide": chosen_ide}, project_path)
@@ -916,7 +917,7 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
                 )
                 include_wildcard = bool(wildcard_choice and wildcard_choice.startswith("Yes"))
 
-    chosen_enforcement = _prompt_enforcement(chosen_tier)
+    chosen_enforcement = _prompt_enforcement(chosen_tier, shape=shape)
 
     _run_install_mcp(project_path, chosen_ide, mcp_mode=mcp_mode,
                      permissions=chosen_tier, include_mcp_wildcard=include_wildcard,
@@ -924,8 +925,69 @@ def _prompt_init_steps(project_path: str, ide_name: str, default_mode: str = "di
     return chosen_ide, True
 
 
-def _prompt_enforcement(chosen_tier: str | None) -> str | None:
+def _assess_repo_shape(project_path: str):
+    """Measure the project (services.repo_shape). None when it cannot be measured."""
+    try:
+        from services import repo_shape
+        return repo_shape.assess(project_path)
+    except Exception:
+        _log.debug("repo shape assessment failed", exc_info=True)
+        return None
+
+
+def _apply_repo_shape_default(project_path: str, explicit_enforcement: str | None = None,
+                              shape=None) -> None:
+    """Say what kind of project this is, and default a prose one to ``advisory``.
+
+    Field report 2026-08-22: a 636-file project, ~95% Markdown and .docx,
+    where every symbol-aware C3 tool had nothing to act on and strict
+    discipline was paid on every turn until C3 was uninstalled. The shape
+    is printed for every project; the default is written only for the prose
+    kind, only over a tier-derived or unset mode (never over ``c3 enforce``
+    or ``--enforcement``), with provenance ``set_by: repo-shape`` so
+    ``c3 enforce`` shows where it came from, and with the way back printed.
+    """
+    try:
+        from services import enforcement_policy as ep
+        from services import repo_shape
+    except Exception:
+        return
+    if shape is None:
+        shape = _assess_repo_shape(project_path)
+    if shape is None or shape.kind == repo_shape.KIND_EMPTY:
+        return
+    print(f"\n  Repo shape: {shape.describe()}")
+    mode = repo_shape.recommended_mode(shape)
+    if not mode:
+        return
+    if explicit_enforcement:
+        print(f"      Prose-heavy, but --enforcement {explicit_enforcement} was given — leaving it as set.")
+        return
+    current = ep.resolve(project_path)
+    if current.set_by == ep.SET_BY_USER:
+        print(f"      Prose-heavy; tool discipline stays '{current.mode}' (your choice).")
+        return
+    if current.mode == mode:
+        print(f"      Prose-heavy; tool discipline is already '{mode}'.")
+        return
+    try:
+        result = ep.set_mode(mode, project_path, set_by=ep.SET_BY_SHAPE, scope="project")
+    except ValueError:
+        return
+    if result.get("deferred"):
+        return
+    print("  [!] This is a documentation project: C3's symbol-aware tools (compress/read/impact/")
+    print(f"      validate/CI) have little to act on here, so tool discipline is set to '{mode}' —")
+    print("      native Edit/Write are allowed with a nudge and the edit ledger still records them.")
+    print("      `c3 enforce strict` restores the hard block; `c3 enforce` shows the setting.")
+
+
+def _prompt_enforcement(chosen_tier: str | None, shape=None) -> str | None:
     """Step 5/5 — tool discipline. Returns an explicit mode, or None to derive.
+
+    ``shape`` (services.repo_shape.RepoShape) moves the suggested default to
+    ``advisory`` for a documentation project and says why, so the user is
+    not asked to guess what C3's symbol tools will do with 600 Markdown files.
 
     Asked separately from the permission tier because it answers a genuinely
     different question: the tier controls what the IDE will let the agent call,
@@ -938,8 +1000,18 @@ def _prompt_enforcement(chosen_tier: str | None) -> str | None:
         return None
 
     default_mode = ep.derive_from_tier(chosen_tier) if chosen_tier else ep.MODE_ADVISORY
+    suggested_by = "Your permission tier suggests"
+    try:
+        from services import repo_shape
+        shape_mode = repo_shape.recommended_mode(shape) if shape is not None else None
+    except Exception:
+        shape_mode = None
+    if shape_mode:
+        default_mode = shape_mode
+        suggested_by = ("This is a documentation project — C3's symbol tools have "
+                        "little to act on here. Suggested")
     print()
-    print(f"  (Your permission tier suggests: {default_mode})")
+    print(f"  ({suggested_by}: {default_mode})")
     choice = _prompt_choice(
         "Step 5/5 — Tool discipline: how hard should C3 push toward c3_* tools?",
         [
@@ -1085,6 +1157,7 @@ def cmd_init(args):
     if not c3_dir.exists() or not (c3_dir / "config.json").exists():
         print_header(f"Initializing C3 for: {project_path}")
         _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
+        shape = _assess_repo_shape(project_path)
         try:
             from services.project_manager import ProjectManager
             ProjectManager().add_project(project_path)
@@ -1101,7 +1174,11 @@ def cmd_init(args):
                 enforcement=getattr(args, "enforcement", None),
             )
         else:
-            _prompt_init_steps(project_path, requested_ide, default_mode=getattr(args, "mcp_mode", "direct"))
+            _prompt_init_steps(project_path, requested_ide,
+                               default_mode=getattr(args, "mcp_mode", "direct"), shape=shape)
+        _apply_repo_shape_default(project_path,
+                                  explicit_enforcement=getattr(args, "enforcement", None),
+                                  shape=shape)
         # Detect Codex CLI availability
         try:
             from cli.tools.delegate import check_codex
