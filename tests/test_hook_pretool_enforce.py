@@ -369,6 +369,58 @@ class TestSubagentGrant(EnforceBase):
         self.assertIn("[c3:hint]", out["additionalContext"])
         self.assertNotIn("ledger still records", out["additionalContext"])
 
+class TestShellAdvisory(EnforceBase):
+    """Bash is nudged, never denied (field report 2026-08-22, ISSUE-1's
+    buried finding): a command that looks like it writes project files gets
+    the advisory hint naming them — in strict mode too — unless c3_edit just
+    ran. Read-only commands, writes outside the root, and `off` are silent."""
+
+    def _bash(self, cmd, session_id=""):
+        return self._run("Bash", {"command": cmd}, session_id=session_id)
+
+    def test_write_inside_gets_hint_not_deny(self):
+        out = self._bash("python -c \"open('gen.py','w').write('x')\"")
+        self.assertNotIn("hookSpecificOutput", out)
+        self.assertIn("[c3:hint]", out["additionalContext"])
+        self.assertIn("gen.py", out["additionalContext"])
+        self.assertIn("never blocked", out["additionalContext"])
+
+    def test_heredoc_redirect_names_the_file(self):
+        out = self._bash("cat > docs/notes.md <<'EOF'\nhi\nEOF")
+        self.assertIn("docs/notes.md", out["additionalContext"])
+
+    def test_read_only_command_is_silent(self):
+        self.assertIsNone(self._bash("grep -rn foo . | head"))
+        self.assertIsNone(self._bash("git status && ls -la"))
+
+    def test_write_outside_root_is_silent(self):
+        other = Path(tempfile.mkdtemp())
+        try:
+            self.assertIsNone(self._bash(f'echo x > "{other / "scratch.txt"}"'))
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_fresh_c3_edit_signal_silences_the_hint(self):
+        self._write_state(tool="c3_edit", session_id="s1")
+        self.assertIsNone(self._bash("echo x > a.py", session_id="s1"))
+
+    def test_read_class_signal_does_not_silence(self):
+        self._write_state(tool="c3_search", read_unlocked=True, session_id="s1")
+        out = self._bash("echo x > a.py", session_id="s1")
+        self.assertIn("[c3:hint]", out["additionalContext"])
+
+    def test_run_shell_command_alias(self):
+        out = self._run("run_shell_command", {"command": "touch made.py"})
+        self.assertIn("made.py", out["additionalContext"])
+
+    def test_off_mode_is_silent(self):
+        (self.tmp / ".c3" / "config.json").write_text(
+            json.dumps({"enforcement": {"mode": "off", "set_by": "user"}}), encoding="utf-8")
+        self.assertIsNone(self._bash("echo x > a.py"))
+
+    def test_empty_command(self):
+        self.assertIsNone(self._bash(""))
+
 
 if __name__ == "__main__":
     unittest.main()

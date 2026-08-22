@@ -21,6 +21,7 @@ from cli._hook_utils import (  # noqa: E402
     emit_additional_context,
     log_hook_error,
     record_json_unlocks,
+    tool_response_failed,
 )
 
 EDITABLE_EXTS = {
@@ -97,6 +98,13 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         return None
 
     base = project_path if project_path is not None else Path.cwd()
+
+    # "c3_compress on a path that does not exist" returned an error and still
+    # unlocked native Write for that path (field report 2026-08-22, ISSUE-3).
+    # An error response gathered no context, so it grants nothing. New files
+    # are created through c3_edit(old_string=""), which needs no unlock.
+    if tool_response_failed(payload):
+        return None
 
     tool_input = payload.get("tool_input", {}) or {}
     tool_response = payload.get("tool_response", "")

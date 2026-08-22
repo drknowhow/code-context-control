@@ -4,6 +4,46 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — shell writes were invisible to tool discipline, and a failed `c3_*` call counted as "c3 was used"
+
+The last two items from the 2026-08-22 field report, both in the
+PreToolUse hook's blind spots.
+
+**Shell file writes get the nudge and reach the ledger.** `Bash` has been
+in the PreToolUse matcher since v2.62, but only the Access Guard ever read
+the command, and only for path-access rules. `python -c "open(f,'w')"`, a
+heredoc, `sed -i`, `tee`, `cp` — none of it was nudged toward `c3_edit` and
+none of it reached the edit ledger, so every agent that met a blocked
+`Write` simply went round it (four self-reported ledger gaps in one
+session). New `cli/_shell_writes.py` answers "which files does this command
+probably write?" — redirects, `tee`, `cp`/`mv`/`touch`/`rm`, `sed -i`,
+inline Python `open(...,'w')` / `Path(...).write_text`, following `cd`,
+skipping streams and pip `>=` specs. `hook_pretool_enforce` now gives a
+shell command that writes project files the advisory hint naming them — in
+`strict` and `advisory` alike; shell is **never blocked**, because blocking
+shell writes outright would break far more legitimate work than it
+protects — and stays silent when `c3_edit` just ran. `hook_edit_ledger`
+gets a Bash branch: files the command named that exist, are editable and
+changed in the last two minutes become `change_type: "shell"` rows carrying
+the command (no pre-edit snapshot — there is none to take). The dispatcher
+routes Bash PostToolUse to it after the ghost-file sweep.
+
+**A failed `c3_*` call no longer unlocks anything.** `c3_compress` on a path
+that does not exist returned `Error: File not found` — and
+`hook_c3_signal` still wrote a fresh signal, `hook_edit_unlock` still stuck
+an unlock on that path, and the activity-log scan still counted the call,
+so native `Write` on that very path was allowed. One definition of "that
+call failed" (`_hook_utils.response_text_failed`: a leading `Error` /
+`[tool:error]` line, the masked-path refusal tag, or an MCP `isError`) now
+gates all three: no signal, no unlock, and `mcp_server` writes `ok: false`
+into the activity log so the scan skips it (older entries are judged by
+their summary text). The sanctioned way to make a new file is
+`c3_edit(file_path=..., old_string='', new_string=...)`, which creates it
+and logs it; the `Write` redirect and the compress not-found message now
+say so instead of pointing at a failed call.
+
 ## [2.92.0] - 2026-08-22
 
 ### Added — `c3 init` says what kind of project it is looking at, and defaults a documentation repo to `advisory`

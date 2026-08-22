@@ -415,7 +415,15 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
         svc.activity_log.log("budget_auto_reset", {"gap_seconds": gap_reset_seconds})
 
     svc.session_mgr.log_tool_call(tool_name, args, summary)
-    svc.activity_log.log("tool_call", {"tool": tool_name, "args": args, "result_summary": summary})
+    # ok=False lets hook_pretool_enforce's activity scan skip a failed call
+    # (ISSUE-3: "Error: File not found" used to count as "c3 was used").
+    try:
+        from cli._hook_utils import response_text_failed as _failed
+        call_ok = not _failed(response)
+    except Exception:
+        call_ok = True
+    svc.activity_log.log("tool_call", {"tool": tool_name, "args": args,
+                                       "result_summary": summary, "ok": call_ok})
     tracker = getattr(svc, "time_tracker", None)
     if tracker is not None:
         try:
