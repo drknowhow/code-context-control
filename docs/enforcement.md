@@ -42,6 +42,14 @@ setting. What `strict` buys you over `advisory` is the pre-edit snapshot that
 `c3_edit` takes, which is what makes a clean revert possible. That is the whole
 trade-off.
 
+## Scope: the project root
+
+The hook governs the project's own files. A native Edit/Write/Read aimed at
+a path outside the project root — a scratch file in `/tmp`, a file in
+another checkout — passes through untouched in every mode: no block, no
+hint. There is no ledger here for that file, so there is nothing to protect.
+Relative paths resolve against the project root.
+
 ## What never changes, at any mode
 
 Loosening tool discipline is safe precisely because it cannot reach these:

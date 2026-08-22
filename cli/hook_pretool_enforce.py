@@ -361,6 +361,35 @@ def _vault_denial(tool_name: str, tool_input: dict) -> dict | None:
     return None
 
 
+def _outside_project(base: Path, tool_input: dict) -> bool:
+    """True when the call targets a path outside the project root.
+
+    Tool discipline exists to keep THIS project's edit ledger complete and
+    its index warm. A scratch file in /tmp or a file in some other checkout
+    has no ledger here, so a block buys nothing and costs a workaround, and
+    a hint is noise (ISSUE-2 of the 2026-08 field report). Relative paths
+    resolve against the project root, which is also the hook's cwd. A path
+    that cannot be resolved counts as inside — the existing behaviour.
+    """
+    raw = str(tool_input.get("file_path") or tool_input.get("notebook_path")
+              or tool_input.get("path") or "")
+    if not raw:
+        return False
+    try:
+        target = Path(raw)
+        if not target.is_absolute():
+            target = base / target
+        resolved = target.resolve()
+        root = base.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return True
+    return False
+
+
 def _override_allows(base: Path, tool_name: str, tool_input: dict,
                      session_id: str) -> str | None:
     """A live discipline grant for this exact write, or None (spec §5).
@@ -400,6 +429,11 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     vault = _vault_denial(tool_name, tool_input)
     if vault:
         return vault
+
+    # Scope: this hook governs the project's own files. Anything outside the
+    # root passes through in every mode — nothing here to keep a ledger of.
+    if _outside_project(base, tool_input):
+        return None
 
     policy = _resolve_policy(base)
     mode = getattr(policy, "mode", None) or "strict"
