@@ -1285,11 +1285,7 @@ def cmd_init(args):
         if c3_dir.exists():
             shutil.rmtree(c3_dir)
             print("  Deleted .c3/")
-        for filename, _ in _instruction_documents_for_project():
-            p = Path(project_path) / filename
-            if p.exists():
-                p.unlink()
-                print(f"  Deleted {filename}")
+        _remove_c3_instruction_docs(project_path)
         print("\n[OK] C3 project files removed.")
         return
 
@@ -1361,9 +1357,10 @@ def cmd_init(args):
 
     elif selected.startswith("Wipe"):
         confirm = input(
-            "\n  WARNING: This will permanently delete .c3/ and all project\n"
-            "  instruction files (CLAUDE.md, GEMINI.md, AGENTS.md), and remove\n"
-            "  C3 MCP configurations from your IDE. Type 'yes' to confirm: "
+            "\n  WARNING: This will permanently delete .c3/, remove C3's managed\n"
+            "  block from CLAUDE.md / AGENTS.md / GEMINI.md (a file is deleted only\n"
+            "  when nothing else is in it), and remove C3 MCP configurations from\n"
+            "  your IDE. Type 'yes' to confirm: "
         ).strip().lower()
         if confirm != "yes":
             print("  Wipe cancelled.")
@@ -1375,11 +1372,7 @@ def cmd_init(args):
             shutil.rmtree(c3_dir)
             print("  Deleted .c3/")
 
-        for filename, _ in _instruction_documents_for_project():
-            p = Path(project_path) / filename
-            if p.exists():
-                p.unlink()
-                print(f"  Deleted {filename}")
+        _remove_c3_instruction_docs(project_path)
 
         print("\n[OK] C3 project files removed.")
 
@@ -4555,6 +4548,115 @@ def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None 
             print(f"Warning: Could not update {antigravity_path} (global fallback skipped)")
 
 
+# Every hook script C3 has ever registered in a settings file — the v2.42+
+# dispatcher plus the pre-v2.42 per-hook scripts — so uninstall recognises an
+# entry written by any C3 version. A user hook is anything not naming one.
+_C3_HOOK_SCRIPTS = (
+    "hook_dispatch.py",
+    "hook_access_guard.py", "hook_artifact.py", "hook_auto_snapshot.py",
+    "hook_c3_signal.py", "hook_c3read.py", "hook_edit_ledger.py",
+    "hook_edit_unlock.py", "hook_filter.py", "hook_ghost_files.py",
+    "hook_pretool_enforce.py", "hook_prompt_recall.py", "hook_read.py",
+    "hook_session_stats.py", "hook_terse_advisor.py",
+)
+
+
+def _is_c3_hook_command(command) -> bool:
+    return any(script in str(command or "") for script in _C3_HOOK_SCRIPTS)
+
+
+def _is_c3_permission(rule) -> bool:
+    """``mcp__c3__<tool>``, ``mcp__c3__*``, or the bare ``mcp__c3`` server grant."""
+    r = str(rule or "").strip()
+    return r == "mcp__c3" or r.startswith("mcp__c3__")
+
+
+def _c3_references_in_settings(settings: dict) -> list:
+    """Every C3-owned entry present in a settings dict: hook commands (named
+    by event) and permission rules. Used to decide whether there is anything
+    to remove and, after writing, to check that it was actually removed."""
+    refs: list = []
+    hooks = settings.get("hooks")
+    if isinstance(hooks, dict):
+        for event, groups in hooks.items():
+            for group in groups or []:
+                if not isinstance(group, dict):
+                    continue
+                for hk in group.get("hooks") or []:
+                    if isinstance(hk, dict) and _is_c3_hook_command(hk.get("command")):
+                        refs.append(f"hooks.{event}")
+    perms = settings.get("permissions")
+    if isinstance(perms, dict):
+        for key in ("allow", "deny", "ask"):
+            for rule in perms.get(key) or []:
+                if _is_c3_permission(rule):
+                    refs.append(f"permissions.{key}:{rule}")
+    if "c3" in (settings.get("enabledMcpjsonServers") or []):
+        refs.append("enabledMcpjsonServers:c3")
+    return refs
+
+
+def _strip_c3_from_settings(settings: dict) -> dict:
+    """Remove every C3-owned entry from a Claude Code settings dict (in place,
+    and returned). Touches ONLY what C3 wrote: hook entries whose command runs
+    a C3 hook script — any event, any matcher; the previous cleanup looked at
+    three PostToolUse matchers from the pre-v2.42 layout and nothing else, so
+    PreToolUse/Stop/UserPromptSubmit and the whole ``permissions.allow`` list
+    survived an "uninstall" — plus ``mcp__c3__*`` permission rules and the
+    ``c3`` MCP-server enablement. User hooks, user permission rules and every
+    other key are left exactly as found; containers emptied by the removal
+    are dropped so a file C3 created alone ends up empty (and the caller
+    deletes it) rather than as ``{"hooks": {}}``.
+    """
+    hooks = settings.get("hooks")
+    if isinstance(hooks, dict):
+        for event in list(hooks.keys()):
+            kept_groups = []
+            for group in hooks.get(event) or []:
+                if not isinstance(group, dict):
+                    kept_groups.append(group)
+                    continue
+                entries = group.get("hooks") or []
+                if not any(isinstance(hk, dict) and _is_c3_hook_command(hk.get("command"))
+                           for hk in entries):
+                    kept_groups.append(group)  # not ours — untouched
+                    continue
+                kept = [hk for hk in entries
+                        if not (isinstance(hk, dict) and _is_c3_hook_command(hk.get("command")))]
+                if kept:
+                    group = dict(group)
+                    group["hooks"] = kept
+                    kept_groups.append(group)
+            if kept_groups:
+                hooks[event] = kept_groups
+            else:
+                del hooks[event]
+        if not hooks:
+            del settings["hooks"]
+
+    perms = settings.get("permissions")
+    if isinstance(perms, dict):
+        for key in ("allow", "deny", "ask"):
+            rules = perms.get(key)
+            if isinstance(rules, list) and any(_is_c3_permission(r) for r in rules):
+                kept_rules = [r for r in rules if not _is_c3_permission(r)]
+                if kept_rules:
+                    perms[key] = kept_rules
+                else:
+                    del perms[key]
+        if not perms:
+            del settings["permissions"]
+
+    enabled = settings.get("enabledMcpjsonServers")
+    if isinstance(enabled, list) and "c3" in enabled:
+        enabled = [s for s in enabled if s != "c3"]
+        if enabled:
+            settings["enabledMcpjsonServers"] = enabled
+        else:
+            del settings["enabledMcpjsonServers"]
+    return settings
+
+
 def _uninstall_mcp_all(project_path: str, include_global: bool = True):
     """Remove C3 MCP server configurations from all supported IDEs.
 
@@ -4658,37 +4760,28 @@ def _uninstall_mcp_all(project_path: str, include_global: bool = True):
                     with open(settings_path, 'r', encoding="utf-8") as f:
                         settings = json.load(f)
 
-                    # Remove hooks
-                    hooks = settings.get("hooks", {}).get("PostToolUse", [])
-                    new_hooks = []
-                    c3_hook_files = {"hook_filter.py", "hook_read.py", "hook_c3read.py", "hook_dispatch.py"}
-                    for h in hooks:
-                        if h.get("matcher") in ("Bash", "Read", "mcp__c3__c3_read"):
-                            h["hooks"] = [hook for hook in h.get("hooks", [])
-                                          if not any(f in hook.get("command", "") for f in c3_hook_files)]
-                            if h["hooks"]:
-                                new_hooks.append(h)
-                        else:
-                            new_hooks.append(h)
-
-                    if new_hooks:
-                        settings["hooks"]["PostToolUse"] = new_hooks
-                    elif "hooks" in settings and "PostToolUse" in settings["hooks"]:
-                        del settings["hooks"]["PostToolUse"]
-                        if not settings["hooks"]:
-                            del settings["hooks"]
-
-                    # Remove enabled server
-                    if "enabledMcpjsonServers" in settings and "c3" in settings["enabledMcpjsonServers"]:
-                        settings["enabledMcpjsonServers"].remove("c3")
-
-                    if not settings:
-                        settings_path.unlink()
-                        print(f"  Deleted empty {settings_path}")
+                    before = _c3_references_in_settings(settings)
+                    if not before:
+                        print(f"  No C3 entries in {settings_path}")
                     else:
-                        with open(settings_path, 'w', encoding="utf-8") as f:
-                            json.dump(settings, f, indent=2)
-                        print(f"  Removed C3 hooks/settings from {settings_path}")
+                        settings = _strip_c3_from_settings(settings)
+                        if not settings:
+                            settings_path.unlink()
+                            print(f"  Deleted empty {settings_path}")
+                        else:
+                            with open(settings_path, 'w', encoding="utf-8") as f:
+                                json.dump(settings, f, indent=2)
+                            # Postcondition: re-read what is on disk and report
+                            # what is true, not what was attempted.
+                            with open(settings_path, 'r', encoding="utf-8") as f:
+                                remaining = _c3_references_in_settings(json.load(f))
+                            if remaining:
+                                shown = ", ".join(remaining[:5]) + (" ..." if len(remaining) > 5 else "")
+                                print(f"  [!] C3 entries remain in {settings_path} "
+                                      f"({len(remaining)}): {shown}")
+                            else:
+                                print(f"  Removed C3 hooks/settings from {settings_path} "
+                                      f"({len(before)} entries)")
                 except Exception as e:
                     print(f"  Warning: Could not update {settings_path}: {e}")
 
@@ -4870,6 +4963,44 @@ def _instruction_documents_for_project() -> list[tuple[str, str]]:
         ("AGENTS.md", _AGENTS_MD_CONTENT),
         ("GEMINI.md", ""),
     ]
+
+
+def _remove_c3_instruction_docs(project_path: str) -> None:
+    """Take C3's managed block OUT of every instruction doc it ever wrote.
+
+    Uninstall counterpart of ``_sync_project_instruction_docs``. Before
+    v2.92 this was a bare ``unlink()`` of CLAUDE.md / AGENTS.md / GEMINI.md —
+    which, in a project whose CLAUDE.md also carried another tool's managed
+    block (``<!-- YEP:BEGIN -->``) or the user's own notes, destroyed content
+    C3 never owned, with no warning and no way back unless git had it.
+    Same rule every regeneration path already follows: C3 owns its slice,
+    everything outside the markers is preserved. A file is deleted only when
+    the block was all there was.
+    """
+    from services.claude_md import strip_c3_block
+
+    for filename, _ in _instruction_documents_for_project():
+        p = Path(project_path) / filename
+        if not p.exists():
+            continue
+        try:
+            existing = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"  Warning: Could not read {filename}: {exc}")
+            continue
+        remainder = strip_c3_block(existing)
+        if remainder is None:
+            print(f"  Kept {filename} (no C3 block in it — not ours to delete)")
+        elif remainder.strip():
+            try:
+                p.write_text(remainder, encoding="utf-8")
+            except OSError as exc:
+                print(f"  Warning: Could not update {filename}: {exc}")
+                continue
+            print(f"  Removed C3 block from {filename} (kept the rest of the file)")
+        else:
+            p.unlink()
+            print(f"  Deleted {filename}")
 
 
 _LEGACY_INSTRUCTION_DOCS = ("GEMINI.md",)  # Gemini CLI profile removed in v2.52

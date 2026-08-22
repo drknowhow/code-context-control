@@ -241,6 +241,44 @@ def merge_c3_block(existing: str, new_block: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+def strip_c3_block(existing: str) -> Optional[str]:
+    """Remove C3's managed block from ``existing`` and return what is left.
+
+    The inverse of :func:`merge_c3_block`, for the uninstall paths
+    (``c3 init --clear`` / Wipe). Same three cases, same ownership rule —
+    C3 deletes only what it wrote:
+
+    1. Markers present → cut the FIRST BEGIN … LAST END span and keep
+       everything before and after it: the user's own notes, or another
+       tool's managed block (``<!-- YEP:BEGIN -->``) sharing the file.
+    2. Legacy marker-less C3 doc (full ``## C3 Tools — MANDATORY`` head) →
+       the head was ours; keep only a trailing ``# User Notes`` section.
+    3. No markers and no legacy signature → not a C3 document at all.
+       Return ``None``: the caller must leave the file alone.
+
+    Returns the remaining text — ``""`` when the block was the whole file,
+    so the caller may delete it — or ``None`` for case 3. Out-of-order
+    (corrupt) markers fall to case 3: when the span cannot be trusted,
+    nothing is cut.
+    """
+    if C3_BLOCK_BEGIN in existing and C3_BLOCK_END in existing:
+        start = existing.index(C3_BLOCK_BEGIN)
+        end = existing.rindex(C3_BLOCK_END) + len(C3_BLOCK_END)
+        if end > start:
+            before = existing[:start].rstrip()
+            after = existing[end:].lstrip()
+            parts = [p for p in (before, after) if p]
+            return ("\n\n".join(parts) + "\n") if parts else ""
+
+    has_markers = C3_BLOCK_BEGIN in existing or C3_BLOCK_END in existing
+    if not has_markers and existing.lstrip().startswith(C3_LEGACY_FIRST_LINE):
+        if "# User Notes" in existing:
+            return existing[existing.index("# User Notes"):].strip() + "\n"
+        return ""
+
+    return None
+
+
 def write_c3_instruction_doc(path, content: str, project_path=None) -> str:
     """Write a C3-generated instruction doc without clobbering user content.
 

@@ -6,6 +6,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `c3 init --clear` deleted files it did not own, and the settings cleanup reported work it had not done
+
+From a field report (2026-08-22): a documentation-only project whose
+CLAUDE.md carried both C3's managed block and another tool's, where the
+session ended with C3 uninstalled — and the uninstall itself doing damage.
+
+**`--clear` and Wipe now remove C3's block, not the file.** Both paths did
+a bare `unlink()` of CLAUDE.md / AGENTS.md / GEMINI.md. In a file that also
+held a `<!-- YEP:BEGIN -->` block, or the user's own notes, that destroyed
+content C3 never wrote — recoverable only because git happened to have it.
+They now cut the `C3:BEGIN … C3:END` span with the same ownership rule
+every regeneration path already follows (`strip_c3_block`, the inverse of
+`merge_c3_block`), write the remainder back, and delete a file only when
+the block was all there was. A file with no C3 block in it is left alone
+and says so. The Wipe prompt describes what it actually does.
+
+**The settings cleanup now touches every C3 entry, and checks itself.**
+`_uninstall_mcp_all` stripped `PostToolUse` entries under three matchers
+from the pre-v2.42 layout — and nothing else — then printed *Removed C3
+hooks/settings*. PreToolUse, Stop and UserPromptSubmit dispatcher hooks and
+the whole `mcp__c3__*` permission list survived the "uninstall" (66 entries
+in the report). It now removes any hook whose command runs a C3 hook script,
+under any event and any matcher, every `mcp__c3__*` / `mcp__c3` permission
+rule, and the `c3` MCP-server enablement; user hooks and user rules are not
+touched. After writing it re-reads the file and reports what is on disk:
+*Removed … (N entries)*, or *[!] C3 entries remain* with what they are.
+
+**Tool discipline stops at the project root.** The PreToolUse hook blocked
+(strict) or nudged a native Edit/Write aimed at `/tmp/scratch.html` exactly
+as if it were a project file — there is no ledger for it to protect, so the
+block was pure friction and pushed writes onto a shell-heredoc path that
+mangled `\u2019` escapes. Paths outside the project root now pass through
+in every mode. The credential-vault guard still runs first and is unaffected.
+
 ### Fixed — the Oracle dashboard was signed out, and said the model was down
 
 **The Open Oracle button now signs you in.** Since the Oracle became a

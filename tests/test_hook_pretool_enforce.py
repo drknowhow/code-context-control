@@ -246,6 +246,46 @@ class TestSessionScoping(EnforceBase):
         self.assert_allowed_silently(
             self._run("Read", {"file_path": "foo.py"}, session_id="session-B"))
 
+class TestProjectScope(EnforceBase):
+    """A call aimed outside the project root is none of this hook's business
+    (field report 2026-08-22, ISSUE-2): no ledger here to protect, so no
+    block and no hint — in strict mode, with no c3 state at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.other, ignore_errors=True)
+        super().tearDown()
+
+    def test_write_outside_root_passes_through(self):
+        out = self._run("Write", {"file_path": str(self.other / "scratch.html"), "content": "x"})
+        self.assertIsNone(out)
+
+    def test_edit_outside_root_passes_through(self):
+        out = self._run("Edit", {"file_path": str(self.other / "a.py"), "old_string": "a", "new_string": "b"})
+        self.assertIsNone(out)
+
+    def test_write_inside_root_is_still_blocked(self):
+        out = self._run("Write", {"file_path": str(self.tmp / "a.py"), "content": "x"})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_relative_paths_resolve_against_the_root(self):
+        inside = self._run("Edit", {"file_path": "sub/a.py", "old_string": "a", "new_string": "b"})
+        self.assertEqual(inside["hookSpecificOutput"]["permissionDecision"], "deny")
+        escaped = self._run("Edit", {"file_path": "../escaped.py", "old_string": "a", "new_string": "b"})
+        self.assertIsNone(escaped)
+
+    def test_read_outside_root_gets_no_hint(self):
+        self.assertIsNone(self._run("Read", {"file_path": str(self.other / "notes.md")}))
+        self.assertIsNone(self._run("Grep", {"pattern": "x", "path": str(self.other)}))
+
+    def test_vault_guard_still_runs_first(self):
+        out = self._run("Write", {"file_path": str(self.other / ".c3" / "secrets.enc"), "content": "x"})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("vault", out["hookSpecificOutput"]["permissionDecisionReason"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
