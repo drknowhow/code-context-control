@@ -379,15 +379,13 @@ def _outside_project(base: Path, tool_input: dict) -> bool:
         target = Path(raw)
         if not target.is_absolute():
             target = base / target
-        resolved = target.resolve()
-        root = base.resolve()
+        # canonical_key: resolved, forward-slash, casefolded — the one path
+        # identity the unlock map and Access Guard already agree on.
+        target_key = canonical_key(target)
+        root_key = canonical_key(base).rstrip("/")
     except (OSError, RuntimeError, ValueError):
         return False
-    try:
-        resolved.relative_to(root)
-    except ValueError:
-        return True
-    return False
+    return not (target_key == root_key or target_key.startswith(root_key + "/"))
 
 
 def _override_allows(base: Path, tool_name: str, tool_input: dict,
