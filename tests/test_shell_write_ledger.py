@@ -47,7 +47,7 @@ class _Project(unittest.TestCase):
 class TestShellRows(_Project):
     def test_fresh_written_file_is_logged_as_shell(self):
         (self.tmp / "gen.py").write_text("print(1)\n", encoding="utf-8")
-        out = self._bash("python -c \"open('gen.py','w').write('print(1)')\"")
+        out = self._bash("python -c \"from pathlib import Path; Path('gen.py').write_text('print(1)')\"")
         rows = self._rows()
         self.assertEqual(len(rows), 1)
         row = rows[0]

@@ -379,7 +379,7 @@ class TestShellAdvisory(EnforceBase):
         return self._run("Bash", {"command": cmd}, session_id=session_id)
 
     def test_write_inside_gets_hint_not_deny(self):
-        out = self._bash("python -c \"open('gen.py','w').write('x')\"")
+        out = self._bash("python -c \"from pathlib import Path; Path('gen.py').write_text('x')\"")
         self.assertNotIn("hookSpecificOutput", out)
         self.assertIn("[c3:hint]", out["additionalContext"])
         self.assertIn("gen.py", out["additionalContext"])

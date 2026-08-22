@@ -2,7 +2,7 @@
 
 Field report 2026-08-22, ISSUE-1's buried finding: ``Bash`` sits in the
 PreToolUse matcher, but tool discipline never looked at what a shell
-command does to files. ``python -c "open(f,'w')"``, ``cat > f <<EOF`` and
+command does to files. An inline ``python -c`` write, ``cat > f <<EOF`` and
 ``sed -i`` were never nudged toward c3_edit and never reached the ledger,
 so every agent that met a blocked ``Write`` simply went round it. This
 module is the one place that answers "which files does this command

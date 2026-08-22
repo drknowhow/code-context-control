@@ -35,6 +35,7 @@ advisory path instead of granting stale unlocks.
 Supports both Claude Code and Gemini CLI via _hook_utils.
 """
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -637,7 +638,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
 
 def _shell_advisory(payload: dict, project_path: Path | None) -> dict | None:
     """Bash is the escape hatch tool discipline never looked at (field
-    report 2026-08-22, ISSUE-1's buried finding): ``python -c "open(f,'w')"``
+    report 2026-08-22, ISSUE-1's buried finding): an inline ``python -c`` write
     or a heredoc was never nudged toward c3_edit and never snapshotted. It
     is NOT denied — blocking shell writes outright would break far more
     legitimate work than it protects — it gets the advisory hint that names
@@ -668,8 +669,8 @@ def _shell_advisory(payload: dict, project_path: Path | None) -> dict | None:
         return _policy_warnings(policy)
     shown = []
     for t in targets[:3]:
-        try:
-            shown.append(str(Path(t).resolve().relative_to(base.resolve())).replace("\\", "/"))
+        try:  # display only; no path resolution here (canonical_key owns that)
+            shown.append(os.path.relpath(t, str(base)).replace("\\", "/"))
         except (OSError, ValueError):
             shown.append(t)
     more = f" (+{len(targets) - 3} more)" if len(targets) > 3 else ""

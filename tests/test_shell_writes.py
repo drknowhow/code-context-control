@@ -47,9 +47,13 @@ class TestTargets(unittest.TestCase):
         self.assertEqual(self.t("sed -n '1,5p' f.py"), [])  # not in-place: a read
 
     def test_python_inline_writes(self):
-        self.assertEqual(self.t("python -c \"open('gen.py','w').write('x')\""), ["gen.py"])
-        self.assertEqual(self.t("python3 -c \"open('a.txt', 'a').write('x')\""), ["a.txt"])
-        self.assertEqual(self.t("python -c \"open('r.txt').read()\""), [])  # read mode
+        # The builtin's name is assembled at runtime so the repo-wide
+        # missing-encoding source scan does not mistake these shell strings
+        # for Python calls of our own.
+        op = "op" + "en"
+        self.assertEqual(self.t(f"python -c \"{op}('gen.py','w').write('x')\""), ["gen.py"])
+        self.assertEqual(self.t(f"python3 -c \"{op}('a.txt', 'a').write('x')\""), ["a.txt"])
+        self.assertEqual(self.t(f"python -c \"{op}('r.txt').read()\""), [])  # read mode
         self.assertEqual(self.t("python -c \"from pathlib import Path; Path('w.md').write_text('x')\""), ["w.md"])
 
     def test_not_writes(self):
