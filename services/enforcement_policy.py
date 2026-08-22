@@ -75,6 +75,10 @@ TIER_TO_MODE = {
 
 SET_BY_TIER = "tier"
 SET_BY_USER = "user"
+#: Written by ``c3 init`` when the repo is prose (services.repo_shape): a
+#: default with a stated reason, not a choice. Defers to ``user`` exactly as
+#: ``tier`` does; a later tier choice overrides it.
+SET_BY_SHAPE = "repo-shape"
 
 #: Age limit for the "a c3_* tool just ran" signal. Was a hardcoded 600 in
 #: hook_pretool_enforce; now tunable because a long single-file refactor can
@@ -202,7 +206,7 @@ def _coerce(section: dict, scope: str) -> Policy:
         blocked = frozenset(_DEFAULT_BLOCKED)
 
     set_by = str(section.get("set_by") or "").strip().lower()
-    if set_by not in (SET_BY_TIER, SET_BY_USER, ""):
+    if set_by not in (SET_BY_TIER, SET_BY_USER, SET_BY_SHAPE, ""):
         set_by = ""
 
     return Policy(mode=mode, set_by=set_by, signal_ttl_s=ttl,
@@ -329,6 +333,8 @@ def set_mode(mode: str, project_path: str = ".", *,
 
     ``set_by=SET_BY_TIER`` will NOT overwrite an existing ``user`` choice —
     picking a permission tier must not silently undo an explicit ``c3 enforce``.
+    ``set_by=SET_BY_SHAPE`` (the ``c3 init`` repo-shape default) defers to
+    ``user`` the same way.
     """
     mode = str(mode or "").strip().lower()
     if mode not in MODES:
@@ -352,8 +358,8 @@ def set_mode(mode: str, project_path: str = ".", *,
     previous = str(section.get("mode") or "")
     prior_set_by = str(section.get("set_by") or "").strip().lower()
 
-    # A tier-derived write defers to an explicit user choice.
-    if set_by == SET_BY_TIER and prior_set_by == SET_BY_USER:
+    # A derived write (tier, repo shape) defers to an explicit user choice.
+    if set_by in (SET_BY_TIER, SET_BY_SHAPE) and prior_set_by == SET_BY_USER:
         return {"mode": previous or DEFAULT_MODE, "previous": previous,
                 "changed": False, "scope": scope, "set_by": SET_BY_USER,
                 "path": str(cfg), "deferred": True}

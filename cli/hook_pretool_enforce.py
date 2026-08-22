@@ -35,6 +35,7 @@ advisory path instead of granting stale unlocks.
 Supports both Claude Code and Gemini CLI via _hook_utils.
 """
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -388,6 +389,104 @@ def _outside_project(base: Path, tool_input: dict) -> bool:
     return not (target_key == root_key or target_key.startswith(root_key + "/"))
 
 
+# ── Sub-agent tool grants ──────────────────────────────────────────────────
+# Claude Code sends `agent_type` (plus `agent_id` inside a sub-agent) with
+# every hook payload. A sub-agent whose definition lists `tools:` gets ONLY
+# those tools; if none of them reaches the c3 MCP server, the agent has no
+# c3_edit to be redirected to, and a strict deny just pushes the write onto
+# a shell heredoc that the ledger never sees (field report 2026-08-22,
+# ISSUE-1: four self-reports in one session). For that agent only, the
+# block degrades to the advisory nudge. An agent with no `tools:` line
+# inherits every tool and stays strict; an agent we cannot find stays strict
+# but the deny names the fix.
+
+_C3_GRANT_PREFIXES = ("mcp__c3__", "c3_")
+_C3_GRANT_EXACT = frozenset({"*", "mcp__*", "mcp__c3"})
+
+
+def _agent_definition(base: Path, agent_type: str) -> Path | None:
+    """The agent file for ``agent_type``: project ``.claude/agents`` first,
+    then the user's. Plugin-scoped or path-like names are not looked up."""
+    name = str(agent_type or "").strip()
+    if not name or any(ch in name for ch in r"/\:") or name.startswith("."):
+        return None
+    roots = [base / ".claude" / "agents"]
+    try:
+        roots.append(Path.home() / ".claude" / "agents")
+    except Exception:
+        pass
+    for root in roots:
+        if not root.is_dir():
+            continue
+        direct = root / f"{name}.md"
+        if direct.is_file():
+            return direct
+        nested = next((p for p in root.rglob(f"{name}.md") if p.is_file()), None)
+        if nested is not None:
+            return nested
+    return None
+
+
+def _frontmatter_tools(text: str) -> list | None:
+    """The ``tools:`` grant from an agent file's YAML frontmatter.
+
+    ``None`` when there is no frontmatter or no ``tools:`` key — the agent
+    inherits every tool. Handles the inline form (``tools: Read, Write`` or
+    ``tools: [Read, Write]``) and the list form (``- Read`` lines).
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    body = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        body.append(line)
+    for i, line in enumerate(body):
+        m = re.match(r"^tools\s*:\s*(.*)$", line)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        if rest and rest not in ("|", ">"):
+            rest = rest.strip("[]")
+            return [t.strip().strip("'\"") for t in rest.split(",") if t.strip()]
+        tools = []
+        for nxt in body[i + 1:]:
+            lm = re.match(r"^\s+-\s*(.*)$", nxt)
+            if not lm:
+                break
+            tools.append(lm.group(1).strip().strip("'\""))
+        return tools
+    return None
+
+
+def _grant_reaches_c3(tools: list) -> bool:
+    for t in tools:
+        t = str(t).strip()
+        if t in _C3_GRANT_EXACT or t.startswith(_C3_GRANT_PREFIXES):
+            return True
+    return False
+
+
+def _agent_cannot_comply(payload: dict, base: Path) -> str | None:
+    """A one-line reason when the calling agent provably has no c3 tool to
+    use instead, else None (keep strict). Any failure → None."""
+    agent_type = str(payload.get("agent_type") or "").strip()
+    if not agent_type:
+        return None
+    try:
+        definition = _agent_definition(base, agent_type)
+        if definition is None:
+            return None
+        tools = _frontmatter_tools(definition.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return None
+    if tools is None or _grant_reaches_c3(tools):
+        return None
+    return (f"agent '{agent_type}' ({definition.name}) lists tools: with no "
+            f"mcp__c3__* entry, so it has no c3_edit to use")
+
+
 def _override_allows(base: Path, tool_name: str, tool_input: dict,
                      session_id: str) -> str | None:
     """A live discipline grant for this exact write, or None (spec §5).
@@ -476,6 +575,16 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         granted = _override_allows(base, tool_name, tool_input, session_id)
         if granted:
             return _with_warnings({"additionalContext": granted}, policy)
+        cannot = _agent_cannot_comply(payload, base)
+        if cannot:
+            return _with_warnings({
+                "additionalContext": (
+                    f"[c3:hint] Native `{tool_name}` allowed: {cannot}. The edit "
+                    f"ledger still records this write. To keep strict discipline "
+                    f"for this agent, add `mcp__c3__c3_edit` (or `mcp__c3`) to its "
+                    f"tools: list, or drop the tools: line so it inherits every tool."
+                )
+            }, policy)
         _record_block(tool_name, tool_input, session_id, base)
         reason = (
             f"[c3:enforce] Native `{tool_name}` is blocked to preserve the edit "
@@ -483,6 +592,13 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
             f"If this is getting in your way, the user can run "
             f"`c3 enforce advisory`."
         )
+        agent_type = str(payload.get("agent_type") or "").strip()
+        if agent_type:
+            reason += (
+                f" Running as agent '{agent_type}': if its tools: grant has no "
+                f"mcp__c3__* entry it cannot follow this — add `mcp__c3__c3_edit` "
+                f"to the grant, or drop the tools: line so it inherits every tool."
+            )
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

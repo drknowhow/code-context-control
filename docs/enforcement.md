@@ -87,6 +87,10 @@ had every native `Edit` hard-denied by the hook:
 
 ### Provenance (`set_by`)
 
+- `set_by: "repo-shape"` — written by `c3 init` when the project is a
+  documentation repo (see *`c3 init`* below). A default with a stated
+  reason: it defers to `user` exactly as `tier` does, and a later tier
+  choice overrides it.
 - `set_by: "tier"` — written as a side effect of choosing a permission tier.
   A later tier change may overwrite it.
 - `set_by: "user"` — set explicitly with `c3 enforce`. A tier change **defers**
@@ -242,6 +246,30 @@ Omit `--enforcement` to take the tier's derived value.
 
 `c3 init` on an existing project prints a `Disc :` line with the active mode,
 its provenance, and a note when it disagrees with what the stored tier implies.
+
+### Repo shape
+
+A new install also prints a `Repo shape:` line — how many source files
+against how many prose/office documents (`.md`, `.rst`, `.docx`, `.pdf`, …;
+config, data and images count for neither side). Below 20 judged files it
+has no opinion. At 10% source or less the project is `prose`: C3's
+symbol-aware tools have little to act on in a documentation repo, so
+interactive Step 5/5 suggests `advisory` and says why, and `--force` without
+`--enforcement` writes `advisory` with `set_by: repo-shape` and prints the
+way back. It never overrides a `c3 enforce` choice or an explicit
+`--enforcement`. `services.repo_shape` holds the thresholds.
+
+## Sub-agents without C3 tools
+
+A Claude Code sub-agent whose definition lists `tools:` gets only those
+tools. If none of them reaches the `c3` MCP server (`mcp__c3__c3_edit`,
+`mcp__c3`, or `*`), a strict deny telling it to use `c3_edit` cannot be
+followed. The hook reads `agent_type` from the payload, looks the agent up
+in `.claude/agents/` (project, then `~/.claude/agents/`), and for such an
+agent degrades the block to the advisory nudge — the edit ledger still
+records the write. An agent with no `tools:` line inherits every tool and
+stays strict. To keep strict for a tool-listed agent, add `mcp__c3__c3_edit`
+to its grant or drop the `tools:` line.
 
 ## Troubleshooting
 

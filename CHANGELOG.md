@@ -6,6 +6,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `c3 init` says what kind of project it is looking at, and defaults a documentation repo to `advisory`
+
+From the same field report: 636 files, ~95% Markdown and `.docx`, near-zero
+source. Symbol-aware `c3_compress`/`c3_read`, `c3_impact`, `c3_validate` and
+`c3_ci` had nothing to act on, `c3_search` never beat `Grep` for a known
+filename, and strict discipline was paid on every turn regardless — the
+cost/benefit was negative for the whole session and C3 was uninstalled.
+
+`services.repo_shape` counts source files against prose/office documents
+(config, data and images count for neither side) and calls the project
+`code`, `mixed`, `prose`, or `empty` (fewer than 20 judged files — no
+opinion). `c3 init` prints the result for every new project. For the `prose`
+kind it suggests `advisory` in the interactive Step 5/5 with the reason
+stated, and on a non-interactive install without `--enforcement` it writes
+`advisory` with provenance `set_by: repo-shape` — over a tier-derived or
+unset mode only, never over a `c3 enforce` choice or an explicit flag — and
+prints the way back (`c3 enforce strict`). The edit ledger records native
+writes in every mode, so nothing is lost but the hard block.
+
+### Fixed — a sub-agent with no C3 tools no longer gets a deny it cannot follow
+
+A Claude Code sub-agent whose definition lists `tools:` gets only those
+tools. If none of them reaches the `c3` MCP server, the strict-mode deny
+("use `c3_edit`") names a tool the agent does not have; the report counted
+four unprompted self-reports in one session of agents completing their edits
+through `python3 -c` instead — writes the ledger never saw. Claude Code
+sends `agent_type` with every hook payload, so the PreToolUse hook now reads
+the agent's `.claude/agents/<name>.md` (project, then user; inline and list
+`tools:` forms) and, when the grant provably has no `mcp__c3__*`, `mcp__c3`
+or `*` entry, degrades the block to the advisory nudge for that agent only —
+the edit ledger still records the write — and says how to keep strict for
+it. An agent with no `tools:` line inherits every tool and stays strict. An
+agent that cannot be found stays strict, but the deny now names the fix
+(add `mcp__c3__c3_edit` to the grant, or drop the `tools:` line) instead of
+pointing at a tool the agent may not have.
+
 ### Fixed — `c3 init --clear` deleted files it did not own, and the settings cleanup reported work it had not done
 
 From a field report (2026-08-22): a documentation-only project whose
