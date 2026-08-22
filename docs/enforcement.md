@@ -50,6 +50,26 @@ another checkout — passes through untouched in every mode: no block, no
 hint. There is no ledger here for that file, so there is nothing to protect.
 Relative paths resolve against the project root.
 
+## Shell commands
+
+`Bash` is never blocked by tool discipline — blocking shell writes outright
+would break far more legitimate work than it protects. What the hook does
+instead: it reads the command for files it probably writes (`cli/_shell_writes.py`
+— redirects, `tee`, `cp`/`mv`/`touch`/`rm`, `sed -i`, inline Python
+`open(...,'w')`, following `cd`) and, when any of them is inside the project
+and `c3_edit` has not just run, adds an advisory hint naming them. After the
+command runs, files it named that exist, are editable and changed within the
+last two minutes are written to the edit ledger as `change_type: "shell"`
+rows carrying the command — after the fact, with no pre-edit snapshot.
+
+## Failed calls
+
+A `c3_*` call that failed (a response beginning `Error` / `[tool:error]`, the
+masked-path refusal, or an MCP `isError`) counts for nothing: no enforcement
+signal, no sticky unlock, and the activity log records it with `ok: false` so
+the hook's scan skips it. To create a new file use
+`c3_edit(file_path=..., old_string='', new_string=...)`.
+
 ## What never changes, at any mode
 
 Loosening tool discipline is safe precisely because it cannot reach these:

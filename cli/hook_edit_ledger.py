@@ -139,6 +139,9 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     """
     tool_name = normalize_tool_name(payload.get("tool_name", ""))
 
+    if tool_name == "Bash":
+        return _run_shell(payload, project_path)
+
     if tool_name not in ("Edit", "Write", "NotebookEdit"):
         return None
 
@@ -226,6 +229,89 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
             f"[c3:ledger] {rel} {entry['version']} auto-logged. "
             f"Call c3_edits(action='log', file='{rel}', summary='...', tags='...') "
             f"to add a semantic summary."
+        )
+    }
+
+
+# A file named by the command counts as written by it only if it changed
+# this recently — `rm`, a stale name in a quoted string, or a path that was
+# merely mentioned must not become a ledger row.
+_SHELL_WRITE_WINDOW_S = 120
+
+
+def _run_shell(payload: dict, project_path: Path | None) -> dict | None:
+    """After-the-fact ledger rows for files a shell command wrote.
+
+    Field report 2026-08-22 (ISSUE-1): writes through `python -c`, heredocs
+    and `sed -i` never reached the ledger, so the audit trail had holes
+    exactly where the agent had gone round the Write block. There is no
+    pre-edit snapshot to take here — the command already ran — so the row
+    is marked change_type "shell" and carries the command.
+    """
+    tool_input = payload.get("tool_input", {}) or {}
+    cmd = str(tool_input.get("command") or "")
+    if not cmd.strip():
+        return None
+    if project_path is None:
+        project_path = Path.cwd()
+    c3_dir = project_path / ".c3"
+    if not c3_dir.exists():
+        return None
+    config = load_hybrid_config(str(project_path))
+    ledger_cfg = config.get("edit_ledger", {})
+    if not ledger_cfg.get("enabled", True):
+        return None
+    tracking_level = ledger_cfg.get("tracking_level", "standard")
+    try:
+        from cli._shell_writes import shell_write_targets
+    except Exception:
+        return None
+
+    ledger_file = c3_dir / "edit_ledger.jsonl"
+    now = datetime.now(timezone.utc)
+    root = project_path.resolve()
+    logged = []
+    for target in shell_write_targets(cmd, str(project_path)):
+        p = Path(target)
+        try:
+            if not p.is_file() or p.suffix.lower() not in EDITABLE_EXTS:
+                continue
+            rel = str(p.resolve().relative_to(root)).replace("\\", "/")
+            if now.timestamp() - p.stat().st_mtime > _SHELL_WRITE_WINDOW_S:
+                continue
+        except (OSError, ValueError):
+            continue
+        entry = {
+            "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}_{uuid.uuid4().hex[:4]}",
+            "timestamp": now.isoformat(),
+            "session_id": str(payload.get("session_id") or ""),
+            "file": rel,
+            "change_type": "shell",
+            "summary": "shell" if tracking_level == "minimal" else f"shell: {cmd.strip()[:160]}",
+            "lines_changed": None,
+            "version": _next_version(ledger_file, rel),
+            "git": {},
+            "diff_summary": "",
+            "git_pending": tracking_level != "minimal",
+            "tags": ["auto", "shell"] if ledger_cfg.get("auto_tag", True) else ["shell"],
+        }
+        if tracking_level == "detailed":
+            entry["detail"] = {"command": cmd.strip()[:300]}
+        with open(ledger_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        logged.append(f"{rel} {entry['version']}")
+        try:
+            from services.repo_map import is_structural_change, mark_map_dirty
+            if is_structural_change(rel, "shell"):
+                mark_map_dirty(project_path, f"shell:{rel}")
+        except Exception:
+            pass
+    if not logged:
+        return None
+    return {
+        "_text": (
+            f"[c3:ledger] shell write logged after the fact: {', '.join(logged)} "
+            f"— no pre-edit snapshot; prefer c3_edit for file changes."
         )
     }
 

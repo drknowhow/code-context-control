@@ -7,6 +7,7 @@ All hook reads/writes of enforcement state MUST go through this module.
 """
 import json
 import os
+import re
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -438,6 +439,43 @@ def get_tool_output(data: dict) -> tuple:
             )
         return str(content) if content is not None else "", True
     return resp if isinstance(resp, str) else "", False
+
+
+# A c3 tool that failed did not read, search or edit anything, so its
+# completion is not evidence that c3 was used (field report 2026-08-22,
+# ISSUE-3: c3_compress on a missing path -> "Error: File not found" -> the
+# sticky unlock and the signal both fired -> native Write allowed). Tools
+# report failure as a leading "Error" / "[<tool>:error]" line, the masked-path
+# refusal tag, or an MCP isError flag.
+_FAILED_RESPONSE_RE = re.compile(
+    r"^\s*(?:Error\b|\[[a-z0-9_\-]+:error\]|\[c3-mask:unsupported\])", re.IGNORECASE)
+
+
+def response_text_failed(text) -> bool:
+    """True when a c3 tool's response text reads as a failure."""
+    return bool(_FAILED_RESPONSE_RE.match(str(text or "")))
+
+
+def tool_response_failed(data: dict) -> bool:
+    """True when the PostToolUse payload carries a failed c3 tool response.
+
+    Handles Claude Code's plain string, an MCP-style dict with ``isError`` /
+    ``content`` parts, a bare list of parts, and Gemini's ``llmContent``.
+    """
+    resp = data.get("tool_response")
+    if isinstance(resp, dict):
+        if resp.get("isError") is True or resp.get("is_error") is True:
+            return True
+        content = resp.get("content")
+        if isinstance(content, list):
+            text = "\n".join((p.get("text") or "") for p in content if isinstance(p, dict))
+            return response_text_failed(text)
+        text, _ = get_tool_output(data)
+        return response_text_failed(text)
+    if isinstance(resp, list):
+        text = "\n".join((p.get("text") or "") if isinstance(p, dict) else str(p) for p in resp)
+        return response_text_failed(text)
+    return response_text_failed(resp if isinstance(resp, str) else "")
 
 
 def get_tool_input_path(data: dict) -> str:

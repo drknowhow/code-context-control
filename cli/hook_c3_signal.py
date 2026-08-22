@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cli._hook_utils import log_hook_error, record_c3_signal  # noqa: E402
+from cli._hook_utils import log_hook_error, record_c3_signal, tool_response_failed  # noqa: E402
 
 # Tools that unlock generic read operations (Grep/Glob without a file path)
 _READ_UNLOCK_TOOLS = {"c3_search", "c3_compress", "c3_filter", "c3_read", "c3_impact", "c3_validate"}
@@ -43,6 +43,10 @@ def run(payload: dict, project_path: Path | None = None):
     short_name = raw_tool.replace("mcp__c3__", "") if "mcp__c3__" in raw_tool else raw_tool
 
     if not short_name.startswith("c3_"):
+        return None
+
+    # A failed call read nothing and edited nothing: no signal (ISSUE-3).
+    if tool_response_failed(payload):
         return None
 
     record_c3_signal(

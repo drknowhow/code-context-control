@@ -35,6 +35,7 @@ advisory path instead of granting stale unlocks.
 Supports both Claude Code and Gemini CLI via _hook_utils.
 """
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -54,7 +55,16 @@ from _hook_utils import (  # noqa: E402
     log_hook_error,
     normalize_tool_name,
     record_unlocked_files,
+    response_text_failed,
 )
+
+try:
+    from _shell_writes import shell_write_targets
+except Exception:  # pragma: no cover - package-style import (tests, dispatcher)
+    try:
+        from cli._shell_writes import shell_write_targets
+    except Exception:
+        shell_write_targets = None
 
 try:
     from services import access_telemetry, enforcement_policy
@@ -142,7 +152,8 @@ _REDIRECTS = {
     ),
     "Write": (
         "Use c3_edit(file_path='...', old_string='...', new_string='...', summary='...') "
-        "for file modifications. For new files, use native Write only after c3_search/c3_compress."
+        "for file modifications. For a NEW file, c3_edit(file_path='...', old_string='', "
+        "new_string='<content>') creates it and logs it."
     ),
 }
 
@@ -312,6 +323,11 @@ def _check_c3_used(
 
         tool = entry.get("tool", "")
         if tool not in allowed:
+            continue
+        # ISSUE-3: the log used to count a call that returned "Error: File
+        # not found" as "c3 was used". Newer entries carry ok=False; older
+        # ones are judged by the summary text.
+        if entry.get("ok") is False or response_text_failed(entry.get("result_summary") or ""):
             continue
 
         if native_target:
@@ -514,6 +530,9 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     """
     tool_name = normalize_tool_name(payload.get("tool_name", ""))
 
+    if tool_name == "Bash":
+        return _shell_advisory(payload, project_path)
+
     if tool_name not in _PREREQS:
         return None  # Not a tool we enforce — pass through
 
@@ -613,6 +632,55 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         "additionalContext": (
             f"[c3:hint] Native `{tool_name}` {verb} without a prior c3_* call. "
             f"For better index awareness next time: {redirect}"
+        )
+    }, policy)
+
+
+def _shell_advisory(payload: dict, project_path: Path | None) -> dict | None:
+    """Bash is the escape hatch tool discipline never looked at (field
+    report 2026-08-22, ISSUE-1's buried finding): an inline ``python -c`` write
+    or a heredoc was never nudged toward c3_edit and never snapshotted. It
+    is NOT denied — blocking shell writes outright would break far more
+    legitimate work than it protects — it gets the advisory hint that names
+    the files, in strict and advisory modes alike, and hook_edit_ledger
+    records the writes after the fact. A fresh write-class c3 signal
+    (c3_edit just ran) means the agent is already on the c3 path: silent.
+    """
+    if shell_write_targets is None:
+        return None
+    tool_input = payload.get("tool_input", {}) or {}
+    cmd = str(tool_input.get("command") or "")
+    if not cmd.strip():
+        return None
+    base = project_path if project_path is not None else Path.cwd()
+    policy = _resolve_policy(base)
+    mode = getattr(policy, "mode", None) or "strict"
+    if mode == "off":
+        return _policy_warnings(policy)
+    targets = [t for t in shell_write_targets(cmd, str(base))
+               if not _outside_project(base, {"file_path": t})]
+    if not targets:
+        return _policy_warnings(policy)
+    session_id = str(payload.get("session_id") or "")
+    state = load_enforcement_state(base, session_id=session_id)
+    ttl_s = getattr(policy, "signal_ttl_s", _SIGNAL_MAX_AGE_SECS)
+    recent, _read_unlocked, signal_tool = _check_signal(state, ttl_s)
+    if recent and signal_tool in _PREREQS["Write"]:
+        return _policy_warnings(policy)
+    shown = []
+    for t in targets[:3]:
+        try:  # display only; no path resolution here (canonical_key owns that)
+            shown.append(os.path.relpath(t, str(base)).replace("\\", "/"))
+        except (OSError, ValueError):
+            shown.append(t)
+    more = f" (+{len(targets) - 3} more)" if len(targets) > 3 else ""
+    return _with_warnings({
+        "additionalContext": (
+            f"[c3:hint] This shell command looks like it writes {', '.join(shown)}{more}. "
+            f"Shell writes bypass c3_edit: no pre-edit snapshot, and the ledger can only "
+            f"record them after the fact as `shell` changes. Prefer "
+            f"c3_edit(file_path='...', old_string='...', new_string='...') — old_string='' "
+            f"creates a file. (advisory: shell is never blocked)"
         )
     }, policy)
 

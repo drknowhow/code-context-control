@@ -152,6 +152,10 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
             yield "hook_artifact"
         if raw_tool in _GHOST_TOOLS:
             yield "hook_ghost_files"
+        # Shell file writes land in the ledger after the fact (after the
+        # ghost sweep, so a 0-byte redirect artifact is never logged).
+        if norm_tool == "Bash":
+            yield "hook_edit_ledger"
     elif event == "stop":
         yield "hook_session_stats"
         yield "hook_auto_snapshot"

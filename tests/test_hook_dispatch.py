@@ -87,8 +87,11 @@ class TestRouting(unittest.TestCase):
                          ["hook_access_guard", "hook_pretool_enforce"])
 
     def test_posttool_bash_routes(self):
+        # Shell writes reach the ledger after the ghost sweep (field report
+        # 2026-08-22, ISSUE-1): the sweep deletes 0-byte redirect artifacts
+        # before the ledger could mistake one for a write.
         self.assertEqual(self._routes("posttool", "Bash"),
-                         ["hook_filter", "hook_ghost_files"])
+                         ["hook_filter", "hook_ghost_files", "hook_edit_ledger"])
 
     def test_posttool_read_routes(self):
         self.assertEqual(self._routes("posttool", "Read"),

@@ -135,13 +135,13 @@ class TestCodexRouting(unittest.TestCase):
     def test_codex_bash_keeps_ghost_sweep(self):
         # Bookkeeping that never touches the payload stays on (requirement 3).
         self.assertEqual(self._routes("posttool", "Bash", HOST_CODEX),
-                         ["hook_ghost_files"])
+                         ["hook_ghost_files", "hook_edit_ledger"])
 
     def test_other_hosts_still_filter(self):
         for host in (HOST_CLAUDE, HOST_GEMINI):
             with self.subTest(host=host):
                 self.assertEqual(self._routes("posttool", "Bash", host),
-                                 ["hook_filter", "hook_ghost_files"])
+                                 ["hook_filter", "hook_ghost_files", "hook_edit_ledger"])
 
     def test_codex_keeps_ledger_and_signal_routes(self):
         self.assertEqual(self._routes("posttool", "Edit", HOST_CODEX),

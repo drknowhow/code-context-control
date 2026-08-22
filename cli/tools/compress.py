@@ -147,7 +147,8 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
 
     if mode in ("map", "dense_map"):
         if not full.exists():
-            return "[file_map:error] not found"
+            return ("[file_map:error] not found. To create a new file use "
+                    "c3_edit(file_path=..., old_string='', new_string=<content>).")
         rel = str(full.resolve().relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
         queued = svc.file_memory.drain_queue()
         completed = []
