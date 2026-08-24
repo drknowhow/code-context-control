@@ -4,6 +4,28 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.92.3] - 2026-08-24
+
+### Fixed — one minified bundle could hang a build for a quarter of an hour
+
+`services/indexer.py::_build_cooccurrence` was quadratic in a chunk's
+unique-token count, with no bound. A vendored `*.min.css` or `*.min.js`
+chunk carries hundreds of unique tokens, so the pair loop reached the
+billions: one real project (4091 chunks, one 798-token bundle chunk) sat
+at 1.9e9 counter updates, pinned a core at 100% with no I/O, and `c3
+index` simply never returned. Nothing timed out and nothing logged, so
+the failure looked like a hang rather than a bug.
+
+Two bounds, both reported. `_COOC_MAX_CHUNK_TOKENS` (200) skips an
+individual chunk whose unique-token count is pathological;
+`_COOC_MAX_PAIR_UPDATES` (20M) stops the whole pass. `build_index()`
+returns a new `cooccurrence` stats block naming how many chunks were
+skipped and whether the pass was capped, so a bounded build cannot be
+mistaken for a complete one. The project above now rebuilds in 69s.
+
+If you have ever started `c3 index` on a repo that vendors a minified
+bundle and given up waiting, this was why.
+
 ## [2.92.2] - 2026-08-24
 
 ### Fixed — the indexer read every file as cp1252, so the index stored mojibake
