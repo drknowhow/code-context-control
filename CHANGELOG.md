@@ -4,6 +4,39 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.92.2] - 2026-08-24
+
+### Fixed — the indexer read every file as cp1252, so the index stored mojibake
+
+`services/indexer.py`, `doc_index.py`, `protocol.py` and `scanner.py` all
+called `Path.read_text(errors="replace")` with no `encoding=`. On a Windows
+box whose preferred encoding is cp1252 that decodes UTF-8 source as cp1252,
+and `errors="replace"` guarantees it never raises — so it failed silently,
+forever.
+
+Source files were never touched. The corruption lived in the *indexed
+copies*: on this repo, 4102 mangled sequences in `.c3/index/index.json`,
+2065 in `.c3/doc_index/index.json` and 11244 in the chroma collection, all
+coming back that way through `c3_search` semantic hits and `c3 context`.
+The embeddings were computed over the mangled text too. `compressor.py`
+already passed `encoding="utf-8"`, which is why `c3_compress` / `c3_read`
+looked clean while search did not.
+
+Fix: `encoding="utf-8"` at all five sites (plus one in the swe_bench
+harness).
+
+Guard: `test_windows_reliability` already banned text-mode `open()` without
+`encoding=`; the same invariant was never asserted for
+`read_text`/`write_text`, which is exactly where it broke. New
+`test_no_path_text_io_without_encoding` covers shipped code (positional
+`read_text("utf-8")` counts; `importlib.metadata` `dist.read_text` exempt),
+and `_SKIP_DIRS` now skips gitignored build artifacts (`build/`, `dist/`,
+`.eggs/`) that are stale copies of sources already scanned.
+
+**Upgrading does not repair an index that is already mangled.** The fix
+stops new mojibake only; a project indexed by an older version keeps the
+bad text until its index is rebuilt.
+
 ## [2.92.1] - 2026-08-22
 
 ### Fixed — shell writes were invisible to tool discipline, and a failed `c3_*` call counted as "c3 was used"
