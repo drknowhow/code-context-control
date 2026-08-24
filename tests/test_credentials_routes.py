@@ -242,6 +242,126 @@ class TestCredentialsRoutes(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/credentials/GHOST/usage").status_code, 404)
 
+    # ── .env import ───────────────────────────────────────
+    # The hub twin of this route was tested; this one never was.
+
+    PEM = ("-----BEGIN PRIVATE KEY-----\n"
+           "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIB\n"
+           "-----END PRIVATE KEY-----")
+
+    def _env_body(self):
+        return 'TOKEN=%s\nKEY="%s"\nBAD NAME=x\n' % (CANARY, self.PEM)
+
+    def _import(self, **payload):
+        return self.client.post("/api/credentials/import", json=payload)
+
+    def test_import_preview_writes_nothing_and_echoes_no_value(self):
+        resp = self._import(text=self._env_body(), preview=True)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_data(as_text=True)
+        self.assertNotIn(CANARY, body)
+        self.assertNotIn("MIIEvQIBADAN", body)
+        data = resp.get_json()
+        self.assertEqual(sorted(data["created"]), ["KEY", "TOKEN"])
+        self.assertTrue(data["preview"])
+        # nothing was actually stored
+        self.assertEqual(self.client.get("/api/credentials").get_json()["entries"], [])
+
+    def test_import_rows_carry_length_and_fingerprint_only(self):
+        rows = self._import(text=self._env_body(), preview=True).get_json()["rows"]
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(by_name["TOKEN"]["value_len"], len(CANARY))
+        self.assertEqual(len(by_name["TOKEN"]["fingerprint"]), 8)
+        self.assertEqual(by_name["KEY"]["ctype"], "multiline")
+        # a fingerprint is not a prefix — no substring of the value appears
+        self.assertNotIn(CANARY[:6], json.dumps(rows))
+
+    def test_import_commits_and_multiline_round_trips(self):
+        resp = self._import(text=self._env_body())
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(CANARY, resp.get_data(as_text=True))
+        self.assertEqual(cs.get_value("KEY", project_path=str(self.proj)), self.PEM)
+        self.assertEqual(cs.get_value("TOKEN", project_path=str(self.proj)), CANARY)
+
+    def test_import_only_restricts_what_lands(self):
+        self._import(text=self._env_body(), only=["TOKEN"])
+        names = [e["name"] for e in
+                 self.client.get("/api/credentials").get_json()["entries"]]
+        self.assertEqual(names, ["TOKEN"])
+
+    def test_import_only_must_be_a_list(self):
+        resp = self._import(text="A=1", only="TOKEN")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("must be a list", resp.get_json()["error"])
+
+    def test_import_reports_a_reason_per_skipped_name(self):
+        self._import(text="TOKEN=first")
+        data = self._import(text="TOKEN=second").get_json()
+        self.assertEqual(data["reasons"]["TOKEN"], "exists")
+        self.assertEqual(cs.get_value("TOKEN", project_path=str(self.proj)), "first")
+
+    def test_import_overwrite_replaces(self):
+        self._import(text="TOKEN=first")
+        self._import(text="TOKEN=second", overwrite=True)
+        self.assertEqual(cs.get_value("TOKEN", project_path=str(self.proj)), "second")
+
+    def test_import_overwrite_keeps_the_entry_configured(self):
+        """Re-importing rotates the value and leaves the settings alone.
+
+        The route twin of the store test: an overwrite used to hand the entry
+        back un-configured, so a credential that had been auto-injecting into
+        every shell run quietly stopped.
+        """
+        self._post({"name": "TOKEN", "value": "first", "type": "token",
+                    "description": "prod key", "env_var": "PROD_KEY",
+                    "inject": True, "agent_readable": True})
+        self._import(text="TOKEN=second", overwrite=True)
+
+        self.assertEqual(cs.get_value("TOKEN", project_path=str(self.proj)),
+                         "second")
+        entry = next(e for e in
+                     self.client.get("/api/credentials").get_json()["entries"]
+                     if e["name"] == "TOKEN")
+        self.assertEqual(entry["description"], "prod key")
+        self.assertEqual(entry["env_var"], "PROD_KEY")
+        self.assertEqual(entry["type"], "token")
+        self.assertTrue(entry["inject"])
+        self.assertTrue(entry["agent_readable"])
+
+    def test_import_reads_a_path_inside_the_project(self):
+        (self.proj / ".env").write_text(self._env_body(), encoding="utf-8")
+        data = self._import(path=".env").get_json()
+        self.assertEqual(sorted(data["created"]), ["KEY", "TOKEN"])
+        self.assertEqual(cs.get_value("KEY", project_path=str(self.proj)), self.PEM)
+
+    def test_import_refuses_a_path_outside_the_project(self):
+        outside = Path(self._home.name) / "elsewhere.env"
+        outside.write_text("X=1\n", encoding="utf-8")
+        for candidate in (str(outside), "../elsewhere.env"):
+            resp = self._import(path=candidate)
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn("escapes", resp.get_json()["error"])
+
+    def test_import_of_a_cp1252_file_does_not_explode(self):
+        (self.proj / "l.env").write_bytes("CAFE=caf\u00e9\n".encode("cp1252"))
+        self.assertEqual(self._import(path="l.env").status_code, 200)
+        self.assertEqual(cs.get_value("CAFE", project_path=str(self.proj)),
+                         "caf\u00e9")
+
+    def test_import_is_audited_without_values(self):
+        self._import(text=self._env_body())
+        text = (self.proj / ".c3" / "activity_log.jsonl").read_text(encoding="utf-8")
+        self.assertIn("TOKEN", text)
+        self.assertNotIn(CANARY, text)
+        ledger = (self.proj / ".c3" / "edit_ledger.jsonl")
+        if ledger.exists():
+            self.assertNotIn(CANARY, ledger.read_text(encoding="utf-8"))
+
+    def test_import_preview_is_not_audited(self):
+        self._import(text=self._env_body(), preview=True)
+        log = self.proj / ".c3" / "activity_log.jsonl"
+        self.assertFalse(log.exists() and "cred_action" in log.read_text(encoding="utf-8"))
+
     def test_mutations_audited_without_values(self):
         self._post({"name": "AUD", "value": CANARY})
         self.client.delete("/api/credentials/AUD")

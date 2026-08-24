@@ -335,6 +335,8 @@ _HUB_JS_FILES = [
     "hub_ui/components/drill_panel.js",
     "hub_ui/components/drill_views.js",
     "hub_ui/components/hub_credentials.js",
+    "hub_ui/components/hub_cred_audit.js",
+    "hub_ui/components/hub_tokens.js",
     "hub_ui/components/hub_locks.js",
     "hub_ui/components/hub_enforcement.js",
     "hub_ui/components/hub_ci.js",
@@ -1987,6 +1989,36 @@ def _hub_cred_audit(action: str, name: str, scope: str, project) -> None:
             pass
 
 
+def _cred_import_payload(data, root):
+    """Pull (text, source_path, error) for an import request.
+
+    The body carries either ``text`` (the browser read the file locally, as
+    the paste box always has) or a path (read it here instead). A path is
+    contained to ``root``: this route is reachable from any page the loopback
+    guard lets through, and an uncontained path would turn it into a
+    read-any-file-into-the-vault primitive.
+
+    ``source_path`` is empty for a pasted body on purpose. A source is a
+    promise that we can read that file again on the next re-sync, and a
+    filename the browser typed is not one.
+    """
+    from services import credential_store as cred_store
+    raw_path = str(data.get("path") or "").strip()
+    if not raw_path:
+        return str(data.get("text") or ""), "", None
+    try:
+        base = Path(root).resolve()
+        target = Path(raw_path)
+        target = target.resolve() if target.is_absolute() else (base / target).resolve()
+        if target != base and base not in target.parents:
+            return None, "", (jsonify({"error": f"path escapes {base}"}), 400)
+        return cred_store.read_env_file(target), str(target), None
+    except cred_store.CredentialError as exc:
+        return None, "", (jsonify({"error": str(exc)}), 400)
+    except OSError as exc:
+        return None, "", (jsonify({"error": str(exc)}), 400)
+
+
 @app.route("/api/projects/credentials", methods=["GET"])
 def api_projects_credentials():
     """Masked credential registry for a project (global entries + project
@@ -2062,24 +2094,50 @@ def api_projects_credentials_set():
 
 @app.route("/api/projects/credentials/import", methods=["POST"])
 def api_projects_credentials_import():
-    """Import KEY=VALUE lines (.env paste). Values are stored, never echoed."""
+    """Import KEY=VALUE lines from a .env paste, upload, or on-disk path.
+
+    ``preview: true`` classifies every row and writes nothing; ``only``
+    narrows a real import to the rows the user ticked. Note that ``path`` here
+    is the hub's project selector, as on every other route in this file — the
+    .env to read is ``env_path``, resolved inside that project.
+    """
     from services import credential_store as cred_store
     data = request.get_json(force=True) or {}
     scope = str(data.get("scope") or "project").strip().lower()
+    preview = bool(data.get("preview"))
+    only = data.get("only")
+    if only is not None and not isinstance(only, list):
+        return jsonify({"error": "only must be a list of names"}), 400
     project, store_path, err = _resolve_cred_target(
-        str(data.get("path") or "").strip(), scope, mutation=True)
+        str(data.get("path") or "").strip(), scope, mutation=not preview)
     if err:
         return err
+    text, source, err = _cred_import_payload(
+        {"text": data.get("text"), "path": data.get("env_path")}, store_path)
+    if err:
+        return err
+    # Checked BEFORE the write: the point is to refuse a commit whose file
+    # moved under the preview the user ticked, which is no use after the fact.
+    expect = str(data.get("expect_digest") or "").strip()
+    if expect and cred_store.text_digest(text) != expect:
+        return jsonify({"error": "the file changed since you previewed it",
+                        "digest": cred_store.text_digest(text),
+                        "stale_preview": True}), 409
     try:
         result = cred_store.import_env(
-            str(data.get("text") or ""), scope=scope, project_path=store_path,
-            overwrite=bool(data.get("overwrite")))
+            text, scope=scope, project_path=store_path,
+            overwrite=bool(data.get("overwrite")),
+            preview=preview, only=only, source=source,
+            compare=bool(data.get("compare")))
     except cred_store.CredentialError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 500
-    for created in result["created"]:
-        _hub_cred_audit("set", created, scope, project)
+    if not preview and result["created"]:
+        _hub_cred_audit("import", f"{len(result['created'])} entries",
+                        scope, project)
+        for created in result["created"]:
+            _hub_cred_audit("set", created, scope, project)
     return jsonify(result)
 
 
@@ -2159,6 +2217,107 @@ def api_projects_credentials_usage():
     })
 
 
+def _cred_audit_args(args):
+    return {
+        "name": (args.get("name") or "").strip(),
+        "kind": (args.get("kind") or "").strip(),
+        "action": (args.get("action") or "").strip(),
+        "surface": (args.get("surface") or "").strip(),
+        "q": (args.get("q") or "").strip(),
+        "since": (args.get("since") or "").strip(),
+    }
+
+
+@app.route("/api/projects/credentials/audit", methods=["GET"])
+def api_projects_credentials_audit():
+    """Credential change+use timeline for one project (global scope merged)."""
+    from services import cred_audit
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    out = cred_audit.audit_events(
+        str(resolved), limit=request.args.get("limit", 200),
+        **_cred_audit_args(request.args))
+    out["path"] = str(resolved)
+    return jsonify(out)
+
+
+@app.route("/api/hub/credentials/audit", methods=["GET"])
+def api_hub_credentials_audit():
+    """Cross-project credential audit: every project, plus the global vault.
+
+    Each project contributes its PROJECT-scope events only and the shared
+    global vault is read exactly once — merging both per project would count
+    one shared log N times and inflate every total on the page.
+    """
+    from services import cred_audit
+    from services import credential_store as cred_store
+
+    filters = _cred_audit_args(request.args)
+    try:
+        limit = max(1, min(1000, int(request.args.get("limit", 300))))
+    except (TypeError, ValueError):
+        limit = 300
+
+    # scope=global answers "what happened in the SHARED vault", which is a
+    # different question from "what happened anywhere" and is what the global
+    # vault's own manager asks.
+    only_global = (request.args.get("scope") or "").strip().lower() == "global"
+
+    events, errors = [], []
+    for p in ([] if only_global else _pm().list_projects()):
+        ppath = str(p.get("path") or "")
+        if not (Path(ppath) / ".c3").is_dir():
+            continue
+        try:
+            res = cred_audit.audit_events(ppath, limit=1000,
+                                          include_global=False, **filters)
+            for ev in res["events"]:
+                ev["project_name"] = p.get("name") or ""
+                events.append(ev)
+        except Exception as e:  # per-row isolation
+            errors.append({"name": p.get("name") or "", "path": ppath,
+                           "error": str(e)})
+
+    home = cred_store.global_base()
+    if home is not None:
+        try:
+            res = cred_audit.audit_events(str(home), limit=1000, **filters)
+            for ev in res["events"]:
+                ev["project_name"] = "global vault"
+                events.append(ev)
+        except Exception as e:
+            errors.append({"name": "global vault", "path": str(home),
+                           "error": str(e)})
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    counts = {"use": 0, "change": 0, "exposing": 0}
+    actions, names = {}, {}
+    for ev in events:
+        counts[ev["kind"]] = counts.get(ev["kind"], 0) + 1
+        if ev["action"] in cred_audit.EXPOSING_ACTIONS:
+            counts["exposing"] += 1
+        actions[ev["action"]] = actions.get(ev["action"], 0) + 1
+        if ev["name"]:
+            names[ev["name"]] = names.get(ev["name"], 0) + 1
+
+    return jsonify({
+        "scope": "global" if only_global else "all",
+        "events": events[:limit], "matched": len(events),
+        "returned": min(limit, len(events)), "truncated": len(events) > limit,
+        "counts": counts, "errors": errors,
+        "actions": [{"name": k, "count": v} for k, v in
+                    sorted(actions.items(), key=lambda kv: -kv[1])],
+        "names": [{"name": k, "count": v} for k, v in
+                  sorted(names.items(), key=lambda kv: -kv[1])][:50],
+        "note": cred_audit.AUDIT_NOTE,
+    })
+
+
 @app.route("/api/hub/credentials/overview", methods=["GET"])
 def api_hub_credentials_overview():
     """Cross-project credential inventory: the global vault plus each
@@ -2197,6 +2356,183 @@ def api_hub_credentials_overview():
         for name, entry in global_entries.items()
     ]
     return jsonify({"global": {"entries": global_out}, "projects": projects_out})
+
+
+#: Bulk actions may only ever REDUCE what a credential is exposed to.
+#: Granting agent-read or enabling auto-inject stays a single-entry action
+#: behind a typed confirmation: a bulk grant widens access to many secrets at
+#: once from a checkbox, and the one row the user did not mean to include is
+#: exactly the one that matters. Bulk rename, retype, storage migration and
+#: cross-scope copy are absent for a different reason — each silently changes
+#: which credential a consumer resolves, and no dialog makes that visible.
+_CRED_BATCH_ACTIONS = ("delete", "revoke_agent_read", "disable_inject", "check")
+_CRED_BATCH_MAX = 200
+
+
+@app.route("/api/hub/credentials/batch", methods=["POST"])
+def api_hub_credentials_batch():
+    """Apply one reduce-only action to many entries, across projects.
+
+    Targets carry their own ``(scope, path, name)``. Name alone is ambiguous —
+    the same name legitimately lives in the global vault and in any number of
+    projects — so identity is the triple, in the request and in the ledger.
+
+    Per-target isolation, like /api/hub/credentials/overview: one failure is
+    recorded against its row and the rest still run. A partial result is
+    reported as one, never as success.
+    """
+    from services import credential_store as cred_store
+    data = request.get_json(force=True) or {}
+    action = str(data.get("action") or "").strip()
+    if action not in _CRED_BATCH_ACTIONS:
+        return jsonify({"error": f"action must be one of "
+                                 f"{list(_CRED_BATCH_ACTIONS)}"}), 400
+    targets = data.get("targets")
+    if not isinstance(targets, list):
+        return jsonify({"error": "targets must be a list"}), 400
+    if not targets:
+        return jsonify({"error": "targets is empty"}), 400
+    if len(targets) > _CRED_BATCH_MAX:
+        return jsonify({"error": f"at most {_CRED_BATCH_MAX} targets per "
+                                 f"request, got {len(targets)}"}), 400
+
+    results = []
+    for target in targets:
+        if not isinstance(target, dict):
+            results.append({"scope": "", "path": "", "name": "",
+                            "ok": False, "error": "target must be an object"})
+            continue
+        name = str(target.get("name") or "").strip()
+        scope = str(target.get("scope") or "project").strip().lower()
+        path = str(target.get("path") or "").strip()
+        row = {"scope": scope, "path": path, "name": name, "ok": False,
+               "error": ""}
+        if not name:
+            row["error"] = "name is required"
+            results.append(row)
+            continue
+        project, store_path, err = _resolve_cred_target(
+            path, scope, mutation=(action != "check"))
+        if err:
+            body = err[0].get_json() or {}
+            row["error"] = str(body.get("error") or "unresolvable target")
+            results.append(row)
+            continue
+        try:
+            if action == "delete":
+                if not cred_store.delete_credential(
+                        name, scope=scope, project_path=store_path):
+                    raise cred_store.CredentialError("not set in this scope")
+                row["ok"] = True
+            elif action == "revoke_agent_read":
+                cred_store.update_metadata(name, scope=scope,
+                                           project_path=store_path,
+                                           agent_readable=False)
+                row["ok"] = True
+            elif action == "disable_inject":
+                cred_store.update_metadata(name, scope=scope,
+                                           project_path=store_path,
+                                           inject=False)
+                row["ok"] = True
+            else:  # check — read-only, mutates nothing and audits nothing
+                row["resolvable"] = cred_store.is_resolvable(
+                    name, project_path=store_path, scope=scope)
+                row["ok"] = True
+        except (cred_store.CredentialError, RuntimeError) as exc:
+            row["error"] = str(exc)
+        except Exception as exc:  # per-row isolation
+            row["error"] = str(exc)
+        else:
+            if action != "check":
+                _hub_cred_audit(action, name, scope, project)
+        results.append(row)
+
+    ok_count = sum(1 for r in results if r["ok"])
+    if action != "check" and ok_count:
+        # One row naming the batch, so the ledger shows a bulk action rather
+        # than N mutations indistinguishable from N manual ones.
+        _hub_cred_audit(f"batch_{action}", f"{ok_count} entries", "", None)
+    return jsonify({"action": action, "results": results,
+                    "ok_count": ok_count,
+                    "fail_count": len(results) - ok_count})
+
+
+# ── Tokens (hub) ─────────────────────────────────────────────────────────────
+# Two logs, deliberately kept apart in the response: tool telemetry counts what
+# C3's own tools returned; session stats are the whole conversation's billable
+# usage from the transcript. Neither is a subset of the other, and averaging
+# them into one "tokens" number would be a made-up figure.
+
+
+def _hub_tokens_days(raw, default: int = 30) -> int:
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(days, 3650))
+
+
+@app.route("/api/projects/tokens", methods=["GET"])
+def api_projects_tokens():
+    """Token usage for one project. Counts only — never transcript content."""
+    from services import telemetry
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    days = _hub_tokens_days(request.args.get("days"))
+    return jsonify({
+        "path": str(resolved), "days": days,
+        "tools": telemetry.aggregate_tool_telemetry(str(resolved), days=days),
+        "sessions": telemetry.aggregate_session_stats(str(resolved), days=days),
+    })
+
+
+@app.route("/api/hub/tokens/overview", methods=["GET"])
+def api_hub_tokens_overview():
+    """Cross-project token totals, one row per registered project.
+
+    Per-row isolation like /api/hub/credentials/overview: a project that
+    cannot be read reports ``error`` rather than a silent zero, because "0
+    tokens" and "we could not look" are very different claims.
+    """
+    from services import telemetry
+    days = _hub_tokens_days(request.args.get("days"))
+    rows, totals = [], {"tool_calls": 0, "tool_tokens": 0,
+                        "session_tokens": 0, "saved": 0}
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
+               "error": None, "tool_calls": 0, "tool_tokens": 0,
+               "session_tokens": 0, "saved": 0, "last_ts": "",
+               "by_tool": [], "sessions": 0}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                tools = telemetry.aggregate_tool_telemetry(ppath, days=days)
+                sess = telemetry.aggregate_session_stats(ppath, days=days)
+                row["tool_calls"] = tools["total_calls"]
+                row["tool_tokens"] = tools["total_response_tokens"]
+                row["saved"] = tools["estimated_saved_vs_full_read"]
+                row["session_tokens"] = sess["total_tokens"]
+                row["sessions"] = sess["session_count"]
+                row["by_tool"] = sorted(
+                    ({"name": k, **v} for k, v in tools["by_tool"].items()),
+                    key=lambda r: -r["response_tokens"])[:5]
+                days_list = tools.get("by_day") or []
+                row["last_ts"] = days_list[-1]["name"] if days_list else ""
+                for key in ("tool_calls", "tool_tokens", "session_tokens", "saved"):
+                    totals[key] += row[key]
+        except Exception as e:  # per-row isolation
+            row["error"] = str(e)
+        rows.append(row)
+    rows.sort(key=lambda r: -r["tool_tokens"])
+    return jsonify({"days": days, "projects": rows, "totals": totals,
+                    "baseline_note": telemetry.BASELINE_NOTE})
 
 
 # ── Agent Locks (hub) ────────────────────────────────────────────────────────

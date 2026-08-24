@@ -284,6 +284,112 @@ class TestCredentialsTool(unittest.TestCase):
         self.assertIn("no recorded uses", self._call("usage", name="NOPE"))
         self.assertIn("use(s) across", self._call("usage"))
 
+    # ── import_env ────────────────────────────────────────
+
+    PEM = ("-----BEGIN PRIVATE KEY-----\n"
+           "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIB\n"
+           "-----END PRIVATE KEY-----")
+
+    def _write_env(self, body=None, name=".env"):
+        path = Path(self._tmp_proj.name) / name
+        path.write_text(
+            body if body is not None else
+            'TOKEN=canary-abc123\nKEY="%s"\n' % self.PEM,
+            encoding="utf-8")
+        return path
+
+    def test_import_env_defaults_to_dry_run_and_writes_nothing(self):
+        self._write_env()
+        resp = self._call("import_env", file_path=".env")
+        self.assertIn("would import 2", resp)
+        self.assertIn("nothing written", resp)
+        self.assertIn("no credentials registered", self._call("list"))
+
+    def test_import_env_applies_when_dry_run_is_false(self):
+        self._write_env()
+        resp = self._call("import_env", file_path=".env", dry_run=False)
+        self.assertIn("imported 2", resp)
+        self.assertIn("TOKEN", self._call("list"))
+        # the multi-line value survived and was typed as multiline
+        self.assertEqual(
+            cs.get_value("KEY", project_path=self._tmp_proj.name), self.PEM)
+        self.assertEqual(
+            cs.get_entry("KEY", project_path=self._tmp_proj.name)["type"],
+            "multiline")
+
+    def test_import_env_never_echoes_a_value(self):
+        """The whole point: .env is a built-in deny for agent reads."""
+        self._write_env()
+        for kwargs in ({}, {"dry_run": False}):
+            resp = self._call("import_env", file_path=".env", **kwargs)
+            self.assertNotIn("canary-abc123", resp)
+            self.assertNotIn("MIIEvQIBADAN", resp)
+        blob = json.dumps(self.finalized) + json.dumps(self.svc.edit_ledger.edits)
+        self.assertNotIn("canary-abc123", blob)
+        self.assertNotIn("MIIEvQIBADAN", blob)
+
+    def test_import_env_refuses_global_scope(self):
+        self._write_env()
+        resp = self._call("import_env", file_path=".env", scope="global",
+                          dry_run=False)
+        self.assertIn("[creds:not-allowed]", resp)
+        self.assertIn("project-scope only", resp)
+
+    def test_import_env_refuses_overwrite(self):
+        self._write_env()
+        resp = self._call("import_env", file_path=".env", overwrite=True,
+                          dry_run=False)
+        self.assertIn("[creds:not-allowed]", resp)
+        self.assertIn("never overwrites", resp)
+
+    def test_import_env_refuses_a_path_outside_the_project(self):
+        outside = Path(self._tmp_home.name) / "elsewhere.env"
+        outside.write_text("X=1\n", encoding="utf-8")
+        for candidate in (str(outside), "../elsewhere.env"):
+            resp = self._call("import_env", file_path=candidate, dry_run=False)
+            self.assertIn("[creds:not-allowed]", resp)
+            self.assertIn("outside the project", resp)
+
+    def test_import_env_reports_a_missing_file(self):
+        self.assertIn("no such file",
+                      self._call("import_env", file_path="absent.env"))
+
+    def test_import_env_requires_a_file_path(self):
+        self.assertIn("file_path is required", self._call("import_env"))
+
+    def test_import_env_does_not_replace_an_existing_secret(self):
+        self._call("set", name="TOKEN", value="original-value")
+        self._write_env()
+        resp = self._call("import_env", file_path=".env", dry_run=False)
+        self.assertIn("already exists", resp)
+        self.assertEqual(cs.get_value("TOKEN", project_path=self._tmp_proj.name),
+                         "original-value")
+
+    def test_import_env_honours_only(self):
+        self._write_env()
+        self._call("import_env", file_path=".env", only="TOKEN", dry_run=False)
+        listing = self._call("list")
+        self.assertIn("TOKEN", listing)
+        self.assertNotIn("KEY ", listing)
+
+    def test_import_env_will_not_flatten_a_structured_entry(self):
+        self._call("set", name="TOKEN", value=json.dumps({
+            "street1": "1 Test Way", "city": "Columbia",
+            "state": "MD", "zip": "21044"}), ctype="address")
+        self._write_env()
+        resp = self._call("import_env", file_path=".env", dry_run=False)
+        self.assertIn("would flatten a structured entry", resp)
+        self.assertEqual(
+            cs.get_value("TOKEN", project_path=self._tmp_proj.name,
+                         field="city"), "Columbia")
+
+    def test_import_env_is_ledger_logged(self):
+        self._write_env()
+        self._call("import_env", file_path=".env", dry_run=False)
+        kinds = [e.get("change_type") for e in self.svc.edit_ledger.edits]
+        self.assertIn("cred_import_env", kinds)
+
+
     # ── federation exclusion ──────────────────────────────
 
     def test_c3_project_has_no_credentials_verb(self):

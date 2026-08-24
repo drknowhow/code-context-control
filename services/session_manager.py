@@ -191,14 +191,17 @@ class SessionManager:
             "result_summary": result_summary[:200],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        # Stash the sub-action for the telemetry record emitted later in
-        # track_response() (same handler thread).
+        # Stash the sub-action and target for the telemetry record emitted
+        # later in track_response() (same handler thread).
         try:
             if isinstance(args, dict):
                 action = str(args.get("action") or args.get("mode") or "")
+                target = self._derive_target(args)
             else:
                 action = ""
+                target = ""
             self._tool_call_local.action = action
+            self._tool_call_local.target = target
         except Exception:
             pass
         # Legacy fallback: heuristic savings estimate scraped from summaries
@@ -1126,6 +1129,69 @@ class SessionManager:
         if budget["call_count"] % 5 == 0:
             self._persist_budget()
 
+    #: Arg names that name a FILE, most specific first. Deliberately excludes
+    #: `query`/`target` on c3_impact (a symbol, not a path) and anything that
+    #: could carry a value rather than a location — telemetry is a measurement
+    #: log, not somewhere to accidentally start recording payloads.
+    _TARGET_ARG_KEYS = ("file_path", "filepath", "path", "file")
+    _TARGET_MAX = 200
+
+    def _derive_target(self, args: dict) -> str:
+        """What a tool call was ABOUT, as a project-relative path.
+
+        Empty when the args name no file — a search by query or a session
+        action has no target, and inventing one would make the "top files"
+        view a mix of paths and unrelated strings.
+        """
+        for key in self._TARGET_ARG_KEYS:
+            raw = args.get(key)
+            if not raw or not isinstance(raw, str):
+                continue
+            value = raw.strip()
+            if not value:
+                continue
+            try:
+                path = Path(value)
+                if path.is_absolute():
+                    value = self._relativize(path)
+            except (OSError, ValueError):
+                pass
+            return value.replace("\\", "/")[:self._TARGET_MAX]
+        return ""
+
+    def _relativize(self, path) -> str:
+        """An absolute path as project-relative, or its bare name.
+
+        Resolve BOTH sides or neither. Resolving only the root compares a
+        symlink-expanded root against an unexpanded candidate, which never
+        matches: on macOS a temp dir is /var/... while its resolved form is
+        /private/var/..., and Windows has the same problem with 8.3 names and
+        substituted drives. The failure is quiet and costly — every path
+        degrades to a bare filename, so `cli/server.py` and `ui/server.py`
+        merge into one "server.py" row in the by-file view.
+
+        Both orders are tried because resolve() can diverge in either
+        direction depending on which side the symlink is on.
+        """
+        root = Path(self.project_path)
+        try:
+            root_resolved = root.resolve()
+        except (OSError, ValueError):
+            root_resolved = root
+        try:
+            path_resolved = path.resolve()
+        except (OSError, ValueError):
+            path_resolved = path
+        for candidate, base in ((path_resolved, root_resolved),
+                                (path, root),
+                                (path_resolved, root),
+                                (path, root_resolved)):
+            try:
+                return str(candidate.relative_to(base))
+            except (ValueError, OSError):
+                continue
+        return path.name
+
     def _emit_tool_telemetry(self, tool_name: str, response_tokens: int) -> None:
         """Append one per-tool-call record to .c3/tool_telemetry.jsonl.
 
@@ -1149,6 +1215,7 @@ class SessionManager:
                 "optimized_tokens": pending.get("optimized_tokens") if pending else None,
                 "duration_ms": pending.get("duration_ms") if pending else None,
                 "source": pending.get("source") if pending else None,
+                "target": getattr(self._tool_call_local, "target", "") or "",
             }
             append_telemetry_record(self.project_path, record)
         except Exception:
@@ -1157,6 +1224,7 @@ class SessionManager:
             try:
                 self._tool_call_local.pending = None
                 self._tool_call_local.action = ""
+                self._tool_call_local.target = ""
             except Exception:
                 pass
 

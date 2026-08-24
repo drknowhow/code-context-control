@@ -649,6 +649,34 @@ def _display_projection(ctype: str, fields: dict) -> dict:
 # ── Public API ────────────────────────────────────────────
 
 
+def _store_value(name: str, value: str, *, scope: str, project_path: str,
+                 realm_s: str) -> tuple:
+    """Write the value to whichever backend its size calls for.
+
+    Returns ``(storage, raw_bytes)``. Shared by :func:`set_credential` and
+    :func:`set_value` so the threshold decision and the "clean up the backend
+    we are no longer using" half exist once — a value that grew past the
+    threshold must leave the keyring, and one that shrank must leave the
+    sidecar, or a stale copy outlives the entry.
+    """
+    raw = value.encode("utf-8")
+    storage = "file" if len(raw) > FILE_STORAGE_THRESHOLD else "keyring"
+    if storage == "keyring":
+        keyring = _keyring_module()
+        try:
+            keyring.set_password(KEYRING_SERVICE, _account(realm_s, name), value)
+        except Exception as exc:
+            raise CredentialError(f"keyring write failed: {exc}") from exc
+        _file_delete(scope, project_path, name)  # value may have shrunk past the threshold
+    else:
+        _file_set(scope, project_path, realm_s, name, value)
+        try:
+            _keyring_module().delete_password(KEYRING_SERVICE, _account(realm_s, name))
+        except Exception:
+            pass
+    return storage, raw
+
+
 def set_credential(
     name: str,
     value: str,
@@ -660,13 +688,16 @@ def set_credential(
     env_var: str = "",
     agent_readable: bool = False,
     inject: bool = False,
+    source: str = "",
 ) -> dict:
     """Store the value (keyring or encrypted sidecar) and register the entry.
 
     Returns the non-secret registry entry. ``env_var`` defaults to the entry
-    name at injection time when empty. Callers enforcing the "agent cannot
-    raise agent_readable on an existing entry" rule must check the current
-    entry first — this layer stores what it is told.
+    name at injection time when empty. ``source`` records the ``.env`` an
+    import read this value from, so a later re-sync can find it again.
+    Callers enforcing the "agent cannot raise agent_readable on an existing
+    entry" rule must check the current entry first — this layer stores what it
+    is told.
 
     Structured types (STRUCTURED_TYPES) take a JSON object of fields as
     ``value``. They are inject-only: ``agent_readable``/``inject`` are
@@ -727,21 +758,8 @@ def set_credential(
         field_names = sorted(fields)
         value = json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
-    raw = value.encode("utf-8")
-    storage = "file" if len(raw) > FILE_STORAGE_THRESHOLD else "keyring"
-    if storage == "keyring":
-        keyring = _keyring_module()
-        try:
-            keyring.set_password(KEYRING_SERVICE, _account(realm_s, name), value)
-        except Exception as exc:
-            raise CredentialError(f"keyring write failed: {exc}") from exc
-        _file_delete(scope, project_path, name)  # value may have shrunk past the threshold
-    else:
-        _file_set(scope, project_path, realm_s, name, value)
-        try:
-            _keyring_module().delete_password(KEYRING_SERVICE, _account(realm_s, name))
-        except Exception:
-            pass
+    storage, raw = _store_value(name, value, scope=scope,
+                                project_path=project_path, realm_s=realm_s)
 
     config = _load_config(base)
     section = _creds_section(config)
@@ -758,6 +776,7 @@ def set_credential(
         "value_len": len(raw),
         "created": created or now,
         "updated": now,
+        "source": {"path": source, "at": now} if source else "",
     }
     if is_structured:
         entry["display"] = display
@@ -767,6 +786,90 @@ def set_credential(
     _save_config(base, config)
     _write_flag_attestation(realm_s, name, bool(agent_readable))
     _write_struct_attestation(realm_s, name, ctype)
+    return dict(entry)
+
+
+def set_value(name: str, value: str, *, scope: str = "project",
+              project_path: str = ".", source=None) -> dict:
+    """Replace the VALUE of an existing entry, keeping everything else.
+
+    The counterpart to :func:`update_metadata`, which changes everything
+    except the value. Only ``storage``, ``value_len`` and ``updated`` move;
+    ``description``, ``env_var``, ``inject``, ``agent_readable`` and
+    ``created`` survive, and the keyring attestations are left alone rather
+    than rewritten to a default.
+
+    This exists because a re-import is not a re-creation. ``set_credential``
+    writes a whole fresh entry, so routing a rotation through it reset every
+    setting the user had made — including ``inject``, which silently stopped
+    auto-injection into every ``c3_shell`` run.
+
+    ``type`` is preserved (a user who chose ``token`` keeps ``token``) except
+    that a value containing a newline promotes to ``multiline``: what the type
+    describes is the value, so the stored type cannot outrank the new content.
+    Structured kinds are refused — their boundary stays delete-then-recreate.
+    """
+    _validate_name(name)
+    if not value:
+        raise CredentialError("value is required")
+    scope = _norm_scope(scope, project_path)
+    base = _scope_dir(scope, project_path)
+    if base is None:
+        raise CredentialError("global scope unavailable: no home directory")
+    entry = _read_entries(scope, project_path).get(name)
+    if entry is None:
+        raise CredentialError(f"{name!r} is not set in {scope} scope")
+    ctype = str(entry.get("type") or "token")
+    if ctype in STRUCTURED_TYPES or structured_type(
+            name, project_path=project_path, scope=scope):
+        raise CredentialError(
+            f"{name!r} is a structured entry — delete it and re-create it to "
+            "store a plain value")
+
+    realm_s = realm(scope, project_path)
+    storage, raw = _store_value(name, value, scope=scope,
+                                project_path=project_path, realm_s=realm_s)
+    if "\n" in value and ctype != "multiline":
+        ctype = "multiline"
+
+    config = _load_config(base)
+    section = _creds_section(config)
+    now = _utcnow()
+    updated = dict(section["entries"].get(name) or entry)
+    updated.pop("scope", None)  # injected at read time, never stored
+    updated.update({"type": ctype, "storage": storage,
+                    "value_len": len(raw), "updated": now})
+    if source:
+        # Re-synced from a file: re-stamp so "last synced" means something.
+        updated["source"] = {"path": source, "at": now}
+    section["entries"][name] = updated
+    config["credentials"] = section
+    _save_config(base, config)
+    return dict(updated)
+
+
+def clear_source(name: str, *, scope: str = "project",
+                 project_path: str = ".") -> dict:
+    """Forget which ``.env`` this entry came from.
+
+    Deliberately not reachable through :func:`update_metadata` — ``source`` is
+    a record of something that happened, so it is written by an import and
+    cleared by an explicit act, never edited to say a file it never came from.
+    """
+    _validate_name(name)
+    scope = _norm_scope(scope, project_path)
+    base = _scope_dir(scope, project_path)
+    if base is None:
+        raise CredentialError("global scope unavailable: no home directory")
+    config = _load_config(base)
+    section = _creds_section(config)
+    entry = section["entries"].get(name)
+    if not isinstance(entry, dict):
+        raise CredentialError(f"unknown credential {name!r} in {scope} scope")
+    entry["source"] = ""
+    entry["updated"] = _utcnow()
+    config["credentials"] = section
+    _save_config(base, config)
     return dict(entry)
 
 
@@ -845,7 +948,7 @@ def list_entries(project_path: str = ".") -> dict:
 
 PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
                  "agent_readable", "description", "storage", "created",
-                 "updated", "display", "fields")
+                 "updated", "display", "fields", "source")
 
 
 def public_entry(name: str, entry: dict, *, usage=None,
@@ -1018,7 +1121,7 @@ def fingerprint(name: str, *, project_path: str = ".") -> str:
     val = get_value(name, project_path=project_path)
     if val is None:
         return ""
-    return hashlib.sha256(val.encode("utf-8")).hexdigest()[:8]
+    return _digest(val)
 
 
 def touch_last_used(names: list, project_path: str = ".") -> None:
@@ -1075,45 +1178,330 @@ def read_usage_state(project_path: str = ".") -> dict:
     return merged
 
 
-def import_env(
-    text: str, *, scope: str = "project", project_path: str = ".", overwrite: bool = False
-) -> dict:
-    """Parse KEY=VALUE lines (.env style) into credentials of type ``env``.
+def _digest(value: str) -> str:
+    """First 8 hex of sha256(value). Shared by :func:`fingerprint` and by the
+    import preview, which has to identify a not-yet-stored value without
+    echoing any part of it."""
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
-    Skips comments/blank lines, tolerates a leading ``export ``, strips one
-    layer of matching quotes. Without ``overwrite``, names already registered
-    in the TARGET scope are skipped (shadowing the other scope is allowed).
-    Returns {"created": [...], "skipped": [...]}.
+
+# Escapes honoured inside a DOUBLE-quoted .env value. Single-quoted values are
+# literal (POSIX), so nothing is unescaped there.
+_ENV_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "'": "'"}
+
+
+def _unescape_double(raw: str) -> str:
+    out: list = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw) and raw[i + 1] in _ENV_ESCAPES:
+            out.append(_ENV_ESCAPES[raw[i + 1]])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _closing_quote(segment: str, quote: str):
+    """Index of the unescaped closing ``quote`` in ``segment``, else None."""
+    i = 0
+    while i < len(segment):
+        ch = segment[i]
+        if ch == "\\" and quote == '"':
+            i += 2
+            continue
+        if ch == quote:
+            return i
+        i += 1
+    return None
+
+
+def _strip_inline_comment(raw: str) -> str:
+    """Drop a trailing ``# comment`` from an UNQUOTED value.
+
+    Only a ``#`` that opens a whitespace-delimited token counts, so a value
+    like ``pa#ss`` survives intact. Quoted values never reach here.
+    """
+    idx = 0
+    while True:
+        hit = raw.find("#", idx)
+        if hit == -1:
+            return raw
+        if hit == 0 or raw[hit - 1] in " \t":
+            return raw[:hit]
+        idx = hit + 1
+
+
+# Row-level notes (a line was unusable or superseded) as opposed to
+# credential-level skips (a named value we declined to store).
+_LINE_NOTES = frozenset({"no-assignment", "duplicate"})
+
+_IMPORT_REASON_TEXT = {
+    "no-assignment": "no KEY=VALUE on this line",
+    "bad-name": "not a usable credential name",
+    "empty": "no value",
+    "unterminated-quote": "quote never closes",
+    "duplicate": "redefined later in the file",
+    "exists": "already exists (enable overwrite to replace)",
+    "structured": "would flatten a structured entry (delete it first)",
+    "deselected": "not selected",
+}
+
+
+def read_env_file(path) -> str:
+    """Read a ``.env`` off disk as text, for every surface that imports one.
+
+    Never ``read_text(encoding="utf-8")``: a `.env` written by a Windows editor
+    is routinely cp1252/latin-1, and that call raises `UnicodeDecodeError` —
+    which the CLI's ``except (CredentialError, RuntimeError)`` did not catch,
+    so the command died on a traceback. Nor ``errors="replace"``: silently
+    mangling a byte inside a secret is worse than refusing the file, and 2.92.2
+    was exactly that bug elsewhere in the codebase.
+
+    So: strict UTF-8 (BOM tolerated), then strict cp1252, then give up loudly.
+    Raises :class:`CredentialError` with the path on any failure.
+    """
+    p = Path(path)
+    try:
+        raw = p.read_bytes()
+    except OSError as exc:
+        raise CredentialError(f"cannot read {p}: {exc}") from exc
+    # PowerShell's `>` wrote UTF-16LE for years, and cp1252 decodes those
+    # bytes without complaint straight into mojibake, so check the BOM first.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError as exc:
+            raise CredentialError(f"{p}: malformed UTF-16") from exc
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise CredentialError(
+        f"{p} is neither UTF-8 nor cp1252 — re-save it as UTF-8 and retry")
+
+
+def parse_env(text: str) -> list:
+    """Parse ``.env`` text into ordered rows. Pure: no I/O, no store access.
+
+    Each row is ``{"name", "value", "line", "ok", "reason"}``; ``reason`` is
+    ``""`` for a usable row and otherwise one of ``no-assignment``,
+    ``bad-name``, ``empty``, ``unterminated-quote``, ``duplicate``.
+
+    Handles what a real ``.env`` actually contains: a UTF-8 BOM, CRLF, a
+    leading ``export``, inline comments on unquoted values, single quotes as
+    literal and double quotes with ``\\n``-style escapes, and — the reason this
+    function exists — a value spanning several lines inside one pair of quotes.
+    The previous line-at-a-time parser truncated those at the first newline and
+    dropped the rest without reporting anything, so a PEM key imported as a
+    single dangling-quote fragment and the caller was told it succeeded.
+
+    Deliberately unsupported: ``${VAR}`` interpolation. A vault entry whose
+    value silently depends on another entry is worse than an explicit one.
+    """
+    lines = (text or "").lstrip("﻿").splitlines()
+    rows: list = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        i += 1
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
+        start_line = i
+        if "=" not in stripped:
+            # Previously discarded in silence, which is precisely what hid a
+            # truncated multi-line value. The line content is NOT echoed: a
+            # stray line in a .env is far more likely to be key material than
+            # anything a user needs to read back.
+            rows.append({"name": f"line {start_line}", "value": "",
+                         "line": start_line, "ok": False,
+                         "reason": "no-assignment"})
+            continue
+        key, _, val = stripped.partition("=")
+        key = key.strip()
+        reason = ""
+
+        quote = val[:1] if val[:1] in ("\"", "'") else ""
+        if quote:
+            body = val[1:]
+            closed = _closing_quote(body, quote)
+            if closed is not None:
+                val = body[:closed]
+            else:
+                # Consume following lines until the quote closes, keeping the
+                # newlines verbatim — the PEM / JSON-blob case.
+                parts = [body]
+                while i < len(lines):
+                    nxt = lines[i]
+                    i += 1
+                    shut = _closing_quote(nxt, quote)
+                    if shut is not None:
+                        parts.append(nxt[:shut])
+                        break
+                    parts.append(nxt)
+                else:
+                    reason = "unterminated-quote"
+                val = "\n".join(parts)
+            if quote == '"':
+                val = _unescape_double(val)
+        else:
+            val = _strip_inline_comment(val).strip()
+
+        if not reason and not _NAME_RE.match(key):
+            reason = "bad-name"
+        elif not reason and not val:
+            reason = "empty"
+        rows.append({"name": key[:128] or f"line {start_line}", "value": val,
+                     "line": start_line, "ok": not reason, "reason": reason})
+
+    # Last definition of a name wins, as in every shell and dotenv loader.
+    by_name: dict = {}
+    for row in rows:
+        if row["ok"]:
+            by_name.setdefault(row["name"], []).append(row)
+    for dupes in by_name.values():
+        for row in dupes[:-1]:
+            row["ok"] = False
+            row["reason"] = "duplicate"
+    return rows
+
+
+def text_digest(text: str) -> str:
+    """Identify a body of ``.env`` text without keeping any of it.
+
+    Lets a commit prove it is applying the same file the user previewed, so a
+    file edited between the two calls is refused instead of silently importing
+    new content under the old, ticked row list.
+    """
+    return _digest(text or "")
+
+
+def source_paths(project_path: str = ".", scope: str = "") -> list:
+    """Every ``.env`` a credential in this vault remembers being imported from.
+
+    DERIVED from the entries, never stored beside them. A second registry of
+    "known sources" would be a hand-maintained copy of a list the entries
+    already imply, and a copy is what silently goes stale.
+    """
+    out: dict = {}
+    entries = (_read_entries(scope, project_path) if scope
+               else list_entries(project_path))
+    for entry in entries.values():
+        src = entry.get("source") or {}
+        path = src.get("path") if isinstance(src, dict) else ""
+        if not path:
+            continue
+        seen = out.setdefault(path, {"path": path, "count": 0, "at": ""})
+        seen["count"] += 1
+        seen["at"] = max(seen["at"], str(src.get("at") or ""))
+    return [out[k] for k in sorted(out)]
+
+
+def import_env(
+    text: str, *, scope: str = "project", project_path: str = ".",
+    overwrite: bool = False, preview: bool = False, only=None,
+    source: str = "", compare: bool = False,
+) -> dict:
+    """Parse ``.env`` text (see :func:`parse_env`) into credentials.
+
+    Without ``overwrite``, names already registered in the TARGET scope are
+    skipped (shadowing the other scope is allowed). ``only`` restricts the
+    import to a set of names. ``preview=True`` classifies every row and writes
+    nothing, so a caller can show the user what would happen before any value
+    reaches the keyring.
+
+    A value containing a newline is stored as ``multiline`` rather than ``env``
+    — that is what the type is for, and it makes a PEM legible in the UI.
+
+    ``source`` records which ``.env`` an entry came from, so a later re-sync
+    can find the file again without the user re-picking it.
+
+    ``compare`` turns the preview into a DIFF: a row whose stored value
+    already equals the file's is reported as ``action="current"`` instead of
+    ``"replace"``, and ``vanished`` names entries this same file used to
+    define and no longer does. The comparison is a digest of both values made
+    server-side; neither value, nor the stored value's digest, goes anywhere.
+
+    Returns ``{"created", "skipped", "reasons", "rows", "preview", "digest",
+    "vanished"}``. ``created`` and ``skipped`` remain plain name lists for
+    callers that predate the rest. ``rows`` carries a value's LENGTH and
+    FINGERPRINT and never any part of the value itself.
     """
     scope = _norm_scope(scope, project_path)
     existing = _read_entries(scope, project_path)
-    created: list[str] = []
-    skipped: list[str] = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    wanted = set(only) if only is not None else None
+    created: list = []
+    skipped: list = []
+    reasons: dict = {}
+    out_rows: list = []
+    seen_names: set = set()
+
+    for row in parse_env(text):
+        name, val, reason = row["name"], row["value"], row["reason"]
+        if not reason:
+            if wanted is not None and name not in wanted:
+                reason = "deselected"
+            elif existing.get(name, {}).get("type") in STRUCTURED_TYPES:
+                # Never let a .env import silently flatten a card into an env
+                # var, even with overwrite — the boundary is delete-then-recreate.
+                reason = "structured"
+            elif name in existing and not overwrite:
+                reason = "exists"
+
+        ctype = "multiline" if "\n" in val else "env"
+        if not row["reason"]:
+            seen_names.add(name)
+        action = "skip" if reason else (
+            "replace" if name in existing else "create")
+        if compare and action == "replace":
+            stored = _get_raw(name, project_path=project_path, scope=scope)
+            if stored is not None and _digest(stored) == _digest(val):
+                action = "current"
+        out_rows.append({
+            "name": name, "line": row["line"], "reason": reason,
+            "detail": _IMPORT_REASON_TEXT.get(reason, ""),
+            "action": action,
+            "ctype": ctype, "value_len": len(val),
+            "fingerprint": _digest(val) if not reason else "",
+        })
+        if reason:
+            if reason not in _LINE_NOTES:
+                skipped.append(name)
+                reasons[name] = reason
             continue
-        if line.startswith("export "):
-            line = line[len("export "):]
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip()
-        if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
-            val = val[1:-1]
-        if not _NAME_RE.match(key) or not val:
-            skipped.append(key or line[:24])
-            continue
-        if key in existing and (existing[key].get("type") in STRUCTURED_TYPES):
-            # Never let a .env import silently flatten a card into an env var,
-            # even with overwrite — the boundary is delete-then-recreate.
-            skipped.append(key)
-            continue
-        if not overwrite and key in existing:
-            skipped.append(key)
-            continue
-        set_credential(key, val, scope=scope, project_path=project_path, ctype="env")
-        created.append(key)
-    return {"created": created, "skipped": skipped}
+        if not preview:
+            if name in existing:
+                # A re-import rotates the value; it does not re-create the
+                # entry. set_credential would blank description/env_var and
+                # turn inject and agent_readable back off.
+                set_value(name, val, scope=scope, project_path=project_path,
+                          source=source)
+            else:
+                set_credential(name, val, scope=scope,
+                               project_path=project_path, ctype=ctype,
+                               source=source)
+        created.append(name)
+
+    vanished: list = []
+    if compare and source:
+        for name, entry in existing.items():
+            if name in seen_names:
+                continue
+            src = entry.get("source") or {}
+            if isinstance(src, dict) and src.get("path") == source:
+                vanished.append(name)
+
+    return {"created": created, "skipped": skipped, "reasons": reasons,
+            "rows": out_rows, "preview": bool(preview),
+            "digest": _digest(text or ""), "vanished": sorted(vanished)}
 
 
 def expand_templates(cmd: str, project_path: str = ".") -> tuple:

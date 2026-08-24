@@ -1039,6 +1039,9 @@ async def c3_credentials(
     env_var: str = "",
     inject: bool = False,
     agent_readable: bool = False,
+    file_path: str = "",
+    dry_run: bool = True,
+    only: str = "",
     ctx: Context = None,
 ) -> str:
     """CREDENTIAL VAULT — named secrets + sensitive personal data the user manages
@@ -1048,7 +1051,14 @@ async def c3_credentials(
     projects reduced to counts), reveal (name — only entries the user marked
     agent_readable), set (name, value [scope=project|global]
     [ctype=token|env|multiline|address|identity|card|login] [description] [env_var]
-    [inject]), delete (name [scope]).
+    [inject]), delete (name [scope]), import_env (file_path [only='A,B']
+    [dry_run=false] — bulk-import a .env into the vault).
+    import_env NEVER shows you a value: the server reads the file, you get names,
+    lengths, fingerprints and per-row reasons. It is project scope only, never
+    overwrites, refuses a path outside the project, and DEFAULTS TO dry_run=true
+    — call it bare to preview, then re-run with dry_run=false once the user has
+    seen the list. Importing to the global vault or replacing an existing secret
+    stays a user action (`c3 creds import` / the Credentials UI).
     To USE a credential, do NOT reveal it — pass env_creds='NAME1,NAME2' to c3_shell
     (injected as env vars) or write {{cred:NAME}} inside the cmd (expanded server-side);
     the decoded value never enters model context.
@@ -1075,6 +1085,7 @@ async def c3_credentials(
         handle_credentials, action, svc, finalize,
         name=name, value=value, scope=scope, description=description,
         ctype=ctype, env_var=env_var, inject=inject, agent_readable=agent_readable,
+        file_path=file_path, dry_run=dry_run, only=only,
     )
 
 

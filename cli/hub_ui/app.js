@@ -116,6 +116,8 @@ function App() {
             <HubCI projects={projects} onOpenDrill={openDrill} />
           ) : mainView === 'creds' ? (
             <HubCredentials projects={projects} onOpenDrill={openDrill} />
+          ) : mainView === 'tokens' ? (
+            <HubTokens projects={projects} onOpenDrill={openDrill} />
           ) : mainView === 'locks' ? (
             <HubLocks projects={projects} onOpenDrill={openDrill} />
           ) : mainView === 'enforce' ? (

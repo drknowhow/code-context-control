@@ -286,7 +286,8 @@ function DrillLedger({ project }) {
 // Full management via the shared CredsManager (hub_credentials.js).
 // Write-only wire: values are submitted inbound-only and never returned.
 function DrillCredentials({ project }) {
-  return <CredsManager path={project.path} projectName={project.name} />;
+  // bindSlash: standalone mount, so nothing above is competing for `/`.
+  return <CredsManager path={project.path} projectName={project.name} bindSlash />;
 }
 
 function DrillSessions({ project }) {
