@@ -159,6 +159,232 @@ const CredsUsageView = () => {
   );
 };
 
+// ── .env import: choose → preview → commit ────────────────────────────────
+// The panel never renders a value or any prefix of one. Rows carry a length
+// and a sha256[:8] fingerprint, which is enough to tell two keys apart and to
+// spot a truncated paste, and keeps the vault's rule that a stored value never
+// travels back to the browser.
+const CREDS_IMPORT_STATUS_TONE = (reason) => (
+  !reason ? "ok" : (reason === "no-assignment" || reason === "duplicate") ? "note" : "skip"
+);
+
+const CredsImportPanel = ({ T, post, scopes, defaultScope, onDone, inputStyle, labelStyle }) => {
+  const [text, setText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [scope, setScope] = useState(defaultScope || scopes[0]);
+  const [overwrite, setOverwrite] = useState(false);
+  const [rows, setRows] = useState(null);     // null = nothing previewed yet
+  const [picked, setPicked] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [dragging, setDragging] = useState(false);
+
+  // Any change to how the file would be classified invalidates the preview,
+  // so the table can never disagree with the button beneath it.
+  const invalidate = () => setRows(null);
+
+  const takeFile = async (file) => {
+    if (!file) return;
+    try {
+      const body = await file.text();
+      setFileName(file.name);
+      setText(body);
+      setErr("");
+      invalidate();
+    } catch (e) { setErr(String(e)); }
+  };
+
+  const runPreview = async () => {
+    if (!text.trim()) { setErr("Nothing to import — choose a file or paste some lines."); return; }
+    setBusy(true); setErr("");
+    try {
+      const resp = await post({ text, scope, overwrite, preview: true });
+      if (resp && resp.error) setErr(resp.error);
+      else {
+        const got = (resp && resp.rows) || [];
+        setRows(got);
+        const sel = {};
+        got.forEach(r => { if (!r.reason) sel[r.name] = true; });
+        setPicked(sel);
+      }
+    } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+
+  const runImport = async () => {
+    const only = Object.keys(picked).filter(n => picked[n]);
+    if (!only.length) return;
+    setBusy(true); setErr("");
+    try {
+      const resp = await post({ text, scope, overwrite, preview: false, only });
+      if (resp && resp.error) setErr(resp.error);
+      else {
+        setText(""); setFileName(""); setRows(null); setPicked({});
+        onDone(`Imported ${(resp.created || []).length}, skipped ${(resp.skipped || []).length}`);
+      }
+    } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+
+  const eligible = (rows || []).filter(r => !r.reason);
+  const chosen = Object.keys(picked).filter(n => picked[n]).length;
+  const cell = { padding: "3px 8px", textAlign: "left", whiteSpace: "nowrap" };
+  const tone = {
+    ok: T.accent,
+    note: T.textMuted,
+    skip: T.error,
+  };
+
+  return (
+    <div style={{
+      border: `1px solid ${T.border}`, borderRadius: 8, padding: 14,
+      marginBottom: 14, background: T.surface,
+    }}>
+      {/* 1 — choose */}
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={e => {
+          e.preventDefault(); setDragging(false);
+          takeFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+        }}
+        style={{
+          border: `1px dashed ${dragging ? T.accent : T.border}`,
+          background: dragging ? `${T.accent}11` : "transparent",
+          borderRadius: 6, padding: "14px 12px", textAlign: "center",
+          marginBottom: 10, fontSize: 12, color: T.textMuted,
+        }}>
+        <div style={{ marginBottom: 8 }}>
+          {fileName
+            ? <span className="mono" style={{ color: T.text }}>{fileName}</span>
+            : "Drop a .env file here"}
+        </div>
+        <label className="btn" style={{
+          background: T.surfaceAlt, color: T.text, border: `1px solid ${T.border}`,
+          padding: "5px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+          display: "inline-block",
+        }}>
+          Choose file…
+          <input type="file" style={{ display: "none" }}
+            onChange={e => takeFile(e.target.files && e.target.files[0])} />
+        </label>
+      </div>
+
+      <span style={labelStyle}>…or paste KEY=VALUE lines (comments and `export` prefixes are tolerated)</span>
+      <textarea rows={4} value={text}
+        onChange={e => { setText(e.target.value); setFileName(""); invalidate(); }}
+        style={{ ...inputStyle, fontFamily: "monospace", resize: "vertical" }}
+        autoComplete="off" spellCheck={false} />
+
+      <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {scopes.length > 1 && (
+          <select value={scope}
+            onChange={e => { setScope(e.target.value); invalidate(); }}
+            style={{ ...inputStyle, width: 140 }}>
+            {scopes.map(s => <option key={s} value={s}>{s} scope</option>)}
+          </select>
+        )}
+        <label style={{ fontSize: 11, color: T.textMuted, display: "flex", alignItems: "center", gap: 5 }}>
+          <input type="checkbox" checked={overwrite}
+            onChange={e => { setOverwrite(e.target.checked); invalidate(); }} />
+          replace entries that already exist
+        </label>
+        <div style={{ flex: 1 }} />
+        <button className="btn" disabled={busy} onClick={runPreview} style={{
+          background: rows ? T.surfaceAlt : T.accent,
+          color: rows ? T.text : "#fff",
+          border: rows ? `1px solid ${T.border}` : "none",
+          padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+        }}>{rows ? "Re-check" : "Preview"}</button>
+      </div>
+
+      {err && (
+        <div style={{
+          padding: "8px 12px", borderRadius: 6, marginTop: 10, fontSize: 12,
+          background: `${T.error}22`, color: T.error, border: `1px solid ${T.error}55`,
+        }}>{err}</div>
+      )}
+
+      {/* 2 — preview */}
+      {rows && (
+        <div style={{ marginTop: 12 }}>
+          {rows.length === 0 ? (
+            <div style={{ fontSize: 12, color: T.textMuted }}>
+              No KEY=VALUE lines found in that file.
+            </div>
+          ) : (
+            <React.Fragment>
+              <div style={{ maxHeight: 260, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 6 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: T.surfaceAlt, color: T.textMuted }}>
+                      <th style={{ ...cell, width: 28 }}>
+                        <input type="checkbox"
+                          checked={eligible.length > 0 && chosen === eligible.length}
+                          onChange={e => {
+                            const sel = {};
+                            if (e.target.checked) eligible.forEach(r => { sel[r.name] = true; });
+                            setPicked(sel);
+                          }} />
+                      </th>
+                      <th style={cell}>name</th>
+                      <th style={cell}>line</th>
+                      <th style={cell}>type</th>
+                      <th style={cell}>len</th>
+                      <th style={cell}>fingerprint</th>
+                      <th style={{ ...cell, whiteSpace: "normal" }}>status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={`${r.name}-${r.line}-${i}`}
+                        style={{ borderTop: `1px solid ${T.border}`, opacity: r.reason ? 0.65 : 1 }}>
+                        <td style={cell}>
+                          <input type="checkbox" disabled={!!r.reason}
+                            checked={!!picked[r.name]}
+                            onChange={e => setPicked({ ...picked, [r.name]: e.target.checked })} />
+                        </td>
+                        <td style={{ ...cell, color: T.text }} className="mono">{r.name}</td>
+                        <td style={{ ...cell, color: T.textMuted }}>{r.line}</td>
+                        <td style={{ ...cell, color: T.textMuted }}>{r.ctype}</td>
+                        <td style={{ ...cell, color: T.textMuted }}>{r.value_len}</td>
+                        <td style={{ ...cell, color: T.textMuted }} className="mono">{r.fingerprint || "—"}</td>
+                        <td style={{ ...cell, whiteSpace: "normal", color: tone[CREDS_IMPORT_STATUS_TONE(r.reason)] }}>
+                          {r.detail || r.action}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: T.textMuted }}>
+                  {chosen} of {eligible.length} importable selected
+                </span>
+                <div style={{ flex: 1 }} />
+                <button className="btn" disabled={busy || !chosen} onClick={runImport} style={{
+                  background: chosen ? T.accent : T.surfaceAlt,
+                  color: chosen ? "#fff" : T.textMuted,
+                  border: chosen ? "none" : `1px solid ${T.border}`,
+                  padding: "6px 14px", borderRadius: 6, fontSize: 12,
+                  cursor: chosen ? "pointer" : "default",
+                }}>Import {chosen} selected</button>
+              </div>
+            </React.Fragment>
+          )}
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: T.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+        Nothing is written until you press Import. Values are shown only as a
+        length and a fingerprint — never the value itself. Importing does not
+        delete the source file: once the entries are in the vault, remove the
+        .env or confirm it is gitignored.
+      </div>
+    </div>
+  );
+};
+
 const CredentialsPanel = () => {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -170,8 +396,6 @@ const CredentialsPanel = () => {
   const [editing, setEditing] = useState(false); // true when form edits an existing entry
   const [checks, setChecks] = useState({});      // name -> {resolvable, fingerprint}
   const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState("");
-  const [importScope, setImportScope] = useState("project");
 
   const load = useCallback(async () => {
     try {
@@ -251,22 +475,6 @@ const CredentialsPanel = () => {
     } catch (e) { setError(String(e)); }
   };
 
-  const runImport = async () => {
-    if (!importText.trim()) return;
-    setBusy(true);
-    try {
-      const resp = await api.post("/api/credentials/import",
-        { text: importText, scope: importScope });
-      if (resp && resp.error) setError(resp.error);
-      else {
-        flash(`Imported ${(resp.created || []).length}, skipped ${(resp.skipped || []).length}`);
-        setImportText(""); setImportOpen(false);
-        load();
-      }
-    } catch (e) { setError(String(e)); }
-    setBusy(false);
-  };
-
   const inputStyle = {
     width: "100%", padding: "7px 10px", borderRadius: 6, fontSize: 12,
     border: `1px solid ${T.border}`, background: T.surface, color: T.text,
@@ -339,26 +547,14 @@ const CredentialsPanel = () => {
 
       {/* .env import */}
       {importOpen && (
-        <div style={{
-          border: `1px solid ${T.border}`, borderRadius: 8, padding: 14,
-          marginBottom: 14, background: T.surface,
-        }}>
-          <span style={labelStyle}>Paste KEY=VALUE lines (comments and `export` prefixes are tolerated)</span>
-          <textarea rows={5} value={importText} onChange={e => setImportText(e.target.value)}
-            style={{ ...inputStyle, fontFamily: "monospace", resize: "vertical" }}
-            autoComplete="off" spellCheck={false} />
-          <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
-            <select value={importScope} onChange={e => setImportScope(e.target.value)}
-              style={{ ...inputStyle, width: 140 }}>
-              <option value="project">project scope</option>
-              <option value="global">global scope</option>
-            </select>
-            <button className="btn" disabled={busy} onClick={runImport} style={{
-              background: T.accent, color: "#fff", border: "none",
-              padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
-            }}>Import</button>
-          </div>
-        </div>
+        <CredsImportPanel
+          T={T}
+          scopes={["project", "global"]}
+          inputStyle={inputStyle}
+          labelStyle={labelStyle}
+          post={body => api.post("/api/credentials/import", body)}
+          onDone={msg => { setImportOpen(false); flash(msg); load(); }}
+        />
       )}
 
       {/* Create / edit form */}

@@ -265,6 +265,106 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(forced["created"], ["FOO"])
         self.assertEqual(cs.get_value("FOO", project_path=self.project), "new")
 
+    def test_reimport_updates_the_value_and_keeps_the_metadata(self):
+        """Re-importing a .env must not silently un-configure the entry.
+
+        ``import_env`` used to replace an existing entry through
+        ``set_credential`` with no metadata, and ``set_credential`` writes a
+        fresh entry dict. Everything the user had configured was reset:
+        description, env_var, type, and — the one that actually breaks a
+        running setup — ``inject``, which stops auto-injection into every
+        ``c3_shell`` run without a word.
+        """
+        cs.set_credential("API_KEY", "old", scope="project",
+                          project_path=self.project, ctype="token",
+                          description="prod key", env_var="PROD_KEY",
+                          agent_readable=True, inject=True)
+        result = cs.import_env("API_KEY=fresh", scope="project",
+                               project_path=self.project, overwrite=True)
+
+        self.assertEqual(result["created"], ["API_KEY"])
+        self.assertEqual(cs.get_value("API_KEY", project_path=self.project),
+                         "fresh")
+        entry = cs.get_entry("API_KEY", project_path=self.project)
+        self.assertEqual(entry["description"], "prod key")
+        self.assertEqual(entry["env_var"], "PROD_KEY")
+        self.assertEqual(entry["type"], "token")
+        self.assertTrue(entry["inject"])
+        self.assertTrue(entry["agent_readable"])
+        self.assertEqual(entry["value_len"], len("fresh"))
+        # The keyring attestation must not have been rewritten to False, or
+        # the agent loses read access that the user never revoked.
+        self.assertTrue(cs.verify_agent_readable(
+            "API_KEY", scope="project", project_path=self.project))
+
+    def test_import_records_the_source_and_derives_the_source_list(self):
+        cs.import_env("A=1\nB=2", scope="project", project_path=self.project,
+                      source="/proj/.env")
+        cs.set_credential("HAND", "made", scope="project",
+                          project_path=self.project)
+        entry = cs.get_entry("A", project_path=self.project)
+        self.assertEqual(entry["source"]["path"], "/proj/.env")
+        self.assertTrue(entry["source"]["at"])
+        self.assertEqual(cs.get_entry("HAND", project_path=self.project)["source"], "")
+
+        sources = cs.source_paths(self.project, scope="project")
+        self.assertEqual([s["path"] for s in sources], ["/proj/.env"])
+        self.assertEqual(sources[0]["count"], 2)
+
+    def test_clear_source_unlinks_without_touching_the_value(self):
+        cs.import_env("A=1", scope="project", project_path=self.project,
+                      source="/proj/.env")
+        cs.clear_source("A", scope="project", project_path=self.project)
+        self.assertEqual(cs.get_entry("A", project_path=self.project)["source"], "")
+        self.assertEqual(cs.get_value("A", project_path=self.project), "1")
+        self.assertEqual(cs.source_paths(self.project, scope="project"), [])
+
+    def test_compare_marks_unchanged_rows_current_and_reports_vanished(self):
+        cs.import_env("KEEP=same\nEDIT=before\nGONE=x", scope="project",
+                      project_path=self.project, source="/proj/.env")
+        result = cs.import_env(
+            "KEEP=same\nEDIT=after\nADDED=new", scope="project",
+            project_path=self.project, source="/proj/.env",
+            overwrite=True, preview=True, compare=True)
+
+        actions = {r["name"]: r["action"] for r in result["rows"]}
+        self.assertEqual(actions["KEEP"], "current")
+        self.assertEqual(actions["EDIT"], "replace")
+        self.assertEqual(actions["ADDED"], "create")
+        self.assertEqual(result["vanished"], ["GONE"])
+        # A preview still writes nothing, and nothing auto-deletes.
+        self.assertEqual(cs.get_value("EDIT", project_path=self.project), "before")
+        self.assertEqual(cs.get_value("GONE", project_path=self.project), "x")
+
+    def test_compare_only_claims_a_key_vanished_from_its_own_source(self):
+        cs.import_env("OTHER=1", scope="project", project_path=self.project,
+                      source="/proj/other.env")
+        cs.set_credential("HAND", "made", scope="project",
+                          project_path=self.project)
+        result = cs.import_env("A=1", scope="project",
+                               project_path=self.project,
+                               source="/proj/.env", preview=True, compare=True)
+        self.assertEqual(result["vanished"], [])
+
+    def test_preview_digest_identifies_the_text_that_was_previewed(self):
+        first = cs.import_env("A=1", scope="project", project_path=self.project,
+                              preview=True)
+        same = cs.import_env("A=1", scope="project", project_path=self.project,
+                             preview=True)
+        other = cs.import_env("A=2", scope="project", project_path=self.project,
+                              preview=True)
+        self.assertEqual(first["digest"], same["digest"])
+        self.assertNotEqual(first["digest"], other["digest"])
+
+    def test_reimport_promotes_a_single_line_type_to_multiline(self):
+        """Preserving the type must not outrank what the value now is."""
+        cs.set_credential("PEM", "short", scope="project",
+                          project_path=self.project, ctype="token")
+        cs.import_env('PEM="line1\nline2"', scope="project",
+                      project_path=self.project, overwrite=True)
+        self.assertEqual(
+            cs.get_entry("PEM", project_path=self.project)["type"], "multiline")
+
 
 PAN = "4242424242424242"          # Luhn-valid visa test number
 PAN_BAD = "4242424242424241"      # fails checksum
@@ -396,6 +496,53 @@ class TestStructuredKinds(TestCredentialStore):
         with self.assertRaises(cs.CredentialError):
             cs.set_credential("VISA", ADDRESS, scope="project",
                               project_path=self.project, ctype="address")
+
+    def test_import_env_preview_writes_nothing(self):
+        result = cs.import_env("A=1\nB=2\n", scope="project",
+                               project_path=self.project, preview=True)
+        self.assertEqual(sorted(result["created"]), ["A", "B"])
+        self.assertTrue(result["preview"])
+        self.assertIsNone(cs.get_value("A", project_path=self.project))
+
+    def test_import_env_reports_a_reason_per_skipped_name(self):
+        cs.set_credential("TAKEN", "v", scope="project",
+                          project_path=self.project, ctype="env")
+        result = cs.import_env("TAKEN=x\n1BAD=y\nEMPTY=\n", scope="project",
+                               project_path=self.project)
+        self.assertEqual(result["reasons"], {
+            "TAKEN": "exists", "1BAD": "bad-name", "EMPTY": "empty"})
+
+    def test_import_env_only_restricts_the_set(self):
+        result = cs.import_env("A=1\nB=2\n", scope="project",
+                               project_path=self.project, only=["A"])
+        self.assertEqual(result["created"], ["A"])
+        self.assertEqual(result["reasons"]["B"], "deselected")
+        self.assertIsNone(cs.get_value("B", project_path=self.project))
+
+    def test_import_env_stores_multiline_values_as_multiline(self):
+        pem = "-----BEGIN KEY-----\nAAAA\n-----END KEY-----"
+        cs.import_env('P="%s"\n' % pem, scope="project", project_path=self.project)
+        self.assertEqual(cs.get_value("P", project_path=self.project), pem)
+        self.assertEqual(
+            cs.get_entry("P", project_path=self.project)["type"], "multiline")
+
+    def test_import_env_rows_never_carry_the_value(self):
+        secret = "canary-store-value-42"
+        result = cs.import_env("S=%s\n" % secret, scope="project",
+                               project_path=self.project, preview=True)
+        self.assertNotIn(secret, json.dumps(result["rows"]))
+        row = result["rows"][0]
+        self.assertEqual(row["value_len"], len(secret))
+        self.assertEqual(len(row["fingerprint"]), 8)
+
+    def test_import_env_line_notes_are_not_credential_skips(self):
+        """A stray line and a superseded duplicate are not failed secrets."""
+        result = cs.import_env("D=1\nD=2\nnot an assignment\n",
+                               scope="project", project_path=self.project)
+        self.assertEqual(result["created"], ["D"])
+        self.assertEqual(result["skipped"], [])
+        notes = [r["reason"] for r in result["rows"] if r["reason"]]
+        self.assertEqual(sorted(notes), ["duplicate", "no-assignment"])
 
     def test_import_env_never_flattens_structured(self):
         cs.set_credential("VISA", CARD, scope="project",

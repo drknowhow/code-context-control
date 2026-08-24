@@ -16,6 +16,11 @@ Record schema (one JSON object per line)::
     duration_ms       tool handler duration if reported, or None
     source            "structured" (explicit accounting), "summary"
                       (legacy regex-scraped from the summary string), or None
+    target            what the call was ABOUT — a project-relative file path
+                      when the args carried one, else "" (v2.95.0+). Answers
+                      "which file cost me tokens", which tool+action alone
+                      never could. Records written before 2.95.0 have no
+                      target and aggregate under "" rather than being dropped.
 
 Honesty note: ``raw_tokens`` is a *full-read baseline* — what ingesting the
 entire un-optimized source would have cost. Savings derived from
@@ -59,6 +64,7 @@ _RECORD_DEFAULTS = {
     "optimized_tokens": None,
     "duration_ms": None,
     "source": None,
+    "target": "",
 }
 
 BASELINE_NOTE = (
@@ -225,7 +231,9 @@ def _as_int(value) -> Optional[int]:
     return n if n >= 0 else None
 
 
-def aggregate_tool_telemetry(project_path, days: int = 7) -> dict:
+def aggregate_tool_telemetry(project_path, days: int = 7, *,
+                             top_targets: int = 25,
+                             top_sessions: int = 25) -> dict:
     """Aggregate per-tool telemetry over the last ``days`` days.
 
     This is the public query API for the honest measurement layer. It
@@ -265,6 +273,9 @@ def aggregate_tool_telemetry(project_path, days: int = 7) -> dict:
         since_iso = since.isoformat()
 
     by_tool: dict = {}
+    by_day: dict = {}
+    by_session: dict = {}
+    by_target: dict = {}
     total_calls = 0
     total_response = 0
     total_saved = 0
@@ -298,6 +309,33 @@ def aggregate_tool_telemetry(project_path, days: int = 7) -> dict:
             entry["estimated_saved_vs_full_read"] += saved
             total_saved += saved
 
+        # The three dimensions the per-tool view cannot answer: WHEN, WHICH
+        # session, and WHAT the call was about.
+        day = str(rec.get("ts") or "")[:10]
+        if day:
+            slot = by_day.setdefault(day, {"calls": 0, "response_tokens": 0})
+            slot["calls"] += 1
+            slot["response_tokens"] += resp
+
+        sid = str(rec.get("session_id") or "")
+        if sid:
+            slot = by_session.setdefault(
+                sid, {"calls": 0, "response_tokens": 0, "first_ts": "", "last_ts": ""})
+            slot["calls"] += 1
+            slot["response_tokens"] += resp
+            ts = str(rec.get("ts") or "")
+            if ts:
+                if not slot["first_ts"] or ts < slot["first_ts"]:
+                    slot["first_ts"] = ts
+                if ts > slot["last_ts"]:
+                    slot["last_ts"] = ts
+
+        target = str(rec.get("target") or "")
+        if target:
+            slot = by_target.setdefault(target, {"calls": 0, "response_tokens": 0})
+            slot["calls"] += 1
+            slot["response_tokens"] += resp
+
         dur = rec.get("duration_ms")
         if dur is not None and not isinstance(dur, bool):
             try:
@@ -311,6 +349,11 @@ def aggregate_tool_telemetry(project_path, days: int = 7) -> dict:
         total = entry.pop("_duration_total")
         entry["avg_duration_ms"] = round(total / count, 1) if count else None
 
+    def _top(mapping, limit):
+        rows = sorted(mapping.items(),
+                      key=lambda kv: (-kv[1]["response_tokens"], kv[0]))
+        return [dict(name=k, **v) for k, v in rows[:limit]]
+
     return {
         "days": days,
         "since": since_iso,
@@ -319,4 +362,105 @@ def aggregate_tool_telemetry(project_path, days: int = 7) -> dict:
         "estimated_saved_vs_full_read": total_saved,
         "baseline_note": BASELINE_NOTE,
         "by_tool": by_tool,
+        # Sorted lists, not dicts: these are read in rank order and a dict
+        # would push that ordering decision into every consumer.
+        "by_day": [dict(name=k, **by_day[k]) for k in sorted(by_day)],
+        "by_session": _top(by_session, top_sessions),
+        "by_target": _top(by_target, top_targets),
+        "targets_tracked": len(by_target),
+    }
+
+
+# ── Claude Code session stats (Stop-hook rows) ───────────────────────────────
+# A different measurement from the per-tool log above: tool telemetry counts
+# what C3's own tools returned, while these rows are the WHOLE conversation's
+# billable usage as reported by the transcript. Neither one is a subset of the
+# other, so the UI shows both rather than pretending one explains the other.
+
+SESSION_STATS_RELPATH = Path(".c3") / "session_stats.jsonl"
+
+_SESSION_TOKEN_FIELDS = ("input_tokens", "output_tokens",
+                         "cache_creation_tokens", "cache_read_tokens")
+
+
+def session_stats_path(project_path) -> Path:
+    return Path(project_path) / SESSION_STATS_RELPATH
+
+
+def aggregate_session_stats(project_path, days: int = 0,
+                            limit: int = 50) -> dict:
+    """Roll up ``.c3/session_stats.jsonl`` into per-session totals.
+
+    Each row is a CUMULATIVE snapshot written on one Stop event, so a session
+    appears once per turn and its rows must not be summed. The newest row per
+    ``session_id`` is that session's total; that is the one kept.
+
+    ``all_zero_rows`` counts rows carrying no tokens at all. Before v2.95.0 the
+    Stop hook read fields the event never sends and every row was zero — a
+    non-zero count here dates the log rather than implying idle sessions.
+    """
+    path = session_stats_path(project_path)
+    since = None
+    if days and days > 0:
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    latest: dict = {}
+    rows_seen = 0
+    all_zero = 0
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    rows_seen += 1
+                    if not any(_as_int(rec.get(f)) for f in _SESSION_TOKEN_FIELDS):
+                        all_zero += 1
+                    ts = str(rec.get("ts") or "")
+                    if since is not None:
+                        parsed = _parse_ts(ts)
+                        if parsed is None or parsed < since:
+                            continue
+                    sid = str(rec.get("session_id") or "")
+                    if not sid:
+                        continue
+                    prev = latest.get(sid)
+                    if prev is None or ts >= str(prev.get("ts") or ""):
+                        latest[sid] = rec
+        except OSError:
+            pass
+
+    sessions = []
+    totals = {f: 0 for f in _SESSION_TOKEN_FIELDS}
+    for sid, rec in latest.items():
+        row = {"session_id": sid, "ts": str(rec.get("ts") or ""),
+               "model": str(rec.get("model") or ""),
+               "assistant_messages": _as_int(rec.get("assistant_messages")),
+               "source": str(rec.get("source") or "")}
+        for f in _SESSION_TOKEN_FIELDS:
+            value = _as_int(rec.get(f)) or 0
+            row[f] = value
+            totals[f] += value
+        row["total_tokens"] = sum(row[f] for f in _SESSION_TOKEN_FIELDS)
+        sessions.append(row)
+    sessions.sort(key=lambda r: r["ts"], reverse=True)
+
+    return {
+        "days": days,
+        "sessions": sessions[:limit],
+        "session_count": len(sessions),
+        "rows_seen": rows_seen,
+        "all_zero_rows": all_zero,
+        "totals": totals,
+        "total_tokens": sum(totals.values()),
+        "cost_note": (
+            "Token counts are measured from the transcript. Cost is not "
+            "recorded: the transcript carries no price, and a rate hardcoded "
+            "here would age into a confidently wrong number."
+        ),
     }

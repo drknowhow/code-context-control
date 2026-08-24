@@ -146,5 +146,45 @@ class TestCredsCliSmoke(unittest.TestCase):
         )
 
 
+    def test_import_dry_run_writes_nothing(self):
+        env_file = Path(self.proj) / "dry.env"
+        env_file.write_text("D1=a\nD2=b\n", encoding="utf-8")
+        out = self._run(["creds", "import", str(env_file), "--dry-run",
+                         "--path", self.proj])
+        self.assertIn("[dry-run]", out)
+        self.assertIn("2 would be imported", out)
+        self.assertIsNone(cs.get_value("D1", project_path=self.proj))
+
+    def test_import_only_restricts_what_lands(self):
+        env_file = Path(self.proj) / "only.env"
+        env_file.write_text("O1=a\nO2=b\n", encoding="utf-8")
+        self._run(["creds", "import", str(env_file), "--only", "O1",
+                   "--path", self.proj])
+        self.assertEqual(cs.get_value("O1", project_path=self.proj), "a")
+        self.assertIsNone(cs.get_value("O2", project_path=self.proj))
+
+    def test_import_reports_reasons_not_a_flat_list(self):
+        env_file = Path(self.proj) / "why.env"
+        env_file.write_text("W=1\n", encoding="utf-8")
+        self._run(["creds", "import", str(env_file), "--path", self.proj])
+        out = self._run(["creds", "import", str(env_file), "--path", self.proj])
+        self.assertIn("already exists", out)
+
+    def test_import_of_a_multiline_value_round_trips(self):
+        pem = "-----BEGIN KEY-----\nAAAA\nBBBB\n-----END KEY-----"
+        env_file = Path(self.proj) / "pem.env"
+        env_file.write_text('PEM="%s"\n' % pem, encoding="utf-8")
+        self._run(["creds", "import", str(env_file), "--path", self.proj])
+        self.assertEqual(cs.get_value("PEM", project_path=self.proj), pem)
+
+    def test_import_of_a_cp1252_file_does_not_traceback(self):
+        """read_text(encoding='utf-8') raised past the except clause."""
+        env_file = Path(self.proj) / "latin.env"
+        env_file.write_bytes("CAFE=caf\u00e9\n".encode("cp1252"))
+        out = self._run(["creds", "import", str(env_file), "--path", self.proj])
+        self.assertIn("[OK]", out)
+        self.assertEqual(cs.get_value("CAFE", project_path=self.proj), "caf\u00e9")
+
+
 if __name__ == "__main__":
     unittest.main()

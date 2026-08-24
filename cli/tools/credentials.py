@@ -29,10 +29,11 @@ from services import credential_store as cs
 
 _TOOL = "c3_credentials"
 
-_MUTATING_ACTIONS = {"set", "delete"}
+_MUTATING_ACTIONS = {"set", "delete", "import_env"}
 _AUDITED_ACTIONS = _MUTATING_ACTIONS | {"reveal"}
 _VALID_ACTIONS = sorted(["list", "describe", "check", "reveal", "set",
-                         "delete", "usage"])
+                         "delete", "usage", "import_env"])
+_NAMELESS_ACTIONS = {"list", "usage", "import_env"}
 
 _USAGE_FOOTER = (
     "use: c3_shell(env_creds='NAME1,NAME2') or {{cred:NAME}} inside cmd — "
@@ -259,6 +260,66 @@ def _act_usage(name: str, project_path: str) -> str:
     return "\n".join(lines)
 
 
+def _act_import_env(svc, project_path: str, **kwargs) -> str:
+    """Bulk-import a .env into the vault WITHOUT the agent seeing any value.
+
+    `.env` is a Tier-1 built-in deny (access_guard.BUILTIN_DENY), so the agent
+    cannot read one. This does not lift that: the server reads the file and the
+    response carries names, lengths, fingerprints and reasons only. What the
+    agent gains is "put these in the vault", never "show me these".
+
+    The residual risk is SHADOWING — a repo-controlled .env imported at project
+    scope would shadow a same-named global entry, since project scope wins. So:
+    project scope only, never overwrite, path contained to the project, and
+    dry_run defaults true so a bare call is a preview the user can read first.
+    """
+    from pathlib import Path
+
+    raw = (kwargs.get("file_path") or "").strip()
+    if not raw:
+        return "[creds:error] file_path is required for import_env"
+    scope = (kwargs.get("scope") or "project").strip().lower()
+    if scope != "project":
+        return ("[creds:not-allowed] import_env is project-scope only. "
+                "Importing into the shared global vault is a user action "
+                "(`c3 creds import <file> --global` or the Credentials UI).")
+    if kwargs.get("overwrite"):
+        return ("[creds:not-allowed] import_env never overwrites. Existing "
+                "names are reported as skipped; replacing a stored secret is "
+                "a user action.")
+
+    base = Path(project_path).resolve()
+    target = Path(raw)
+    target = target.resolve() if target.is_absolute() else (base / target).resolve()
+    if target != base and base not in target.parents:
+        return f"[creds:not-allowed] {raw} resolves outside the project"
+    if not target.is_file():
+        return f"[creds:unknown] no such file: {raw}"
+
+    only = [n.strip() for n in str(kwargs.get("only") or "").split(",") if n.strip()]
+    dry_run = kwargs.get("dry_run")
+    dry_run = True if dry_run is None else bool(dry_run)
+
+    text = cs.read_env_file(target)
+    result = cs.import_env(text, scope="project", project_path=project_path,
+                           overwrite=False, preview=dry_run,
+                           only=only or None, source=str(target),
+                           compare=dry_run)
+
+    verb = "would import" if dry_run else "imported"
+    lines = [f"[creds:import_env] {verb} {len(result['created'])} from "
+             f"{target.name} (project scope)"]
+    for row in result["rows"]:
+        status = row["detail"] or row["action"]
+        lines.append(f"  {row['name']} [{row['ctype']}] len={row['value_len']} "
+                     f"fp={row['fingerprint'] or '-'} — {status}")
+    if dry_run:
+        lines.append("nothing written — re-run with dry_run=false to apply")
+    else:
+        lines.append(_USAGE_FOOTER)
+    return "\n".join(lines)
+
+
 def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
     """Dispatch a credential-vault action.
 
@@ -281,7 +342,7 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
         )
 
     name = (kwargs.get("name") or "").strip()
-    if action not in ("list", "usage") and not name:
+    if action not in _NAMELESS_ACTIONS and not name:
         return finalize(
             _TOOL, args_for_log,
             f"[creds:error] name is required for {action}", "missing-arg",
@@ -291,6 +352,8 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
     try:
         if action == "list":
             resp = _act_list(project_path)
+        elif action == "import_env":
+            resp = _act_import_env(svc, project_path, **kwargs)
         elif action == "usage":
             resp = _act_usage(name, project_path)
         elif action == "describe":
@@ -352,5 +415,7 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
         "[creds:error]", "[creds:unknown", "[creds:not-allowed]",
         "[creds:not-readable]", "[creds:no-value]", "[creds:structured]",
     )):
-        _log_access(svc, action, name, scope or "", resp)
+        _log_access(svc, action,
+                    name or (kwargs.get("file_path") or "").strip(),
+                    scope or "", resp)
     return finalize(_TOOL, args_for_log, resp, action)

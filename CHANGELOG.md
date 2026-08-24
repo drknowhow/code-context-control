@@ -4,6 +4,211 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.95.0] - 2026-08-24
+
+### Fixed — the Stop hook wrote 498 rows of zeros and nothing noticed
+
+`cli/hook_session_stats.py` read `payload["usage"]` and `payload["cost_usd"]`
+from the Claude Code Stop event. That event sends neither. It sends
+`session_id`, `transcript_path`, `hook_event_name`, `stop_hook_active` and
+`cwd` — so `usage` was `{}` on every call, `.get(..., 0)` returned 0, and the
+hook appended a structurally perfect row of zeros after every single turn.
+
+498 consecutive all-zero rows in this repo before the fix. Nothing raised,
+nothing logged, the file kept growing, and the failure is invisible by
+construction: a missing key reads as 0 exactly as convincingly as a real 0.
+The same silent-wrong-data shape as 2.92.2's mojibake and 2.93.0's truncated
+PEM — three releases in a row where the bug was not a crash but a plausible
+number.
+
+The numbers were always one dereference away: every assistant message in the
+transcript the payload points at carries a `message.usage` block. The hook now
+reads that file and sums it, and falls back to the payload only if a future
+Claude Code starts sending usage directly. Each row is a CUMULATIVE snapshot
+(Stop fires per turn and the transcript is re-summed), so the newest row per
+session is that session's total and rows must never be added together —
+`aggregate_session_stats` enforces that rather than leaving it to callers.
+
+Cost is deliberately still not recorded. The transcript carries no price, and a
+rate hardcoded here would age into a confidently wrong number. Tokens are
+measured, so tokens are what gets written.
+
+### Added — one audit trail for a credential's whole life
+
+C3 recorded both halves of a credential's history and joined neither. Uses
+went to `.c3/cred_usage.jsonl` — injection into a subprocess, `{{cred:X}}`
+expansion, a gated reveal, `c3 creds get --show`. Changes went to the activity
+log as `cred_action` rows. Two files, two schemas, two different notions of
+scope. Answering "who changed this key, and where has it been used since"
+meant opening both and merging them by eye, which is not an audit trail; it is
+the raw material for one.
+
+`services/cred_audit.py` merges them into a single normalized timeline.
+
+- **Credentials → Audit** in the hub: cross-project, newest first, filterable
+  by kind, by credential, or free text. Every credential list also has its own
+  **Audit** button scoped to that vault, and a row's context menu has
+  **View audit trail…** which opens the timeline already filtered to it.
+- **The `exposing` filter.** `reveal` and `cli_show` are the only two actions
+  that put a plaintext value somewhere a person or a model can read it;
+  everything else hands it to a subprocess and never surfaces it. Those rows
+  are badged and counted separately rather than left to be spotted in a list.
+- **Rows carry what an audit needs**: when, which project or the global vault,
+  which surface (`shell`/`cli`/`mcp`/`ui`/`hub`), the command that needed the
+  credential, and that command's exit code.
+- **`c3 creds audit [NAME] [--kind] [--action] [--surface] [--since] [--json]`**
+  and three read-only routes.
+
+Two scope rules, both load-bearing. A project's timeline includes the global
+vault, because a shared credential used from a project records into `~/.c3`
+rather than the project — reading only the project loses exactly the entries a
+shared secret generates. The cross-project roll-up reads that shared vault
+once rather than once per project, which would have multiplied one log by the
+number of registered projects.
+
+Nothing in the trail can leak a value, because neither log ever stored one:
+`cmd` is the raw template (`{{cred:X}}`, `$NAME`), never the substitution. The
+command is therefore shown in full rather than masked — masking it would imply
+there was something behind the mask.
+
+### Added — a Tokens tab, because the measurement layer had no reader
+
+`.c3/tool_telemetry.jsonl` has recorded one row per tool call since v2.66.0 —
+2,724 calls and 1.2M tokens in this repo alone — and
+`services/telemetry.py::aggregate_tool_telemetry()` has been a complete query
+API over it the whole time. **Nothing called it.** No CLI, no route, no UI;
+the only caller anywhere was the test suite. A feature can be fully built,
+fully tested and completely unreachable, and the tests stay green either way
+because a test is a caller.
+
+- **Hub → Tokens**, a top-level tab beside Credentials: cross-project totals,
+  a per-project roll-up ranked by spend, and any project expandable in place.
+- **A Tokens tab in every project's drill panel**, the same component.
+- **Four breakdowns** — by tool, by day, by session, and by file.
+- **`c3 tokens [--days N] [--by tool|day|session|file] [--limit N] [--json]`**.
+- **`GET /api/tokens`**, **`GET /api/projects/tokens`**, and
+  **`GET /api/hub/tokens/overview`**, all read-only and counts-only.
+
+The two logs are shown side by side and never summed. Tool tokens are what
+C3's own tools returned; session tokens are what the whole conversation cost.
+A session spends tokens on prose, on files read by native tools, and on cache
+that no tool log can see, so a combined figure would be invented. Where a log
+is all zeros the UI says the log predates the fix rather than showing a
+confident `0` — absence of measurement and measurement of absence are
+different claims.
+
+### Added — which file a tool call was about
+
+Telemetry recorded `tool` and `action` but never a location, so "which file is
+costing me tokens" was unanswerable — the one question worth asking of a
+token log. Records now carry `target`: the project-relative path when the
+args named a file, and `""` when they did not. A search by query has no file,
+and inventing one would turn the file view into a mix of paths and unrelated
+strings. Rows written before 2.95.0 have no target and aggregate under `""`
+rather than being dropped, and the UI says so instead of showing an empty
+table.
+
+### Added — the bundle guard now transpiles the bundle
+
+`tests/test_ui_jsx_syntax.py` (2.92.4) recognised one shape of syntax error:
+the `{/* … */}` in expression position that black-screened 2.92.0–2.92.3. It
+passes clean on every other kind. A second class transpiles the real
+concatenated hub and project bundles through Babel exactly as the browser
+does. It earned its place immediately by catching an unterminated string
+literal in `hub_credentials.js` that the regex test approved. It skips unless
+`node` and `@babel/standalone` are present, since the project deliberately has
+no build step; the module comment says how to run it.
+
+## [2.94.0] - 2026-08-24
+
+### Added — the Credentials page stops being a one-row-at-a-time interface
+
+A vault with sixty entries across nine projects was still being managed the way
+one with six was: a single search box, and every action reaching exactly one
+row. The three things you actually do in bulk — audit what the agent can read,
+turn off injection you no longer want, and clear out a batch of keys — each
+meant N trips through a context menu.
+
+- **Filter chips, always on.** `agent-readable`, `auto-inject`, `structured`,
+  `shadowing`, `from .env`, `never used`, `stale >30d`, each with a live count.
+  They narrow rather than widen, and compose with the existing `key:value`
+  filter box; `/` focuses that box from anywhere. New `source:` qualifier and a
+  `newest` sort.
+- **Multi-select and bulk actions.** `Select` turns on checkboxes;
+  shift-click extends a range; the header checkbox takes everything currently
+  shown — which is the point of the chips: filter to `agent-readable`, select
+  all, revoke. Bulk check resolution, revoke agent read, disable auto-inject,
+  export a metadata-only CSV, and delete.
+- **Bulk may only ever reduce exposure.** There is no bulk "allow agent read"
+  and no bulk "enable auto-inject": granting stays one entry at a time behind a
+  confirmation that names it, because a bulk grant widens access to many
+  secrets from one checkbox and the row you did not mean to include is exactly
+  the one that matters. `POST /api/hub/credentials/batch` enforces the same
+  allowlist, so this is not merely a missing button. Bulk rename, retype,
+  storage migration and copy-to-global are absent for a different reason: each
+  silently changes which credential a consumer resolves.
+- **Bulk delete states what else it breaks.** Deleting a project entry does not
+  remove the name — it hands it back to the global vault, so the project starts
+  resolving the *global* value instead of failing. The confirmation lists which
+  of the selected rows do that before you type `DELETE <count>`.
+- **A partial run reports as partial** — `7 ok, 2 failed` naming the first
+  failure, never nine successes.
+
+### Added — a `.env` import you can run again next week
+
+The import shipped in 2.93.0 was a wizard: it knew how to read a file once and
+then forgot it. A `.env` drifts all week, so the second import was as much work
+as the first, and re-importing was the operation most likely to be wrong.
+
+- **The vault remembers which `.env` an entry came from** (new `source` field,
+  set when C3 read the file from a path on this machine — a pasted body has no
+  path worth promising to re-read). The manager grows an **Imported from**
+  strip listing each file with its entry count and last sync, and a
+  **Re-sync** button. The list is derived from the entries, not kept beside
+  them: a second copy of a derivable list is what goes stale.
+- **Re-sync is a diff.** The server re-reads the file and compares each value
+  against the stored one by digest, so it reports `unchanged` / `changed` /
+  `new` without either value reaching the browser. Rows already matching are
+  left unticked — rewriting an identical value is a keyring write and a ledger
+  row for nothing.
+- **Keys that left the file are reported, never deleted.** Plenty of
+  credentials outlive the file that seeded them, so a vanished key is listed
+  separately and left alone.
+- **A commit refuses a file that moved under its preview.** The preview returns
+  a digest and the commit must echo it, so a `.env` edited between the two
+  calls 409s instead of importing content you never saw.
+
+Re-sync is a *two-way* diff, deliberately: it can tell you the file and the
+vault disagree, not which one you changed. A value edited in the vault by hand
+reads as `changed`. Nothing is persisted that could be correlated offline — no
+stored digest, no baseline.
+
+### Fixed — credential failures rendered as successes
+
+Every `notify()` call in the credentials UI omitted the `kind` argument, and
+`kindColor` falls back to the accent colour. A failed delete, a failed
+resolution check and a rejected exposure change all came back looking exactly
+like the green confirmation of the thing having worked.
+
+### Fixed — a row was identified by a name that is not unique
+
+The same credential name legitimately lives in the global vault and in any
+number of projects, but rows were keyed by bare name. A resolution check run on
+a project entry rendered its result against a same-named global one. Identity
+is now `(scope, project, name)` everywhere it is remembered — selection sets,
+check results and every ledger row the batch route writes.
+
+### Added — the bundle guard now actually parses the bundle
+
+`tests/test_ui_jsx_syntax.py` (2.92.4) recognised one shape of syntax error:
+the `{/* … */}` in expression position that black-screened 2.92.0–2.92.3. It
+passes clean on every other kind. A second class transpiles the real
+concatenated bundles through Babel exactly as the browser does, and it earned
+its place immediately by catching an unterminated string literal in
+`hub_credentials.js` that the regex test approved. It skips unless `node` and
+`@babel/standalone` are present, since the project deliberately has no build
+step; the module comment says how to run it.
+
 ## [2.92.4] - 2026-08-24
 
 ### Fixed — the hub opened to a black screen, and only the browser console said why
@@ -32,6 +237,107 @@ a JSX comment opening in expression position. The existing bundle tests check
 the *shape* of the build — every listed module exists, markers are stamped,
 `app.js` stays last — and passed for the whole time the broken file was
 shipping, because a bundle can be assembled perfectly and still not parse.
+## [2.93.0] - 2026-08-24
+
+### Fixed — a `.env` with a PEM key in it imported a truncated PEM key, and said it worked
+
+`services/credential_store.py::import_env` walked the file one line at a time:
+`splitlines()`, `strip()`, `partition("=")`. That is fine until a value spans
+lines, which is exactly what a `.env` holding a private key or a JSON
+service-account blob does. Given
+
+```
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ
+-----END PRIVATE KEY-----"
+```
+
+the stored secret was the single string `"-----BEGIN PRIVATE KEY-----` —
+opening quote included, everything after the first newline gone. The
+continuation lines were dropped on the `"=" not in line` test, which appended
+nothing to `skipped`, so the CLI printed `Imported 1 credential(s)` and the
+user walked away with a key that could never work. Nothing raised, nothing
+logged: the same silent-wrong-data shape as 2.92.2's mojibake.
+
+The parser is now a separate, pure `parse_env()` that understands what a real
+`.env` contains: values quoted across multiple lines, single quotes as literal
+and double quotes with `\n`-style escapes, inline `#` comments on unquoted
+values (`FOO=bar # note` stored `bar # note` before), a UTF-8 BOM (which made
+the *first* secret in every BOM'd file fail its name check and vanish),
+duplicate keys, and whitespace that a quoted value deliberately keeps. A value
+containing a newline is now stored as `multiline` rather than `env` — the type
+already existed for exactly this. `${VAR}` interpolation is still not
+supported, on purpose.
+
+Every line the parser cannot use is now reported instead of discarded, and
+each skip carries a reason — `already exists`, `not a usable credential name`,
+`no value`, `quote never closes`, `redefined later in the file` — where before
+four different causes arrived as one flat list of bare names.
+
+Reading the file was its own bug. `c3 creds import` called
+`read_text(encoding="utf-8")` while catching only `CredentialError` and
+`RuntimeError`, so a `.env` saved by a Windows editor as cp1252 killed the
+command with a `UnicodeDecodeError` traceback. All three surfaces now share
+`read_env_file()`: UTF-8 (BOM tolerated), then cp1252, with a UTF-16 BOM check
+in front because PowerShell's `>` wrote UTF-16LE for years and cp1252 decodes
+those bytes into mojibake without complaining.
+
+### Added — see what a `.env` import will do before it touches the keyring
+
+`import_env` takes `preview=True` and returns the same shape without writing,
+plus `only=[...]` to import a subset. Each row reports name, line, type, value
+**length** and a sha256[:8] **fingerprint** — never the value or any prefix of
+it, because a prefix is part of the secret and the vault's rule is that a
+stored value never travels back to the browser.
+
+- **Both web UIs get a file picker and a drop zone.** Importing no longer means
+  opening `.env`, selecting all, and pasting secrets into a textarea — though
+  the textarea stays as a fallback. The flow is choose → preview → tick → import:
+  a table of what would land, rows that cannot be imported disabled and
+  explained, and the **overwrite** checkbox that both routes have always
+  accepted but neither UI ever sent.
+- **An overwrite now rotates the value and nothing else.** `import_env`
+  replaced an existing entry by calling `set_credential` with no metadata, and
+  `set_credential` writes a whole fresh entry dict — only `created` survived.
+  So re-importing a key already in the vault reset its `description` and
+  `env_var` to `""`, turned a `token` back into an `env`, and set both `inject`
+  and `agent_readable` to false, rewriting the keyring attestation to match.
+  The last of those is the one that bites: auto-injection into every
+  `c3_shell` run simply stopped, with no error and nothing in the ledger to
+  say why. The two overwrite tests only ever asserted that the *value* had
+  changed, so nothing caught it. A new `set_value()` does what a re-import
+  actually means — the counterpart to `update_metadata()`, which changes
+  everything except the value. Type is preserved too, except that a value
+  containing a newline still promotes to `multiline`: the type describes the
+  value, so a stored type cannot outrank the new content.
+- **`c3 creds import` gains `--dry-run` and `--only NAME,...`.** `--dry-run`
+  prints the table and writes nothing.
+- **The CLI import is now audited.** It was the one credential mutation path in
+  the system with no ledger entry; both REST routes logged and it did not. A
+  bulk import also writes a single `cred_import` row naming the source and the
+  count, so the ledger no longer shows N sets indistinguishable from N manual
+  ones.
+- **`POST /api/credentials/import` and its hub twin** take `preview`, `only`,
+  and a server-side path (`path` on the project route, `env_path` on the hub
+  route, where `path` already meant the project). A path is contained to the
+  project root and refused otherwise.
+
+### Added — `c3_credentials(action='import_env')`, which still cannot read your `.env`
+
+Agents can offer to bulk-import a `.env` without gaining the ability to read
+one. `**/.env*` remains a Tier-1 built-in deny; the server reads the file and
+the agent gets names, lengths, fingerprints and reasons back. The gates are
+deliberately tight, because the real risk is an agent importing a
+repo-controlled `.env` at project scope to shadow a good global name:
+
+- `dry_run` defaults to **true** — a bare call is a preview
+- project scope only; importing to the shared global vault stays a user action
+- `overwrite` is refused outright — an agent never replaces a stored secret
+- the path must resolve inside the project
+- entries are created with `agent_readable=false`, which the agent still cannot
+  raise afterwards
+
+The mobile gateway deliberately still has no import route.
 
 ## [2.92.3] - 2026-08-24
 

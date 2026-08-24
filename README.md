@@ -145,7 +145,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter, `verify` (did a failed `c3_edit` still land?) |
 | `c3_task` | Per-project PM — tasks, dependencies, milestones, time tracking (v2.53.0) |
 | `c3_artifacts` | Agent-config version history, diff & restore (v2.46.0) |
-| `c3_credentials` | Named-secret vault; values never enter model context (v2.58.0) |
+| `c3_credentials` | Named-secret vault; values never enter model context (v2.58.0). `import_env` bulk-imports a `.env` the agent still cannot read (v2.93.0) |
 | `c3_bitbucket` | Bitbucket Data Center — PRs, branches, builds, admin (v2.30.0) |
 | `c3_jira` | Jira Cloud + Data Center — JQL, issues, transitions (v2.56.0) |
 | `c3_project` | Cross-project discovery & operations; guarded writes (v2.31.0) |

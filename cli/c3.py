@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.92.4"
+__version__ = "2.95.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6114,11 +6114,75 @@ def _bb_cmd_set_default(args, project_path: str) -> None:
     print(f"[OK] Default repo: {args.project}/{args.repo}")
 
 
+def cmd_tokens(args):
+    """Print token usage from the two local measurement logs.
+
+    Reads only; writes nothing. Counts come from .c3/tool_telemetry.jsonl
+    (what C3's tools returned) and .c3/session_stats.jsonl (what the whole
+    conversation cost, per the transcript).
+    """
+    from services import telemetry
+
+    project_path = getattr(args, "project_path", ".") or "."
+    days = max(0, int(getattr(args, "days", 30) or 0))
+    limit = max(1, int(getattr(args, "limit", 15) or 15))
+    tools = telemetry.aggregate_tool_telemetry(project_path, days=days)
+    sess = telemetry.aggregate_session_stats(project_path, days=days)
+
+    if getattr(args, "json", False):
+        print(json.dumps({"tools": tools, "sessions": sess}, indent=2))
+        return
+
+    window = "all history" if days == 0 else f"last {days}d"
+    print(f"\nToken usage — {window}")
+    print(f"  tool calls        {tools['total_calls']:>14,}")
+    print(f"  tool tokens       {tools['total_response_tokens']:>14,}")
+    print(f"  est. saved        {tools['estimated_saved_vs_full_read']:>14,}"
+          "   (vs full-read baseline)")
+    print(f"  session tokens    {sess['total_tokens']:>14,}"
+          f"   across {sess['session_count']} session(s)")
+    if sess["rows_seen"] and sess["all_zero_rows"] == sess["rows_seen"]:
+        # Do not let a log full of zeros read as "you used nothing".
+        print("  note: every session row is zero — these predate the v2.95.0 "
+              "Stop-hook fix; new sessions record real numbers.")
+
+    by = getattr(args, "by", "tool")
+    if by == "tool":
+        rows = sorted(({"name": k, **v} for k, v in tools["by_tool"].items()),
+                      key=lambda r: -r["response_tokens"])
+        head, cols = "tool", ("calls", "tokens", "avg")
+    elif by == "day":
+        rows, head, cols = tools["by_day"][::-1], "day", ("calls", "tokens", "avg")
+    elif by == "session":
+        rows, head, cols = tools["by_session"], "session", ("calls", "tokens", "avg")
+    else:
+        rows, head, cols = tools["by_target"], "file", ("calls", "tokens", "avg")
+
+    if not rows:
+        extra = ("  (no file attribution recorded yet — targets are logged "
+                 "from v2.95.0 onward)" if by == "file" else "  (nothing recorded)")
+        print(f"\n{extra}")
+        return
+
+    print(f"\n{head:<44}{cols[0]:>8}{cols[1]:>12}{cols[2]:>8}")
+    print("  " + "-" * 70)
+    for r in rows[:limit]:
+        calls = r.get("calls", 0)
+        toks = r.get("response_tokens", 0)
+        name = str(r.get("name", ""))
+        if len(name) > 43:
+            name = "…" + name[-42:]
+        print(f"{name:<44}{calls:>8}{toks:>12,}{toks // max(1, calls):>8}")
+    if len(rows) > limit:
+        print(f"  … {len(rows) - limit} more (use --limit)")
+    print()
+
+
 def cmd_creds(args):
     """Credential vault management (global + per-project scopes)."""
     sub = getattr(args, "creds_cmd", None)
     if not sub:
-        print("Usage: c3 creds {set,get,list,rm,import,usage} [args]")
+        print("Usage: c3 creds {set,get,list,rm,import,usage,audit} [args]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -6135,6 +6199,8 @@ def cmd_creds(args):
         _creds_cmd_import(args, project_path)
     elif sub == "usage":
         _creds_cmd_usage(args, project_path)
+    elif sub == "audit":
+        _creds_cmd_audit(args, project_path)
     else:
         print(f"Unknown creds subcommand: {sub}")
 
@@ -6321,6 +6387,25 @@ def _creds_cmd_rm(args, project_path: str) -> None:
         print(f"[error] no credential named '{args.name}' in {scope} scope")
 
 
+def _creds_import_table(rows: list) -> None:
+    """Print one line per parsed row: what it is, not what it holds.
+
+    Length and fingerprint are enough to tell two keys apart and to spot a
+    truncated paste; a value prefix would be part of the secret, so there
+    isn't one.
+    """
+    if not rows:
+        print("Nothing to import — no KEY=VALUE lines found.")
+        return
+    width = max(len(str(r["name"])) for r in rows)
+    print(f"{'NAME'.ljust(width)}  LINE  TYPE       LEN  FINGERPRINT  STATUS")
+    for r in rows:
+        status = r["detail"] or r["action"]
+        print(f"{str(r['name']).ljust(width)}  {str(r['line']).rjust(4)}  "
+              f"{r['ctype']:<9}  {str(r['value_len']).rjust(4)}  "
+              f"{(r['fingerprint'] or '-'):<11}  {status}")
+
+
 def _creds_cmd_import(args, project_path: str) -> None:
     from services import credential_store as cred_store
 
@@ -6328,20 +6413,126 @@ def _creds_cmd_import(args, project_path: str) -> None:
     if not env_path.exists():
         print(f"[error] file not found: {env_path}")
         return
+    only = [n.strip() for n in str(getattr(args, "only", "") or "").split(",")
+            if n.strip()] or None
+    dry_run = bool(getattr(args, "dry_run", False))
     try:
-        text = env_path.read_text(encoding="utf-8")
+        text = cred_store.read_env_file(env_path)
         result = cred_store.import_env(
             text, scope=_creds_scope(args), project_path=project_path,
             overwrite=bool(getattr(args, "overwrite", False)),
+            preview=dry_run, only=only,
+            source=str(env_path.resolve()), compare=dry_run,
         )
     except (cred_store.CredentialError, RuntimeError) as exc:
         print(f"[error] {exc}")
         return
+
+    if dry_run:
+        _creds_import_table(result["rows"])
+        print(f"\n[dry-run] {len(result['created'])} would be imported, "
+              f"{len(result['skipped'])} skipped. Nothing was written.")
+        return
+
     print(f"[OK] Imported {len(result['created'])} credential(s): "
           f"{', '.join(result['created']) or '-'}")
     if result["skipped"]:
-        print(f"Skipped {len(result['skipped'])}: {', '.join(result['skipped'])} "
-              "(use --overwrite to replace)")
+        # Reasons come off the rows, which already carry human text — the old
+        # output was a bare comma list that lumped four causes together.
+        detail = {r["name"]: r["detail"] for r in result["rows"] if r["reason"]}
+        print(f"Skipped {len(result['skipped'])}:")
+        for name in result["skipped"]:
+            print(f"  {name} - {detail.get(name, 'skipped')}")
+    notes = [r for r in result["rows"] if r["reason"] in ("no-assignment", "duplicate")]
+    if notes:
+        print(f"{len(notes)} line(s) ignored "
+              "(no KEY=VALUE, or redefined later in the file).")
+    if result["created"]:
+        _creds_audit_import(project_path, _creds_scope(args), result["created"],
+                            env_path)
+
+
+def _creds_audit_import(project_path: str, scope: str, created: list,
+                        env_path) -> None:
+    """The CLI import was the one credential mutation with no audit trail —
+    both REST paths logged and this did not. Names only, never values."""
+    try:
+        from services.edit_ledger import EditLedger
+        ledger = EditLedger(str(project_path))
+        ledger.log_edit(
+            file=f"cred://{len(created)} entries",
+            change_type="cred_import",
+            summary=f"import {len(created)} entries ({scope}) from "
+                    f"{Path(env_path).name} via c3 creds",
+            tags=["creds", "import"],
+            detail={"kind": "creds", "action": "import", "scope": scope,
+                    "names": list(created), "source": Path(env_path).name},
+        )
+        for name in created:
+            ledger.log_edit(
+                file=f"cred://{name}", change_type="cred_set",
+                summary=f"set {name} ({scope}) via c3 creds import",
+                tags=["creds", "set"],
+                detail={"kind": "creds", "action": "set", "name": name,
+                        "scope": scope},
+            )
+    except Exception:
+        pass
+    try:
+        from services.activity_log import ActivityLog
+        log = ActivityLog(str(project_path))
+        for name in created:
+            log.log("cred_action", {"kind": "creds", "action": "set",
+                                    "name": name, "scope": scope, "via": "cli"})
+    except Exception:
+        pass
+
+
+def _creds_cmd_audit(args, project_path):
+    """One timeline of every credential change and use.
+
+    Reads only. Prints names and command TEMPLATES — the logs never hold a
+    value, so there is nothing to redact on the way out.
+    """
+    from services import cred_audit
+
+    res = cred_audit.audit_events(
+        project_path,
+        name=getattr(args, "name", "") or "",
+        kind=getattr(args, "kind", "") or "",
+        action=getattr(args, "action", "") or "",
+        surface=getattr(args, "surface", "") or "",
+        q=getattr(args, "q", "") or "",
+        since=getattr(args, "since", "") or "",
+        limit=getattr(args, "limit", 40) or 40,
+    )
+    if getattr(args, "as_json", False):
+        print(json.dumps(res, indent=2))
+        return
+
+    counts = res["counts"]
+    print(f"\nCredential audit — {res['matched']} event(s): "
+          f"{counts['use']} use, {counts['change']} change"
+          + (f", {counts['exposing']} exposing" if counts["exposing"] else ""))
+    if not res["events"]:
+        print("  (nothing recorded for these filters)\n")
+        return
+
+    print(f"\n{'when':<20}{'kind':<8}{'action':<12}{'name':<24}{'where'}")
+    print("  " + "-" * 84)
+    for ev in res["events"]:
+        when = str(ev["ts"])[:19].replace("T", " ")
+        name = ev["name"] + (f".{ev['field']}" if ev["field"] else "")
+        where = ev["surface"] or "?"
+        if ev["scope"]:
+            where += f" ({ev['scope']})"
+        mark = " !" if ev["action"] in cred_audit.EXPOSING_ACTIONS else ""
+        print(f"{when:<20}{ev['kind']:<8}{ev['action']:<12}{name[:23]:<24}{where}{mark}")
+        if ev["cmd"]:
+            print(f"{'':<20}  cmd: {ev['cmd']}")
+    if res["truncated"]:
+        print(f"  … {res['matched'] - res['returned']} more (use --limit)")
+    print(f"\n  {res['note']}\n")
 
 
 def _creds_cmd_usage(args, project_path: str) -> None:
@@ -8769,6 +8960,7 @@ def main():
         "bitbucket": cmd_bitbucket,
         "jira": cmd_jira,
         "creds": cmd_creds,
+        "tokens": cmd_tokens,
         "access": cmd_access,
         "enforce": cmd_enforce,
         "override": cmd_override,

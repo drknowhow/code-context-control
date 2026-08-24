@@ -20,6 +20,7 @@ itself in the keyring.
 ```bash
 c3 creds set OPENAI_KEY --desc "OpenAI billing key"   # value prompted, masked
 c3 creds set NPM_TOKEN --global
+c3 creds import .env --dry-run                         # preview, write nothing
 c3 creds import .env                                   # bulk import
 c3 creds list
 ```
@@ -47,7 +48,12 @@ hard-excluded from the Oracle Discovery API.
 
 **Hub Credentials view.** Manage the global vault and every registered
 project's entries in one place, with overriding shown both ways ("overrides
-global" / "overridden ×N").
+global" / "overridden ×N"). Filter chips (`agent-readable`, `auto-inject`,
+`structured`, `shadowing`, `from .env`, `never used`, `stale >30d`) narrow the
+list, and **Select** turns on checkboxes for bulk actions: check resolution,
+revoke agent read, disable auto-inject, export a metadata-only CSV, and delete
+behind a typed confirmation. Bulk may only ever *reduce* exposure — granting
+agent-read or auto-inject stays one entry at a time, enforced server-side.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/drknowhow/code-context-control/main/docs/screenshots/2026-07/hub_credentials.png" alt="C3 Hub Credentials view" width="900">
@@ -56,15 +62,71 @@ global" / "overridden ×N").
 Cross-project search on <kbd>/</kbd> or
 <kbd>Ctrl</kbd>+<kbd>K</kbd>: free words match name / description / env var /
 project, and `project:` `scope:` `type:` `storage:` `name:` `env:` `inject:`
-`agent:` `shadow:` qualifiers narrow further. Results group by credential name,
+`agent:` `shadow:` `source:` qualifiers narrow further. Results group by credential name,
 so "where is `STRIPE_KEY` defined and which one wins?" is one glance.
 `agent:true` and `inject:true` are one-key exposure audits.
+
+**Audit trail.** Every credential **change** (activity log `cred_action` rows)
+and every **use** (`.c3/cred_usage.jsonl` — injection, template expansion,
+reveal, `c3 creds get --show`) merge into one timeline under **Credentials →
+Audit** in the hub, with an `Audit` button on every credential list scoped to
+that vault. Filter by kind, by credential, or by `exposing` — `reveal` and
+`cli_show`, the only two actions that put a plaintext value where a person or
+a model can read it. Rows carry when, which project, which surface, the
+command that needed it, and its exit code. Also `c3 creds audit [NAME]
+[--kind change|use] [--action ...] [--since ...] [--json]`, and
+`GET /api/credentials/audit` / `/api/projects/credentials/audit` /
+`/api/hub/credentials/audit`.
+
+Neither log has ever stored a value: `cmd` is the raw template (`{{cred:X}}`),
+never the substitution, so there is nothing in the trail to redact.
+
+**Re-syncing a `.env`.** An import from a path on this machine records which
+file each entry came from, so the manager can list those files and re-read them
+later. A re-sync compares each value against the stored one by digest on the
+server and reports `unchanged` / `changed` / `new`, plus the keys that have
+since left the file — which are reported, never deleted. Replacing an entry
+rotates its value only: the description, env var, type and exposure settings
+survive.
 
 The write-only wire contract extends to the Hub: values are submitted
 inbound-only, **no hub route ever returns a stored value**, and search indexes
 metadata only.
 
 Full guide: `cli/guide/credentials.html` (open in-app at `/guide/credentials.html`).
+
+---
+
+## Token tracking
+
+Two local logs, written per project under `.c3/`, and a **Tokens** tab in the
+hub (plus one in every project's drill panel) that reads them.
+
+- **`tool_telemetry.jsonl`** — one row per C3 tool call: timestamp, session,
+  tool, action, response tokens, the full-read baseline where measured, and
+  (v2.95.0+) `target`, the project-relative file the call was about.
+- **`session_stats.jsonl`** — one row per Stop event, summed from the Claude
+  Code transcript: input / output / cache-creation / cache-read tokens, model,
+  and assistant-message count. Rows are cumulative per session; the newest row
+  for a session is its total, so they are never added together.
+
+The two are shown side by side and never combined. Tool tokens are what C3's
+tools returned to the model; session tokens are what the whole conversation
+cost, including prose and cache no tool log can see.
+
+```bash
+c3 tokens                      # last 30 days, by tool
+c3 tokens --days 0 --by file   # all history, ranked by file
+c3 tokens --by day --limit 30
+c3 tokens --json
+```
+
+Read-only REST: `GET /api/tokens` (project), `GET /api/projects/tokens?path=`
+and `GET /api/hub/tokens/overview` (hub). Counts only — no transcript content
+and no file contents ever leave the log.
+
+Cost is not recorded: the transcript carries no price, and a rate hardcoded in
+C3 would age into a confidently wrong number.
 
 ---
 

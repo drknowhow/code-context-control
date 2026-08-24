@@ -2289,6 +2289,39 @@ def api_hybrid_config_put():
 
 
 # ─── API: Budget Config ───────────────────────────────────
+def _tokens_payload(project_path, days: int) -> dict:
+    """The Tokens view's whole dataset, from the two measurement logs.
+
+    Shared verbatim by the project route and the hub's per-project route so
+    the two surfaces cannot drift into showing different numbers for the same
+    project — the bug class this feature exists to end.
+    """
+    from services import telemetry
+    tools = telemetry.aggregate_tool_telemetry(project_path, days=days)
+    sessions = telemetry.aggregate_session_stats(project_path, days=days)
+    return {"days": days, "tools": tools, "sessions": sessions}
+
+
+def _tokens_days(raw, default: int = 30) -> int:
+    """Clamp a ?days= param. 0 means all history, which the aggregators accept."""
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(days, 3650))
+
+
+@app.route('/api/tokens', methods=['GET'])
+def api_tokens():
+    """Token usage for this project: per-tool, per-day, per-session, per-file.
+
+    Read-only measurement over .c3/tool_telemetry.jsonl and
+    .c3/session_stats.jsonl. No values, no transcript content — counts only.
+    """
+    days = _tokens_days(request.args.get("days"))
+    return jsonify(_tokens_payload(str(PROJECT_PATH), days))
+
+
 @app.route('/api/budget/config', methods=['GET'])
 def api_budget_config_get():
     """Get current context budget threshold."""
@@ -2688,6 +2721,36 @@ def _cred_route_audit(action: str, name: str, scope: str) -> None:
         pass
 
 
+def _cred_import_payload(data, root):
+    """Pull (text, source_path, error) for an import request.
+
+    The body carries either ``text`` (the browser read the file locally, as
+    the paste box always has) or a path (read it here instead). A path is
+    contained to ``root``: this route is reachable from any page the loopback
+    guard lets through, and an uncontained path would turn it into a
+    read-any-file-into-the-vault primitive.
+
+    ``source_path`` is empty for a pasted body on purpose. A source is a
+    promise that we can read that file again on the next re-sync, and a
+    filename the browser typed is not one.
+    """
+    from services import credential_store as cred_store
+    raw_path = str(data.get("path") or "").strip()
+    if not raw_path:
+        return str(data.get("text") or ""), "", None
+    try:
+        base = Path(root).resolve()
+        target = Path(raw_path)
+        target = target.resolve() if target.is_absolute() else (base / target).resolve()
+        if target != base and base not in target.parents:
+            return None, "", (jsonify({"error": f"path escapes {base}"}), 400)
+        return cred_store.read_env_file(target), str(target), None
+    except cred_store.CredentialError as exc:
+        return None, "", (jsonify({"error": str(exc)}), 400)
+    except OSError as exc:
+        return None, "", (jsonify({"error": str(exc)}), 400)
+
+
 @app.route('/api/credentials', methods=['GET'])
 def api_credentials_list():
     """Masked entry list (values never included)."""
@@ -2748,22 +2811,47 @@ def api_credentials_set():
 
 @app.route('/api/credentials/import', methods=['POST'])
 def api_credentials_import():
-    """Import KEY=VALUE lines (.env paste). Values are stored, never echoed."""
+    """Import KEY=VALUE lines from a .env paste, upload, or on-disk path.
+
+    ``preview: true`` classifies every row and writes nothing, so the browser
+    can show what would land before a value reaches the keyring. ``only``
+    narrows a real import to the rows the user ticked. The response carries
+    each value's LENGTH and FINGERPRINT and never any part of the value.
+    """
     from services import credential_store as cred_store
     data = request.get_json() or {}
-    text = str(data.get("text") or "")
     scope = str(data.get("scope") or "project").strip()
+    preview = bool(data.get("preview"))
+    only = data.get("only")
+    if only is not None and not isinstance(only, list):
+        return jsonify({"error": "only must be a list of names"}), 400
+    text, source, err = _cred_import_payload(data, PROJECT_PATH)
+    if err:
+        return err
+    # Checked BEFORE the write: the point is to refuse a commit whose file
+    # moved under the preview the user ticked, which is no use after the fact.
+    expect = str(data.get("expect_digest") or "").strip()
+    if expect and cred_store.text_digest(text) != expect:
+        return jsonify({"error": "the file changed since you previewed it",
+                        "digest": cred_store.text_digest(text),
+                        "stale_preview": True}), 409
     try:
         result = cred_store.import_env(
             text, scope=scope, project_path=str(PROJECT_PATH),
             overwrite=bool(data.get("overwrite")),
+            preview=preview, only=only, source=source,
+            compare=bool(data.get("compare")),
         )
     except cred_store.CredentialError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 500
-    for created in result["created"]:
-        _cred_route_audit("set", created, scope)
+    if not preview and result["created"]:
+        # One row for the import itself, so the ledger shows a bulk .env
+        # import rather than N sets indistinguishable from manual ones.
+        _cred_route_audit("import", f"{len(result['created'])} entries", scope)
+        for created in result["created"]:
+            _cred_route_audit("set", created, scope)
     return jsonify(result)
 
 
@@ -2801,6 +2889,26 @@ def api_credentials_check(name):
         "resolvable": cred_store.is_resolvable(name, project_path=pp),
         "fingerprint": cred_store.fingerprint(name, project_path=pp),
     })
+
+
+@app.route('/api/credentials/audit', methods=['GET'])
+def api_credentials_audit():
+    """One timeline of every credential CHANGE and USE for this project.
+
+    Names and command templates only — neither log ever holds a value, so
+    there is nothing here to redact.
+    """
+    from services import cred_audit
+    args = request.args
+    return jsonify(cred_audit.audit_events(
+        str(PROJECT_PATH),
+        name=(args.get("name") or "").strip(),
+        kind=(args.get("kind") or "").strip(),
+        action=(args.get("action") or "").strip(),
+        surface=(args.get("surface") or "").strip(),
+        q=(args.get("q") or "").strip(),
+        since=(args.get("since") or "").strip(),
+        limit=args.get("limit", 200)))
 
 
 @app.route('/api/credentials/usage', methods=['GET'])

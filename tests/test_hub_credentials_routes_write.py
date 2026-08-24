@@ -159,6 +159,60 @@ class TestHubCredentialsWriteRoutes(unittest.TestCase):
         self.assertIn("A_KEY", resp2.get_json()["skipped"])
         self.assertEqual(cs.get_value("A_KEY", project_path=str(self.proj)), CANARY)
 
+    def test_import_preview_writes_nothing(self):
+        resp = self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project",
+            "text": f"P_KEY={CANARY}\n", "preview": True,
+        })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertEqual(body["created"], ["P_KEY"])
+        self.assertTrue(body["preview"])
+        self.assertNotIn(CANARY, resp.get_data(as_text=True))
+        self.assertIsNone(cs.get_value("P_KEY", project_path=str(self.proj)))
+
+    def test_import_preview_rows_carry_length_and_fingerprint_only(self):
+        rows = self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project",
+            "text": f"R_KEY={CANARY}\n", "preview": True,
+        }).get_json()["rows"]
+        self.assertEqual(rows[0]["value_len"], len(CANARY))
+        self.assertEqual(len(rows[0]["fingerprint"]), 8)
+        self.assertNotIn(CANARY[:6], json.dumps(rows))
+
+    def test_import_only_restricts_what_lands(self):
+        self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project",
+            "text": "O_ONE=a\nO_TWO=b\n", "only": ["O_ONE"],
+        })
+        self.assertEqual(cs.get_value("O_ONE", project_path=str(self.proj)), "a")
+        self.assertIsNone(cs.get_value("O_TWO", project_path=str(self.proj)))
+
+    def test_import_reads_env_path_inside_the_project(self):
+        (self.proj / ".env").write_text(f"F_KEY={CANARY}\n", encoding="utf-8")
+        resp = self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project", "env_path": ".env",
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(cs.get_value("F_KEY", project_path=str(self.proj)), CANARY)
+        self.assertNotIn(CANARY, resp.get_data(as_text=True))
+
+    def test_import_refuses_an_env_path_outside_the_project(self):
+        resp = self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project",
+            "env_path": "../escape.env",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("escapes", resp.get_json()["error"])
+
+    def test_import_multiline_value_round_trips(self):
+        pem = "-----BEGIN KEY-----\nAAAA\n-----END KEY-----"
+        self.client.post("/api/projects/credentials/import", json={
+            "path": str(self.proj), "scope": "project",
+            "text": 'M_KEY="%s"\n' % pem,
+        })
+        self.assertEqual(cs.get_value("M_KEY", project_path=str(self.proj)), pem)
+
     # ── delete ────────────────────────────────────────────────
 
     def test_delete_scope_inference_and_explicit(self):
@@ -416,3 +470,109 @@ class TestHubCredentialsWriteRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHubCredentialsBatch(TestHubCredentialsWriteRoutes):
+    """POST /api/hub/credentials/batch — reduce-only bulk actions (v2.94.0)."""
+
+    def _seed(self, name, **kw):
+        kw.setdefault("scope", "project")
+        kw.setdefault("project_path", str(self.proj))
+        cs.set_credential(name, CANARY, **kw)
+
+    def _batch(self, action, targets):
+        return self.client.post("/api/hub/credentials/batch",
+                                json={"action": action, "targets": targets})
+
+    def _target(self, name, scope="project", path=None):
+        return {"name": name, "scope": scope,
+                "path": str(self.proj) if path is None else path}
+
+    def test_batch_delete_applies_to_every_target(self):
+        self._seed("ONE")
+        self._seed("TWO")
+        with self._patched_pm():
+            data = self._batch("delete",
+                               [self._target("ONE"), self._target("TWO")]).get_json()
+        self.assertEqual(data["ok_count"], 2)
+        self.assertEqual(data["fail_count"], 0)
+        self.assertEqual(cs.list_entries(str(self.proj)), {})
+
+    def test_one_bad_target_does_not_sink_the_rest(self):
+        self._seed("REAL")
+        with self._patched_pm():
+            data = self._batch("delete",
+                               [self._target("GHOST"), self._target("REAL")]).get_json()
+        self.assertEqual(data["ok_count"], 1)
+        self.assertEqual(data["fail_count"], 1)
+        by_name = {r["name"]: r for r in data["results"]}
+        self.assertFalse(by_name["GHOST"]["ok"])
+        self.assertTrue(by_name["GHOST"]["error"])
+        self.assertTrue(by_name["REAL"]["ok"])
+
+    def test_batch_reduces_exposure(self):
+        self._seed("EXPOSED", agent_readable=True, inject=True)
+        with self._patched_pm():
+            self._batch("revoke_agent_read", [self._target("EXPOSED")])
+            self._batch("disable_inject", [self._target("EXPOSED")])
+        entry = cs.get_entry("EXPOSED", project_path=str(self.proj))
+        self.assertFalse(entry["agent_readable"])
+        self.assertFalse(entry["inject"])
+        self.assertFalse(cs.verify_agent_readable(
+            "EXPOSED", scope="project", project_path=str(self.proj)))
+
+    def test_batch_refuses_to_raise_exposure(self):
+        """The allowlist is enforced server-side, not only in the UI."""
+        self._seed("QUIET")
+        for action in ("grant_agent_read", "enable_inject", "set_agent_readable",
+                       "copy_to_global", "rename", "reveal"):
+            with self._patched_pm():
+                resp = self._batch(action, [self._target("QUIET")])
+            self.assertEqual(resp.status_code, 400, action)
+            self.assertIn("action must be one of", resp.get_json()["error"])
+        self.assertFalse(cs.get_entry("QUIET", project_path=str(self.proj))
+                         ["agent_readable"])
+
+    def test_batch_rejects_a_bad_target_list(self):
+        for targets, fragment in (
+            ("ONE,TWO", "must be a list"),
+            ([], "empty"),
+            ([{"name": "X"} for _ in range(201)], "at most 200"),
+        ):
+            resp = self.client.post("/api/hub/credentials/batch",
+                                    json={"action": "delete", "targets": targets})
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn(fragment, resp.get_json()["error"])
+
+    def test_batch_check_is_read_only(self):
+        self._seed("CHECKME")
+        with self._patched_pm():
+            data = self._batch("check", [self._target("CHECKME")]).get_json()
+        self.assertTrue(data["results"][0]["resolvable"])
+        self.assertEqual(cs.get_value("CHECKME", project_path=str(self.proj)), CANARY)
+
+    def test_batch_never_echoes_a_value(self):
+        self._seed("SECRET_ONE", agent_readable=True, inject=True)
+        with self._patched_pm():
+            bodies = [
+                self._batch("check", [self._target("SECRET_ONE")]),
+                self._batch("revoke_agent_read", [self._target("SECRET_ONE")]),
+                self._batch("disable_inject", [self._target("SECRET_ONE")]),
+                self._batch("delete", [self._target("SECRET_ONE")]),
+            ]
+        for resp in bodies:
+            self.assertNotIn(CANARY, resp.get_data(as_text=True))
+
+    def test_results_identify_a_target_by_scope_path_and_name(self):
+        """Name alone is ambiguous — the same name lives in many vaults."""
+        self._seed("DUP")
+        cs.set_credential("DUP", CANARY, scope="global",
+                          project_path=str(self.home))
+        with self._patched_pm():
+            data = self._batch("delete", [self._target("DUP")]).get_json()
+        row = data["results"][0]
+        self.assertEqual(row["name"], "DUP")
+        self.assertEqual(row["scope"], "project")
+        self.assertEqual(row["path"], str(self.proj))
+        # only the project copy went; the global one is untouched
+        self.assertEqual(cs.get_value("DUP", project_path=str(self.home)), CANARY)

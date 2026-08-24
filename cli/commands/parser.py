@@ -407,6 +407,21 @@ def build_parser(version: str, parse_cli_ide_arg):
     jr_default.add_argument("project_path", nargs="?", default=".")
 
     # ── Credential vault (v2.58.0) ──────────────────────────────────────
+    # ── Tokens ──────────────────────────────────────────────────────────
+    p_tokens = subparsers.add_parser(
+        "tokens",
+        help="Token usage — per tool, per day, per session, per file",
+    )
+    p_tokens.add_argument("--days", type=int, default=30,
+                          help="Window in days; 0 = all recorded history (default: 30)")
+    p_tokens.add_argument("--by", default="tool",
+                          choices=["tool", "day", "session", "file"],
+                          help="Which breakdown to print (default: tool)")
+    p_tokens.add_argument("--limit", type=int, default=15,
+                          help="Rows to show (default: 15)")
+    p_tokens.add_argument("--json", action="store_true",
+                          help="Emit the full aggregate as JSON")
+
     p_creds = subparsers.add_parser(
         "creds",
         help="Credential vault — named secrets for agents (global + per-project)",
@@ -452,6 +467,8 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_import.add_argument("env_file", help="Path to the .env file")
     cr_import.add_argument("--global", dest="use_global", action="store_true", help="Import into the global scope")
     cr_import.add_argument("--overwrite", action="store_true", help="Replace entries already registered in the target scope")
+    cr_import.add_argument("--dry-run", dest="dry_run", action="store_true", help="Show what would be imported; write nothing")
+    cr_import.add_argument("--only", default="", help="Comma-separated names to import (default: all)")
     cr_import.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     cr_usage = creds_subs.add_parser(
@@ -460,6 +477,20 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_usage.add_argument("--limit", type=int, default=20, help="Recent events to show (default: 20)")
     cr_usage.add_argument("--json", dest="as_json", action="store_true", help="Emit raw JSON")
     cr_usage.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
+    cr_audit = creds_subs.add_parser(
+        "audit", help="Audit trail — every change AND use, on one timeline")
+    cr_audit.add_argument("name", nargs="?", default="", help="Limit to one credential (default: all)")
+    cr_audit.add_argument("--kind", default="", choices=["", "use", "change"],
+                          help="Show only uses or only changes (default: both)")
+    cr_audit.add_argument("--action", default="",
+                          help="Exact action: inject_env, template, reveal, cli_show, set, update, delete, import…")
+    cr_audit.add_argument("--surface", default="", help="Exact surface: shell, cli, mcp, ui, hub")
+    cr_audit.add_argument("--since", default="", help="ISO timestamp lower bound, e.g. 2026-08-01")
+    cr_audit.add_argument("-q", dest="q", default="", help="Free-text over name/field/cmd/project")
+    cr_audit.add_argument("--limit", type=int, default=40, help="Events to show (default: 40)")
+    cr_audit.add_argument("--json", dest="as_json", action="store_true", help="Emit raw JSON")
+    cr_audit.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     # ── Agent Locks (docs/agent-locks.md) ───────────────────────────────
     # force-release is human-only: it bumps the fencing counter so a holder
