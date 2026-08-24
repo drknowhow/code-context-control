@@ -37,6 +37,20 @@ def _masked_content(fpath, project_path):
         return None
 
 
+# Co-occurrence is O(unique_tokens^2) per chunk, so one minified vendor
+# bundle can dominate a whole index build. Both bounds below are deliberate
+# and their effect is REPORTED in build_index()'s stats rather than applied
+# silently — a capped build must never look like a complete one.
+#
+# 200: chunks above this are minified/bundled/data blobs, not code. The
+# pruning step keeps only the top-5 co-occurring terms per token with at
+# least 3 hits, so such a chunk contributes noise that is discarded anyway.
+_COOC_MAX_CHUNK_TOKENS = 200
+# 20M: whole-pass ceiling on pair updates, so no repository shape can make
+# this step unbounded. ~10s of CPU on the boxes this runs on.
+_COOC_MAX_PAIR_UPDATES = 20_000_000
+
+
 class CodeIndex:
     """TF-IDF based code search index with structural awareness."""
 
@@ -240,6 +254,7 @@ class CodeIndex:
             "entries_scanned": scan_stats["entries"],
             "files_capped": files_capped,
             "max_files": max_files,
+            "cooccurrence": getattr(self, "_cooccurrence_stats", {}),
         }
 
     def _chunk_file(self, content: str, ext: str, doc_id: str) -> list:
@@ -625,16 +640,39 @@ class CodeIndex:
                 self.chunk_tfidf[chunk_id][term] = normalized_tf * self.idf.get(term, 0)
 
     def _build_cooccurrence(self):
-        """Build lightweight co-occurrence map from indexed chunks for auto-synonyms."""
+        """Build lightweight co-occurrence map from indexed chunks for auto-synonyms.
+
+        Bounded on purpose: the pair loop is quadratic in a chunk's unique
+        token count, so a single minified bundle (798 unique tokens x 4091
+        chunks = 1.9e9 pair updates, measured on a real project) can hang a
+        build that has nothing else wrong with it. Skipped chunks and an
+        exhausted budget are recorded in ``self._cooccurrence_stats`` and
+        returned by :meth:`build_index`.
+        """
         self._cooccurrence = {}
+        skipped = 0
+        updates = 0
+        budget_hit = False
         for chunk in self.chunks.values():
             tokens = set(self._tokenize(chunk["content"]))
+            if len(tokens) > _COOC_MAX_CHUNK_TOKENS:
+                skipped += 1
+                continue
+            if updates + len(tokens) * (len(tokens) - 1) > _COOC_MAX_PAIR_UPDATES:
+                budget_hit = True
+                break
             for t in tokens:
                 if t not in self._cooccurrence:
                     self._cooccurrence[t] = Counter()
                 for t2 in tokens:
                     if t != t2:
                         self._cooccurrence[t][t2] += 1
+            updates += len(tokens) * (len(tokens) - 1)
+        self._cooccurrence_stats = {
+            "chunks_skipped": skipped,
+            "pair_updates": updates,
+            "budget_exhausted": budget_hit,
+        }
         # Prune: keep only top-5 co-occurring terms per token (minimum 3 co-occurrences)
         pruned = {}
         for term, counts in self._cooccurrence.items():
