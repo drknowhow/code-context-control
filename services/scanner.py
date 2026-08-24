@@ -43,7 +43,8 @@ def gitignore_dir_patterns(root) -> tuple:
     names: set = set()
     patterns: list = []
     try:
-        text = (Path(root) / '.gitignore').read_text(errors='replace')
+        text = (Path(root) / '.gitignore').read_text(encoding='utf-8',
+                                                     errors='replace')
     except OSError:
         return names, patterns
     for line in text.splitlines():

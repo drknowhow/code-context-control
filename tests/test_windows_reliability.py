@@ -2,6 +2,7 @@
 
 Locks in invariants that have bitten this project on Windows:
 - Text-mode open() calls must pass encoding='utf-8' so cp1252 doesn't corrupt JSON
+- Path.read_text()/write_text() must pass encoding='utf-8' for the same reason
 - No mojibake byte sequences in .py sources (re-encoding bugs decay silently)
 """
 from __future__ import annotations
@@ -12,7 +13,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".c3"}
+_SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".c3",
+              # Build artifacts: gitignored copies of sources we already scan.
+              "build", "dist", ".eggs"}
 _SKIP_FRAGMENTS = (".tmp.",)
 
 # Sequence produced when UTF-8 text is written then re-read as cp1252 and
@@ -63,6 +66,36 @@ def _find_open_calls_missing_encoding(text: str):
         yield line_no, call.replace("\n", " ")[:160]
 
 
+# Path.read_text/write_text default to locale encoding exactly like open().
+# `importlib.metadata` Distribution.read_text takes a FILENAME, not an encoding.
+_PATH_TEXT_CALL = re.compile(r"\.(read_text|write_text)\s*\(", re.MULTILINE)
+_PATH_TEXT_EXEMPT = re.compile(r"\b(dist|distribution)\.\s*$")
+
+
+def _find_path_text_calls_missing_encoding(text: str):
+    """Yield (line_no, call_text) for read_text/write_text without an encoding.
+
+    ``read_text('utf-8')`` (positional) counts: encoding is the first parameter.
+    """
+    for m in _PATH_TEXT_CALL.finditer(text):
+        if _PATH_TEXT_EXEMPT.search(text[max(0, m.start() - 24):m.start() + 1]):
+            continue
+        depth = 1
+        i = m.end()
+        while i < len(text) and depth > 0:
+            c = text[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
+        call = text[m.start():i]
+        if "encoding" in call or "utf-8" in call or "utf8" in call:
+            continue
+        line_no = text[: m.start()].count("\n") + 1
+        yield line_no, call.replace("\n", " ")[:160]
+
+
 class TestWindowsReliability(unittest.TestCase):
     def test_no_text_open_without_encoding(self):
         """Every text-mode open() in shipped code must pass encoding='utf-8'.
@@ -86,6 +119,37 @@ class TestWindowsReliability(unittest.TestCase):
             self.fail(
                 "Text-mode open() calls missing encoding='utf-8' "
                 "(will corrupt on Windows cp1252):\n  "
+                + "\n  ".join(offenders)
+            )
+
+    def test_no_path_text_io_without_encoding(self):
+        """Path.read_text()/write_text() must declare encoding='utf-8'.
+
+        The indexer, doc index, protocol dictionary and .gitignore scanner all
+        called ``read_text(errors='replace')`` with no encoding. On Windows
+        that decodes UTF-8 source as cp1252, and ``errors='replace'`` means it
+        never raises — every em dash landed in .c3/index, the doc index and the
+        chroma collection as the three-char mojibake this module's
+        ``_MOJIBAKE_EM_DASH`` matches. Source files were never touched; the
+        corruption lived only in the indexed copies served back to the agent.
+        """
+        offenders = []
+        for py in _iter_py_files():
+            # Shipped code only. Test fixtures write their own temp files and
+            # control both ends of the encoding.
+            if "tests" in py.relative_to(REPO_ROOT).parts:
+                continue
+            try:
+                text = py.read_text(encoding="utf-8")
+            except UnicodeDecodeError as e:
+                self.fail(f"{py} is not valid UTF-8: {e}")
+            for line_no, call in _find_path_text_calls_missing_encoding(text):
+                offenders.append(
+                    f"{py.relative_to(REPO_ROOT).as_posix()}:{line_no}: {call}")
+        if offenders:
+            self.fail(
+                "read_text()/write_text() calls missing encoding='utf-8' "
+                "(silently mojibake non-ASCII on Windows cp1252):\n  "
                 + "\n  ".join(offenders)
             )
 

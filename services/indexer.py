@@ -30,7 +30,7 @@ def _masked_content(fpath, project_path):
     if v.denial:
         return None
     if not v.masked:
-        return fpath.read_text(errors="replace")
+        return fpath.read_text(encoding="utf-8", errors="replace")
     try:
         return mask_mirror.render_for_path(fpath, project_path).text
     except Exception:
@@ -187,7 +187,8 @@ class CodeIndex:
                         # (docs/mask-guard.md §6, row 2). Skip it instead.
                         continue
                 else:
-                    content = fpath.read_text(errors='replace')
+                    content = fpath.read_text(encoding='utf-8',
+                                              errors='replace')
             except Exception:
                 continue
 
