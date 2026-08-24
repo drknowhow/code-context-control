@@ -1153,14 +1153,44 @@ class SessionManager:
             try:
                 path = Path(value)
                 if path.is_absolute():
-                    try:
-                        value = str(path.relative_to(Path(self.project_path).resolve()))
-                    except (ValueError, OSError):
-                        value = path.name
+                    value = self._relativize(path)
             except (OSError, ValueError):
                 pass
             return value.replace("\\", "/")[:self._TARGET_MAX]
         return ""
+
+    def _relativize(self, path) -> str:
+        """An absolute path as project-relative, or its bare name.
+
+        Resolve BOTH sides or neither. Resolving only the root compares a
+        symlink-expanded root against an unexpanded candidate, which never
+        matches: on macOS a temp dir is /var/... while its resolved form is
+        /private/var/..., and Windows has the same problem with 8.3 names and
+        substituted drives. The failure is quiet and costly — every path
+        degrades to a bare filename, so `cli/server.py` and `ui/server.py`
+        merge into one "server.py" row in the by-file view.
+
+        Both orders are tried because resolve() can diverge in either
+        direction depending on which side the symlink is on.
+        """
+        root = Path(self.project_path)
+        try:
+            root_resolved = root.resolve()
+        except (OSError, ValueError):
+            root_resolved = root
+        try:
+            path_resolved = path.resolve()
+        except (OSError, ValueError):
+            path_resolved = path
+        for candidate, base in ((path_resolved, root_resolved),
+                                (path, root),
+                                (path_resolved, root),
+                                (path, root_resolved)):
+            try:
+                return str(candidate.relative_to(base))
+            except (ValueError, OSError):
+                continue
+        return path.name
 
     def _emit_tool_telemetry(self, tool_name: str, response_tokens: int) -> None:
         """Append one per-tool-call record to .c3/tool_telemetry.jsonl.

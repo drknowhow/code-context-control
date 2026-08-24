@@ -68,6 +68,36 @@ class TestTargetAttribution(unittest.TestCase):
             sm = self._sm(tmp)
             self.assertEqual(sm._derive_target({"path": "services/x.py"}), "services/x.py")
 
+    def test_a_symlinked_root_still_yields_a_relative_path(self):
+        """The bug CI caught on macOS and Windows and Ubuntu did not.
+
+        Resolving only the project root compares a symlink-expanded root
+        against an unexpanded candidate, which never matches — on macOS a
+        temp dir is /var/... and its resolved form is /private/var/... . Every
+        path then degraded to a bare filename, so cli/server.py and
+        ui/server.py would merge into one "server.py" row.
+        """
+        with tempfile.TemporaryDirectory() as real:
+            root = Path(real) / "root"
+            (root / ".c3").mkdir(parents=True)
+            link = Path(real) / "link"
+            try:
+                link.symlink_to(root, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable (Windows needs privilege)")
+            # project addressed through the link, file through the real path
+            sm = SessionManager(str(link))
+            sm.start_session("t")
+            self.assertEqual(
+                sm._derive_target({"file_path": str(root / "cli" / "server.py")}),
+                "cli/server.py")
+            # ...and the mirror case: project real, file through the link
+            sm2 = SessionManager(str(root))
+            sm2.start_session("t")
+            self.assertEqual(
+                sm2._derive_target({"file_path": str(link / "cli" / "server.py")}),
+                "cli/server.py")
+
     def test_a_path_outside_the_project_degrades_to_its_name(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
             sm = self._sm(tmp)
