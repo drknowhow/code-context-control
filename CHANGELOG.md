@@ -4,6 +4,35 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.92.4] - 2026-08-24
+
+### Fixed — the hub opened to a black screen, and only the browser console said why
+
+`cli/hub_ui/components/topbar.js` put a `{/* ... */}` comment directly inside
+`{hubConfig && hubConfig.oracle_url && ( ... )}`, above the Open-Oracle link.
+That position is expression context, not JSX children context, so Babel reads
+the `{` as an object literal and stops with `Unexpected token, expected ","`.
+A JSX comment is only legal *between* JSX tags.
+
+The hub UI is one concatenated script transpiled in the browser, so a single
+syntax error anywhere in it takes the entire bundle down: no React, no render,
+a black page, and the only evidence a console line naming a position in a
+464 KB inline script. Nothing on the Python side notices — the route still
+returns 200 with the full 472 KB of HTML, which is why every server-side check
+stayed green. The comment moves above the conditional; the link is unchanged.
+
+Introduced by #119 on 2026-08-21 and released in 2.92.0, so every hub on
+2.92.0 through 2.92.3 is affected. Nothing else regressed in those
+releases — the hub UI simply never rendered.
+
+### Added — a syntax guard for the browser-transpiled UI bundles
+
+`tests/test_ui_jsx_syntax.py` scans `cli/ui`, `cli/hub_ui` and `oracle/ui` for
+a JSX comment opening in expression position. The existing bundle tests check
+the *shape* of the build — every listed module exists, markers are stamped,
+`app.js` stays last — and passed for the whole time the broken file was
+shipping, because a bundle can be assembled perfectly and still not parse.
+
 ## [2.92.3] - 2026-08-24
 
 ### Fixed — one minified bundle could hang a build for a quarter of an hour
