@@ -446,7 +446,9 @@ def evaluate_with_docker(
         "--timeout", str(timeout),
     ]
     try:
-        subprocess.run(cmd, check=True, timeout=timeout * len(list(predictions_path.read_text().splitlines())))
+        n_predictions = len(
+            predictions_path.read_text(encoding="utf-8").splitlines())
+        subprocess.run(cmd, check=True, timeout=timeout * n_predictions)
     except Exception as e:
         return {"error": str(e)}
 

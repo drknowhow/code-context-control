@@ -261,7 +261,7 @@ class CompressionProtocol:
                 if _sub_excluded(fpath):
                     continue
                 try:
-                    content = fpath.read_text(errors='replace')
+                    content = fpath.read_text(encoding='utf-8', errors='replace')
                 except Exception:
                     continue
                 _accumulate(content)
