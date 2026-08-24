@@ -26,7 +26,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cli.hook_session_stats import read_transcript_usage, run as stats_run
+from cli.hook_session_stats import read_transcript_usage
+from cli.hook_session_stats import run as stats_run
 from services.session_manager import SessionManager
 from services.telemetry import (
     aggregate_session_stats,
@@ -244,8 +245,9 @@ class TestTokenRoutes(unittest.TestCase):
             "tool": "c3_read", "response_tokens": 100, "target": "a.py"})
 
     def test_hub_overview_isolates_a_project_it_cannot_read(self):
-        import cli.hub_server as hub_server
         from unittest import mock
+
+        import cli.hub_server as hub_server
 
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp) / "good"
@@ -269,8 +271,9 @@ class TestTokenRoutes(unittest.TestCase):
             self.assertEqual(data["totals"]["tool_tokens"], 100)
 
     def test_days_param_is_clamped_not_trusted(self):
-        import cli.hub_server as hub_server
         from unittest import mock
+
+        import cli.hub_server as hub_server
 
         with tempfile.TemporaryDirectory() as tmp:
             class _PM:
