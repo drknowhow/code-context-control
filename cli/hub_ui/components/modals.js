@@ -58,6 +58,7 @@ function HubModals({ modal, projects, onClose, onChanged }) {
     case 'merge': return <MergeModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'ide': return <IdePickerModal project={project} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'folderPick': return <FolderPickerModal project={project} onClose={onClose} onChanged={onChanged} {...props} />;
+    case 'linkPath': return <LinkProjectModal project={project} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'makeSub': return <MakeSubprojectModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'reparent': return <ReparentModal project={project} projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
     case 'batch': return <BatchUpdateModal projects={projects} onClose={onClose} onChanged={onChanged} {...props} />;
@@ -67,15 +68,33 @@ function HubModals({ modal, projects, onClose, onChanged }) {
 }
 
 // ── Make sub-project of… ───────────────────────────────────────
-// Reverse designate: pick a registered parent that physically
-// contains this project (containment is mandatory server-side) and
-// link it as a child via the same validate/add endpoints.
+// Reverse designate: pick a registered parent and link this project
+// under it via the same validate/add endpoints. Since 2.96 the parent
+// need not contain this project on disk, and need not be top-level --
+// so any registered project except this one and its own descendants is
+// a candidate. validate() has the last word on cycles.
 function MakeSubprojectModal({ project, projects, onClose, onChanged }) {
   const norm = (s) => (s || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const self = norm(project.path);
+  // Exclude descendants: linking this project under one of its own children
+  // would close a loop. Walk up from each candidate to see if we are above it.
+  const byPath = {};
+  (projects || []).forEach(c => { byPath[norm(c.path)] = c; });
+  const isDescendant = (c) => {
+    const seen = new Set();
+    let cursor = c;
+    while (cursor && cursor.parent_path) {
+      const key = norm(cursor.parent_path);
+      if (key === self) return true;
+      if (seen.has(key)) break;
+      seen.add(key);
+      cursor = byPath[key];
+    }
+    return false;
+  };
   const candidates = (projects || []).filter(c => {
     const cp = norm(c.path);
-    return cp && cp !== self && !c.parent_path && self.startsWith(cp + '\\');
+    return cp && cp !== self && !isDescendant(c);
   });
   const [selected, setSelected] = useState(candidates.length === 1 ? candidates[0].path : '');
   const [validation, setValidation] = useState(null);
@@ -169,18 +188,32 @@ function ReparentModal({ project, projects, onClose, onChanged }) {
   const folderName = (project.path || '').split(/[\\/]/).filter(Boolean).pop() || project.name;
 
   // Candidate new parents: registered, not this project, not the current
-  // parent, not themselves children (nesting depth > 1 is unsupported),
-  // not inside this project. `ready` = the folder is already physically
-  // inside the candidate, so no move is needed.
+  // parent, and not one of this project's own descendants (that would close
+  // a loop). A candidate may itself be a child -- depth is no longer capped
+  // at one -- and it need not contain this project on disk.
+  //
+  // Since 2.96 `ready` is always true: a child can be addressed by absolute
+  // path, so re-parenting is a config write and no folder ever moves. The
+  // wizard's move and cleanup stages fall away on their own.
+  const byPath = {};
+  (projects || []).forEach(c => { byPath[norm(c.path)] = c; });
+  const isDescendant = (c) => {
+    const seen = new Set();
+    let cursor = c;
+    while (cursor && cursor.parent_path) {
+      const key = norm(cursor.parent_path);
+      if (key === self) return true;
+      if (seen.has(key)) break;
+      seen.add(key);
+      cursor = byPath[key];
+    }
+    return false;
+  };
   const candidates = (projects || []).filter(c => {
     const cp = norm(c.path);
-    return cp && cp !== self && cp !== norm(oldParentPath) && !c.parent_path
-      && !cp.startsWith(self + '\\');
-  }).map(c => {
-    const ready = self.startsWith(norm(c.path) + '\\');
-    const sep = c.path.includes('\\') ? '\\' : '/';
-    return { ...c, ready, destination: ready ? project.path : c.path.replace(/[\\/]+$/, '') + sep + folderName };
-  });
+    return cp && cp !== self && cp !== norm(oldParentPath)
+      && !cp.startsWith(self + '\\') && !isDescendant(c);
+  }).map(c => ({ ...c, ready: true, destination: project.path }));
 
   const [target, setTarget] = useState(null);      // chosen candidate (+ ready/destination)
   const [phase, setPhase] = useState('choose');    // choose | run
@@ -391,7 +424,7 @@ function ReparentModal({ project, projects, onClose, onChanged }) {
                     <Badge color={c.ready ? T.accent : T.warn}>{c.ready ? 'ready now' : 'move needed'}</Badge>
                   </div>
                   <div className="mono" style={{ fontSize: 11, color: T.textDim, marginTop: 2, paddingLeft: 21, wordBreak: 'break-all' }}>
-                    {c.ready ? 'already inside — no move required' : `requires: ${c.destination}`}
+                    {c.path}
                   </div>
                 </div>
               );
@@ -403,7 +436,7 @@ function ReparentModal({ project, projects, onClose, onChanged }) {
               {target.ready ? (
                 <React.Fragment>
                   <div>1. Unlink from {oldParentName} &nbsp; 2. Link under {target.name}</div>
-                  <div>The folder is already inside {target.name} — no files move.</div>
+                  <div>Re-parenting is a config change — no files move.</div>
                 </React.Fragment>
               ) : (
                 <React.Fragment>
@@ -938,6 +971,266 @@ function FolderPickerModal({ project, onClose, onChanged }) {
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
         <Btn onClick={designate} disabled={busy || validating || !(validation && validation.ok)}>
           {busy ? 'Designating…' : 'Designate'}
+        </Btn>
+      </MdlFooter>
+    </Modal>
+  );
+}
+
+// ── Link a project by path ─────────────────────────────────────
+// POST /api/projects/subprojects/inspect {path}   -> read-only report
+// POST /api/projects/subprojects/validate {parent, folder}
+// POST /api/projects/subprojects/link {parent, folder, name?, ide?, init?}
+//
+// The sibling of FolderPickerModal, and the difference is the fence: this one
+// browses the whole filesystem, because the projects worth linking are the
+// ones that do NOT live inside the parent. Selecting a folder inspects it
+// first, so you see what you are about to claim -- what is there, who already
+// claims it, and what it claims -- before the button does anything.
+function LinkProjectModal({ project, onClose, onChanged }) {
+  const parentPath = (project && project.path) || '';
+  const [listing, setListing] = useState(null);
+  const [browsing, setBrowsing] = useState(false);
+  const [manual, setManual] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [report, setReport] = useState(null);
+  const [validation, setValidation] = useState(null);
+  const [probing, setProbing] = useState(false);
+  const [name, setName] = useState('');
+  const [ide, setIde] = useState('auto');
+  const [busy, setBusy] = useState(false);
+
+  const loadDir = async (path) => {
+    setBrowsing(true);
+    setSelected(null); setReport(null); setValidation(null); setName('');
+    try {
+      setListing(await api.post('/api/projects/browse', { path }));
+    } catch (e) {
+      notify(`Browse failed: ${apiErr(e)}`, 'err');
+    }
+    setBrowsing(false);
+  };
+
+  // Start one level above the parent: a sibling is the common case.
+  useEffect(() => {
+    if (!parentPath) return;
+    const up = parentPath.replace(/[\\/][^\\/]+[\\/]?$/, '') || parentPath;
+    loadDir(up);
+  }, [parentPath]);
+
+  const probe = async (path, label) => {
+    setSelected({ path, name: label || (path.split(/[\\/]/).filter(Boolean).pop() || path) });
+    setReport(null); setValidation(null); setName('');
+    setProbing(true);
+    try {
+      const [rep, val] = await Promise.all([
+        api.post('/api/projects/subprojects/inspect', { path }),
+        api.post('/api/projects/subprojects/validate', { parent: parentPath, folder: path }),
+      ]);
+      setReport(rep);
+      setValidation(val);
+    } catch (e) {
+      setReport(null);
+      setValidation({ ok: false, warnings: [apiErr(e)] });
+    }
+    setProbing(false);
+  };
+
+  const link = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api.post('/api/projects/subprojects/link', {
+        parent: parentPath,
+        folder: selected.path,
+        name: name.trim() || undefined,
+        ide: ide === 'auto' ? undefined : ide,
+        init: !!(report && !report.has_c3),
+      });
+      notify(`Linked ${name.trim() || selected.name}`, 'ok');
+      onChanged && onChanged();
+      onClose();
+    } catch (e) {
+      notify(`Link failed: ${apiErr(e)}`, 'err');
+    }
+    setBusy(false);
+  };
+
+  const crumbs = _pathCrumbs((listing && listing.path) || '');
+  const needsInit = !!(report && !report.has_c3);
+  const canLink = !!(validation && validation.ok);
+  const proj = report && report.project;
+
+  return (
+    <Modal title="Link project by path" width={620} onClose={onClose}>
+      <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 10 }}>
+        Link any C3 project as a sub-project of <b style={{ color: T.text }}>{project.name}</b> —
+        it does not have to live inside it.
+      </div>
+
+      <MdlLabel>Paste a path</MdlLabel>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input value={manual} onChange={e => setManual(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && manual.trim()) probe(manual.trim()); }}
+          placeholder="U:\Projects\my-service" style={{ ...mdlInputStyle(), flex: 1 }} />
+        <Btn variant="ghost" onClick={() => manual.trim() && probe(manual.trim())}>Inspect</Btn>
+        <Btn variant="ghost" onClick={() => manual.trim() && loadDir(manual.trim())}>Browse</Btn>
+      </div>
+
+      {crumbs.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center', margin: '12px 0 6px' }}>
+          {listing && listing.parent && (
+            <button onClick={() => loadDir(listing.parent)} title="Up one level"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: T.textDim, fontSize: 12 }}>↑</button>
+          )}
+          {crumbs.map((c, i) => (
+            <button key={c.path} onClick={() => loadDir(c.path)} style={{
+              background: 'transparent', border: 'none', cursor: 'pointer', padding: '1px 3px',
+              fontSize: 11, color: i === crumbs.length - 1 ? T.text : T.textDim,
+            }}>{c.label}{i < crumbs.length - 1 ? ' ›' : ''}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{
+        border: `1px solid ${T.border}`, borderRadius: 8, overflowY: 'auto',
+        maxHeight: 220, minHeight: 70, background: T.surfaceAlt,
+      }}>
+        {browsing && (
+          <div style={{ padding: 14, fontSize: 12, color: T.textMuted, animation: 'pulse 1s infinite' }}>Loading…</div>
+        )}
+        {!browsing && listing && !(listing.dirs || []).length && (
+          <div style={{ padding: 14, fontSize: 12, color: T.textDim }}>No sub-folders here.</div>
+        )}
+        {!browsing && listing && (listing.dirs || []).map(dir => {
+          const sel = selected && selected.path === dir.path;
+          return (
+            <div key={dir.path} onClick={() => probe(dir.path, dir.name)} onDoubleClick={() => loadDir(dir.path)} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
+              cursor: 'pointer', borderBottom: `1px solid ${T.border}40`,
+              background: sel ? T.accentDim : 'transparent',
+            }}>
+              <I name="folder" size={13} color={sel ? T.accent : T.textMuted} />
+              <span style={{ fontSize: 13, color: sel ? T.accent : T.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {dir.name}
+              </span>
+              {dir.has_c3 && <Badge color={T.accent}>c3</Badge>}
+              {dir.registered && <Badge color={T.blue}>registered</Badge>}
+              <button onClick={e => { e.stopPropagation(); loadDir(dir.path); }} title="Open folder"
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, display: 'flex' }}>
+                <I name="chevron" size={12} color={T.textDim} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <div style={{ marginTop: 12 }}>
+          <MdlPath>{selected.path}</MdlPath>
+          {probing && (
+            <div style={{ fontSize: 11, color: T.textMuted, animation: 'pulse 1s infinite' }}>Inspecting…</div>
+          )}
+
+          {!probing && proj && (
+            <div style={{
+              border: `1px solid ${T.border}`, borderRadius: 8, padding: 10,
+              background: T.surfaceAlt, marginTop: 6,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{proj.name}</span>
+                {proj.c3_version && <Badge color={T.textMuted}>v{proj.c3_version}</Badge>}
+                <Badge color={report.registered ? T.blue : T.warn}>
+                  {report.registered ? 'registered' : 'not registered'}
+                </Badge>
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: T.textMuted }}>
+                {proj.facts_count} facts · {proj.sessions} sessions · {proj.edit_ledger_entries} ledger · {proj.notification_count} alerts
+              </div>
+              {(report.ancestors || []).length > 0 && (
+                <div style={{ fontSize: 11, color: T.warn, marginTop: 5 }}>
+                  ↳ already under {report.ancestors.map(a => a.name).join(' ‹ ')}
+                </div>
+              )}
+              {(report.children || []).length > 0 && (
+                <div style={{ fontSize: 11, color: T.textMuted, marginTop: 5 }}>
+                  Brings {report.children.length} sub-project{report.children.length === 1 ? '' : 's'} with it:
+                  {' '}{report.children.map(c => c.name).join(', ')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!probing && report && !report.has_c3 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: T.textMuted, marginTop: 5 }}>
+              <I name="folder" size={11} color={T.textMuted} style={{ marginTop: 1, flexShrink: 0 }} />
+              Not a C3 project yet — linking will initialize one here.
+            </div>
+          )}
+
+          {!probing && (report ? (report.detected || []) : []).length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: T.textDim, marginBottom: 3 }}>
+                Unlinked projects detected inside — suggestions, nothing is linked automatically:
+              </div>
+              {report.detected.map(d => (
+                <div key={d.path} onClick={() => probe(d.path, d.name)} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px',
+                  cursor: 'pointer', fontSize: 11, color: T.textMuted,
+                }}>
+                  <I name="folder" size={11} color={T.textDim} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                  <Badge color={T.textDim}>select</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!probing && validation && (validation.warnings || []).map((w, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11,
+              color: validation.ok ? T.textMuted : T.warn, marginTop: 3,
+            }}>
+              <I name="alertTriangle" size={11} color={validation.ok ? T.textMuted : T.warn}
+                style={{ marginTop: 1, flexShrink: 0 }} />{w}
+            </div>
+          ))}
+
+          {!probing && canLink && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: T.accent, marginTop: 4 }}>
+              <I name="check" size={11} color={T.accent} style={{ marginTop: 1, flexShrink: 0 }} />
+              Will link as a {validation.link_kind} child at depth {validation.depth}.
+            </div>
+          )}
+
+          {!probing && canLink && (
+            <div>
+              <MdlLabel>Name (optional)</MdlLabel>
+              <input value={name} onChange={e => setName(e.target.value)}
+                placeholder={(proj && proj.name) || selected.name} style={mdlInputStyle()} />
+              {needsInit && (
+                <div>
+                  <MdlLabel>Instruction docs / IDE</MdlLabel>
+                  <select value={ide} onChange={e => setIde(e.target.value)} style={mdlInputStyle()}>
+                    {_SUB_IDE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <MdlFooter>
+        {!probing && canLink && (
+          <span style={{ marginRight: 'auto', alignSelf: 'center', fontSize: 11, color: T.textMuted }}>
+            {needsInit ? 'Will initialize a new .c3'
+              : (report && !report.registered ? 'Will register and link' : 'Will link')}
+          </span>
+        )}
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={link} disabled={busy || probing || !canLink}>
+          {busy ? 'Linking…' : (report && !report.registered && !needsInit ? 'Register + link' : 'Link')}
         </Btn>
       </MdlFooter>
     </Modal>

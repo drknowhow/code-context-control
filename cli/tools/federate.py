@@ -31,16 +31,20 @@ def _noop_facts(*_a, **_kw):
 def subproject_scopes(svc, scope: str = "all") -> list:
     """Resolve ``scope`` to child targets ``[{name, path}]``.
 
-    ``'all'`` -> every linked child that still has a usable ``.c3``;
-    ``'<name>'`` -> that child only. Capped by
+    ``'all'`` -> every linked DESCENDANT that still has a usable ``.c3``,
+    nearest level first; ``'<name>'`` -> that descendant only. Capped by
     ``hybrid.subprojects.max_children_per_query``.
+
+    The walk is breadth-first so that when the cap bites it drops the most
+    distant relatives rather than an arbitrary slice: a direct child is more
+    likely to be relevant to the parent's query than a grandchild.
     """
     project_path = str(getattr(svc, "project_path", "") or "")
     if not project_path:
         return []
     try:
         from services.subprojects import SubprojectManager
-        children = [c for c in SubprojectManager(project_path).list()
+        children = [c for c in SubprojectManager(project_path).descendants()
                     if c["status"] not in ("missing_folder", "missing_c3")]
     except Exception:
         return []

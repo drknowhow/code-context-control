@@ -537,7 +537,7 @@ def _compute_subproject_links(projects):
         config_paths = set()
         for entry in entries:
             try:
-                key = _norm_realpath(mgr._abs_child(entry.get("rel_path", "")))
+                key = _norm_realpath(mgr._abs_child(entry))
                 status = mgr._entry_status(entry, registry)
             except Exception:
                 continue
@@ -609,10 +609,26 @@ def api_projects_list():
         from services.task_store import open_task_count
         projects = _pm().list_projects()
         parent_paths = {os.path.normcase(p["parent_path"]) for p in projects if p.get("parent_path")}
+        # Depth from the registry alone — no disk reads. Bounded by the number
+        # of projects and a visited-set, so a corrupt cycle cannot hang the poll.
+        by_path = {os.path.normcase(p.get("path", "")): p for p in projects}
+
+        def _depth(row):
+            n, seen, cursor = 0, set(), row
+            while cursor and cursor.get("parent_path"):
+                key = os.path.normcase(cursor["parent_path"])
+                if key in seen or key not in by_path:
+                    break
+                seen.add(key)
+                cursor = by_path[key]
+                n += 1
+            return n
+
         for p in projects:
             p["notification_count"] = _notification_count(p.get("path", ""))
             p["is_parent"] = os.path.normcase(p.get("path", "")) in parent_paths
             p["open_task_count"] = open_task_count(p.get("path", ""))
+            p["depth"] = _depth(p)
         _annotate_subproject_links(projects)
         return jsonify(projects)
     except Exception as e:
@@ -1438,14 +1454,83 @@ def _parse_json_tail(output: str):
 
 @app.route("/api/projects/subprojects", methods=["GET"])
 def api_subprojects_tree():
-    """Parent + children + rollup. Query: ?parent=<path>"""
+    """Parent + descendants + rollup. Query: ?parent=<path>&depth=<n>
+
+    ``depth`` defaults to the full hierarchy; pass 1 for the direct-children
+    shape the drill-in panel used before 2.96.
+    """
     parent = (request.args.get("parent") or "").strip()
     if not parent:
         return jsonify({"error": "parent is required"}), 400
     try:
-        return jsonify(_sub_manager(parent).tree())
+        from services.subprojects import MAX_DEPTH
+        depth = int(request.args.get("depth") or MAX_DEPTH)
+    except (TypeError, ValueError):
+        return jsonify({"error": "depth must be an integer"}), 400
+    try:
+        return jsonify(_sub_manager(parent).tree(depth=depth))
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/subprojects/inspect", methods=["POST"])
+def api_subprojects_inspect():
+    """Read-only report on any path. Body: {path, detect?}
+
+    Answers "is there a C3 project here, what is in it, who already claims it,
+    what does it claim, and what nested projects under it are unlinked?" —
+    without registering, linking, or initializing anything. This is what the
+    Hub calls before offering to link, so it must stay side-effect free.
+    """
+    data = request.get_json(force=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        from services.subprojects import inspect_path
+        return jsonify(inspect_path(path, detect=bool(data.get("detect", True))))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/hierarchy", methods=["GET"])
+def api_projects_hierarchy():
+    """The whole forest: every root project with its descendants. Query: ?depth=<n>
+
+    Roots are registered projects with no parent back-link. A project whose
+    parent is not itself registered still surfaces as a root, so nothing can
+    fall out of the listing because of a broken link.
+    """
+    try:
+        from services.subprojects import MAX_DEPTH, SubprojectManager, parent_link
+        depth = int(request.args.get("depth") or MAX_DEPTH)
+    except (TypeError, ValueError):
+        return jsonify({"error": "depth must be an integer"}), 400
+    try:
+        projects = ProjectManager()._read_projects()
+        known = {os.path.normcase(p.get("path", "")) for p in projects}
+        roots, claimed = [], set()
+        for p in projects:
+            path = p.get("path", "")
+            if not path:
+                continue
+            link = parent_link(path)
+            parent = link.get("path") or p.get("parent_path")
+            if parent and os.path.normcase(str(Path(parent).resolve())) in known:
+                claimed.add(os.path.normcase(path))
+                continue
+            roots.append(p)
+        out = []
+        for p in roots:
+            try:
+                out.append(SubprojectManager(p["path"]).tree(depth=depth))
+            except Exception as e:  # one bad root must not blank the forest
+                out.append({"parent": {"name": p.get("name"), "path": p["path"]},
+                            "children": [], "rollup": {}, "error": str(e)})
+        return jsonify({"roots": out, "root_count": len(out),
+                        "linked_count": len(claimed), "depth": depth})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1484,6 +1569,41 @@ def api_subprojects_add():
     ide = (data.get("ide") or "").strip()
     if ide and ide != "unknown":
         args += ["--ide", ide]
+    res = _run_c3(args, timeout=300)
+    payload = _parse_json_tail(res.get("output", ""))
+    ok = res.get("success") and bool((payload or {}).get("added"))
+    if ok:
+        _invalidate_subproject_links()
+    body = {"success": ok, "result": payload, "output": res.get("output", "")}
+    return jsonify(body), (201 if ok else 500)
+
+
+@app.route("/api/projects/subprojects/link", methods=["POST"])
+def api_subprojects_link():
+    """Link an existing project by path. Body: {parent, folder, name?, ide?, init?}
+
+    The register-and-link one-shot behind the Hub's "Register + link" button.
+    ``folder`` may be anywhere on disk — inside the parent, a sibling, another
+    drive. Unlike ``/add`` this refuses a folder that is not already a C3
+    project unless ``init`` is set, so "link" never silently creates one.
+
+    Shells out like /add and /remove, so errors land at result.error and the
+    frontend's apiErr() keeps reading them.
+    """
+    data = request.get_json(force=True) or {}
+    parent = (data.get("parent") or "").strip()
+    folder = (data.get("folder") or "").strip()
+    if not parent or not folder:
+        return jsonify({"error": "parent and folder are required"}), 400
+    args = ["sub", "link", folder, "--parent", parent, "--json"]
+    name = (data.get("name") or "").strip()
+    if name:
+        args += ["--name", name]
+    ide = (data.get("ide") or "").strip()
+    if ide and ide != "unknown":
+        args += ["--ide", ide]
+    if data.get("init"):
+        args.append("--init")
     res = _run_c3(args, timeout=300)
     payload = _parse_json_tail(res.get("output", ""))
     ok = res.get("success") and bool((payload or {}).get("added"))

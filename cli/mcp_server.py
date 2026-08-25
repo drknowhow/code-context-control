@@ -1127,8 +1127,16 @@ async def c3_project(
     Discover: list (registry), scan (registry+filesystem), info, register, unregister.
     Read    : search, read, compress, status, memory, impact, edits, validate, filter.
     Write   : edit, shell, memory(add/update/delete) — require allow_write=true; logged to that project's ledger.
-    Sub-projects (project = the PARENT): subprojects (tree+rollup), sub_add (target=folder, tag=name; allow_write),
-      sub_remove (target=name|path, mode=unlink|clear; allow_write), sub_cascade (mode=update|reindex|health; health is read-only).
+    Sub-projects (project = the PARENT). Hierarchy is a strict tree: one parent, many children, nested up to 8 deep.
+      Reads : subprojects (direct children + rollup), sub_tree (the whole hierarchy),
+              sub_inspect (target=path — is there a C3 project there, what is in it, who already claims it,
+              what it claims, and which nested projects under it are NOT linked yet; mutates nothing).
+      Writes: sub_add (target=folder|path, tag=name — initializes if needed; allow_write),
+              sub_link (target=path to an EXISTING project anywhere on disk, incl. another drive; allow_write),
+              sub_remove (target=name|path, mode=unlink|clear; allow_write),
+              sub_cascade (mode=update|reindex|health — walks the whole subtree; health is read-only).
+      A child need NOT live inside the parent folder. Nested children are excluded from the parent's index;
+      externally-linked ones are not in it to begin with, so the parent's index is untouched.
     project = registered name OR absolute path (.c3 required). list/scan need no project.
     search_action/mem_action/edits_action pick the sub-op for those verbs."""
     svc = _svc(ctx)

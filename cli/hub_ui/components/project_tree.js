@@ -41,13 +41,18 @@ function ProjectTree({ projects, allProjects, view, loaded, onChanged, onOpenDri
 
   const tree = buildProjectTree(projects);
 
-  // Rollups reflect ALL registered children, even when filtering hides rows.
-  const allChildrenOf = {};
-  (allProjects || projects).forEach(p => {
-    if (!p.parent_path) return;
-    const key = (p.parent_path || '').toLowerCase();
-    (allChildrenOf[key] = allChildrenOf[key] || []).push(p);
+  // Rollups reflect ALL registered descendants, even when filtering hides
+  // rows -- so a collapsed parent still shows a truthful subtree count.
+  const allNodes = {};
+  const indexNodes = (nodes) => (nodes || []).forEach(n => {
+    allNodes[(n.project.path || '').toLowerCase()] = n;
+    indexNodes(n.children);
   });
+  indexNodes(buildProjectTree(allProjects || projects));
+  const rollupFor = (p) => {
+    const n = allNodes[(p.path || '').toLowerCase()];
+    return n && n.children.length ? treeRollup(n.children) : null;
+  };
 
   const toggle = (path) => setCollapsed(c => ({ ...c, [path]: !c[path] }));
   const common = { onChanged, onOpenDrill, onOpenModal, onOpenDrawer, view, hubVersion };
@@ -58,46 +63,45 @@ function ProjectTree({ projects, allProjects, view, loaded, onChanged, onOpenDri
         display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
         gap: 12, alignItems: 'start',
       }}>
-        {tree.map(({ project, children }) => {
-          const rollChildren = allChildrenOf[(project.path || '').toLowerCase()] || children;
-          return (
-            <ProjectCard key={project.path} p={project}
-              rollup={rollChildren.length ? treeRollup(rollChildren) : null}
-              childRows={children}
-              {...common} />
-          );
-        })}
+        {tree.map(({ project, children }) => (
+          <ProjectCard key={project.path} p={project}
+            rollup={rollupFor(project)}
+            childRows={flattenTree(children)}
+            {...common} />
+        ))}
       </div>
     );
   }
 
-  // List view: parent row, then indented child rows behind a hairline.
+  // List view: a row per project, each level indented behind its own
+  // hairline. Depth is bounded server-side, so the recursion is finite.
+  const renderNodes = (nodes, depth) => nodes.map(({ project, children }) => {
+    const rollup = rollupFor(project);
+    const hasKids = !!(rollup && rollup.count);
+    const expanded = !collapsed[project.path];
+    return (
+      <div key={project.path}>
+        <ProjectCard p={project}
+          isChild={depth > 0}
+          rollup={rollup}
+          expanded={expanded}
+          onToggleExpand={hasKids ? () => toggle(project.path) : null}
+          {...common} />
+        {hasKids && expanded && children.length > 0 && (
+          <div style={{
+            paddingLeft: 26, borderLeft: `1px solid ${T.border}`,
+            marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6,
+          }}>
+            {renderNodes(children, depth + 1)}
+          </div>
+        )}
+      </div>
+    );
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {tree.map(({ project, children }) => {
-        const rollChildren = allChildrenOf[(project.path || '').toLowerCase()] || children;
-        const hasKids = rollChildren.length > 0;
-        const expanded = !collapsed[project.path];
-        return (
-          <div key={project.path}>
-            <ProjectCard p={project}
-              rollup={hasKids ? treeRollup(rollChildren) : null}
-              expanded={expanded}
-              onToggleExpand={hasKids ? () => toggle(project.path) : null}
-              {...common} />
-            {hasKids && expanded && children.length > 0 && (
-              <div style={{
-                paddingLeft: 26, borderLeft: `1px solid ${T.border}`,
-                marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6,
-              }}>
-                {children.map(c => (
-                  <ProjectCard key={c.path} p={c} isChild {...common} />
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {renderNodes(tree, 0)}
     </div>
   );
 }

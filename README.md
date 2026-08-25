@@ -86,7 +86,7 @@ Every C3-initialized project registers itself here on `c3 init`. Filter by activ
 
 Three top-level views — **Projects**, **Tasks** (a cross-project kanban), and **Credentials** — plus a drill-in panel per project covering Overview, Sub-projects, Tasks, Artifacts, Memory, Ledger, Sessions, Health, Budget, Credentials, Config, and MCP.
 
-**Sub-projects** make a nested repo a first-class child with its own `.c3`: the parent's index excludes the child's subtree, and `c3_search` / `c3_memory` fan out on demand (`scope='all'`, or one child by name). → [Sub-projects guide](https://github.com/drknowhow/code-context-control/blob/main/docs/sub-projects.md)
+**Sub-projects** make one project a first-class child of another, with its own `.c3`. It can be a nested repo — the parent's index then excludes its subtree — or a project anywhere else on disk, linked by path. Hierarchies nest up to 8 levels, and `c3_search` / `c3_memory` fan out on demand (`scope='all'`, or one by name). → [Sub-projects guide](https://github.com/drknowhow/code-context-control/blob/main/docs/sub-projects.md)
 
 ### Per-project UI
 
@@ -148,7 +148,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_credentials` | Named-secret vault; values never enter model context (v2.58.0). `import_env` bulk-imports a `.env` the agent still cannot read (v2.93.0) |
 | `c3_bitbucket` | Bitbucket Data Center — PRs, branches, builds, admin (v2.30.0) |
 | `c3_jira` | Jira Cloud + Data Center — JQL, issues, transitions (v2.56.0) |
-| `c3_project` | Cross-project discovery & operations; guarded writes (v2.31.0) |
+| `c3_project` | Cross-project discovery & operations; sub-project hierarchy (link by path, inspect, multi-level tree); guarded writes (v2.31.0) |
 
 Every tool is **read-only safe in plan mode** except `c3_edit`, `c3_shell`, `c3_ci(action='run'|'rerun')`, `c3_artifacts(action='restore')`, `c3_delegate` with write delegation enabled, and write actions on `c3_bitbucket` / `c3_jira` / `c3_credentials` / `c3_project` / `c3_task` / `c3_locks`.
 

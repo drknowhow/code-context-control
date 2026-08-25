@@ -237,13 +237,41 @@ class ProjectManager:
         return entry
 
     def set_parent(self, path: str, parent_path: str | None) -> bool:
-        """Set or clear a project's sub-project link in the registry."""
+        """Set or clear a project's sub-project link in the registry.
+
+        Refuses to make a project its own ancestor. Hierarchy is a strict tree
+        and, since 2.96, a child need not live inside its parent — so the cycle
+        that containment used to rule out has to be checked here.
+        """
         path = str(Path(path).resolve())
         projects = self._read_projects()
+
+        if parent_path:
+            parent_path = str(Path(parent_path).resolve())
+            if os.path.normcase(parent_path) == os.path.normcase(path):
+                return False
+            # Walk the prospective parent's own chain: if we meet ``path``,
+            # this link would close a loop.
+            seen = {os.path.normcase(parent_path)}
+            by_path = {os.path.normcase(p.get("path", "")): p for p in projects}
+            cursor = parent_path
+            for _ in range(16):  # bounded: a corrupt registry must not spin
+                entry = by_path.get(os.path.normcase(cursor)) or {}
+                nxt = entry.get("parent_path")
+                if not nxt:
+                    break
+                nxt = os.path.normcase(str(Path(nxt).resolve()))
+                if nxt == os.path.normcase(path):
+                    return False
+                if nxt in seen:
+                    break
+                seen.add(nxt)
+                cursor = nxt
+
         for p in projects:
             if p["path"] == path:
                 if parent_path:
-                    p["parent_path"] = str(Path(parent_path).resolve())
+                    p["parent_path"] = parent_path
                 else:
                     p.pop("parent_path", None)
                 self._write_projects(projects)

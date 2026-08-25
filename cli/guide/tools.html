@@ -1394,9 +1394,13 @@ c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ
               <tr><td class="param-name">scan</td><td>Discover</td><td class="param-desc">Registry + bounded filesystem scan for unregistered <code>.c3</code> projects nearby</td></tr>
               <tr><td class="param-name">info, register, unregister</td><td>Discover</td><td class="param-desc">Project details / add to / remove from the registry</td></tr>
               <tr><td class="param-name">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project</td></tr>
+              <tr><td class="param-name">subprojects, sub_tree, sub_inspect</td><td>Read</td><td class="param-desc">Direct children; the whole hierarchy; a read-only report on any path (what is there, who already claims it, what it claims, which nested projects under it are unlinked)</td></tr>
+              <tr><td class="param-name">sub_add, sub_link, sub_remove, sub_cascade</td><td>Write</td><td class="param-desc">Designate / link by path / unlink / cascade across the subtree — require <code>allow_write=true</code> (<code>sub_cascade</code> with <code>mode='health'</code> is a read)</td></tr>
               <tr><td class="param-name">edit, shell, memory(add/update/delete)</td><td>Write</td><td class="param-desc">Mutate the target project — require <code>allow_write=true</code></td></tr>
             </tbody>
           </table>
+
+          <p class="tool-desc"><strong>Sub-project hierarchy:</strong> <code>project</code> is the PARENT. A child need not live inside it — <code>sub_link</code> takes an absolute path anywhere on disk, including another drive — and hierarchies nest up to 8 levels. Nested children are excluded from the parent's index; externally linked ones were never in it. Linking is refused if it would make a project its own ancestor.</p>
 
           <h4>Examples</h4>
           <pre><code><span class="com"># Which projects have C3 installed?</span>
@@ -1414,7 +1418,18 @@ c3_project(action=<span class="str">'memory'</span>, project=<span class="str">'
 c3_project(action=<span class="str">'edit'</span>, project=<span class="str">'Sentinel'</span>,
            file_path=<span class="str">'README.md'</span>,
            old_string=<span class="str">'v1'</span>, new_string=<span class="str">'v2'</span>,
-           allow_write=<span class="num">true</span>)</code></pre>
+           allow_write=<span class="num">true</span>)
+
+<span class="com"># What is at this path, and who already claims it? (read-only)</span>
+c3_project(action=<span class="str">'sub_inspect'</span>, project=<span class="str">'Code Context Control'</span>,
+           target=<span class="str">r'U:\1. Projects\Claude Code Companion (C3)\c3-mobile'</span>)
+
+<span class="com"># Link it — a sibling on disk, not nested, so containment cannot express it</span>
+c3_project(action=<span class="str">'sub_link'</span>, project=<span class="str">'Code Context Control'</span>,
+           target=<span class="str">r'U:\1. Projects\Claude Code Companion (C3)\c3-mobile'</span>,
+           allow_write=<span class="num">true</span>)
+
+c3_project(action=<span class="str">'sub_tree'</span>, project=<span class="str">'Code Context Control'</span>)   <span class="com"># every level</span></code></pre>
 
           <p class="tool-desc"><strong>Sub-action params:</strong> <code>search_action</code> (code/files/semantic/…), <code>mem_action</code> (recall/index/fetch/add/…), and <code>edits_action</code> (history/versions/stats) pick the operation for those verbs; <code>scan_roots</code> (comma-separated) overrides where <code>scan</code> looks.</p>
         </div>

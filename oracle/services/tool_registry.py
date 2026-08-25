@@ -281,15 +281,19 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "tier": TIER_READ,
         "description": (
             "Cross-project operations by registered project NAME or path: registry listing, "
-            "project info, sub-project tree, and read-only proxied ops (search/read/compress/"
-            "status/memory/impact/edits/validate). Read-only: registration, sub-project "
-            "changes, edit and shell actions are blocked — use suggest_action for writes."
+            "project info, sub-project tree (direct children via 'subprojects', the full "
+            "multi-level hierarchy via 'sub_tree'), path inspection ('sub_inspect' — what is "
+            "at a path, who already claims it, what it claims), and read-only proxied ops "
+            "(search/read/compress/status/memory/impact/edits/validate). Read-only: "
+            "registration, sub-project linking and removal, edit and shell actions are "
+            "blocked — use suggest_action for writes."
         ),
         "parameters": _obj(
             {
                 "action": {
                     "type": "string", "default": "list",
-                    "enum": ["list", "info", "subprojects", "search", "read", "compress",
+                    "enum": ["list", "info", "subprojects", "sub_tree", "sub_inspect",
+                             "search", "read", "compress",
                              "status", "memory", "impact", "edits", "validate"],
                     "description": "Operation to run.",
                 },
@@ -311,7 +315,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "file": {"type": "string", "default": "", "description": "Edit-ledger file filter."},
                 "tag": {"type": "string", "default": "", "description": "Edit-ledger tag filter."},
                 "limit": {"type": "integer", "default": 50, "description": "Max records."},
-                "target": {"type": "string", "default": "", "description": "Symbol for action='impact'."},
+                "target": {"type": "string", "default": "",
+                           "description": "Symbol for action='impact', or a folder path for action='sub_inspect'."},
             },
             ["action"],
         ),

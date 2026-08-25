@@ -152,7 +152,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_sub.add_argument(
         "sub_cmd",
         nargs="?",
-        choices=["add", "list", "remove", "run", "check"],
+        choices=["add", "link", "inspect", "list", "tree", "remove", "run", "check"],
         default="list",
         help="Sub-command (default: list)",
     )
@@ -160,7 +160,8 @@ def build_parser(version: str, parse_cli_ide_arg):
         "target",
         nargs="?",
         default=None,
-        help="Folder (add), sub-project name/path (remove), or operation update|reindex|health (run)",
+        help="Folder (add), path to an existing project (link|inspect), "
+             "sub-project name/path (remove), or operation update|reindex|health (run)",
     )
     p_sub.add_argument("--parent", default=".", help="Parent project path (default: current directory)")
     p_sub.add_argument("--name", default=None, help="Display name for the sub-project (add)")
@@ -173,6 +174,12 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_sub.add_argument("--mcp", action="store_true", help="Also reinstall MCP config on update (run update)")
     p_sub.add_argument("--fix", action="store_true", help="Repair links from the parent config (check)")
     p_sub.add_argument("--prune", action="store_true", help="With --fix: drop entries whose folder is gone (check)")
+    p_sub.add_argument("--depth", default=None, type=int,
+                       help="Levels to descend (tree|run); default: the full hierarchy")
+    p_sub.add_argument("--init", action="store_true",
+                       help="Initialize the folder if it is not a C3 project yet (link)")
+    p_sub.add_argument("--no-detect", action="store_true",
+                       help="Skip the scan for unlinked nested projects (inspect)")
     p_sub.add_argument("--json", action="store_true", help="Emit JSON output")
 
     p_perms = subparsers.add_parser("permissions",
