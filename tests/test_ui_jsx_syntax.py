@@ -14,6 +14,12 @@ be a plain `/* ... */`, or move above the conditional.
 The existing bundle tests check the SHAPE of the build (files listed, markers
 stamped, order kept) and passed the whole time the broken file was shipping.
 This one checks the property that actually broke.
+
+The transpile checks need node + `@babel/standalone`, and skip without them.
+That skip is correct on a dev box and dangerous in CI, because a summary line
+reading "2 passed, 2 skipped" is indistinguishable from a green run — so
+`C3_REQUIRE_JSX_TOOLCHAIN=1` turns a missing toolchain into a FAILURE. CI sets
+it; locally, `npm install --no-save @babel/standalone` makes the real parse run.
 """
 from __future__ import annotations
 
@@ -107,17 +113,56 @@ def _bundle_files(server_rel, const_name):
     return [REPO_ROOT / "cli" / rel for rel in _JS_STR.findall(match.group(1))]
 
 
+def _node_env():
+    """Environment for every node call, with the repo's own node_modules on it.
+
+    node resolves `require` relative to the SCRIPT's directory, and the parse
+    script below is written to a temp dir. A local `npm install` in the repo
+    root is therefore invisible to it, while a global install plus NODE_PATH
+    works — so the probe and the real run can disagree, the probe passing while
+    the run dies on MODULE_NOT_FOUND. Putting the repo's node_modules on
+    NODE_PATH makes both resolution paths agree and supports either install.
+    """
+    env = dict(os.environ)
+    local = REPO_ROOT / "node_modules"
+    existing = env.get("NODE_PATH", "")
+    if local.is_dir():
+        env["NODE_PATH"] = (str(local) + os.pathsep + existing) if existing else str(local)
+    return env
+
+
 def _toolchain_ready():
     try:
         probe = subprocess.run(
             ["node", "-e", "require.resolve('@babel/standalone'); console.log('y')"],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=60, env=_node_env())
     except (OSError, subprocess.SubprocessError):
         return False
     return probe.returncode == 0
 
 
-@unittest.skipUnless(_toolchain_ready(),
+# Skipping is right on a dev box with no node, and WRONG anywhere the
+# toolchain is supposed to be installed: "2 passed, 2 skipped" reads exactly
+# like a green run, so a broken `npm install` step would silently return CI to
+# the state that let 2.92.0-2.92.3 ship. Where the toolchain is promised, set
+# C3_REQUIRE_JSX_TOOLCHAIN=1 and a missing one FAILS instead of skipping.
+_TOOLCHAIN = _toolchain_ready()
+_REQUIRED = os.environ.get("C3_REQUIRE_JSX_TOOLCHAIN", "") not in ("", "0", "false")
+
+
+class TestToolchainAvailability(unittest.TestCase):
+    def test_toolchain_present_when_required(self):
+        if not _REQUIRED:
+            self.skipTest("C3_REQUIRE_JSX_TOOLCHAIN not set (local dev)")
+        self.assertTrue(
+            _TOOLCHAIN,
+            "C3_REQUIRE_JSX_TOOLCHAIN=1 but node + @babel/standalone did not "
+            "resolve, so the bundle transpile checks below would have SKIPPED "
+            "and the run would still have looked green. Install the toolchain "
+            "(`npm install --no-save @babel/standalone`) or unset the variable.")
+
+
+@unittest.skipUnless(_TOOLCHAIN,
                      "node + @babel/standalone unavailable (see module comment)")
 class TestBundlesActuallyTranspile(unittest.TestCase):
     def _check(self, server_rel, const_name):
@@ -129,7 +174,8 @@ class TestBundlesActuallyTranspile(unittest.TestCase):
             script = fh.name
         try:
             proc = subprocess.run(["node", script] + [str(f) for f in files],
-                                  capture_output=True, text=True, timeout=300)
+                                  capture_output=True, text=True, timeout=300,
+                                  env=_node_env())
         finally:
             os.unlink(script)
         self.assertEqual(

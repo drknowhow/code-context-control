@@ -26,6 +26,41 @@ jobs:
       - name: ruff check
         run: ruff check .
 
+  jsx:
+    # The browser-transpiled UI bundles, parsed by the real Babel.
+    # A JSX syntax error anywhere in a concatenated bundle renders the page
+    # black while the route still returns 200, so nothing Python-side notices;
+    # 2.92.0-2.92.3 shipped exactly that. The test that catches it SKIPS when
+    # @babel/standalone is missing, and a skip reads like a pass in the summary
+    # line — hence C3_REQUIRE_JSX_TOOLCHAIN=1, which turns a missing toolchain
+    # into a failure instead. One job: the bundles are OS-independent, so
+    # paying for this on all nine test cells would buy nothing.
+    name: JSX bundles transpile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Babel
+        # --prefix . is load-bearing: the repo has no package.json, so a bare
+        # `npm install` walks UP and installs outside the checkout, where the
+        # test's node subprocess cannot see it. This pins node_modules to the
+        # repo root, which is what the test puts on NODE_PATH.
+        run: npm install --no-save --prefix . @babel/standalone
+      - name: Confirm Babel landed in the repo root
+        run: node -e "require('./node_modules/@babel/standalone'); console.log('babel ok')" 
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+      - name: Transpile both bundles
+        env:
+          C3_REQUIRE_JSX_TOOLCHAIN: "1"
+        run: pytest -q tests/test_ui_jsx_syntax.py
+
   test:
     name: Test (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -57,7 +92,7 @@ jobs:
 
   build:
     name: Build distribution
-    needs: [lint, test]
+    needs: [lint, jsx, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
