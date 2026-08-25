@@ -100,21 +100,30 @@ class ProjectScanner:
             except Exception:
                 pass
 
-        # Sub-project hierarchy (v2.44 parent/child model). Registry
-        # parent_path is authoritative; the child config back-link covers a
-        # stale registry. Best-effort: broken links degrade to top-level.
+        # Sub-project hierarchy (v2.44 parent/child model, multi-level since
+        # 2.96). Registry parent_path is authoritative; the child config
+        # back-link covers a stale registry. Best-effort: broken links degrade
+        # to top-level.
         parent_path = str(project.get("parent_path") or "")
         sub_rel_paths: list[str] = []
+        sub_paths: list[str] = []
         if has_c3:
             try:
-                from services.subprojects import _read_config, get_subprojects
+                from services.subprojects import (
+                    _read_config,
+                    entry_abs_path,
+                    get_subprojects,
+                )
                 if not parent_path:
                     back = _read_config(project["path"]).get("parent") or {}
                     parent_path = str(back.get("path") or "")
-                sub_rel_paths = [
-                    s.get("rel_path", "") for s in get_subprojects(project["path"])
-                    if s.get("rel_path")
-                ]
+                entries = get_subprojects(project["path"])
+                # rel_paths are the NESTED children only — they are what the
+                # parent's index excludes. The count must include external
+                # children too, or a parent whose children all live elsewhere
+                # reports zero.
+                sub_rel_paths = [s.get("rel_path", "") for s in entries if s.get("rel_path")]
+                sub_paths = [str(entry_abs_path(project["path"], s)) for s in entries]
             except Exception:
                 pass
         if parent_path:
@@ -137,5 +146,6 @@ class ProjectScanner:
             "parent_path": parent_path,
             "is_subproject": bool(parent_path),
             "subproject_rel_paths": sub_rel_paths,
-            "subproject_count": len(sub_rel_paths),
+            "subproject_paths": sub_paths,
+            "subproject_count": len(sub_paths),
         }

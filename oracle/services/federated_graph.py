@@ -252,14 +252,33 @@ class FederatedGraph:
         links = self._hierarchy(project_paths)
         result["hierarchy"] = links
         parent_by_child = {link["child"]: link["parent"] for link in links}
+
+        def _depth(slug: str) -> int:
+            n, seen = 0, {slug}
+            cursor = parent_by_child.get(slug)
+            while cursor and cursor not in seen and n < 32:
+                seen.add(cursor)
+                n += 1
+                cursor = parent_by_child.get(cursor)
+            return n
+
         for proj in result.get("projects", []):
-            proj["parent_slug"] = parent_by_child.get(proj.get("slug"), "")
+            slug = proj.get("slug")
+            proj["parent_slug"] = parent_by_child.get(slug, "")
+            proj["depth"] = _depth(slug)
         result.setdefault("stats", {})["parent_child"] = len(links)
+        result["stats"]["max_depth"] = max(
+            (p.get("depth", 0) for p in result.get("projects", [])), default=0)
         return result
 
     def _hierarchy(self, project_paths: list[str]) -> list[dict]:
         """``parent_child`` project links for children whose parent is also in
-        ``project_paths`` (depth-1 model). Best-effort per project."""
+        ``project_paths``. Best-effort per project.
+
+        Each project reports only its own parent, so the edge set describes a
+        hierarchy of any depth without this needing to walk one — depth is
+        derived from the assembled edges in ``_apply_hierarchy``.
+        """
         def _key(p: str) -> str:
             return os.path.normcase(str(Path(p).resolve()))
 

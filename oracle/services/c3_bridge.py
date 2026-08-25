@@ -161,8 +161,8 @@ class C3Bridge:
 
         ``""``/``"all"`` → every discovered project; ``"top"`` → top-level
         projects only; anything else → that project (name or path, resolved
-        and validated) plus its direct sub-projects (depth-1 model). Parent
-        indexes already exclude child folders, so the full scope never
+        and validated) plus its whole subtree, at any depth. Parent indexes
+        already exclude nested child folders, so the full scope never
         double-counts code hits.
         """
         projects = self._discover_c3_projects()
@@ -181,15 +181,41 @@ class C3Bridge:
 
         resolved = resolve_project(scope)
         root_key = _key(validate_project_path(self.scanner, resolved["path"]))
-        selected = []
+
+        # Transitive closure down the parent_path edges. Iterating to a fixed
+        # point rather than one hop, bounded by the project count and a
+        # visited-set so a cycle in the registry cannot loop forever.
+        children_of = {}
         for p in projects:
-            path = p.get("path", "")
             parent = p.get("parent_path") or ""
+            if not parent:
+                continue
             try:
-                if _key(path) == root_key or (parent and _key(parent) == root_key):
+                children_of.setdefault(_key(parent), []).append(p)
+            except Exception:
+                continue
+
+        selected, seen, frontier = [], {root_key}, [root_key]
+        for p in projects:
+            try:
+                if _key(p.get("path", "")) == root_key:
                     selected.append(p)
             except Exception:
                 continue
+        while frontier:
+            nxt = []
+            for key in frontier:
+                for child in children_of.get(key, []):
+                    try:
+                        child_key = _key(child.get("path", ""))
+                    except Exception:
+                        continue
+                    if child_key in seen:
+                        continue
+                    seen.add(child_key)
+                    selected.append(child)
+                    nxt.append(child_key)
+            frontier = nxt
         return selected
 
     # ── Per-project tool wrappers ─────────────────────────────────
