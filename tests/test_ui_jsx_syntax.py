@@ -113,11 +113,29 @@ def _bundle_files(server_rel, const_name):
     return [REPO_ROOT / "cli" / rel for rel in _JS_STR.findall(match.group(1))]
 
 
+def _node_env():
+    """Environment for every node call, with the repo's own node_modules on it.
+
+    node resolves `require` relative to the SCRIPT's directory, and the parse
+    script below is written to a temp dir. A local `npm install` in the repo
+    root is therefore invisible to it, while a global install plus NODE_PATH
+    works — so the probe and the real run can disagree, the probe passing while
+    the run dies on MODULE_NOT_FOUND. Putting the repo's node_modules on
+    NODE_PATH makes both resolution paths agree and supports either install.
+    """
+    env = dict(os.environ)
+    local = REPO_ROOT / "node_modules"
+    existing = env.get("NODE_PATH", "")
+    if local.is_dir():
+        env["NODE_PATH"] = (str(local) + os.pathsep + existing) if existing else str(local)
+    return env
+
+
 def _toolchain_ready():
     try:
         probe = subprocess.run(
             ["node", "-e", "require.resolve('@babel/standalone'); console.log('y')"],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=60, env=_node_env())
     except (OSError, subprocess.SubprocessError):
         return False
     return probe.returncode == 0
@@ -156,7 +174,8 @@ class TestBundlesActuallyTranspile(unittest.TestCase):
             script = fh.name
         try:
             proc = subprocess.run(["node", script] + [str(f) for f in files],
-                                  capture_output=True, text=True, timeout=300)
+                                  capture_output=True, text=True, timeout=300,
+                                  env=_node_env())
         finally:
             os.unlink(script)
         self.assertEqual(

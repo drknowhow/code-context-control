@@ -47,9 +47,13 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install Babel
-        # Local (not -g) so `require.resolve` finds it from the repo root,
-        # which is the cwd the test probes from. No NODE_PATH needed.
-        run: npm install --no-save @babel/standalone
+        # --prefix . is load-bearing: the repo has no package.json, so a bare
+        # `npm install` walks UP and installs outside the checkout, where the
+        # test's node subprocess cannot see it. This pins node_modules to the
+        # repo root, which is what the test puts on NODE_PATH.
+        run: npm install --no-save --prefix . @babel/standalone
+      - name: Confirm Babel landed in the repo root
+        run: node -e "require('./node_modules/@babel/standalone'); console.log('babel ok')" 
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
       - name: Transpile both bundles
