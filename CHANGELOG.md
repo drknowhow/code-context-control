@@ -4,6 +4,81 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.96.0] - 2026-08-25
+
+### Added — a sub-project had to live inside its parent, one level down
+
+Two lines in `SubprojectManager.validate()` decided the whole shape of the
+hierarchy. One refused any folder that was not physically inside the parent;
+the other refused a parent that was itself a child. Together they meant C3
+could describe a monorepo, and only two levels of one.
+
+The registry on this machine shows the cost. All 56 registered projects were
+flat, and `Code Context Control` and `c3-mobile` sat side by side under one
+folder — one product, two checkouts, and no containment-based model can ever
+relate them, because neither contains the other.
+
+Containment was not really a rule. It was a consequence of the storage:
+entries addressed children by `rel_path`, so a child outside the parent had no
+way to be written down. `relative_to()` raises, and on Windows so does
+`relpath` across drive letters — `U:` to `W:` is not expressible as a relative
+path at all.
+
+Entries now address a child one of two ways, and C3 picks from the path you
+give it. **Nested** children keep `rel_path` and keep being carved out of the
+parent's index, because they are still inside the tree that gets scanned.
+**External** children store an absolute `path`, carry no `rel_path`, and
+contribute no exclusion — there is nothing to exclude from a scan they were
+never part of. `entry_abs_path()` is the single place the two forms are told
+apart; status, listing, reconcile and removal all resolve through it. Old
+`rel_path`-only configs keep working untouched.
+
+Depth is now bounded rather than forbidden: a strict tree, one parent, up to
+eight levels. Containment used to make cycles structurally impossible, which
+is why nothing checked for them; now `validate()` walks the ancestor chain and
+`set_parent()` walks the registry, both with a visited-set as well as a limit,
+because a corrupt chain must terminate rather than spin.
+
+`inspect_path()` answers the question you have *before* you link: point at a
+folder and find out whether there is a project there, what is in it, who
+already claims it, what it claims, and which nested projects underneath it are
+not linked yet. It mutates nothing — inspecting an unregistered folder must not
+register it — and the nested projects it finds are surfaced as suggestions,
+never applied. Explicit links are the source of truth; a rescan never creates
+or overwrites one.
+
+**Surfaces.** `c3 sub` gains `inspect`, `link` and `tree`; `sub list` gains a
+LINK column and its REL PATH column becomes LOCATION, because an external child
+has no `rel_path` to print. `c3_project` gains `sub_tree` and `sub_inspect` as
+reads (plan-mode safe) and `sub_link` behind `allow_write`; the Oracle
+`TOOL_SPECS` enum takes the two reads and not the write, which is its existing
+deliberate asymmetry. The Hub gains `/subprojects/inspect`, `/subprojects/link`
+and `/projects/hierarchy`, and `GET /api/projects` now reports `depth` per row.
+
+**Hub UI.** A new "Link project by path…" modal browses the whole filesystem
+rather than the parent's subtree — deliberately, because the projects worth
+linking are the ones that do *not* live inside the parent — and inspects a
+folder before offering to claim it. The project tree renders every level
+instead of one, rollups count the whole subtree instead of the first hop, and
+the kebab stops hiding sub-project actions from children, since a sub-project
+may have sub-projects. Re-parenting was a staged wizard because folders had to
+move; it is now a configuration change and no files move.
+
+### Fixed — consumers that walked exactly one hop
+
+Search/memory federation and three Oracle surfaces each resolved "the children"
+as the direct children. With a real hierarchy that silently drops everything
+below the first level, and none of them errors — a grandchild is simply never
+searched, never counted, never in the graph.
+
+`federate.subproject_scopes` now walks descendants breadth-first, so when
+`max_children_per_query` bites it drops the most distant relatives rather than
+an arbitrary slice. The Oracle's `_scoped_projects` takes the transitive
+closure down `parent_path` instead of matching one edge. `project_scanner`
+counted sub-projects by counting `rel_paths`, so a parent whose children all
+lived elsewhere reported zero while plainly having some. `federated_graph`
+exposes a derived per-project `depth` and `stats.max_depth`.
+
 ## [2.95.0] - 2026-08-24
 
 ### Fixed — the Stop hook wrote 498 rows of zeros and nothing noticed
