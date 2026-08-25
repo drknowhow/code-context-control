@@ -1,15 +1,32 @@
 """Sub-project designation and governance for C3 parent projects.
 
-A *sub-project* is a sub-folder of a c3-initialized parent that carries its
-own full ``.c3`` branch (index, memory, ledger, config) linked to the parent:
+A *sub-project* is a c3-initialized project that carries its own full ``.c3``
+branch (index, memory, ledger, config) and is declared a child of a parent:
 
 - parent ``.c3/config.json`` lists children under ``subprojects``
 - child ``.c3/config.json`` back-links via ``parent``
 - the global registry entry (``~/.c3/projects.json``) carries ``parent_path``
 
-The parent's own index/doc-index/dictionary/watcher exclude designated
-sub-project folders (see ``exclusion_prefixes``); cross-scope visibility is
-restored by search/memory federation (``cli/tools/federate.py``).
+Two link kinds, distinguished by how the entry addresses the child:
+
+``nested``
+    The child folder lives inside the parent tree. The entry stores a
+    parent-relative ``rel_path``, and the parent's own index / doc-index /
+    dictionary / watcher exclude that subtree (see ``exclusion_prefixes``)
+    so nothing is indexed twice.
+
+``external``
+    The child lives anywhere on disk — a sibling folder, another drive. The
+    entry stores an absolute ``path`` and no ``rel_path``. There is nothing to
+    exclude, because the child was never inside the parent's scan tree.
+
+Hierarchy is a **strict tree**: one parent per project (the registry's single
+``parent_path``), many children, nested to ``MAX_DEPTH``. Containment used to
+make cycles structurally impossible; once children can live anywhere it does
+not, so ``validate()`` walks the ancestor chain explicitly.
+
+Cross-scope visibility is restored by search/memory federation
+(``cli/tools/federate.py``).
 """
 
 import json
@@ -23,6 +40,14 @@ from services.project_manager import ProjectManager
 
 VALID_CASCADE_OPS = ("update", "reindex", "health")
 VALID_REMOVE_MODES = ("unlink", "clear")
+
+LINK_NESTED = "nested"
+LINK_EXTERNAL = "external"
+
+#: Hard ceiling on hierarchy depth. Guards a malformed or looping chain of
+#: ``parent`` back-links as much as it caps legitimate nesting — every walk
+#: over the chain is bounded by this *and* a visited-set.
+MAX_DEPTH = 8
 
 
 # ── Path helpers ───────────────────────────────────────────────────────────
@@ -77,6 +102,104 @@ def get_subprojects(parent_path) -> list:
     return [s for s in subs if isinstance(s, dict)] if isinstance(subs, list) else []
 
 
+# ── Entry addressing ───────────────────────────────────────────────────────
+#
+# An entry addresses its child either relatively (``rel_path``, nested) or
+# absolutely (``path``, external). Everything downstream — status, listing,
+# reconcile, removal, the hub's link annotations — resolves through
+# ``entry_abs_path``, so this pair is the only place the two forms are known
+# apart.
+
+def entry_link_kind(entry: dict) -> str:
+    """``external`` when the entry carries an absolute ``path``, else ``nested``."""
+    return LINK_EXTERNAL if (entry or {}).get("path") else LINK_NESTED
+
+
+def entry_abs_path(parent_path, entry) -> Path:
+    """Resolve a sub-project entry to an absolute path.
+
+    Accepts a full entry dict (preferred) or a bare ``rel_path`` string, so
+    pre-2.96 call sites that passed ``entry["rel_path"]`` keep working.
+    """
+    if isinstance(entry, dict):
+        if entry.get("path"):
+            return Path(entry["path"]).resolve()
+        rel = entry.get("rel_path") or ""
+    else:
+        rel = entry or ""
+    return (Path(parent_path) / PurePosixPath(rel)).resolve()
+
+
+def _rel_or_none(target, base) -> str | None:
+    """POSIX relpath from ``base`` to ``target``, or None when impossible.
+
+    ``os.path.relpath`` raises on Windows when the two sides sit on different
+    drives (``U:\\`` vs ``W:\\``) — which is precisely the external-link case,
+    so the back-link's ``rel_path`` has to be allowed to be absent.
+    """
+    try:
+        return Path(os.path.relpath(str(target), str(base))).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def parent_link(project_path) -> dict:
+    """The child's ``parent`` back-link record, or ``{}`` when top-level."""
+    link = _read_config(project_path).get("parent")
+    return link if isinstance(link, dict) and link.get("path") else {}
+
+
+def ancestors(project_path, max_depth: int = MAX_DEPTH) -> list:
+    """Walk ``parent`` back-links upward: nearest parent first, root last.
+
+    Bounded by ``max_depth`` and a visited-set so a corrupt or self-referential
+    config chain terminates instead of spinning.
+    """
+    out, seen = [], {_norm(project_path)}
+    current = project_path
+    for _ in range(max_depth):
+        link = parent_link(current)
+        if not link:
+            break
+        nxt = link.get("path")
+        if not nxt or _norm(nxt) in seen:
+            break
+        seen.add(_norm(nxt))
+        out.append({"name": link.get("name") or Path(nxt).name, "path": str(nxt)})
+        current = nxt
+    return out
+
+
+def depth_of(project_path) -> int:
+    """0 for a top-level project, 1 for its child, and so on."""
+    return len(ancestors(project_path))
+
+
+def subtree_depth(project_path, limit: int = MAX_DEPTH) -> int:
+    """How many levels of descendants hang below ``project_path`` (0 = none).
+
+    Breadth-first with a visited-set, so linking a project that already has a
+    deep subtree can be checked against ``MAX_DEPTH`` before it is attached.
+    """
+    seen = {_norm(project_path)}
+    frontier, levels = [str(project_path)], 0
+    while frontier and levels < limit:
+        nxt = []
+        for path in frontier:
+            for entry in get_subprojects(path):
+                child = entry_abs_path(path, entry)
+                key = _norm(child)
+                if key in seen:
+                    continue
+                seen.add(key)
+                nxt.append(str(child))
+        if not nxt:
+            break
+        levels += 1
+        frontier = nxt
+    return levels
+
+
 # ── Index-exclusion helpers (hot path for indexer/doc_index/watcher) ──────
 
 def exclusion_prefixes(project_path) -> list:
@@ -84,6 +207,10 @@ def exclusion_prefixes(project_path) -> list:
 
     Fast path: ``[]`` when the project has no sub-projects, so scan loops
     pay nothing in the common case.
+
+    **External children contribute nothing.** They carry no ``rel_path``
+    because they were never inside the parent's tree, so there is no subtree
+    to carve out — the empty-parts test below is what skips them.
     """
     subs = get_subprojects(project_path)
     if not subs:
@@ -172,8 +299,9 @@ class SubprojectManager:
         meta = cfg.get("meta") or {}
         return meta.get("name") or Path(self.parent_path).name
 
-    def _abs_child(self, rel_path: str) -> Path:
-        return (Path(self.parent_path) / PurePosixPath(rel_path)).resolve()
+    def _abs_child(self, entry) -> Path:
+        """Resolve one entry (dict, or a bare ``rel_path`` string) to a path."""
+        return entry_abs_path(self.parent_path, entry)
 
     def _resolve_ref(self, ref: str) -> dict | None:
         """Find a parent-config entry by name, rel_path, or path."""
@@ -183,19 +311,22 @@ class SubprojectManager:
             if (e.get("name") or "").lower() == ref_l:
                 return e
         for e in entries:
-            if PurePosixPath(e.get("rel_path", "")).as_posix().lower() == PurePosixPath(ref.replace("\\", "/")).as_posix().lower():
+            rel = e.get("rel_path")
+            if not rel:
+                continue  # external entry — matched by path below
+            if PurePosixPath(rel).as_posix().lower() == PurePosixPath(ref.replace("\\", "/")).as_posix().lower():
                 return e
         try:
             ref_abs = Path(self.parent_path, ref) if not Path(ref).is_absolute() else Path(ref)
             for e in entries:
-                if _same_path(self._abs_child(e.get("rel_path", "")), ref_abs):
+                if _same_path(self._abs_child(e), ref_abs):
                     return e
         except OSError:
             pass
         return None
 
     def _entry_status(self, entry: dict, registry: list = None) -> str:
-        abs_path = self._abs_child(entry.get("rel_path", ""))
+        abs_path = self._abs_child(entry)
         if not abs_path.is_dir():
             return "missing_folder"
         if not (abs_path / ".c3").is_dir():
@@ -216,16 +347,20 @@ class SubprojectManager:
         return "ok"
 
     def list(self) -> list:
-        """Parent-config entries enriched with status and live counts."""
+        """Parent-config entries enriched with status and live counts.
+
+        Direct children only — see ``tree()`` for the recursive view.
+        """
         out = []
         registry = self.pm._read_projects()
         for entry in get_subprojects(self.parent_path):
-            abs_path = self._abs_child(entry.get("rel_path", ""))
+            abs_path = self._abs_child(entry)
             status = self._entry_status(entry, registry)
             out.append({
                 "name": entry.get("name") or abs_path.name,
                 "rel_path": entry.get("rel_path", ""),
                 "path": str(abs_path),
+                "link_kind": entry_link_kind(entry),
                 "added_at": entry.get("added_at"),
                 "status": status,
                 "facts_count": _facts_count(abs_path) if status not in ("missing_folder", "missing_c3") else 0,
@@ -233,18 +368,71 @@ class SubprojectManager:
             })
         return out
 
-    def tree(self) -> dict:
-        """Hub-facing parent + children + rollup summary."""
-        children = self.list()
+    def tree(self, depth: int = MAX_DEPTH) -> dict:
+        """Hub-facing parent + descendants + transitive rollup.
+
+        ``depth=1`` reproduces the pre-2.96 single-level shape. Deeper levels
+        hang off each child as its own ``children`` list, and the rollup counts
+        the whole subtree, not just the first hop.
+        """
+        seen = {_norm(self.parent_path)}
+
+        def _walk(path: str, remaining: int) -> list:
+            if remaining <= 0:
+                return []
+            rows = SubprojectManager(path).list() if not _same_path(path, self.parent_path) else self.list()
+            for row in rows:
+                key = _norm(row["path"])
+                if key in seen:
+                    # Already visited on this walk: a cycle, or a project
+                    # reachable twice. Render it, but do not descend again.
+                    row["children"] = []
+                    row["rollup"] = {"children": 0, "notifications": 0, "issues": 0}
+                    continue
+                seen.add(key)
+                kids = _walk(row["path"], remaining - 1) if row["status"] != "missing_folder" else []
+                row["children"] = kids
+                row["rollup"] = {
+                    "children": len(kids) + sum(k["rollup"]["children"] for k in kids),
+                    "notifications": sum(k["notification_count"] + k["rollup"]["notifications"] for k in kids),
+                    "issues": sum((1 if k["status"] != "ok" else 0) + k["rollup"]["issues"] for k in kids),
+                }
+            return rows
+
+        children = _walk(self.parent_path, max(1, int(depth or 1)))
         return {
-            "parent": {"name": self._parent_name(), "path": self.parent_path},
+            "parent": {"name": self._parent_name(), "path": self.parent_path,
+                       "depth": depth_of(self.parent_path)},
             "children": children,
             "rollup": {
-                "children": len(children),
-                "notifications": sum(c["notification_count"] for c in children),
-                "issues": sum(1 for c in children if c["status"] != "ok"),
+                "children": len(children) + sum(c["rollup"]["children"] for c in children),
+                "notifications": sum(c["notification_count"] + c["rollup"]["notifications"]
+                                     for c in children),
+                "issues": sum((1 if c["status"] != "ok" else 0) + c["rollup"]["issues"]
+                              for c in children),
+                "direct_children": len(children),
             },
         }
+
+    def descendants(self, depth: int = MAX_DEPTH) -> list:
+        """Flat, de-duplicated list of every descendant, nearest level first."""
+        out, seen = [], {_norm(self.parent_path)}
+        frontier = [self.parent_path]
+        for _ in range(max(1, int(depth or 1))):
+            nxt = []
+            for path in frontier:
+                for row in SubprojectManager(path).list():
+                    key = _norm(row["path"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(row)
+                    if row["status"] != "missing_folder":
+                        nxt.append(row["path"])
+            if not nxt:
+                break
+            frontier = nxt
+        return out
 
     # ── Designation ────────────────────────────────────────────────
 
@@ -254,6 +442,9 @@ class SubprojectManager:
             "ok": False, "exists": False, "is_dir": False, "has_c3": False,
             "registered": False, "already_child_of": None, "is_ancestor": False,
             "already_linked": False, "path": "", "warnings": [],
+            "link_kind": LINK_NESTED, "rel_path": None,
+            "parent_depth": 0, "depth": 0, "subtree_depth": 0,
+            "would_create_cycle": False, "ancestors": [],
         }
         try:
             target = Path(folder) if Path(folder).is_absolute() else Path(self.parent_path) / folder
@@ -268,23 +459,56 @@ class SubprojectManager:
             out["warnings"].append("folder does not exist")
             return out
 
-        if _same_path(target, self.parent_path) or is_within(self.parent_path, target):
+        # ── Cycle safety ───────────────────────────────────────────
+        # Containment used to make cycles impossible by construction. Once a
+        # child can live anywhere, the ancestor chain has to be walked.
+        out["ancestors"] = ancestors(self.parent_path)
+        out["parent_depth"] = len(out["ancestors"])
+        out["depth"] = out["parent_depth"] + 1
+
+        if _same_path(target, self.parent_path):
             out["is_ancestor"] = True
-            out["warnings"].append("folder is the parent itself or an ancestor of it")
-        if not is_within(target, self.parent_path):
-            if not out["is_ancestor"]:
-                out["warnings"].append("folder is outside the parent project")
+            out["would_create_cycle"] = True
+            out["warnings"].append("folder is the parent itself")
+            return out
+        if is_within(self.parent_path, target):
+            out["is_ancestor"] = True
+            out["would_create_cycle"] = True
+            out["warnings"].append(
+                "folder contains the parent — linking it would create a cycle")
+            return out
+        if any(_same_path(a["path"], target) for a in out["ancestors"]):
+            out["is_ancestor"] = True
+            out["would_create_cycle"] = True
+            out["warnings"].append(
+                "folder is already an ancestor of the parent — linking it would create a cycle")
             return out
 
-        if _read_config(self.parent_path).get("parent"):
+        # ── Depth ──────────────────────────────────────────────────
+        out["subtree_depth"] = subtree_depth(target)
+        total_depth = out["depth"] + out["subtree_depth"]
+        if total_depth > MAX_DEPTH:
             out["warnings"].append(
-                "parent is itself a sub-project (nesting depth > 1 is not supported)"
-            )
+                f"hierarchy would be {total_depth} levels deep (max {MAX_DEPTH})")
             return out
+
+        # ── Link kind ──────────────────────────────────────────────
+        # Nested children carry a rel_path and are carved out of the parent's
+        # index; external children are addressed absolutely and change nothing
+        # about what the parent indexes.
+        if is_within(target, self.parent_path):
+            out["link_kind"] = LINK_NESTED
+            out["rel_path"] = PurePosixPath(
+                *target.relative_to(Path(self.parent_path).resolve()).parts).as_posix()
+        else:
+            out["link_kind"] = LINK_EXTERNAL
+            out["warnings"].append(
+                "folder is outside the parent — it will be linked by path, "
+                "and the parent's index is unaffected")
 
         out["has_c3"] = (target / ".c3").is_dir()
         for e in get_subprojects(self.parent_path):
-            if _same_path(self._abs_child(e.get("rel_path", "")), target):
+            if _same_path(self._abs_child(e), target):
                 out["already_linked"] = True
                 if out["has_c3"]:
                     out["warnings"].append("already designated as a sub-project")
@@ -293,7 +517,7 @@ class SubprojectManager:
                 break
 
         if out["has_c3"]:
-            back = _read_config(target).get("parent") or {}
+            back = parent_link(target)
             if back.get("path") and not _same_path(back["path"], self.parent_path):
                 out["already_child_of"] = back["path"]
                 out["warnings"].append(f"already a sub-project of {back['path']}")
@@ -316,7 +540,8 @@ class SubprojectManager:
                     "validation": v}
 
         target = Path(v["path"])
-        rel_posix = PurePosixPath(*target.relative_to(Path(self.parent_path).resolve()).parts).as_posix()
+        link_kind = v["link_kind"]
+        rel_posix = v["rel_path"]  # None for an external link
         name = name or target.name
         adopted = v["has_c3"]
         warnings = []
@@ -327,33 +552,42 @@ class SubprojectManager:
             from cli.c3 import _do_init
             _do_init(str(target), ide_name=ide)
 
-        # Child back-link.
+        # Child back-link. rel_path is best-effort and omitted entirely when
+        # the two sides sit on different Windows drives, where relpath raises.
         child_cfg = _read_config(target)
-        child_cfg["parent"] = {
-            "name": self._parent_name(),
-            "path": self.parent_path,
-            "rel_path": Path(os.path.relpath(self.parent_path, target)).as_posix(),
-        }
+        back = {"name": self._parent_name(), "path": self.parent_path}
+        back_rel = _rel_or_none(self.parent_path, target)
+        if back_rel is not None:
+            back["rel_path"] = back_rel
+        child_cfg["parent"] = back
         _write_config(target, child_cfg)
 
         # Parent config entry (replace stale duplicate if re-adding).
         parent_cfg = _read_config(self.parent_path)
         entries = [e for e in parent_cfg.get("subprojects", []) if isinstance(e, dict)]
-        entries = [e for e in entries
-                   if not _same_path(self._abs_child(e.get("rel_path", "")), target)]
-        entries.append({"name": name, "rel_path": rel_posix, "added_at": _utcnow()})
+        entries = [e for e in entries if not _same_path(self._abs_child(e), target)]
+        entry = {"name": name, "added_at": _utcnow()}
+        if link_kind == LINK_EXTERNAL:
+            entry["path"] = str(target)
+            entry["link"] = LINK_EXTERNAL
+        else:
+            entry["rel_path"] = rel_posix
+        entries.append(entry)
         parent_cfg["subprojects"] = entries
         _write_config(self.parent_path, parent_cfg)
 
         # Global registry.
         self.pm.add_project(str(target), name=name, parent_path=self.parent_path)
 
+        # Only a nested child changes what the parent indexes; an external one
+        # was never in the parent's scan tree, so there is nothing to rebuild.
         reindex = {}
-        if reindex_parent:
+        if reindex_parent and link_kind == LINK_NESTED:
             reindex = self._reindex_parent()
 
         result = {"added": True, "adopted": adopted, "name": name,
-                  "rel_path": rel_posix, "path": str(target)}
+                  "rel_path": rel_posix, "path": str(target),
+                  "link_kind": link_kind, "depth": v["depth"]}
         if reindex:
             result["parent_reindex"] = reindex
         if warnings:
@@ -368,7 +602,8 @@ class SubprojectManager:
         if entry is None:
             return {"removed": False, "error": f"no sub-project matches: {ref}"}
 
-        abs_path = self._abs_child(entry.get("rel_path", ""))
+        abs_path = self._abs_child(entry)
+        was_nested = entry_link_kind(entry) == LINK_NESTED
         warnings = []
 
         # Strip from parent config.
@@ -376,7 +611,7 @@ class SubprojectManager:
         parent_cfg["subprojects"] = [
             e for e in parent_cfg.get("subprojects", [])
             if not (isinstance(e, dict)
-                    and _same_path(self._abs_child(e.get("rel_path", "")), abs_path))
+                    and _same_path(self._abs_child(e), abs_path))
         ]
         if not parent_cfg["subprojects"]:
             parent_cfg.pop("subprojects", None)
@@ -414,12 +649,15 @@ class SubprojectManager:
                 warnings.append(f"cleanup helpers unavailable: {e}")
             self.pm.remove_project(str(abs_path))
 
+        # Un-nesting restores a subtree to the parent's index; unlinking an
+        # external child leaves the parent's scan tree exactly as it was.
         reindex = {}
-        if reindex_parent:
+        if reindex_parent and was_nested:
             reindex = self._reindex_parent()
 
         result = {"removed": True, "mode": mode, "path": str(abs_path),
-                  "name": entry.get("name")}
+                  "name": entry.get("name"),
+                  "link_kind": LINK_NESTED if was_nested else LINK_EXTERNAL}
         if reindex:
             result["parent_reindex"] = reindex
         if warnings:
@@ -445,20 +683,21 @@ class SubprojectManager:
 
         registry = self.pm._read_projects()
         for entry in entries:
-            abs_path = self._abs_child(entry.get("rel_path", ""))
+            abs_path = self._abs_child(entry)
             status = self._entry_status(entry, registry)
             rec = {"name": entry.get("name"), "rel_path": entry.get("rel_path"),
-                   "path": str(abs_path), "status": status}
+                   "path": str(abs_path), "status": status,
+                   "link_kind": entry_link_kind(entry)}
             if status == "missing_folder" and prune and fix:
                 pruned.append(rec)
                 continue
             if fix and status == "backlink_broken":
                 child_cfg = _read_config(abs_path)
-                child_cfg["parent"] = {
-                    "name": self._parent_name(),
-                    "path": self.parent_path,
-                    "rel_path": Path(os.path.relpath(self.parent_path, abs_path)).as_posix(),
-                }
+                back = {"name": self._parent_name(), "path": self.parent_path}
+                back_rel = _rel_or_none(self.parent_path, abs_path)
+                if back_rel is not None:
+                    back["rel_path"] = back_rel
+                child_cfg["parent"] = back
                 _write_config(abs_path, child_cfg)
                 fixed.append({**rec, "action": "backlink_rewritten"})
                 status = self._entry_status(entry)
@@ -479,7 +718,7 @@ class SubprojectManager:
 
         # Registry orphans: claim this parent but aren't in the config.
         orphans = []
-        config_paths = {_norm(self._abs_child(e.get("rel_path", ""))) for e in keep}
+        config_paths = {_norm(self._abs_child(e)) for e in keep}
         for p in self.pm._read_projects():
             if p.get("parent_path") and _same_path(p["parent_path"], self.parent_path):
                 if _norm(p.get("path", "")) not in config_paths:
@@ -500,13 +739,19 @@ class SubprojectManager:
 
     # ── Governance ─────────────────────────────────────────────────
 
-    def cascade(self, op: str, include_parent: bool = False, mcp: bool = False) -> dict:
-        """Run ``op`` across all sub-projects (sequential), aggregating results."""
+    def cascade(self, op: str, include_parent: bool = False, mcp: bool = False,
+                depth: int = MAX_DEPTH) -> dict:
+        """Run ``op`` across the whole subtree (sequential), aggregating results.
+
+        Descends to ``depth`` levels — ``depth=1`` is the pre-2.96 direct-children
+        behaviour. ``descendants()`` de-duplicates, so a project reachable twice
+        is still operated on once.
+        """
         if op not in VALID_CASCADE_OPS:
             return {"op": op, "error": f"invalid op: {op} (use {'|'.join(VALID_CASCADE_OPS)})",
                     "results": [], "summary": {"total": 0, "ok": 0, "failed": 0}}
 
-        targets = [(c["name"], c["path"], c["status"]) for c in self.list()]
+        targets = [(c["name"], c["path"], c["status"]) for c in self.descendants(depth)]
         if include_parent:
             targets.append((self._parent_name(), self.parent_path, "ok"))
 
@@ -556,6 +801,7 @@ class SubprojectManager:
             "op": op,
             "parent": self.parent_path,
             "include_parent": include_parent,
+            "depth": depth,
             "results": results,
             "summary": {"total": len(results), "ok": ok_count,
                         "failed": len(results) - ok_count},
@@ -594,3 +840,127 @@ class SubprojectManager:
             except Exception:
                 pass  # embeddings are best-effort; index/doc exclusion is the contract
         return detail
+
+
+# ── Path inspection ────────────────────────────────────────────────────────
+
+def _count_lines(path: Path, cap: int = 100_000) -> int:
+    """Bounded line count — big ledgers are common and reading one is enough."""
+    if not path.exists():
+        return 0
+    n = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, _ in enumerate(f, 1):
+                if n >= cap:
+                    break
+    except OSError:
+        return 0
+    return n
+
+
+def _project_summary(path: Path) -> dict:
+    """Cheap identity + volume read of an initialized .c3 branch."""
+    cfg = _read_config(path)
+    meta = cfg.get("meta") or {}
+    c3 = path / ".c3"
+    try:
+        sessions = sum(1 for _ in (c3 / "sessions").glob("*.json"))
+    except OSError:
+        sessions = 0
+    return {
+        "name": meta.get("name") or path.name,
+        "description": meta.get("description") or "",
+        "c3_version": cfg.get("version"),
+        "ide": cfg.get("ide"),
+        "facts_count": _facts_count(path),
+        "notification_count": _notification_count(path),
+        "sessions": sessions,
+        "edit_ledger_entries": _count_lines(c3 / "edit_ledger.jsonl"),
+        "has_index": (c3 / "index" / "index.json").exists(),
+    }
+
+
+def _detect_nested(path: Path, linked: set) -> list:
+    """Nested .c3 projects under ``path`` that are not linked to it.
+
+    Suggestions only — nothing here is ever applied automatically. Explicit
+    links are the source of truth; this is the prompt to create one.
+    """
+    from services.project_runtime import scan_for_c3
+
+    # scan_for_c3 stops at the first .c3 it finds, so scanning ``path`` itself
+    # would return only ``path`` when it is already a project. Scan one level in.
+    if (path / ".c3").is_dir():
+        try:
+            roots = [str(d) for d in path.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        except OSError:
+            roots = []
+    else:
+        roots = [str(path)]
+    out = []
+    for found in scan_for_c3(roots):
+        if _same_path(found, path) or _norm(found) in linked:
+            continue
+        out.append({"name": Path(found).name, "path": found, "has_c3": True, "linked": False})
+    return out
+
+
+def inspect_path(path, detect: bool = True) -> dict:
+    """Read-only report on any path: is it a C3 project, and how is it linked?
+
+    Mutates nothing. This is what the Hub calls before offering to link, so
+    inspecting an unregistered folder must never register it.
+    """
+    out = {
+        "path": "", "exists": False, "is_dir": False, "has_c3": False,
+        "registered": False, "project": None, "parent": None, "ancestors": [],
+        "depth": 0, "children": [], "detected": [], "linkable": False,
+        "warnings": [],
+    }
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError) as e:
+        out["warnings"].append(f"unresolvable path: {e}")
+        return out
+
+    out["path"] = str(target)
+    out["exists"] = target.exists()
+    out["is_dir"] = target.is_dir()
+    if not out["is_dir"]:
+        out["warnings"].append("folder does not exist")
+        return out
+
+    out["has_c3"] = (target / ".c3").is_dir()
+    if not out["has_c3"]:
+        out["warnings"].append("no .c3 here — it will be initialized when linked")
+        if detect:
+            out["detected"] = _detect_nested(target, set())
+        out["linkable"] = True
+        return out
+
+    out["project"] = _project_summary(target)
+    out["registered"] = any(
+        _same_path(p.get("path", ""), target)
+        for p in ProjectManager()._read_projects()
+    )
+    if not out["registered"]:
+        out["warnings"].append("has .c3 but is not in the registry — linking will register it")
+
+    back = parent_link(target)
+    if back:
+        out["parent"] = {"name": back.get("name") or Path(back["path"]).name,
+                         "path": back["path"]}
+        out["warnings"].append(f"already a sub-project of {back['path']}")
+    out["ancestors"] = ancestors(target)
+    out["depth"] = len(out["ancestors"])
+
+    children = SubprojectManager(str(target)).list()
+    out["children"] = children
+    if detect:
+        out["detected"] = _detect_nested(target, {_norm(c["path"]) for c in children})
+
+    # Linkable means "this is a thing a link can point at" — whether a specific
+    # parent may claim it is validate()'s question, not this one.
+    out["linkable"] = out["parent"] is None
+    return out

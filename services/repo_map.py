@@ -516,6 +516,12 @@ class RepoMapService:
         return "(no description)"
 
     def _subproject_boundaries(self) -> list:
+        """Nested children only — they are the folders inside this tree.
+
+        An external child (linked by absolute path) has no ``rel_path`` and is
+        not in this tree at all, so it is not a boundary to draw. The truthy
+        filter below is what keeps it out.
+        """
         try:
             from services.subprojects import get_subprojects
             entries = get_subprojects(self.project_path)
