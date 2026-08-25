@@ -89,3 +89,4 @@ requirements.txt
 # Temp benchmark files
 _bench_*.txt
 _fix_*.py
+node_modules/

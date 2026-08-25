@@ -14,6 +14,12 @@ be a plain `/* ... */`, or move above the conditional.
 The existing bundle tests check the SHAPE of the build (files listed, markers
 stamped, order kept) and passed the whole time the broken file was shipping.
 This one checks the property that actually broke.
+
+The transpile checks need node + `@babel/standalone`, and skip without them.
+That skip is correct on a dev box and dangerous in CI, because a summary line
+reading "2 passed, 2 skipped" is indistinguishable from a green run — so
+`C3_REQUIRE_JSX_TOOLCHAIN=1` turns a missing toolchain into a FAILURE. CI sets
+it; locally, `npm install --no-save @babel/standalone` makes the real parse run.
 """
 from __future__ import annotations
 
@@ -117,7 +123,28 @@ def _toolchain_ready():
     return probe.returncode == 0
 
 
-@unittest.skipUnless(_toolchain_ready(),
+# Skipping is right on a dev box with no node, and WRONG anywhere the
+# toolchain is supposed to be installed: "2 passed, 2 skipped" reads exactly
+# like a green run, so a broken `npm install` step would silently return CI to
+# the state that let 2.92.0-2.92.3 ship. Where the toolchain is promised, set
+# C3_REQUIRE_JSX_TOOLCHAIN=1 and a missing one FAILS instead of skipping.
+_TOOLCHAIN = _toolchain_ready()
+_REQUIRED = os.environ.get("C3_REQUIRE_JSX_TOOLCHAIN", "") not in ("", "0", "false")
+
+
+class TestToolchainAvailability(unittest.TestCase):
+    def test_toolchain_present_when_required(self):
+        if not _REQUIRED:
+            self.skipTest("C3_REQUIRE_JSX_TOOLCHAIN not set (local dev)")
+        self.assertTrue(
+            _TOOLCHAIN,
+            "C3_REQUIRE_JSX_TOOLCHAIN=1 but node + @babel/standalone did not "
+            "resolve, so the bundle transpile checks below would have SKIPPED "
+            "and the run would still have looked green. Install the toolchain "
+            "(`npm install --no-save @babel/standalone`) or unset the variable.")
+
+
+@unittest.skipUnless(_TOOLCHAIN,
                      "node + @babel/standalone unavailable (see module comment)")
 class TestBundlesActuallyTranspile(unittest.TestCase):
     def _check(self, server_rel, const_name):
