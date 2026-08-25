@@ -273,32 +273,32 @@ function CardKebab({ p, isParent, isChild, rollup, onChanged, onOpenModal, onOpe
             onClick={() => { close(); onOpenModal('transfer', p); }} />
           <CardMenuItem icon="layers" label="Merge…"
             onClick={() => { close(); onOpenModal('merge', p); }} />
-          {!isChild && (
+          {/* Every project can take children -- a sub-project is allowed
+              its own sub-projects, so these are no longer gated on !isChild. */}
+          <CardMenuDivider />
+          <CardMenuItem icon="tree" label="Link project by path…"
+            onClick={() => { close(); onOpenModal('linkPath', p); }} />
+          <CardMenuItem icon="folderOpen" label="Designate sub-project…"
+            onClick={() => { close(); onOpenModal('folderPick', p); }} />
+          {!isChild && !isParent && (
+            <CardMenuItem icon="gitBranch" label="Make sub-project of…"
+              onClick={() => { close(); onOpenModal('makeSub', p); }} />
+          )}
+          {isParent && (
             <React.Fragment>
-              <CardMenuDivider />
-              <CardMenuItem icon="folderOpen" label="Designate sub-project…"
-                onClick={() => { close(); onOpenModal('folderPick', p); }} />
-              {!isParent && (
-                <CardMenuItem icon="gitBranch" label="Make sub-project of…"
-                  onClick={() => { close(); onOpenModal('makeSub', p); }} />
-              )}
-              {isParent && (
+              <CardMenuItem icon="refresh" label={cascadeOpen ? 'Cascade ▾' : 'Cascade ▸'}
+                onClick={() => setCascadeOpen(o => !o)} />
+              {cascadeOpen && (
                 <React.Fragment>
-                  <CardMenuItem icon="refresh" label={cascadeOpen ? 'Cascade ▾' : 'Cascade ▸'}
-                    onClick={() => setCascadeOpen(o => !o)} />
-                  {cascadeOpen && (
-                    <React.Fragment>
-                      <CardMenuItem indent label="Update all" onClick={() => runCascade('update')} />
-                      <CardMenuItem indent label="Reindex all" onClick={() => runCascade('reindex')} />
-                      <CardMenuItem indent label="Health check" onClick={() => runCascade('health')} />
-                      <CardMenuItem indent icon={cascadeParent ? 'check' : null}
-                        label="Include parent" color={cascadeParent ? T.accent : null}
-                        onClick={() => setCascadeParent(o => !o)} />
-                    </React.Fragment>
-                  )}
-                  <CardMenuItem icon="wrench" label="Reconcile links" onClick={runReconcile} />
+                  <CardMenuItem indent label="Update all" onClick={() => runCascade('update')} />
+                  <CardMenuItem indent label="Reindex all" onClick={() => runCascade('reindex')} />
+                  <CardMenuItem indent label="Health check" onClick={() => runCascade('health')} />
+                  <CardMenuItem indent icon={cascadeParent ? 'check' : null}
+                    label="Include parent" color={cascadeParent ? T.accent : null}
+                    onClick={() => setCascadeParent(o => !o)} />
                 </React.Fragment>
               )}
+              <CardMenuItem icon="wrench" label="Reconcile links" onClick={runReconcile} />
             </React.Fragment>
           )}
           {isChild && (
@@ -612,7 +612,9 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
           }}>
             {childRows.map(c => (
               <div key={c.path} onClick={() => onOpenDrill(c)} style={{
-                display: 'flex', alignItems: 'center', gap: 8, padding: '3px 2px',
+                display: 'flex', alignItems: 'center', gap: 8,
+                // Grid view flattens the subtree; indent carries the depth.
+                padding: '3px 2px', paddingLeft: 2 + (c._depth || 0) * 14,
                 cursor: 'pointer', minWidth: 0,
               }}>
                 <GlowDot color={c.active ? T.accent : T.textDim} size={5} />
@@ -630,7 +632,7 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
                 <span className="mono" style={{ fontSize: 10, color: T.textDim, flexShrink: 0 }}>
                   {c.last_session ? timeAgo(c.last_session) : ''}
                 </span>
-                <CardKebab p={c} isParent={false} isChild
+                <CardKebab p={c} isParent={!!c.is_parent} isChild
                   onChanged={onChanged} onOpenModal={onOpenModal} onOpenDrawer={onOpenDrawer} />
               </div>
             ))}

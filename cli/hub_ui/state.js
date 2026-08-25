@@ -81,7 +81,8 @@ const filterProjects = (projects, filter, search) => {
 
 // ── Tree building ──────────────────────────────────────────────
 // Groups registry entries by parent_path (feature-detected: entries
-// without the field render flat). Returns [{project, children: [...]}].
+// without the field render flat) and nests to any depth. Returns
+// [{project, children: [{project, children: [...]}, ...]}].
 const buildProjectTree = (projects) => {
   const byPath = {};
   projects.forEach(p => { byPath[(p.path || '').toLowerCase()] = p; });
@@ -99,18 +100,52 @@ const buildProjectTree = (projects) => {
       roots.push(p);
     }
   });
-  return roots.map(p => ({
-    project: p,
-    children: childrenOf[(p.path || '').toLowerCase()] || [],
-  }));
+
+  // The hierarchy is a tree, but the registry is a file a human can edit.
+  // A visited set keeps a cycle from recursing forever.
+  const seen = new Set();
+  const node = (p) => {
+    const key = (p.path || '').toLowerCase();
+    if (seen.has(key)) return { project: p, children: [] };
+    seen.add(key);
+    return { project: p, children: (childrenOf[key] || []).map(node) };
+  };
+
+  const out = roots.map(node);
+  // Anything unreachable from a root -- only possible when a cycle leaves
+  // every member of it with a registered parent -- is promoted rather than
+  // dropped. A project must never silently vanish from the listing.
+  projects.forEach(p => {
+    if (!seen.has((p.path || '').toLowerCase())) out.push(node(p));
+  });
+  return out;
 };
 
-// Rollup chips for a parent card, computed client-side from child rows.
-const treeRollup = (children) => ({
-  count: children.length,
-  active: children.filter(c => c.active).length,
-  alerts: children.reduce((n, c) => n + (c.notification_count || 0), 0),
-});
+// Depth-first flatten, stamping _depth on each row for indented rendering.
+const flattenTree = (nodes, depth = 0, out = []) => {
+  (nodes || []).forEach(n => {
+    const p = n.project || n;
+    p._depth = depth;
+    out.push(p);
+    flattenTree(n.children || [], depth + 1, out);
+  });
+  return out;
+};
+
+// Rollup chips for a parent card. Counts the whole subtree, not just the
+// first hop. Accepts nested nodes or a flat list of rows.
+const treeRollup = (nodes) => {
+  let count = 0, active = 0, alerts = 0;
+  const walk = (list) => (list || []).forEach(n => {
+    const p = n.project || n;
+    count += 1;
+    if (p.active) active += 1;
+    alerts += (p.notification_count || 0);
+    walk(n.children);
+  });
+  walk(nodes);
+  return { count, active, alerts };
+};
 
 // ── Tag tree for the sidebar (hierarchical tags via "/") ───────
 const buildTagTree = (projects) => {

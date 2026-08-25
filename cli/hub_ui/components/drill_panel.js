@@ -111,9 +111,11 @@ function DrillNeedsInit({ project, onReady }) {
 }
 
 function DrillPanel({ project, tab, setTab, onClose, onChanged, onOpenModal, projects }) {
-  // Children can't have children (depth-1) — hide the Sub-projects tab for them.
+  // A sub-project may have sub-projects of its own, so the Sub-projects tab
+  // stays available at every level. isChild now only drives the "under
+  // <parent>" chip below.
   const isChild = !!project.parent_path;
-  const tabs = DRILL_PANEL_TABS.filter(([id]) => id !== 'subprojects' || !isChild);
+  const tabs = DRILL_PANEL_TABS;
   // "under <parent>" chip: friendly name from the loaded project list when
   // available (optional prop), else the last path segment.
   const parentName = (() => {
