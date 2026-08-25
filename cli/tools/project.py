@@ -23,14 +23,17 @@ from services.project_runtime import (
 _MEMORY_WRITE = {"add", "update", "delete", "consolidate", "consolidate_deep", "ground"}
 # Dispatch verbs that mutate the target project.
 _WRITE_OPS = {"edit", "shell"}
-_DISCOVERY_OPS = {"list", "scan", "info", "register", "unregister", "subprojects"}
+_DISCOVERY_OPS = {"list", "scan", "info", "register", "unregister", "subprojects",
+                  "sub_tree", "sub_inspect"}
 _READ_OPS = {
     "search", "read", "compress", "status", "memory",
     "impact", "edits", "validate", "filter",
 }
-# Sub-project governance verbs (project = the PARENT). sub_add/sub_remove and
-# cascade update/reindex mutate the target tree -> allow_write required.
-_SUB_OPS = {"subprojects", "sub_add", "sub_remove", "sub_cascade"}
+# Sub-project governance verbs (project = the PARENT). sub_add/sub_link/
+# sub_remove and cascade update/reindex mutate the target tree -> allow_write
+# required. sub_tree and sub_inspect are reads and mutate nothing.
+_SUB_OPS = {"subprojects", "sub_tree", "sub_inspect",
+            "sub_add", "sub_link", "sub_remove", "sub_cascade"}
 
 
 def _foreign_finalize(_name, _args, resp, _summ="", **_kw):
@@ -202,9 +205,11 @@ def _do_subprojects(action: str, project: str, *, target: str = "", tag: str = "
     if not _is_registered(resolved["path"]):
         return _registration_error(action, resolved)
     from services.subprojects import (
+        MAX_DEPTH,
         VALID_CASCADE_OPS,
         VALID_REMOVE_MODES,
         SubprojectManager,
+        inspect_path,
     )
 
     sm = SubprojectManager(resolved["path"])
@@ -222,32 +227,83 @@ def _do_subprojects(action: str, project: str, *, target: str = "", tag: str = "
         except Exception:
             pass
 
-    if action == "subprojects":
-        tree = sm.tree()
+    if action in ("subprojects", "sub_tree"):
+        # 'subprojects' keeps the direct-children view it has always had;
+        # 'sub_tree' walks the whole hierarchy.
+        levels = MAX_DEPTH if action == "sub_tree" else 1
+        tree = sm.tree(depth=levels)
         if not tree["children"]:
             return (f"No sub-projects designated in {tree['parent']['name']}. "
-                    "Designate one: c3_project(action='sub_add', project='<parent>', "
-                    "target='<folder>', allow_write=true)")
+                    "Link one: c3_project(action='sub_link', project='<parent>', "
+                    "target='<path>', allow_write=true)")
         out = [f"Sub-projects of {tree['parent']['name']} ({tree['rollup']['children']}):"]
-        for c in tree["children"]:
-            out.append(f"  - {c['name']:<24} {c['status']:<16} "
-                       f"alerts:{c['notification_count']:<3} {c['rel_path']}")
+
+        def _rows(children, indent="  "):
+            for c in children:
+                loc = c["rel_path"] or c["path"]
+                out.append(f"{indent}- {c['name']:<24} {c['status']:<16} "
+                           f"{c['link_kind']:<9} alerts:{c['notification_count']:<3} {loc}")
+                _rows(c.get("children") or [], indent + "    ")
+
+        _rows(tree["children"])
         r = tree["rollup"]
-        out.append(f"  rollup: {r['notifications']} alert(s), {r['issues']} issue(s)")
+        out.append(f"  rollup: {r['direct_children']} direct, {r['children']} total, "
+                   f"{r['notifications']} alert(s), {r['issues']} issue(s)")
         return "\n".join(out)
 
-    if action == "sub_add":
+    if action == "sub_inspect":
+        # Read-only: reports what is at a path and how it is already linked.
+        # Never registers, never links.
+        probe = target or resolved["path"]
+        rep = inspect_path(probe)
+        out = [f"Inspect: {rep['path']}"]
+        if not rep["is_dir"]:
+            return out[0] + "\n  not a folder"
+        p = rep.get("project")
+        if p:
+            out.append(f"  C3 project '{p['name']}' v{p.get('c3_version') or '?'} "
+                       f"({'registered' if rep['registered'] else 'NOT registered'})")
+            out.append(f"  {p['facts_count']} facts, {p['sessions']} sessions, "
+                       f"{p['edit_ledger_entries']} ledger entries")
+        else:
+            out.append("  no .c3 — not a C3 project yet")
+        out.append("  parent: " + (" < ".join(a["name"] for a in rep["ancestors"])
+                                   if rep["ancestors"] else "(top-level)"))
+        for c in rep["children"]:
+            out.append(f"    child: {c['name']:<24} {c['link_kind']}/{c['status']}  {c['path']}")
+        for d in rep["detected"]:
+            out.append(f"    detected (unlinked): {d['name']:<20} {d['path']}")
+        for w in rep["warnings"]:
+            out.append(f"  warning: {w}")
+        return "\n".join(out)
+
+    if action in ("sub_add", "sub_link"):
         if not allow_write:
-            return _blocked("sub_add")
+            return _blocked(action)
         if not (target or "").strip():
-            return ("[c3_project:error] sub_add requires target='<folder>' "
-                    "(relative to the parent). Optional: tag='<display name>'.")
-        res = sm.add(target, name=(tag or None))
+            return (f"[c3_project:error] {action} requires target='<folder|path>' "
+                    "(relative to the parent, or absolute anywhere on disk). "
+                    "Optional: tag='<display name>'.")
+        # sub_link means "this is already a project" — it refuses to create one.
+        if action == "sub_link":
+            candidate = Path(target)
+            if not candidate.is_absolute():
+                candidate = Path(resolved["path"]) / target
+            probe = inspect_path(candidate, detect=False)
+            if probe["is_dir"] and not probe["has_c3"]:
+                return (f"[c3_project:error] not a C3 project: {probe['path']}. "
+                        "Use action='sub_add' to initialize it as one.")
+        res = sm.add(target, name=(tag or None), run_init=(action == "sub_add"))
         if not res.get("added"):
             return f"[c3_project:error] {res.get('error')}"
-        _audit("sub_add")
+        _audit(action)
+        if res["link_kind"] == "external":
+            return (f"Linked by path: {res['name']}  ({res['path']}) at depth "
+                    f"{res['depth']} — outside the parent tree, so the parent's "
+                    "index is unchanged.")
         verb = "Adopted (existing .c3 kept)" if res.get("adopted") else "Initialized"
-        return f"{verb}: {res['name']}  ({res['path']}) — parent index now excludes it."
+        return (f"{verb}: {res['name']}  ({res['path']}) at depth {res['depth']} "
+                "— parent index now excludes it.")
 
     if action == "sub_remove":
         if not allow_write:
@@ -391,7 +447,8 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
             f"Discovery: {', '.join(sorted(_DISCOVERY_OPS))}. "
             f"Read: {', '.join(sorted(_READ_OPS))}. "
             f"Write (allow_write=true): {', '.join(sorted(_WRITE_OPS))}. "
-            "Sub-projects: sub_add, sub_remove, sub_cascade.",
+            "Sub-projects: sub_tree, sub_inspect (reads); "
+            "sub_add, sub_link, sub_remove, sub_cascade (allow_write=true).",
             "error")
 
     # ── Discovery (no foreign runtime needed) ──────────────────────────

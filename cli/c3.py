@@ -7986,14 +7986,117 @@ def cmd_sub(args):
         print(f"No .c3 found in {parent}. Run 'c3 init' there first.")
         return
     # Import after the cheap guard — the registry module needs a resolvable home.
-    from services.subprojects import VALID_CASCADE_OPS, SubprojectManager
+    from services.subprojects import (
+        MAX_DEPTH,
+        VALID_CASCADE_OPS,
+        SubprojectManager,
+        inspect_path,
+    )
 
     sm = SubprojectManager(parent)
     sub = getattr(args, "sub_cmd", "list") or "list"
     target = getattr(args, "target", None)
     as_json = getattr(args, "json", False)
+    depth = getattr(args, "depth", None) or MAX_DEPTH
 
-    if sub == "add":
+    if sub == "inspect":
+        if not target:
+            print("Usage: c3 sub inspect <path> [--json]")
+            return
+        rep = inspect_path(target, detect=not getattr(args, "no_detect", False))
+        if as_json:
+            print(json.dumps(rep, indent=2))
+            return
+        print(f"\n{rep['path']}")
+        if not rep["is_dir"]:
+            print("  not a folder")
+            return
+        proj = rep.get("project")
+        if proj:
+            reg = "registered" if rep["registered"] else "NOT registered"
+            print(f"  C3 project: {proj['name']}  (v{proj.get('c3_version') or '?'}, "
+                  f"ide={proj.get('ide') or '?'}, {reg})")
+            print(f"  {proj['facts_count']} facts, {proj['sessions']} sessions, "
+                  f"{proj['edit_ledger_entries']} ledger entries, "
+                  f"{proj['notification_count']} alerts")
+        else:
+            print("  no .c3 — not a C3 project yet")
+        if rep["ancestors"]:
+            chain = " < ".join(a["name"] for a in rep["ancestors"])
+            print(f"  parent chain (depth {rep['depth']}): {chain}")
+        else:
+            print("  top-level (no parent)")
+        if rep["children"]:
+            print(f"  {len(rep['children'])} sub-project(s):")
+            for c in rep["children"]:
+                print(f"    - {c['name']:<22} [{c['link_kind']}/{c['status']}]  {c['path']}")
+        if rep["detected"]:
+            print(f"  {len(rep['detected'])} unlinked project(s) detected inside:")
+            for d in rep["detected"]:
+                print(f"    ? {d['name']:<22} {d['path']}")
+            print("    (suggestions only — link with `c3 sub link <path>`)")
+        for w in rep["warnings"]:
+            print(f"  warning: {w}")
+
+    elif sub == "tree":
+        t = sm.tree(depth=depth)
+        if as_json:
+            print(json.dumps(t, indent=2))
+            return
+        r = t["rollup"]
+        print(f"\n{t['parent']['name']}  ({t['parent']['path']})")
+
+        def _render(rows, indent="  "):
+            for row in rows:
+                flag = "" if row["status"] == "ok" else f"  [{row['status']}]"
+                kind = "" if row["link_kind"] == "nested" else "  (linked)"
+                print(f"{indent}- {row['name']}{kind}{flag}")
+                _render(row.get("children") or [], indent + "    ")
+
+        _render(t["children"])
+        if not t["children"]:
+            print("  No sub-projects designated. Use `c3 sub link <path>`.")
+            return
+        line = f"\n{r['children']} descendant(s), {r['direct_children']} direct"
+        if r["issues"]:
+            line += f" -- {r['issues']} with issues (run `c3 sub check --fix`)"
+        print(line)
+
+    elif sub == "link":
+        if not target:
+            print("Usage: c3 sub link <path> [--parent PATH] [--name NAME] [--init]")
+            return
+        # link is designation for a project that already exists anywhere on
+        # disk; add is for a folder this parent should initialize.
+        want_init = getattr(args, "init", False)
+        candidate = target if Path(target).is_absolute() else str(Path(parent) / target)
+        probe = inspect_path(candidate, detect=False)
+        if probe["is_dir"] and not probe["has_c3"] and not want_init:
+            err = (f"not a C3 project: {probe['path']} — "
+                   "pass --init to initialize it, or run `c3 init` there first")
+            if as_json:
+                print(json.dumps({"added": False, "error": err}, indent=2))
+            else:
+                print(f"Failed: {err}")
+            return
+        result = sm.add(
+            target,
+            name=getattr(args, "name", None),
+            ide=getattr(args, "ide", None),
+            run_init=want_init,
+            reindex_parent=not getattr(args, "no_reindex_parent", False),
+        )
+        if as_json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result.get("added"):
+            print(f"Failed: {result.get('error')}")
+            return
+        where = "by path" if result["link_kind"] == "external" else f"at {result['rel_path']}"
+        print(f"\n[OK] Linked {result['name']} {where}  (depth {result['depth']})")
+        print(f"  {result['path']}")
+
+    elif sub == "add":
         if not target:
             print("Usage: c3 sub add <folder> [--parent PATH] [--name NAME]")
             return
@@ -8026,16 +8129,19 @@ def cmd_sub(args):
         if not children:
             print("No sub-projects designated. Use `c3 sub add <folder>`.")
             return
-        fmt = "{:<22} {:<16} {:>6} {:>7}  {}"
-        print(fmt.format("NAME", "STATUS", "FACTS", "ALERTS", "REL PATH"))
-        print("-" * 76)
+        fmt = "{:<22} {:<16} {:<9} {:>6} {:>7}  {}"
+        print(fmt.format("NAME", "STATUS", "LINK", "FACTS", "ALERTS", "LOCATION"))
+        print("-" * 90)
         for c in children:
+            # An external child has no rel_path — show where it actually lives.
+            location = c.get("rel_path") or c.get("path", "")
             print(fmt.format(
                 (c.get("name") or "?")[:21],
                 c.get("status", "?"),
+                c.get("link_kind", "nested"),
                 c.get("facts_count", 0),
                 c.get("notification_count", 0),
-                c.get("rel_path", ""),
+                location,
             ))
         issues = sum(1 for c in children if c["status"] != "ok")
         line = f"\n{len(children)} sub-project(s)"
@@ -8075,7 +8181,8 @@ def cmd_sub(args):
             return
         result = sm.cascade(target,
                             include_parent=getattr(args, "include_parent", False),
-                            mcp=getattr(args, "mcp", False))
+                            mcp=getattr(args, "mcp", False),
+                            depth=depth)
         if as_json:
             print(json.dumps(result, indent=2))
             return
@@ -8096,7 +8203,8 @@ def cmd_sub(args):
             print("No sub-projects designated.")
             return
         for c in result["children"]:
-            print(f"  [{c['status']:<16}] {c.get('name') or '?':<22} {c.get('rel_path', '')}")
+            location = c.get("rel_path") or c.get("path", "")
+            print(f"  [{c['status']:<16}] {c.get('name') or '?':<22} {location}")
         for o in result["orphans"]:
             print(f"  [orphan_registry ] {o}")
         for f in result.get("fixed", []):
