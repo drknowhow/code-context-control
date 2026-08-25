@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.96.1] - 2026-08-25
+
+### Fixed — removing one sub-project deregistered C3 from the whole machine
+
+`c3 sub remove --clear` called `_uninstall_mcp_all(child)` without
+`include_global=False`, so beyond wiping the child's own `.c3` it walked
+`Path.home()` and stripped C3 from `~/.codex/config.toml` and deleted
+Antigravity's `mcp_config.json`. Those files are machine-wide — they serve
+every C3 project on the box. Clearing one child unregistered C3 from Codex
+and Antigravity for all of them.
+
+This is the bug 2.89.1 already fixed once, at a different call site. That
+release gave `_uninstall_mcp_all` its `include_global` flag and passed
+`False` from `merge_projects`, and its docstring states the rule outright:
+per-project cleanup must never touch home-level configs, only a real machine
+uninstall may. `SubprojectManager.remove()` was written from the same helper
+— the comment above the call still says "same cleanup helpers merge_projects
+uses" — but the copy did not carry the flag.
+
+No test caught it because `SubprojectBase` patches `_uninstall_mcp_all` with
+a lambda that swallows every argument, so the one argument that mattered was
+unobservable. The new `tests/test_subproject_clear_scope.py` runs the real
+helper against a fake home and asserts on the files, not on the call: it
+fails on the unfixed tree with the same "Deleted empty .codex/config.toml"
+output the bug produced in the wild. Two companion tests pin that `--clear`
+still removes the child's own `.c3` and instruction docs, and that `unlink`
+never reaches the uninstall helper at all.
+
+Found by hitting it — a `sub remove --clear` of a scratch project during the
+2.96.0 release check took out this machine's Codex and Antigravity C3
+registrations.
+
 ## [2.96.0] - 2026-08-25
 
 ### Added — a sub-project had to live inside its parent, one level down

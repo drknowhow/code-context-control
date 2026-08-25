@@ -629,7 +629,11 @@ class SubprojectManager:
                 # Same cleanup helpers merge_projects uses (lazy cli import).
                 from cli.c3 import _instruction_documents_for_project, _uninstall_mcp_all
                 try:
-                    _uninstall_mcp_all(str(abs_path))
+                    # Project cleanup only. ~/.codex and Antigravity's
+                    # mcp_config.json are machine-wide and serve every other
+                    # C3 project, so removing ONE sub-project must not
+                    # deregister C3 from the box.
+                    _uninstall_mcp_all(str(abs_path), include_global=False)
                 except Exception as e:
                     warnings.append(f"uninstall_mcp failed: {e}")
                 c3_dir = abs_path / ".c3"
