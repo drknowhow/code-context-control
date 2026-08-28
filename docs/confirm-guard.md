@@ -49,11 +49,18 @@ Mutation stays human-only (`c3 access add --kind confirm`, the Access tab,
   `Rule.confirm_ops == "all"` — is reserved for builtin mode downgrades of
   full-deny builtins, where confirm must cover reads or it would silently
   become allow-read. It is unreachable from config.)
-- Precedence: **`deny` > `mask` > `confirm` > `read_only`**. Mask beats
-  confirm deliberately: masked content is read-only *with no override*
-  (mask-guard §3) because an edit expressed against a transformed view
-  cannot be trusted against the real file — no confirmation flow may
-  authorise it.
+- Precedence: **`deny` > `mask` > `read_only` > `confirm`**. Confirm is the
+  loosest non-allow outcome — a hold can be approved into a write, a
+  `read_only` cannot — so under the scopes-only-tighten invariant everything
+  stricter wins. Two consequences are load-bearing: a user's `read_only`
+  rule is never softened into a pause by a builtin confirm tier beside it,
+  and a user `confirm` glob over `**/.c3/**` does not outrank the builtin
+  write-deny (the sanctioned route to a confirm-mode builtin is
+  `builtin_mode`, §7). Mask beats confirm because an edit expressed against
+  a transformed view cannot be trusted against the real file (mask-guard §3).
+  *(Corrected in v2.100.0 — 2.97.0 briefly shipped confirm above read_only,
+  which let the agent-config tier shadow a stricter user rule; the artifact
+  restore wiring tests caught it.)*
 - The verdict kind is `confirm`; the `Denial` carries `kind="confirm"` with
   the matched glob. `check()` returns that denial, so **every surface that
   was never taught about confirm refuses** (fail closed): filter, validate,
@@ -177,9 +184,23 @@ access-guard §6's, unchanged.
    the widening modes), `POST /api/access/builtin_mode` + a mode selector in
    the Access tab, `list_rules()["builtin"]["modes"]`.
 
+3. **Agent-config confirm tier** — SHIPPED v2.100.0. `BUILTIN_CONFIRM_WRITE`
+   = `**/.mcp.json`, `**/claude.md`, `**/agents.md`, `**/gemini.md`,
+   `**/.claude/{hooks,skills,agents,commands}/**` — the previously
+   UNGUARDED agent-config surfaces (an agent could add an MCP server or
+   rewrite a hook body silently; only artifact capture saw it, after the
+   fact). Default is a pause, not a block: writes hold for one-tap approval,
+   reads stay open — an agent must always be able to read its own
+   instructions. Mode-governable: this tier governs writes only, so `deny`
+   hardens to a write-deny (never a full deny) and `allow` restores the
+   pre-2.100 behaviour. The `settings*.json` write-deny is deliberately NOT
+   in this tier — hook REGISTRATION stays hard while hook BODIES pause,
+   because registration decides code execution. `artifact_store.restore()`
+   exempts builtin confirm exactly as it exempts builtin read_only: restore
+   writes back a version the store itself captured, on an audited
+   human-triggerable path.
+
 Not yet shipped, not yet frozen:
 
-3. **Agent-config confirm tier** — `.mcp.json`, CLAUDE.md/AGENTS.md,
-   `.claude/hooks|skills|agents|commands/**` as builtin confirm-write.
 4. **`shell_warn` grant wiring** — suppress the c3_shell soft-warn once per
    approved use; `_BLOCKED` never consults grants.

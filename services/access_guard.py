@@ -83,8 +83,28 @@ BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json")
 BUILTIN_DENY = ("**/.env*",)
 BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
 
-#: Globs `c3 access disable-builtin` accepts. Order is display order.
-DISABLEABLE_BUILTINS = BUILTIN_DENY + BUILTIN_WRITE_DENY
+# Tier 1, confirm-by-default (docs/confirm-guard.md §7): the agent-config
+# surfaces that were previously UNGUARDED — an agent could add an MCP server
+# to .mcp.json, rewrite a hook script's body, or edit its own instructions
+# without tripping any rule (only artifact capture saw it, after the fact).
+# The default here is a PAUSE, not a block: writes hold for one-tap approval
+# and reads stay open — an agent must always be able to read its own
+# instructions. Mode-governable like the rest of Tier 1: `deny` hardens to a
+# write-deny (reads stay open — this tier governs writes only), `allow`
+# restores the pre-2.100 behaviour. The `**/.claude/settings*.json`
+# write-deny above is NOT in this tier: hook REGISTRATION stays hard while
+# hook BODIES pause, because registration is what decides code execution.
+BUILTIN_CONFIRM_WRITE = (
+    "**/.mcp.json",
+    "**/claude.md", "**/agents.md", "**/gemini.md",
+    "**/.claude/hooks/**",
+    "**/.claude/skills/**",
+    "**/.claude/agents/**",
+    "**/.claude/commands/**",
+)
+
+#: Globs `c3 access builtin {disable,mode}` accepts. Order is display order.
+DISABLEABLE_BUILTINS = BUILTIN_DENY + BUILTIN_WRITE_DENY + BUILTIN_CONFIRM_WRITE
 
 # Spelling rules — they deny how a path is WRITTEN, not where it points, so
 # they have no glob to list. A refusal cites one of these by name, so they
@@ -278,6 +298,17 @@ for _g in BUILTIN_WRITE_DENY:
     _BUILTIN_VARIANTS[_norm_builtin(_g)] = {
         "default": _compile(_g, _KIND_READ_ONLY, "builtin"),
         "deny": _compile(_g, _KIND_DENY, "builtin"),
+        "confirm": _compile(_g, _KIND_CONFIRM, "builtin",
+                            confirm_ops="write"),
+    }
+for _g in BUILTIN_CONFIRM_WRITE:
+    # This tier governs WRITES only — an agent must always be able to read
+    # its own instructions — so `deny` hardens to a write-deny, never a full
+    # deny, and `confirm` is the default rather than a downgrade.
+    _BUILTIN_VARIANTS[_norm_builtin(_g)] = {
+        "default": _compile(_g, _KIND_CONFIRM, "builtin",
+                            confirm_ops="write"),
+        "deny": _compile(_g, _KIND_READ_ONLY, "builtin"),
         "confirm": _compile(_g, _KIND_CONFIRM, "builtin",
                             confirm_ops="write"),
     }
@@ -777,12 +808,13 @@ def canonicalize(path, project_root=".") -> tuple:
 def verdict(path, operation: str, project_path: str = ".") -> Verdict:
     """Full policy answer, including the ``masked`` outcome.
 
-    Precedence: ``deny`` > ``mask`` > ``confirm`` > ``read_only``
-    (docs/mask-guard.md §4, docs/confirm-guard.md §2). A mask rule denies
-    every write-class operation — masked content is read-only, always, with
-    no override (§3) — and mask beats confirm deliberately: an edit expressed
-    against a transformed view cannot be trusted against the real file, so no
-    confirmation flow may authorise it.
+    Precedence: ``deny`` > ``mask`` > ``read_only`` > ``confirm``
+    (docs/mask-guard.md §4, docs/confirm-guard.md §2). Confirm is the
+    LOOSEST non-allow outcome — a hold can be approved, a read_only cannot —
+    so under the scopes-only-tighten invariant everything stricter beats it:
+    a user's read_only rule must never be shadowed by a builtin confirm
+    tier, and mask beats confirm because an edit expressed against a
+    transformed view cannot be trusted against the real file (§3).
 
     Overlapping mask rules that disagree on (preset, params) are a config
     error, not a precedence puzzle: rendering would depend on rule order and
@@ -830,16 +862,19 @@ def verdict(path, operation: str, project_path: str = ".") -> Verdict:
                            hit)
         return Verdict("masked", None, hit)
 
-    # Confirm sits between mask and read_only: a pause the enforcement site
-    # turns into an auto-filed Override Request. Write-class only for user
-    # rules; the internal "all" variant also pauses reads (builtin downgrades).
+    # read_only OUTRANKS confirm: a hold can be approved into a write, a
+    # read_only cannot, so a matching read_only rule (whoever wrote it) must
+    # never be softened into a pause by a confirm rule beside it.
+    if hit_ro is not None and op_write:
+        return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
+                                           hit_ro.scope, "read-only rule"))
+    # Confirm is the pause the enforcement site turns into an auto-filed
+    # Override Request. Write-class only for user rules; the internal "all"
+    # variant also pauses reads (builtin mode downgrades).
     if hit_confirm is not None and (op_write
                                     or hit_confirm.confirm_ops == "all"):
         return Verdict("confirm", Denial(hit_confirm.glob, _KIND_CONFIRM,
                                          hit_confirm.scope, "confirm rule"))
-    if hit_ro is not None and op_write:
-        return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
-                                           hit_ro.scope, "read-only rule"))
     return Verdict("allowed")
 
 

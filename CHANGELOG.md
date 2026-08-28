@@ -4,6 +4,40 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.100.0] - 2026-08-28
+
+### Added — an agent could add an MCP server, rewrite a hook body, or edit its own instructions without tripping any rule
+
+A new builtin tier, `BUILTIN_CONFIRM_WRITE`: `.mcp.json`, the instruction
+docs (CLAUDE.md / AGENTS.md / GEMINI.md), and the `.claude`
+hooks/skills/agents/commands bodies — the agent-config surfaces that were
+fully writable until now, with only after-the-fact artifact capture
+watching. The default is a pause, not a block: a write holds for one-tap
+approval (the confirm flow 2.97.0 built), reads stay open — an agent must
+always be able to read its own instructions. The tier is mode-governable
+like the rest of Tier 1; it governs writes only, so `deny` hardens to a
+write-deny rather than a full deny, and `allow` restores the old
+behaviour. The `settings*.json` write-deny stays where it was, out of
+this tier: hook REGISTRATION remains hard while hook BODIES pause,
+because registration is what decides code execution.
+`artifact_store.restore()` exempts builtin confirm exactly as it exempts
+builtin read_only — restore writes back a version the store itself
+captured, on an audited human-triggerable path.
+
+### Fixed — a builtin confirm could shadow a stricter user rule
+
+Building the tier surfaced a precedence flaw in 2.97.0: `confirm` sat
+above `read_only`, so the new builtin confirm on CLAUDE.md outranked a
+user's `read_only: ["CLAUDE.md"]` — an artifact restore sailed past a
+rule that should have refused it (caught by the restore wiring tests).
+A hold can be approved into a write; a read_only cannot — confirm is the
+loosest non-allow outcome and everything stricter must beat it. The
+precedence is now `deny > mask > read_only > confirm`, and a user
+`confirm` glob over `**/.c3/**` no longer outranks the builtin
+write-deny either (the sanctioned route to a confirm-mode builtin is
+`c3 access builtin mode`). docs/confirm-guard.md §2 records the
+correction.
+
 ## [2.99.0] - 2026-08-28
 
 ### Added — a builtin guard was on or off; now each one takes a mode

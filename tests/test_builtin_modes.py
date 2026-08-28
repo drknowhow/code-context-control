@@ -292,6 +292,52 @@ class TestLegacyAndMigration(_Base):
                                         "write"))
 
 
+class TestAgentConfigTier(_Base):
+    """BUILTIN_CONFIRM_WRITE — the previously-unguarded agent-config
+    surfaces now pause by default (docs/confirm-guard.md §7.3)."""
+
+    def test_previously_unguarded_surfaces_now_pause_writes(self):
+        for rel in (".mcp.json", "CLAUDE.md", "AGENTS.md", "GEMINI.md",
+                    ".claude/hooks/pre.py", ".claude/skills/x/SKILL.md",
+                    ".claude/agents/a.md", ".claude/commands/c.md"):
+            denial = self.check(self.project / rel, "write")
+            self.assertIsNotNone(denial, rel)
+            self.assertEqual(denial.kind, "confirm", rel)
+            self.assertIsNone(self.check(self.project / rel, "read"), rel)
+
+    def test_registration_stays_hard_while_bodies_pause(self):
+        """settings*.json (hook REGISTRATION) keeps the hard write-deny; a
+        hook BODY pauses. Registration decides code execution — the split is
+        the point."""
+        settings = self.check(self.home / ".claude" / "settings.json", "write")
+        self.assertEqual(settings.kind, "read_only")
+        body = self.check(self.home / ".claude" / "hooks" / "h.py", "write")
+        self.assertEqual(body.kind, "confirm")
+
+    def test_hook_files_a_request_for_an_mcp_json_write(self):
+        target = self.project / ".mcp.json"
+        out = hag.run({"tool_name": "Write",
+                       "tool_input": {"file_path": str(target)},
+                       "session_id": SESSION}, project_path=self.project)
+        deny = out["hookSpecificOutput"]
+        self.assertEqual(deny["permissionDecision"], "deny")
+        self.assertIn(access_guard.TAG_CONFIRM,
+                      deny["permissionDecisionReason"])
+        rows = orq.list_requests(project_path=str(self.project))
+        self.assertEqual(len(rows), 1)
+
+    def test_tier_modes_deny_hardens_and_allow_restores(self):
+        target = self.project / ".mcp.json"
+        access_guard.set_builtin_mode("**/.mcp.json", "deny")
+        denial = self.check(target, "write")
+        self.assertEqual(denial.kind, "read_only")  # write-deny; reads open
+        self.assertIsNone(self.check(target, "read"))
+        access_guard.set_builtin_mode("**/.mcp.json", "allow")
+        self.assertIsNone(self.check(target, "write"))
+        access_guard.set_builtin_mode("**/.mcp.json", "default")
+        self.assertEqual(self.check(target, "write").kind, "confirm")
+
+
 class TestReporting(_Base):
     def test_list_rules_reports_modes_and_moved_kinds(self):
         access_guard.set_builtin_mode("**/.env*", "confirm")

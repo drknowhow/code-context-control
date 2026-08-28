@@ -125,10 +125,15 @@ class TestVerdict(ConfirmBase):
         self.assertEqual(v.kind, "denied")
         self.assertEqual(v.denial.kind, "mask")
 
-    def test_confirm_beats_read_only(self):
+    def test_read_only_beats_confirm(self):
+        # A hold can be approved into a write; a read_only cannot. Under
+        # scopes-only-tighten, the stricter rule wins — a confirm rule beside
+        # a read_only must never soften it into a pause.
         self.write_config(access={"confirm": ["infra/**"],
                                   "read_only": ["infra/**"]})
-        self.assertEqual(self.verdict(op="write").kind, "confirm")
+        v = self.verdict(op="write")
+        self.assertEqual(v.kind, "read_only")
+        self.assertEqual(v.denial.kind, "read_only")
 
     def test_enumeration_does_not_leak_and_does_not_pause(self):
         # Search-side prefilters ask for "read": a write-only confirm rule
@@ -247,15 +252,25 @@ class TestAutoFile(ConfirmBase):
         self.assertIsNone(again)
         self.assertIn("muted", reason)
 
-    def test_vault_target_never_files(self):
-        # A confirm glob over .c3/** outranks the builtin read_only, but the
-        # policy files themselves can never become a request (forbidden
-        # targets) — the hold stands with a reason instead.
+    def test_user_confirm_cannot_soften_the_builtin_c3_guard(self):
+        # A user confirm glob over .c3/** does NOT outrank the builtin
+        # write-deny — that would let a project rule loosen a builtin into a
+        # pause. The stricter read_only stands. (The sanctioned route to a
+        # confirm-mode .c3/** is `c3 access builtin mode`, and even there the
+        # policy files are forbidden targets — tests/test_builtin_modes.py.)
         self.write_config(access={"confirm": ["**/.c3/**"]})
         target = self.proj / ".c3" / "config.json"
         denial = ag.check(str(target), "write", str(self.proj))
         self.assertIsNotNone(denial)
-        self.assertEqual(denial.kind, "confirm")
+        self.assertEqual(denial.kind, "read_only")
+        self.assertEqual(denial.scope, "builtin")
+
+    def test_vault_target_never_files(self):
+        # Even handed a confirm denial covering a policy file, auto_file
+        # refuses at request creation (forbidden target) — the backstop is
+        # independent of how the denial arose.
+        target = self.proj / ".c3" / "config.json"
+        denial = ag.Denial("**/.c3/**", "confirm", "builtin", "confirm rule")
         row, reason = orq.auto_file(str(self.proj), denial=denial,
                                     tool="c3_edit", op="write",
                                     path=str(target), session_id=SESSION)
