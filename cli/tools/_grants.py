@@ -59,3 +59,28 @@ def allow(svc, denial, *, tool: str, op: str, path) -> str | None:
                               path=str(path), session_id=session_id(svc))
     except Exception:
         return None
+
+
+def confirm_request(svc, denial, *, tool: str, op: str, path) -> tuple:
+    """Auto-file an Override Request for a ``confirm`` denial on the MCP
+    surface (docs/confirm-guard.md §3).
+
+    ``(request_id, note)`` — one of them is always ''. Same single-gate
+    principle as `allow()`: the filing logic lives in
+    `services.override_requests.auto_file`, which the hook surface also
+    calls, so the two surfaces cannot drift on dedup, mutes, or rate limits.
+    Never raises — a broken request store degrades to S8's "could not be
+    filed" tail and the hold stands.
+    """
+    if denial is None or getattr(denial, "kind", "") != "confirm":
+        return "", ""
+    try:
+        from services import override_requests as orq  # noqa: PLC0415 — lazy
+        row, reason = orq.auto_file(svc.project_path, denial=denial, tool=tool,
+                                    op=op, path=str(path),
+                                    session_id=session_id(svc))
+        if row:
+            return str(row.get("id") or ""), ""
+        return "", reason
+    except Exception as exc:
+        return "", f"request store unavailable ({exc})"

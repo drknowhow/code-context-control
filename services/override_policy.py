@@ -8,9 +8,13 @@ the agent cannot reach the file even with native tools.
 
 Three properties this file exists to hold:
 
-1. **Default off, everywhere.** ``enabled`` and every layer default to
-   ``False``. A C3 that has never heard of overrides behaves exactly as it
-   does today, and the hot path costs one dict lookup.
+1. **Default off, everywhere** — with one carve-out. ``enabled`` and every
+   layer default to ``False``, so a C3 that has never heard of overrides
+   behaves exactly as it does today and the hot path costs one dict lookup.
+   The carve-out is ``access_confirm`` (docs/confirm-guard.md): a ``confirm``
+   rule is human-authored standing policy whose entire meaning is "pause and
+   ask", so that layer defaults ``True`` and does not require ``enabled`` —
+   authorship is the consent. It can still be forced off explicitly.
 2. **Tightening-only merge.** Global (``~/.c3``) and project scopes AND their
    booleans and take the *smaller* number, so a project can never widen what
    global forbids.
@@ -30,6 +34,11 @@ LAYER_DISCIPLINE = "discipline"
 LAYER_ACCESS_READONLY = "access_readonly"
 LAYER_ACCESS_DENY = "access_deny"
 LAYER_ACCESS_BUILTIN = "access_builtin"
+# `confirm` rules (docs/confirm-guard.md): the human WROTE a rule whose whole
+# meaning is "pause and ask me", so the request machinery is the rule's
+# mechanism, not an escalation of it. This is the one layer that defaults ON
+# and does not require `override.enabled` — see escalatable().
+LAYER_ACCESS_CONFIRM = "access_confirm"
 LAYER_MASK = "mask"
 LAYER_SHELL_WARN = "shell_warn"
 
@@ -39,6 +48,7 @@ LAYER_KEYS = (
     LAYER_ACCESS_READONLY,
     LAYER_ACCESS_DENY,
     LAYER_ACCESS_BUILTIN,
+    LAYER_ACCESS_CONFIRM,
     LAYER_MASK,
     LAYER_SHELL_WARN,
 )
@@ -59,6 +69,7 @@ GATE_FOR_LAYER_KEY = {
     LAYER_ACCESS_READONLY: GATE_ACCESS,
     LAYER_ACCESS_DENY: GATE_ACCESS,
     LAYER_ACCESS_BUILTIN: GATE_ACCESS,
+    LAYER_ACCESS_CONFIRM: GATE_ACCESS,
     LAYER_MASK: GATE_MASK,
     LAYER_SHELL_WARN: GATE_SHELL,
 }
@@ -85,7 +96,11 @@ CHANNELS = frozenset({"mobile", "desktop", "both"})
 DEFAULTS = {
     "enabled": False,
     "channel": "mobile",
-    "layers": {k: False for k in LAYER_KEYS},
+    # Every layer defaults OFF except `access_confirm`: a confirm rule exists
+    # only because a human wrote one, and that authorship is the opt-in. An
+    # explicit `layers.access_confirm: false` in either scope still wins
+    # (tightening-only merge), forcing confirm rules to refuse without filing.
+    "layers": {k: (k == LAYER_ACCESS_CONFIRM) for k in LAYER_KEYS},
     "max_ttl_s": 900,
     "default_uses": 1,
     "request_ttl_s": 600,
@@ -176,6 +191,8 @@ def rule_class_for_denial(denial) -> str | None:
         return None
     if kind == "mask":
         return LAYER_MASK
+    if kind == "confirm":
+        return LAYER_ACCESS_CONFIRM
     if kind == "read_only":
         return LAYER_ACCESS_READONLY
     if kind == "deny":
@@ -203,8 +220,25 @@ class OverridePolicy:
     corrupt_scopes: tuple = ()
 
     def escalatable(self, layer_key: str) -> bool:
-        """True iff the feature is on AND this layer was opted into."""
-        return bool(self.enabled) and bool(self.layers.get(layer_key, False))
+        """True iff the feature is on AND this layer was opted into.
+
+        Two carve-outs, both fail-closed:
+        - A corrupt scope disables EVERY layer, including ``access_confirm``
+          — the layers dict still carries its ``True`` default on the corrupt
+          path, and without this guard a broken config would leave confirm
+          escalatable (fail-open, the one direction this module must never
+          take).
+        - ``access_confirm`` does not require ``enabled``: the confirm rule a
+          human wrote IS the opt-in (see the module docstring). An explicit
+          ``layers.access_confirm: false`` still forces it off.
+        """
+        if self.corrupt_scopes:
+            return False
+        if not self.layers.get(layer_key, False):
+            return False
+        if layer_key == LAYER_ACCESS_CONFIRM:
+            return True
+        return bool(self.enabled)
 
     def clamp_ttl(self, requested: int | None) -> int:
         want = self.max_ttl_s if requested is None else int(requested)
@@ -365,7 +399,11 @@ def resolve(project_path: str = ".") -> OverridePolicy:
     for layer in LAYER_KEYS:
         opinions = [s["layers"][layer] for s in sections
                     if isinstance(s.get("layers"), dict) and layer in s["layers"]]
-        values["layers"][layer] = all(opinions) if opinions else False
+        # Fallback is the per-layer DEFAULT, not a blanket False: every layer
+        # defaults off except access_confirm (see DEFAULTS). AND-merge means an
+        # explicit false in either scope still tightens it off.
+        values["layers"][layer] = (all(opinions) if opinions
+                                   else DEFAULTS["layers"][layer])
 
     # Presentation-only keys: last scope with an opinion wins (project last).
     for key in ("channel", "notify_severity"):

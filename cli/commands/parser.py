@@ -751,15 +751,19 @@ def build_parser(version: str, parse_cli_ide_arg):
 
     ac_add = access_subs.add_parser("add", help="Add a rule to the project (or --global) scope")
     ac_add.add_argument("glob", help="POSIX glob (** crosses directories), e.g. 'secrets/**' or '*.pem'")
-    ac_add.add_argument("--kind", choices=["deny", "read_only"], required=True,
-                        help="deny = no read/write/enumerate; read_only = no write")
+    ac_add.add_argument("--kind", choices=["deny", "read_only", "confirm"],
+                        required=True,
+                        help="deny = no read/write/enumerate; read_only = no "
+                             "write; confirm = writes pause for your approval "
+                             "(reads unaffected)")
     ac_add.add_argument("--global", dest="use_global", action="store_true",
                         help="Store in the global scope (~/.c3) so every C3 project enforces it")
     ac_add.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
     ac_remove = access_subs.add_parser("remove", help="Remove a rule from the project (or --global) scope")
     ac_remove.add_argument("glob", help="The stored glob to remove (case-insensitive match)")
-    ac_remove.add_argument("--kind", choices=["deny", "read_only"], required=True,
+    ac_remove.add_argument("--kind", choices=["deny", "read_only", "confirm"],
+                           required=True,
                            help="Which rule list the glob lives in")
     ac_remove.add_argument("--global", dest="use_global", action="store_true",
                            help="Remove from the global scope (~/.c3)")

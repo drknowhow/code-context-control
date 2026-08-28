@@ -1456,7 +1456,8 @@ def mobile_access_check():
                         "rule": "", "scope": "", "refusal": ""})
     return jsonify({
         "path": path, "op": op,
-        "verdict": "read_only" if denial.kind == "read_only" else "denied",
+        "verdict": denial.kind if denial.kind in ("read_only", "confirm")
+        else "denied",
         "rule": denial.rule, "scope": denial.scope, "reason": denial.reason,
         "refusal": access_guard.refusal(denial, path, op),
     })
