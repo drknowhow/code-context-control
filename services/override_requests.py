@@ -310,12 +310,15 @@ def create(project_path: str, *, session_id: str, tool: str, op: str, path,
     retry loop must not be able to fill the user's phone.
     """
     policy = policy or op_policy.resolve(project_path)
-    if not policy.enabled:
+    # Classify BEFORE the enabled check: the `access_confirm` layer does not
+    # require `override.enabled` (the confirm rule a human wrote is the
+    # opt-in — docs/confirm-guard.md), so which layer this is must be known
+    # before deciding whether the master switch matters.
+    gate, layers_key, rule = classify(project_path, denial=denial, layer=layer)
+    if layers_key != op_policy.LAYER_ACCESS_CONFIRM and not policy.enabled:
         raise OverrideError(
             f"{op_policy.TAG_NOT_ESCALATABLE} overrides are switched off for "
             "this project. Ask the user in chat instead.")
-
-    gate, layers_key, rule = classify(project_path, denial=denial, layer=layer)
     if not policy.escalatable(layers_key):
         raise OverrideError(
             f"{op_policy.TAG_NOT_ESCALATABLE} the '{layers_key}' layer is not "
@@ -407,6 +410,35 @@ def create(project_path: str, *, session_id: str, tool: str, op: str, path,
     })
     _notify(project_path, row, policy)
     return row
+
+
+def auto_file(project_path: str, *, denial, tool: str, op: str, path,
+              session_id: str, refusal: str = "") -> tuple:
+    """File a request on the agent's behalf at a ``confirm`` denial site.
+
+    ``(row, "")`` on success — including the duplicate-suppressed case, where
+    the existing pending row comes back — or ``(None, reason)`` when filing
+    was refused (muted, rate-limited, layer forced off, unrepresentable path).
+    Never raises: this runs on refusal paths inside hooks and tool handlers,
+    and a broken request store must degrade to an ordinary refusal, never to a
+    crash that fails the tool call open or closed for the wrong reason.
+
+    ``justification`` is deliberately empty: an auto-filed row carries the
+    denial's identity (tool, op, path, rule) and nothing the agent composed —
+    the card renders from trusted fields only (docs/confirm-guard.md §3).
+    """
+    try:
+        row = create(project_path, session_id=session_id, tool=tool, op=op,
+                     path=path, denial=denial, justification="",
+                     refusal=refusal)
+        return row, ""
+    except OverrideError as exc:
+        reason = str(exc)
+        if reason.startswith(op_policy.TAG_NOT_ESCALATABLE):
+            reason = reason[len(op_policy.TAG_NOT_ESCALATABLE):].strip()
+        return None, reason[:200]
+    except Exception as exc:  # noqa: BLE001 — refusal path must not crash
+        return None, f"request store unavailable ({exc})"[:200]
 
 
 def _notify(project_path: str, row: dict, policy) -> None:
@@ -585,7 +617,7 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
                     tool=row.get("tool", ""), op=row.get("op", ""),
                     path=row.get("path", ""), ttl_s=ttl_s, uses=uses,
                     granted_by=decided_by, request_id=request_id,
-                    policy=policy)
+                    policy=policy, layers_key=layers_key)
 
     row["status"] = STATUS_APPROVED
     row["resolved_at"] = og.iso(now)

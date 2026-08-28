@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.97.0] - 2026-08-28
+
+### Added — a path could be blocked or open, never "ask me first"
+
+Access Guard gains a fourth rule kind, `confirm` (docs/confirm-guard.md):
+writes to a matching path pause for a human decision instead of refusing
+outright. The pause is real machinery, not copy — the denial site auto-files
+an Override Request itself (the agent cannot forget to ask and cannot word
+the ask; auto-filed rows carry an empty justification), the new pinned S8
+refusal names the pending request id, and one tap mints the same single-use,
+session-bound, path-exact grant every other layer uses. Reads are untouched;
+precedence is `deny > mask > confirm > read_only`, with mask deliberately
+above confirm because an edit expressed against a transformed view can never
+be approved into the real file.
+
+The approval pipeline needed one deliberate exception to "default off,
+everywhere": a new `access_confirm` layer that defaults ON and does not
+require `override.enabled` — a confirm rule exists only because a human
+wrote one, and that authorship is the consent. An explicit
+`layers.access_confirm: false` still forces it off, and a corrupt override
+scope disables it like everything else (a new corrupt-scope guard in
+`escalatable()` closes the fail-open path the `True` default would have
+created). Vault and override-policy files can never become a request, even
+under a user confirm rule covering `.c3/**`.
+
+Surfaces: `c3 access add --kind confirm`, the Access tab's kind picker, and
+`/api/access` all accept the new kind; the hook and `c3_edit` file requests,
+every other surface refuses with an S8 that says where filing happens.
+Compatibility is the unknown-key rule doing its job: a pre-2.97 C3 reading
+`access.confirm` treats the scope as corrupt and evaluates deny-all — loud,
+never silently permissive.
+
 ## [2.96.1] - 2026-08-25
 
 ### Fixed — removing one sub-project deregistered C3 from the whole machine

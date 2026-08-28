@@ -324,8 +324,14 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     denial = access_guard.check(str(path), op, svc.project_path)
     if denial and not _grants.allow(svc, denial, tool="c3_edit", op=op,
                                     path=str(path)):
+        # A confirm hold files its own Override Request so the S8 refusal can
+        # name it; every other kind refuses as before.
+        rid, note = _grants.confirm_request(svc, denial, tool="c3_edit",
+                                            op=op, path=str(path))
         return finalize("c3_edit", {"file": file_path},
-                        access_guard.refusal(denial, file_path, op),
+                        access_guard.refusal(denial, file_path, op,
+                                             request_id=rid,
+                                             request_note=note),
                         "access-denied")
 
     # Agent Locks (Layer B). Checked AFTER the policy guards on purpose: an

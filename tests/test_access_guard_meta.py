@@ -102,6 +102,47 @@ class TestToolIoRoutesThroughGuard(unittest.TestCase):
                           f"{rel} lost its access_guard wiring")
 
 
+# Confirm-hold drift guard (docs/confirm-guard.md §3): every tool module
+# that consults override grants on a denial (`_grants.allow`) either files
+# the confirmation request on a confirm hold (`_grants.confirm_request`) or
+# is allowlisted here WITH a reason. A grant-aware surface that refuses a
+# confirm denial without filing leaves the agent a dead S8 with no request
+# behind it.
+_CONFIRM_REFUSE_ONLY = {
+    "read.py":        "read surface — user confirm rules are write-class "
+                      "only; revisit when builtin_mode ships all-ops confirm",
+    "compress.py":    "read surface — same as read.py",
+    "filter.py":      "refuse-only surface (S8 points to c3_edit)",
+    "impact.py":      "refuse-only surface",
+    "validate.py":    "refuse-only surface",
+    "edit_verify.py": "read-back verification — never the write itself",
+}
+
+
+class TestConfirmFilingCoverage(unittest.TestCase):
+    def test_grant_aware_tools_file_confirm_requests_or_are_allowlisted(self):
+        offenders = []
+        for py in sorted((REPO_ROOT / "cli" / "tools").glob("*.py")):
+            if py.name in ("__init__.py", "_grants.py"):
+                continue
+            src = py.read_text(encoding="utf-8")
+            if "_grants.allow(" not in src:
+                continue
+            if "confirm_request(" in src or py.name in _CONFIRM_REFUSE_ONLY:
+                continue
+            offenders.append(py.name)
+        self.assertEqual(
+            offenders, [],
+            f"grant-aware cli/tools modules that never file a confirmation "
+            f"request on a confirm hold: {offenders}. Wire "
+            f"_grants.confirm_request or allowlist WITH a reason.")
+
+    def test_confirm_allowlist_entries_still_exist(self):
+        stale = [n for n in _CONFIRM_REFUSE_ONLY
+                 if not (REPO_ROOT / "cli" / "tools" / n).is_file()]
+        self.assertEqual(stale, [], f"stale allowlist entries: {stale}")
+
+
 class TestResolveBan(unittest.TestCase):
     def _functions_using_resolve(self, src: str):
         """Map each .resolve() occurrence to its enclosing def name."""

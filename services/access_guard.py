@@ -25,7 +25,16 @@ from pathlib import Path
 _KIND_DENY = "deny"
 _KIND_READ_ONLY = "read_only"
 _KIND_MASK = "mask"
-_VALID_KEYS = {_KIND_DENY, _KIND_READ_ONLY, _KIND_MASK}
+# `confirm` (docs/confirm-guard.md): write-class operations pause for a human
+# decision instead of refusing outright — the denial carries kind "confirm"
+# and the enforcement site auto-files an Override Request. Reads are
+# unaffected for user rules (Rule.confirm_ops == "write"); the all-ops
+# variant exists only for builtin mode downgrades of full-deny builtins.
+_KIND_CONFIRM = "confirm"
+_VALID_KEYS = {_KIND_DENY, _KIND_READ_ONLY, _KIND_MASK, _KIND_CONFIRM}
+#: The rule kinds stored as plain glob lists in config (mask entries are
+#: objects and have their own writers).
+_LIST_KINDS = (_KIND_DENY, _KIND_READ_ONLY, _KIND_CONFIRM)
 
 # `access` keys that are not rule kinds. Kept separate from _VALID_KEYS so the
 # "unknown key ⇒ corrupt" rule (which exists so `allow` can never silently
@@ -84,6 +93,7 @@ DEFAULT_GLOBAL_RULES = ("*.pem", "id_rsa*", "*.key")
 # docs/mask-guard.md §5).
 TAG_DENIED = "[c3-access:denied]"
 TAG_READ_ONLY = "[c3-access:read_only]"
+TAG_CONFIRM = "[c3-access:confirm]"
 TAG_LIMITED = "[c3-access:limited]"
 TAG_MASKED = "[c3-mask:transformed]"
 TAG_MASK_LIMITED = "[c3-mask:limited]"
@@ -96,10 +106,17 @@ _PATH_CAP = 200  # interpolation length cap for refusal strings
 @dataclass(frozen=True)
 class Rule:
     glob: str          # POSIX-canonical, casefolded
-    kind: str          # deny | read_only
+    kind: str          # deny | read_only | confirm
     scope: str         # builtin | global | project
     _re: re.Pattern
     _basename: bool    # no '/' in glob → match against the leaf name
+    # Which op class a `confirm` rule gates. "write" for every user rule —
+    # permanently, so the config schema never grows a read-confirm knob (the
+    # pause-on-read flow already exists as deny + access_deny escalation).
+    # "all" is INTERNAL, reserved for builtin mode downgrades of full-deny
+    # builtins, where confirm must cover reads or it silently becomes
+    # allow-read. Ignored for every other kind.
+    confirm_ops: str = "write"
 
     def matches(self, canon: str, rel: str, name: str) -> bool:
         if self._basename:
@@ -130,7 +147,8 @@ class MaskRule:
 
 @dataclass(frozen=True)
 class Verdict:
-    """Full policy answer. ``kind`` ∈ allowed | masked | read_only | denied.
+    """Full policy answer.
+    ``kind`` ∈ allowed | masked | read_only | confirm | denied.
 
     Mask-aware content surfaces call ``verdict()`` and serve ``mask_rule``'s
     materialized view. Everything else calls ``check()``, which fails closed
@@ -152,7 +170,7 @@ class Verdict:
 @dataclass(frozen=True)
 class Denial:
     rule: str          # matched glob (or a synthetic reason marker)
-    kind: str          # deny | read_only
+    kind: str          # deny | read_only | mask | confirm
     scope: str         # builtin | global | project
     reason: str        # short evaluator-internal reason
 
@@ -197,7 +215,8 @@ def _glob_to_re(pat: str) -> re.Pattern:
     return re.compile("^" + "".join(out) + "$")
 
 
-def _compile(glob: str, kind: str, scope: str) -> Rule:
+def _compile(glob: str, kind: str, scope: str,
+             confirm_ops: str = "write") -> Rule:
     canon = glob.replace("\\", "/").casefold().strip()
     if canon.endswith("/**"):
         # `X/**` also protects X itself (gitignore-style prefix semantics).
@@ -207,7 +226,7 @@ def _compile(glob: str, kind: str, scope: str) -> Rule:
     else:
         rx = _glob_to_re(canon)
     return Rule(glob=canon, kind=kind, scope=scope, _re=rx,
-                _basename="/" not in canon)
+                _basename="/" not in canon, confirm_ops=confirm_ops)
 
 
 def validate_globs(globs) -> str:
@@ -465,7 +484,7 @@ def _read_scope_rules(base: Path, scope: str):
     if scope == "project" and section.get(_KEY_DISABLE_BUILTIN):
         return _CORRUPT
     rules = []
-    for kind in (_KIND_DENY, _KIND_READ_ONLY):
+    for kind in _LIST_KINDS:
         globs = section.get(kind, [])
         if not isinstance(globs, list) or validate_globs(globs):
             return _CORRUPT
@@ -618,9 +637,12 @@ def canonicalize(path, project_root=".") -> tuple:
 def verdict(path, operation: str, project_path: str = ".") -> Verdict:
     """Full policy answer, including the ``masked`` outcome.
 
-    Precedence: ``deny`` > ``mask`` > ``read_only`` (docs/mask-guard.md §4).
-    A mask rule denies every write-class operation — masked content is
-    read-only, always, with no override (§3).
+    Precedence: ``deny`` > ``mask`` > ``confirm`` > ``read_only``
+    (docs/mask-guard.md §4, docs/confirm-guard.md §2). A mask rule denies
+    every write-class operation — masked content is read-only, always, with
+    no override (§3) — and mask beats confirm deliberately: an edit expressed
+    against a transformed view cannot be trusted against the real file, so no
+    confirmation flow may authorise it.
 
     Overlapping mask rules that disagree on (preset, params) are a config
     error, not a precedence puzzle: rendering would depend on rule order and
@@ -638,13 +660,17 @@ def verdict(path, operation: str, project_path: str = ".") -> Verdict:
             "(fix .c3/config.json 'access')"))
     name = canon.rsplit("/", 1)[-1]
     hit_ro = None
+    hit_confirm = None
     for rule in rules:
         if not rule.matches(canon, rel, name):
             continue
         if rule.kind == _KIND_DENY:
             return Verdict("denied", Denial(rule.glob, _KIND_DENY, rule.scope,
                                             "deny rule"))
-        if hit_ro is None:
+        if rule.kind == _KIND_CONFIRM:
+            if hit_confirm is None:
+                hit_confirm = rule
+        elif hit_ro is None:
             hit_ro = rule
 
     hits = [m for m in mask_rules if m.matches(canon, rel, name)]
@@ -664,6 +690,13 @@ def verdict(path, operation: str, project_path: str = ".") -> Verdict:
                            hit)
         return Verdict("masked", None, hit)
 
+    # Confirm sits between mask and read_only: a pause the enforcement site
+    # turns into an auto-filed Override Request. Write-class only for user
+    # rules; the internal "all" variant also pauses reads (builtin downgrades).
+    if hit_confirm is not None and (op_write
+                                    or hit_confirm.confirm_ops == "all"):
+        return Verdict("confirm", Denial(hit_confirm.glob, _KIND_CONFIRM,
+                                         hit_confirm.scope, "confirm rule"))
     if hit_ro is not None and op_write:
         return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
                                            hit_ro.scope, "read-only rule"))
@@ -729,11 +762,14 @@ def _override_offer(denial: Denial, path, operation: str, tool: str) -> str:
 
 
 def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
-            tool: str = "", project: str = "") -> str:
+            tool: str = "", project: str = "", request_id: str = "",
+            request_note: str = "") -> str:
     """The exact S1/S2/S3/S5 string for a denial (see frozen spec).
 
     Mask denials use S6 (raw access on a surface that cannot render) and S7
-    (write to a masked path) — docs/mask-guard.md §5.
+    (write to a masked path) — docs/mask-guard.md §5. Confirm denials use S8
+    (docs/confirm-guard.md §4), whose tail names the auto-filed request via
+    ``request_id`` / ``request_note`` — both ignored for every other kind.
 
     On the hook surface an escalatable denial gains one appended line telling
     the agent it may ASK (docs/override-requests.md §6). The pinned strings
@@ -748,18 +784,47 @@ def refusal(denial: Denial, path, operation: str, *, surface: str = "mcp",
     the invitation half of Override Requests had never fired once.
     """
     body = _refusal_body(denial, path, operation, surface=surface,
-                         tool=tool, project=project)
+                         tool=tool, project=project, request_id=request_id,
+                         request_note=request_note)
     # Hook only, still: the offer promises that a 'yes' makes the retry work,
     # and the proxy surface answers for a DIFFERENT project's policy.
-    if surface == "hook":
+    # Confirm denials never carry the offer — S8 self-contains the instruction
+    # and already names the auto-filed request (docs/confirm-guard.md §4).
+    if surface == "hook" and denial.kind != _KIND_CONFIRM:
         return body + _override_offer(denial, path, operation, tool)
     return body
 
 
 def _refusal_body(denial: Denial, path, operation: str, *, surface: str,
-                  tool: str, project: str) -> str:
+                  tool: str, project: str, request_id: str = "",
+                  request_note: str = "") -> str:
     """The pinned string itself, with no override append."""
     p, glob, scope = _cap(path), denial.rule, denial.scope
+    if denial.kind == _KIND_CONFIRM:
+        # S8 (docs/confirm-guard.md §4). A pause, not a refusal: the denial
+        # site auto-files an Override Request and the tail names it — or says
+        # exactly why one could not be filed, or where filing happens when
+        # this surface is refuse-only.
+        if request_id:
+            tail = (f" Confirmation request {request_id} is pending — wait "
+                    f"with c3_override(action='wait', "
+                    f"request_id='{request_id}'), then retry this exact call "
+                    "once if approved.")
+        elif request_note:
+            tail = (f" A confirmation request could not be filed "
+                    f"({_cap(request_note)}) — ask the user in chat.")
+        else:
+            tail = (" No confirmation request was filed from this surface — "
+                    "perform the change via c3_edit or a native tool (both "
+                    "file one), or ask the user in chat.")
+        return (
+            f"{TAG_CONFIRM} {operation} for {p} is held for human "
+            f"confirmation by Access Guard rule '{glob}' ({scope} scope). "
+            "This is a pause, not a refusal — a human must approve this "
+            f"exact {operation}. Do not retry until a decision arrives, and "
+            "do not route around the hold via the shell or another tool."
+            f"{tail} Rules: `c3 access list` or the Access tab."
+        )
     if denial.kind == _KIND_MASK:
         if operation in ("write", "create", "delete"):
             return (
@@ -967,7 +1032,7 @@ def _raw_scope_section(cfg: Path) -> tuple:
     if not isinstance(section, dict):
         return {}, True
     corrupt = bool(set(section) - _VALID_SECTION_KEYS)
-    for kind in (_KIND_DENY, _KIND_READ_ONLY):
+    for kind in _LIST_KINDS:
         globs = section.get(kind, [])
         if not isinstance(globs, list) or validate_globs(_str_list(globs)) \
                 or len(_str_list(globs)) != len(globs):
@@ -1013,6 +1078,7 @@ def list_rules(project_path: str = ".") -> dict:
         # only reads these two keys is never told a disabled builtin is on.
         "deny": builtin_deny,
         "read_only": builtin_ro,
+        "confirm": [],  # builtins gain confirm entries via mode downgrades
         "mask": [], "corrupt": False,
         # Opt-out surface for `c3 access list` and the Access tab.
         "absolute": list(BUILTIN_ABSOLUTE_DENY),
@@ -1023,13 +1089,14 @@ def list_rules(project_path: str = ".") -> dict:
         try:
             cfg = _scope_config_path(scope, project_path)
         except ValueError:
-            out[scope] = {"deny": [], "read_only": [], "mask": [],
-                          "corrupt": False}
+            out[scope] = {"deny": [], "read_only": [], "confirm": [],
+                          "mask": [], "corrupt": False}
             continue
         section, corrupt = _raw_scope_section(cfg)
         out[scope] = {
             _KIND_DENY: _str_list(section.get(_KIND_DENY)),
             _KIND_READ_ONLY: _str_list(section.get(_KIND_READ_ONLY)),
+            _KIND_CONFIRM: _str_list(section.get(_KIND_CONFIRM)),
             _KIND_MASK: _mask_list(section.get(_KIND_MASK)),
             "corrupt": corrupt,
         }
@@ -1059,7 +1126,7 @@ def _load_config_for_write(cfg: Path) -> tuple:
         raise ValueError(
             "access section is invalid (unknown keys or wrong shape) — the "
             "scope fails closed; fix config.json 'access' by hand")
-    for kind in (_KIND_DENY, _KIND_READ_ONLY):
+    for kind in _LIST_KINDS:
         globs = section.get(kind, [])
         if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
             raise ValueError(
@@ -1126,7 +1193,7 @@ def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
                          "set_mask_rule()/remove_mask_rule()")
     if kind not in _VALID_KEYS:
         raise ValueError(f"unknown kind '{kind}' — expected one of: "
-                         f"{_KIND_DENY}, {_KIND_READ_ONLY}")
+                         f"{', '.join(_LIST_KINDS)}")
     canon = _norm_glob(glob)
     bad = validate_globs([canon])
     if bad:
@@ -1209,7 +1276,7 @@ def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
                          "set_mask_rule()/remove_mask_rule()")
     if kind not in _VALID_KEYS:
         raise ValueError(f"unknown kind '{kind}' — expected one of: "
-                         f"{_KIND_DENY}, {_KIND_READ_ONLY}")
+                         f"{', '.join(_LIST_KINDS)}")
     canon = _norm_glob(glob)
     cfg = _scope_config_path(scope, project_path)
     data, section = _load_config_for_write(cfg)

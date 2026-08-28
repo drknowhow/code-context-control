@@ -218,6 +218,7 @@ const AccessPanel = () => {
     const rows = [];
     (sec.deny || []).forEach(g => rows.push({ kind: "deny", glob: g }));
     (sec.read_only || []).forEach(g => rows.push({ kind: "read_only", glob: g }));
+    (sec.confirm || []).forEach(g => rows.push({ kind: "confirm", glob: g }));
     (sec.mask || []).forEach(e => rows.push({
       kind: "mask", glob: e.glob, preset: e.preset, params: e.params,
     }));
@@ -225,7 +226,7 @@ const AccessPanel = () => {
   };
 
   const verdictColor = (v) =>
-    v === "allowed" ? T.accent : v === "read_only" ? T.warn
+    v === "allowed" ? T.accent : v === "read_only" || v === "confirm" ? T.warn
       : v === "masked" ? T.blue : T.error;
   const kindColorFull = (kind) =>
     kind === "deny" ? T.error : kind === "mask" ? T.blue : T.warn;
@@ -286,7 +287,9 @@ const AccessPanel = () => {
       </div>
       <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
         Paths the agent must not read (<b>deny</b>), must not write
-        (<b>read_only</b>), or may read only in transformed form (<b>mask</b>),
+        (<b>read_only</b>), may write only after your approval
+        (<b>confirm</b> — an Override Request is auto-filed; reads
+        unaffected), or may read only in transformed form (<b>mask</b>),
         enforced across every C3 surface. Rule changes are human-only — this
         tab and <span className="mono">c3 access</span> — and every mutation is
         ledger-logged. <b>deny</b> also hides matching paths from listings and
@@ -344,6 +347,7 @@ const AccessPanel = () => {
                 style={inputStyle}>
                 <option value="deny">deny — no read, no write, hidden</option>
                 <option value="read_only">read_only — no write</option>
+                <option value="confirm">confirm — writes pause for your approval</option>
               </select>
             </div>
             <div>

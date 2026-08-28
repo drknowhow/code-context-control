@@ -93,17 +93,26 @@ class OverrideBase(unittest.TestCase):
 
 class TestPolicy(OverrideBase):
     def test_absent_section_is_off(self):
+        # ...for every layer except access_confirm, whose opt-in is the
+        # confirm rule itself, not the override section
+        # (docs/confirm-guard.md §5).
         self.write_config(access={"deny": ["secrets/**"]})
         p = opol.resolve(str(self.proj))
         self.assertFalse(p.enabled)
-        self.assertFalse(any(p.escalatable(k) for k in opol.LAYER_KEYS))
+        self.assertFalse(any(p.escalatable(k) for k in opol.LAYER_KEYS
+                             if k != opol.LAYER_ACCESS_CONFIRM))
+        self.assertTrue(p.escalatable(opol.LAYER_ACCESS_CONFIRM))
 
     def test_defaults_are_all_false(self):
+        # Same carve-out: access_confirm defaults True by design.
         self.write_config(override={})
         p = opol.resolve(str(self.proj))
         self.assertFalse(p.enabled)
         for key in opol.LAYER_KEYS:
-            self.assertFalse(p.layers[key], key)
+            if key == opol.LAYER_ACCESS_CONFIRM:
+                self.assertTrue(p.layers[key], key)
+            else:
+                self.assertFalse(p.layers[key], key)
 
     def test_unknown_key_fails_closed(self):
         self.write_config(override={"enabled": True, "allow_everything": True})

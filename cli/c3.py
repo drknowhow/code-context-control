@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.96.1"
+__version__ = "2.97.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -7266,7 +7266,8 @@ def _access_cmd_list(args, project_path: str) -> None:
              "project": ".c3/config.json"}
     for scope in ("builtin", "global", "project"):
         sec = scopes.get(scope) or {}
-        rules = [(k, g) for k in ("deny", "read_only") for g in sec.get(k, [])]
+        rules = [(k, g) for k in ("deny", "read_only", "confirm")
+                 for g in sec.get(k, [])]
         masks = sec.get("mask") or []
         print(f"[{scope}] ({notes[scope]}) — {len(rules) + len(masks)} rule(s)")
         for kind, glob in rules:

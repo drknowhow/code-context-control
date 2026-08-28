@@ -221,6 +221,25 @@ def _override_allows(base: str, denial, *, tool: str, op: str, path: str,
         return None  # fail closed: no grant, ordinary denial
 
 
+def _confirm_request(base: str, denial, *, tool: str, op: str, path: str,
+                     session_id: str) -> tuple:
+    """Auto-file an Override Request for a ``confirm`` denial (S8).
+
+    ``(request_id, note)`` — one of them is always ''. Lazy import, never
+    raises: a broken request store degrades to S8's "could not be filed"
+    tail, and the hold stands either way (docs/confirm-guard.md §3).
+    """
+    try:
+        from services import override_requests as orq  # noqa: PLC0415 — lazy
+        row, reason = orq.auto_file(base, denial=denial, tool=tool, op=op,
+                                    path=path, session_id=session_id)
+        if row:
+            return str(row.get("id") or ""), ""
+        return "", reason
+    except Exception as exc:
+        return "", f"request store unavailable ({exc})"
+
+
 def _target(tool_input: dict) -> str:
     return str(
         tool_input.get("file_path")
@@ -348,6 +367,14 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
             if granted:
                 return {"additionalContext": granted}
             _record(denial, tool, op, fp, base, session_id)
+            if denial.kind == "confirm":
+                # A confirm hold files its own request (grants were consulted
+                # above, so an approved retry lands in the granted branch).
+                rid, note = _confirm_request(base, denial, tool=tool, op=op,
+                                             path=fp, session_id=session_id)
+                return _deny(ag.refusal(denial, fp, op, surface="hook",
+                                        tool=tool, request_id=rid,
+                                        request_note=note))
             return _deny(ag.refusal(denial, fp, op, surface="hook", tool=tool))
         return None
 

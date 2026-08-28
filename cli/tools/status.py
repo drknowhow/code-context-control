@@ -356,7 +356,8 @@ def _access_view(svc, finalize):
         sec = scopes.get(scope) or {}
         n_deny = len(sec.get("deny") or [])
         n_ro = len(sec.get("read_only") or [])
-        line = f"[{scope}] {n_deny} deny, {n_ro} read_only"
+        n_confirm = len(sec.get("confirm") or [])
+        line = f"[{scope}] {n_deny} deny, {n_ro} read_only, {n_confirm} confirm"
         if sec.get("corrupt"):
             line += ("  [warn] access section invalid — scope fails closed "
                      "(deny-all); fix config.json 'access' by hand")

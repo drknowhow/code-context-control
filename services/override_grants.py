@@ -253,15 +253,26 @@ def new_id(prefix: str = "grt") -> str:
 def mint(project_path=".", *, session_id: str, layer: str, rule: str,
          tool: str, op: str, path, ttl_s: int | None = None,
          uses: int | None = None, granted_by: str = "cli",
-         request_id: str = "", policy=None) -> dict:
+         request_id: str = "", policy=None, layers_key: str = "") -> dict:
     """Create one grant. **Human surfaces only** — callers must be authorised.
 
     Raises ``ValueError`` when policy forbids it. The refusal is the point:
     a mint that policy would not allow must fail loudly at creation, not
     silently produce a grant the gate then ignores.
+
+    ``layers_key``: the ``override.layers`` key the request was classified
+    under. When given, the enabled-check is ``policy.escalatable(layers_key)``
+    — strictly tighter for every layer except ``access_confirm``, which is the
+    one layer that does not require ``override.enabled`` (the confirm rule the
+    human wrote is the opt-in). When empty (direct CLI mints), the legacy
+    ``enabled`` check applies unchanged.
     """
     policy = policy or op_policy.resolve(project_path)
-    if not policy.enabled:
+    if layers_key:
+        if not policy.escalatable(layers_key):
+            raise ValueError(f"the '{layers_key}' layer is not escalatable for "
+                             "this project — no gate would honour the grant")
+    elif not policy.enabled:
         raise ValueError("overrides are disabled for this project "
                          "(`override.enabled` is false)")
     if layer not in op_policy.GATE_LAYERS:
