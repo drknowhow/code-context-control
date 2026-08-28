@@ -142,10 +142,17 @@ write-class only). Requests are approved from `c3 override approve`, the
 mobile Guard tab, and (planned, §7) the Hub. Residual risks are
 access-guard §6's, unchanged.
 
-## 7. Phases building on this (not yet shipped, not yet frozen)
+## 7. Phases building on this
 
-1. **Hub approval surface** — cross-project pending-request cards +
-   decide route (`decided_by="desktop"`), per-project rules/mode matrix.
+1. **Hub approval surface** — SHIPPED v2.98.0. Cross-project pending-request
+   cards + decide routes (`decided_by="desktop"`, typed-glob challenge
+   re-enforced server-side in `decide()`), read-only per-project rules and
+   override-layer matrix. `GET/POST /api/hub/overrides`, `GET
+   /api/hub/access`, `cli/hub_ui/components/hub_access.js`. Audit mirrors
+   the mobile route: identifiers only, never the justification.
+
+Not yet shipped, not yet frozen:
+
 2. **`builtin_mode`** — per-builtin downgrade `deny|confirm|allow`
    (global-only, two-key attested, Tier-0 and forbidden targets excluded;
    `disable_builtin` becomes the legacy alias of `allow`).

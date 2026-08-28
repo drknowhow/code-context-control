@@ -4,6 +4,35 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.98.0] - 2026-08-28
+
+### Added — approvals lived on the phone and the CLI; the desktop could only watch
+
+The Hub gains an Access tab — the desktop half of Override Requests
+(override-requests.md P5, and the natural home for the confirm rules
+2.97.0 added). Pending requests across every project on the machine render
+as cards with Approve / Deny / Deny+mute; approving an `access_deny` or
+`access_builtin` request demands the rule glob typed by hand, in a modal
+the UI computes and `decide()` re-enforces server-side regardless — two
+places compute, one enforces, same as the mobile route. A request that
+lapsed while the page showed it answers 409 and the card refreshes to its
+real status rather than silently minting a grant. The agent-supplied
+justification renders quoted under an untrusted-input label and never
+reaches the activity log or the edit ledger — the audit trail carries
+identifiers and rule globs only, `decided_by="desktop"`.
+
+Under the cards, a read-only policy matrix shows any project's effective
+rules (builtin tiers, disabled builtins, all four kinds, mask presets) and
+its override-layer switches. Rule mutation stays where it was — the
+per-project Access tab and `c3 access`; the Hub approves and reads, it
+does not edit policy.
+
+Routes: `GET /api/hub/overrides` (cross-project, with per-row
+`needs_typed_confirm` / `escalatable` so a card can decide without a
+second fetch), `POST /api/hub/overrides/<id>`, `GET /api/hub/access`.
+Also fixed in passing: the Tokens tab never survived a reload — `tokens`
+was missing from the persisted-view allowlist in `app.js`.
+
 ## [2.97.0] - 2026-08-28
 
 ### Added — a path could be blocked or open, never "ask me first"

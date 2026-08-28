@@ -44,7 +44,7 @@ function App() {
       if (cfg.projects_view === 'grid') setView('grid');
       if (cfg.sidebar_collapsed != null) setSidebarCollapsed(!!cfg.sidebar_collapsed);
       if (cfg.sidebar_group) setFilter(cfg.sidebar_group);
-      if (['board', 'ci', 'creds', 'locks', 'enforce'].includes(cfg.main_view)) setMainView(cfg.main_view);
+      if (['board', 'ci', 'creds', 'tokens', 'locks', 'access', 'enforce'].includes(cfg.main_view)) setMainView(cfg.main_view);
     } catch { }
     try { const v = await api.get('/api/version'); setVersion(v.c3_version || ''); } catch { }
   }, []);
@@ -120,6 +120,8 @@ function App() {
             <HubTokens projects={projects} onOpenDrill={openDrill} />
           ) : mainView === 'locks' ? (
             <HubLocks projects={projects} onOpenDrill={openDrill} />
+          ) : mainView === 'access' ? (
+            <HubAccess projects={projects} />
           ) : mainView === 'enforce' ? (
             <HubEnforcement projects={projects} onOpenDrill={openDrill} />
           ) : (
