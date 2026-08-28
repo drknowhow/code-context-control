@@ -3277,7 +3277,8 @@ def api_hub_access():
     the tab renders under the pending cards. Rule MUTATION stays on the
     per-project server and the CLI — this route never writes.
     """
-    from services import access_guard, override_policy as opol
+    from services import access_guard
+    from services import override_policy as opol
     raw = (request.args.get("path") or "").strip()
     if not raw:
         return jsonify({"error": "path is required"}), 400
