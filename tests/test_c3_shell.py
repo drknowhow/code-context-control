@@ -493,6 +493,7 @@ class TestShellWarnGrants(unittest.TestCase):
     def setUp(self):
         import json
         from unittest import mock
+
         from services import override_policy as opol
         self._tmp = tempfile.TemporaryDirectory()
         self.proj = Path(self._tmp.name).resolve()
