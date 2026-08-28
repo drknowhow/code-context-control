@@ -2,7 +2,11 @@
 
 Status: **FROZEN 2026-08-07. P1 + P2 + P2a + P3 shipped (v2.69.0 / v2.70.0 /
 v2.72.0 / v2.71.0). P4 built and installed on the phone; its first live run
-found the P2a gap, which is what v2.72.0 closes. P5 outstanding.**
+found the P2a gap, which is what v2.72.0 closes. P5 approval surface shipped
+v2.98.0 (Hub Access tab: cross-project pending cards, decide routes with
+`decided_by="desktop"`, typed-glob challenge, read-only policy matrix —
+see docs/confirm-guard.md §7). Still outstanding from P5: the Settings UI
+for `override.layers` and the "this rule is costing you" nudge.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -18,7 +22,7 @@ Implementation status per phase (§14):
 | P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
 | P4 mobile Requests pane | **built — awaiting live end-to-end** | separate repo `c3-mobile` (local, no remote): `50f0c49` + `5c1769b` — `src/api/{types,queries,mutations}.ts`, `src/components/guard/overrides.tsx`, `src/notifications/{routing,route-map}.ts`, 43 node:test cases. arm64 release APK delivered 2026-08-07 |
 | **P4a wake on decide + long-poll delivery** | **shipped v2.73.0** | `services/override_wake.py`, `override.wake` policy key, `/api/mobile/feed?wait=` (`feed_wait` capability, api_version 3), `c3-mobile` live-push loop |
-| P5 desktop parity | not started | — |
+| P5 desktop parity | **approval surface shipped v2.98.0** (Hub Access tab + `/api/hub/overrides` routes; layers Settings UI + cost nudge still open) | `cli/hub_server.py`, `cli/hub_ui/components/hub_access.js`, `tests/test_hub_override_routes.py` |
 
 **Resolved deviation (P1 → P2).** §10's `c3 override approve <id>` / `deny
 <id>` needed the request store; both shipped in P2 alongside `requests`. The

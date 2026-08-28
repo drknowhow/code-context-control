@@ -338,6 +338,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/hub_cred_audit.js",
     "hub_ui/components/hub_tokens.js",
     "hub_ui/components/hub_locks.js",
+    "hub_ui/components/hub_access.js",
     "hub_ui/components/hub_enforcement.js",
     "hub_ui/components/hub_ci.js",
     "hub_ui/components/drill_subprojects.js",
@@ -3086,6 +3087,212 @@ def api_projects_config_put():
     except Exception:
         pass
     return jsonify({"saved": True, "section": section, "config": merged})
+
+
+# ── Override approvals (hub) — docs/override-requests.md P5 desktop parity ──
+# The desktop half of the request→grant pipeline. Everything here reads or
+# decides REQUESTS; grants are only ever minted inside override_requests.decide,
+# and the typed-confirmation checks in the route exist for the client's
+# benefit — decide() enforces them again regardless of what this route
+# believes (same two-places-compute-one-enforces rule as the mobile route).
+
+_OVERRIDE_ROW_FIELDS = (
+    "id", "project_path", "session_id", "created_at", "expires_at", "status",
+    "layer", "rule", "rule_class", "scope", "tool", "op", "path", "refusal",
+    "justification", "resolved_at", "decided_by", "decision_note",
+)
+
+
+def _hub_override_row(row: dict) -> dict:
+    """One request row for the wire. Allowlisted, never the raw dict.
+
+    ``path_key`` stays server-side (grant-matching identity; the UI gets the
+    human-readable ``path``). ``justification`` IS shipped — the UI renders it
+    quoted under the untrusted-input label, never as markup.
+    """
+    out = {k: row.get(k) for k in _OVERRIDE_ROW_FIELDS}
+    for extra in ("grant_id", "grant_mode", "muted"):
+        if row.get(extra) is not None:
+            out[extra] = row.get(extra)
+    return out
+
+
+def _hub_override_audit(action: str, row: dict, *, confirmed: bool = False,
+                        detail_extra: dict | None = None) -> None:
+    """Identifiers and rule globs only — NEVER the justification (untrusted
+    agent text; the activity feed ships verbatim to every client). Mirrors
+    the mobile route's audit shape with via='hub'. Failure-safe."""
+    detail = {"kind": "override", "action": action,
+              "request_id": row.get("id", ""),
+              "session_id": row.get("session_id", ""),
+              "rule": row.get("rule", ""),
+              "rule_class": row.get("rule_class", ""),
+              "tool": row.get("tool", ""), "op": row.get("op", ""),
+              "via": "hub", "confirmed": bool(confirmed)}
+    detail.update(detail_extra or {})
+    project = row.get("project_path") or ""
+    if not project:
+        return
+    try:
+        ActivityLog(str(project)).log("access_action", dict(detail))
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(project)).log_edit(
+            file=f"override://{row.get('id', '')}",
+            change_type=f"override_{action}",
+            summary=(f"{action} override {row.get('id', '')} "
+                     f"({row.get('rule', '')}) via Hub"),
+            tags=["override", action], detail=dict(detail))
+    except Exception:
+        pass
+
+
+@app.route("/api/hub/overrides", methods=["GET"])
+def api_hub_overrides():
+    """Pending + recently-decided requests across every project, newest first.
+
+    The hub is this machine's own surface, so unlike the mobile gateway it
+    does not filter rows to a token's project registry — the store is one file
+    across every project on the box and the hub answers for all of them.
+    Each row carries what the card needs to decide without a second fetch:
+    whether the layer is still escalatable and which typed challenge (if any)
+    an approval demands.
+    """
+    from services import override_policy as opol
+    from services import override_requests as orq
+    project_path = ""
+    raw_project = (request.args.get("path") or "").strip()
+    if raw_project:
+        try:
+            project_path = str(_resolve_project_path(raw_project))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    status = (request.args.get("status") or "").strip().lower()
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+    try:
+        rows = orq.list_requests(project_path=project_path, status=status,
+                                 limit=limit)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    out, policies = [], {}
+    for row in rows:
+        proj = str(row.get("project_path") or ".")
+        if proj not in policies:
+            try:
+                policies[proj] = opol.resolve(proj)
+            except Exception:
+                policies[proj] = None
+        policy = policies[proj]
+        rule_class = str(row.get("rule_class") or "")
+        typed = rule_class in opol.TYPED_CONFIRM_LAYERS
+        entry = _hub_override_row(row)
+        entry["needs_typed_confirm"] = typed
+        entry["confirm_with"] = row.get("rule") if typed else ""
+        entry["escalatable"] = bool(policy.escalatable(rule_class)) \
+            if policy is not None else False
+        entry["allow_session_grants"] = bool(policy.allow_session_grants) \
+            if policy is not None else False
+        entry["project_name"] = Path(proj).name
+        out.append(entry)
+    return jsonify({"requests": out, "count": len(out),
+                    "project": project_path, "status": status,
+                    "limit": limit})
+
+
+@app.route("/api/hub/overrides/<request_id>", methods=["POST"])
+def api_hub_override_decide(request_id):
+    """Approve (minting a grant) or deny one request. decided_by='desktop'.
+
+    Body: {decision, confirm?, mode?, note?, mute?, ttl_s?, uses?}.
+    409 for a request that lapsed while the page was showing it — the card
+    refreshes to the real status instead of silently minting a grant.
+    """
+    from services import override_policy as opol
+    from services import override_requests as orq
+    data = request.get_json(silent=True) or {}
+    decision = str(data.get("decision") or "").strip().lower()
+    if decision not in (orq.DECISION_APPROVE, orq.DECISION_DENY):
+        return jsonify({"error": "decision must be 'approve' or 'deny'"}), 400
+    mode = str(data.get("mode") or orq.MODE_ONCE).strip().lower()
+    if mode not in orq.MODES:
+        return jsonify({"error": f"mode must be one of: "
+                                 f"{', '.join(orq.MODES)}"}), 400
+
+    row = orq.get(str(request_id))
+    if row is None:
+        return jsonify({"error": "unknown request"}), 404
+    if row.get("status") != orq.STATUS_PENDING:
+        return jsonify({"error": f"request is {row.get('status')}, not pending",
+                        "request": _hub_override_row(row)}), 409
+
+    rule_class = str(row.get("rule_class") or "")
+    confirm = data.get("confirm")
+    if (decision == orq.DECISION_APPROVE
+            and rule_class in opol.TYPED_CONFIRM_LAYERS
+            and confirm != row.get("rule")):
+        return jsonify({
+            "error": f"approving an {rule_class} request needs the rule "
+                     "glob retyped by hand",
+            "needs_confirmation": True,
+            "confirm_with": row.get("rule"),
+        }), 400
+
+    try:
+        ttl_s = int(data["ttl_s"]) if data.get("ttl_s") is not None else None
+        uses = int(data["uses"]) if data.get("uses") is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "ttl_s and uses must be integers"}), 400
+
+    try:
+        result = orq.decide(
+            str(request_id), decision, uses=uses, ttl_s=ttl_s,
+            note=str(data.get("note") or ""), decided_by="desktop",
+            confirm=confirm, mode=mode, mute=bool(data.get("mute")))
+    except orq.OverrideError as exc:
+        _hub_override_audit(f"{decision}_refused", row)
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    _hub_override_audit(decision, result,
+                        confirmed=rule_class in opol.TYPED_CONFIRM_LAYERS,
+                        detail_extra={"mode": mode,
+                                      "grant_id": result.get("grant_id", "")})
+    return jsonify({"request": _hub_override_row(result),
+                    "decision": decision})
+
+
+@app.route("/api/hub/access", methods=["GET"])
+def api_hub_access():
+    """Effective Access Guard rules + override policy for one project.
+
+    Read-only companion to the approvals list: the per-project mode matrix
+    the tab renders under the pending cards. Rule MUTATION stays on the
+    per-project server and the CLI — this route never writes.
+    """
+    from services import access_guard
+    from services import override_policy as opol
+    raw = (request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(raw)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        rules = access_guard.list_rules(str(resolved))
+        policy = opol.resolve(str(resolved)).as_dict()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"path": str(resolved), "rules": rules,
+                    "policy": policy})
 
 
 # ── Project management: tasks / milestones / notes (v2.45.0) ──────────────

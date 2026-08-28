@@ -49,11 +49,18 @@ Mutation stays human-only (`c3 access add --kind confirm`, the Access tab,
   `Rule.confirm_ops == "all"` — is reserved for builtin mode downgrades of
   full-deny builtins, where confirm must cover reads or it would silently
   become allow-read. It is unreachable from config.)
-- Precedence: **`deny` > `mask` > `confirm` > `read_only`**. Mask beats
-  confirm deliberately: masked content is read-only *with no override*
-  (mask-guard §3) because an edit expressed against a transformed view
-  cannot be trusted against the real file — no confirmation flow may
-  authorise it.
+- Precedence: **`deny` > `mask` > `read_only` > `confirm`**. Confirm is the
+  loosest non-allow outcome — a hold can be approved into a write, a
+  `read_only` cannot — so under the scopes-only-tighten invariant everything
+  stricter wins. Two consequences are load-bearing: a user's `read_only`
+  rule is never softened into a pause by a builtin confirm tier beside it,
+  and a user `confirm` glob over `**/.c3/**` does not outrank the builtin
+  write-deny (the sanctioned route to a confirm-mode builtin is
+  `builtin_mode`, §7). Mask beats confirm because an edit expressed against
+  a transformed view cannot be trusted against the real file (mask-guard §3).
+  *(Corrected in v2.100.0 — 2.97.0 briefly shipped confirm above read_only,
+  which let the agent-config tier shadow a stricter user rule; the artifact
+  restore wiring tests caught it.)*
 - The verdict kind is `confirm`; the `Denial` carries `kind="confirm"` with
   the matched glob. `check()` returns that denial, so **every surface that
   was never taught about confirm refuses** (fail closed): filter, validate,
@@ -101,7 +108,7 @@ Machine tag: `[c3-access:confirm]`. Base:
 - not filed: ` A confirmation request could not be filed ({reason}) — ask
   the user in chat.`
 - refuse-only surface: ` No confirmation request was filed from this
-  surface — perform the change via c3_edit or a native tool (both file
+  surface — retry via c3_read, c3_edit, or a native tool (those file
   one), or ask the user in chat.`
 
 S8 never carries the override-requests §6 offer line — it would be a second,
@@ -142,14 +149,65 @@ write-class only). Requests are approved from `c3 override approve`, the
 mobile Guard tab, and (planned, §7) the Hub. Residual risks are
 access-guard §6's, unchanged.
 
-## 7. Phases building on this (not yet shipped, not yet frozen)
+## 7. Phases building on this
 
-1. **Hub approval surface** — cross-project pending-request cards +
-   decide route (`decided_by="desktop"`), per-project rules/mode matrix.
-2. **`builtin_mode`** — per-builtin downgrade `deny|confirm|allow`
-   (global-only, two-key attested, Tier-0 and forbidden targets excluded;
-   `disable_builtin` becomes the legacy alias of `allow`).
-3. **Agent-config confirm tier** — `.mcp.json`, CLAUDE.md/AGENTS.md,
-   `.claude/hooks|skills|agents|commands/**` as builtin confirm-write.
-4. **`shell_warn` grant wiring** — suppress the c3_shell soft-warn once per
-   approved use; `_BLOCKED` never consults grants.
+1. **Hub approval surface** — SHIPPED v2.98.0. Cross-project pending-request
+   cards + decide routes (`decided_by="desktop"`, typed-glob challenge
+   re-enforced server-side in `decide()`), read-only per-project rules and
+   override-layer matrix. `GET/POST /api/hub/overrides`, `GET
+   /api/hub/access`, `cli/hub_ui/components/hub_access.js`. Audit mirrors
+   the mobile route: identifiers only, never the justification.
+
+2. **`builtin_mode`** — SHIPPED v2.99.0. Per-builtin mode
+   `deny | confirm | allow` (plus `default`, the reset verb), GLOBAL scope
+   only, in `access.builtin_mode: {glob: mode}`. Two-key attested exactly
+   like the opt-out it generalises: keyring account `builtin_mode|<glob>`
+   must hold the SAME mode string, written attestation-first; every failure
+   path enforces the shipped default. A mode never widens the op class the
+   builtin governs:
+
+   | Tier | default | deny | confirm | allow |
+   |---|---|---|---|---|
+   | `BUILTIN_DENY` (`**/.env*`) — all ops | deny-all | deny-all | confirm ALL ops (`confirm_ops="all"` — a write-only confirm would silently become allow-read) | off |
+   | `BUILTIN_WRITE_DENY` (`**/.c3/**`, `**/.claude/settings*.json`, `**/.git/**`) | read_only | full deny (tightens) | confirm-write | off |
+
+   Tier-0 vault globs take no mode at any price (`set_builtin_mode`
+   raises), and even under a confirm-mode `.c3/**` the `forbidden_target()`
+   files can never become a request. `disable_builtin` survives as the
+   legacy spelling of `allow` (`set_builtin_disabled` is a shim); a glob
+   named in BOTH spellings makes the global scope corrupt (deny-all), and
+   `set_builtin_mode` lazily retires the legacy entry so the state cannot
+   arise through the API. Project-scope `builtin_mode` ⇒ corrupt. Reads on
+   a confirm-held builtin file a request from the hook and `c3_read`;
+   enumeration surfaces exclude and never auto-file (no existence leak).
+   Surfaces: `c3 access builtin mode <glob> <mode>` (typed-glob confirm for
+   the widening modes), `POST /api/access/builtin_mode` + a mode selector in
+   the Access tab, `list_rules()["builtin"]["modes"]`.
+
+3. **Agent-config confirm tier** — SHIPPED v2.100.0. `BUILTIN_CONFIRM_WRITE`
+   = `**/.mcp.json`, `**/claude.md`, `**/agents.md`, `**/gemini.md`,
+   `**/.claude/{hooks,skills,agents,commands}/**` — the previously
+   UNGUARDED agent-config surfaces (an agent could add an MCP server or
+   rewrite a hook body silently; only artifact capture saw it, after the
+   fact). Default is a pause, not a block: writes hold for one-tap approval,
+   reads stay open — an agent must always be able to read its own
+   instructions. Mode-governable: this tier governs writes only, so `deny`
+   hardens to a write-deny (never a full deny) and `allow` restores the
+   pre-2.100 behaviour. The `settings*.json` write-deny is deliberately NOT
+   in this tier — hook REGISTRATION stays hard while hook BODIES pause,
+   because registration decides code execution. `artifact_store.restore()`
+   exempts builtin confirm exactly as it exempts builtin read_only: restore
+   writes back a version the store itself captured, on an audited
+   human-triggerable path.
+
+4. **`shell_warn` grant wiring** — SHIPPED v2.101.0. Grant identity is
+   fixed: `layer=shell`, `rule=<shell:soft-warn>`, `tool="c3_shell"`,
+   `op="run"`, `path_key`=the effective cwd. Stated limitation: the grant
+   binds to the CWD, not the command text — acceptable because the
+   soft-warn is a caveat on an already-executed command, never a block. An
+   approved grant replaces the caveat with the `[c3-override:granted]`
+   line, once per use. Normal layer semantics (`override.enabled` AND
+   `layers.shell_warn` — NOT confirm-class). `_BLOCKED` never consults
+   grants: no approval flow reaches the catastrophic tier. This also fixed
+   `c3_override(action='request', layer='shell')`, which previously fell
+   into the access branch and produced an unsatisfiable request.

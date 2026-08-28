@@ -40,7 +40,18 @@ _LIST_KINDS = (_KIND_DENY, _KIND_READ_ONLY, _KIND_CONFIRM)
 # "unknown key ⇒ corrupt" rule (which exists so `allow` can never silently
 # no-op) still applies to everything else.
 _KEY_DISABLE_BUILTIN = "disable_builtin"
-_VALID_SECTION_KEYS = _VALID_KEYS | {_KEY_DISABLE_BUILTIN}
+# Granular per-builtin mode (docs/confirm-guard.md §7): {glob: mode}. Global
+# scope only, two-key attested like disable_builtin (which survives as the
+# legacy spelling of mode="allow"). A glob present in BOTH keys is ambiguous
+# and makes the scope corrupt — never a precedence puzzle.
+_KEY_BUILTIN_MODE = "builtin_mode"
+_VALID_SECTION_KEYS = _VALID_KEYS | {_KEY_DISABLE_BUILTIN, _KEY_BUILTIN_MODE}
+
+#: Modes a Tier-1 builtin may be set to. "default" is the setter's reset verb,
+#: not a stored value. A mode never widens the op class the builtin governs:
+#: on a full-deny builtin (**/.env*) `confirm` pauses ALL ops; on a write-deny
+#: builtin `confirm` pauses the write class and `deny` tightens to a full deny.
+BUILTIN_MODES = ("deny", "confirm", "allow")
 
 # Keyring namespace for builtin opt-out attestations. Distinct from c3-creds /
 # c3-bitbucket / c3-jira so a vault wipe cannot silently re-enable a builtin
@@ -72,8 +83,28 @@ BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json")
 BUILTIN_DENY = ("**/.env*",)
 BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
 
-#: Globs `c3 access disable-builtin` accepts. Order is display order.
-DISABLEABLE_BUILTINS = BUILTIN_DENY + BUILTIN_WRITE_DENY
+# Tier 1, confirm-by-default (docs/confirm-guard.md §7): the agent-config
+# surfaces that were previously UNGUARDED — an agent could add an MCP server
+# to .mcp.json, rewrite a hook script's body, or edit its own instructions
+# without tripping any rule (only artifact capture saw it, after the fact).
+# The default here is a PAUSE, not a block: writes hold for one-tap approval
+# and reads stay open — an agent must always be able to read its own
+# instructions. Mode-governable like the rest of Tier 1: `deny` hardens to a
+# write-deny (reads stay open — this tier governs writes only), `allow`
+# restores the pre-2.100 behaviour. The `**/.claude/settings*.json`
+# write-deny above is NOT in this tier: hook REGISTRATION stays hard while
+# hook BODIES pause, because registration is what decides code execution.
+BUILTIN_CONFIRM_WRITE = (
+    "**/.mcp.json",
+    "**/claude.md", "**/agents.md", "**/gemini.md",
+    "**/.claude/hooks/**",
+    "**/.claude/skills/**",
+    "**/.claude/agents/**",
+    "**/.claude/commands/**",
+)
+
+#: Globs `c3 access builtin {disable,mode}` accepts. Order is display order.
+DISABLEABLE_BUILTINS = BUILTIN_DENY + BUILTIN_WRITE_DENY + BUILTIN_CONFIRM_WRITE
 
 # Spelling rules — they deny how a path is WRITTEN, not where it points, so
 # they have no glob to list. A refusal cites one of these by name, so they
@@ -241,13 +272,63 @@ def validate_globs(globs) -> str:
     return ""
 
 
+def _norm_builtin(glob) -> str:
+    """Same canonical form _compile() stores on Rule.glob, so they compare."""
+    return str(glob or "").replace("\\", "/").casefold().strip()
+
+
 _ABSOLUTE_RULES = tuple(
     _compile(g, _KIND_DENY, "builtin") for g in BUILTIN_ABSOLUTE_DENY
 )
-_BUILTIN_RULES = tuple(
-    [_compile(g, _KIND_DENY, "builtin") for g in BUILTIN_DENY]
-    + [_compile(g, _KIND_READ_ONLY, "builtin") for g in BUILTIN_WRITE_DENY]
-)
+
+# Per-glob precompiled variants for every reachable mode (hooks import this
+# module on every native tool call, so nothing recompiles per evaluation).
+# A mode never widens the op class the builtin governs: on the full-deny
+# tier `deny` IS the default and `confirm` covers all ops (else it would
+# silently become allow-read); on the write-deny tier `deny` tightens to a
+# full deny and `confirm` pauses the write class only.
+_BUILTIN_VARIANTS = {}
+for _g in BUILTIN_DENY:
+    _BUILTIN_VARIANTS[_norm_builtin(_g)] = {
+        "default": _compile(_g, _KIND_DENY, "builtin"),
+        "deny": _compile(_g, _KIND_DENY, "builtin"),
+        "confirm": _compile(_g, _KIND_CONFIRM, "builtin", confirm_ops="all"),
+    }
+for _g in BUILTIN_WRITE_DENY:
+    _BUILTIN_VARIANTS[_norm_builtin(_g)] = {
+        "default": _compile(_g, _KIND_READ_ONLY, "builtin"),
+        "deny": _compile(_g, _KIND_DENY, "builtin"),
+        "confirm": _compile(_g, _KIND_CONFIRM, "builtin",
+                            confirm_ops="write"),
+    }
+for _g in BUILTIN_CONFIRM_WRITE:
+    # This tier governs WRITES only — an agent must always be able to read
+    # its own instructions — so `deny` hardens to a write-deny, never a full
+    # deny, and `confirm` is the default rather than a downgrade.
+    _BUILTIN_VARIANTS[_norm_builtin(_g)] = {
+        "default": _compile(_g, _KIND_CONFIRM, "builtin",
+                            confirm_ops="write"),
+        "deny": _compile(_g, _KIND_READ_ONLY, "builtin"),
+        "confirm": _compile(_g, _KIND_CONFIRM, "builtin",
+                            confirm_ops="write"),
+    }
+del _g
+
+
+def _builtin_rules_effective(modes: dict | None = None) -> list:
+    """The Tier-1 rules as currently moded: default/deny/confirm variants,
+    'allow' omitted. Declaration order preserved."""
+    modes = effective_builtin_modes() if modes is None else modes
+    out = []
+    for glob in DISABLEABLE_BUILTINS:
+        canon = _norm_builtin(glob)
+        mode = modes.get(canon, "default")
+        if mode == "allow":
+            continue
+        out.append(_BUILTIN_VARIANTS[canon][mode
+                                            if mode in ("deny", "confirm")
+                                            else "default"])
+    return out
 
 
 # ── Builtin opt-out (two-key) ───────────────────────────────────────────────
@@ -267,11 +348,6 @@ _BUILTIN_RULES = tuple(
 # (spec §1). A per-project opt-out would let a cloned repo loosen the guard.
 #
 # Every failure path here leaves the builtin ENFORCED.
-
-
-def _norm_builtin(glob) -> str:
-    """Same canonical form _compile() stores on Rule.glob, so they compare."""
-    return str(glob or "").replace("\\", "/").casefold().strip()
 
 
 def _builtin_attest_account(glob: str) -> str:
@@ -322,16 +398,10 @@ def _configured_disable_list() -> list:
     return [g for g in raw if isinstance(g, str)] if isinstance(raw, list) else []
 
 
-def disabled_builtins() -> frozenset:
-    """Canonical globs of builtins that are genuinely off right now.
-
-    A glob counts only when it is a Tier-1 builtin, listed in the global
-    config, AND attested in the keyring. Anything else — a Tier-0 vault glob,
-    an unknown glob, a config edited outside the API — is silently NOT
-    disabled, which is the safe direction.
-
-    Costs nothing when nobody has opted out: the keyring is only touched once
-    the config list is non-empty.
+def _legacy_disabled() -> frozenset:
+    """The original two-key opt-out read: `disable_builtin` config entries
+    that carry a matching keyring attestation. Kept as the legacy spelling of
+    mode="allow" — existing installs keep working without migration.
     """
     listed = _configured_disable_list()
     if not listed:
@@ -341,6 +411,96 @@ def disabled_builtins() -> frozenset:
         c for c in (_norm_builtin(g) for g in listed)
         if c in allowed and _verify_builtin_disabled(c)
     )
+
+
+# ── Per-builtin modes (docs/confirm-guard.md §7) ────────────────────────────
+# Same two-key construction as the opt-out: the config names the mode, the
+# keyring attests the SAME mode string, and any mismatch — config edited by
+# hand, attestation forged with the wrong value, keyring gone — leaves the
+# builtin at its shipped default. Every failure path here ENFORCES.
+
+
+def _mode_attest_account(glob: str) -> str:
+    return f"builtin_mode|{_norm_builtin(glob)}"
+
+
+def _attest_builtin_mode(glob: str, mode: str) -> bool:
+    """Write (mode) or clear ('') the keyring half. False when it won't stick."""
+    try:
+        import keyring  # noqa: PLC0415 — lazy, see _attest_builtin_disabled
+        keyring.set_password(
+            _ACCESS_KEYRING_SERVICE, _mode_attest_account(glob), mode or "")
+        return True
+    except Exception:
+        return False
+
+
+def _verify_builtin_mode(glob: str) -> str:
+    """The attested mode string, or ''. Fails closed on any error."""
+    try:
+        import keyring  # noqa: PLC0415 — see above
+        return str(keyring.get_password(
+            _ACCESS_KEYRING_SERVICE, _mode_attest_account(glob)) or "")
+    except Exception:
+        return ""
+
+
+def _configured_modes() -> dict:
+    """Raw `access.builtin_mode` from the global config. {} on any problem."""
+    base = _global_base()
+    if base is None:
+        return {}
+    cfg = base / ".c3" / "config.json"
+    if not cfg.is_file():
+        return {}
+    try:
+        section = (json.loads(cfg.read_text(encoding="utf-8")) or {}).get("access")
+    except Exception:
+        return {}
+    if not isinstance(section, dict):
+        return {}
+    raw = section.get(_KEY_BUILTIN_MODE, {})
+    if not isinstance(raw, dict):
+        return {}
+    return {g: m for g, m in raw.items()
+            if isinstance(g, str) and isinstance(m, str)}
+
+
+def builtin_modes() -> dict:
+    """{canonical_glob: mode} for genuinely-set modes (config AND attestation
+    agree on the same string; Tier-1 globs and known modes only). Anything
+    else keeps the shipped default — the safe direction.
+    """
+    configured = _configured_modes()
+    if not configured:
+        return {}
+    allowed = {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}
+    out = {}
+    for glob, mode in configured.items():
+        canon = _norm_builtin(glob)
+        if canon in allowed and mode in BUILTIN_MODES \
+                and _verify_builtin_mode(canon) == mode:
+            out[canon] = mode
+    return out
+
+
+def effective_builtin_modes() -> dict:
+    """{canonical_glob: mode} with the legacy opt-out folded in as 'allow'.
+
+    `builtin_mode` wins when both spellings name a glob — but that state is
+    also flagged corrupt at scope level, so it only matters transiently.
+    """
+    out = {g: "allow" for g in _legacy_disabled()}
+    out.update(builtin_modes())
+    return out
+
+
+def disabled_builtins() -> frozenset:
+    """Canonical globs of builtins that are genuinely OFF right now — the
+    legacy two-key opt-out plus mode="allow" entries. Callers that only ask
+    "is it enforced?" keep working unchanged across both spellings."""
+    return frozenset(g for g, m in effective_builtin_modes().items()
+                     if m == "allow")
 
 
 # ── Mask rules ──────────────────────────────────────────────────────────────
@@ -478,11 +638,23 @@ def _read_scope_rules(base: Path, scope: str):
     unknown = set(section) - _VALID_SECTION_KEYS
     if unknown:
         return _CORRUPT  # hard error — 'allow' must never silently no-op
-    # Builtin opt-out is global-only, because a project scope may only ever
-    # TIGHTEN. A project-scope entry is a loud error, not a silent no-op: the
-    # UI must never claim a builtin is off while evaluation still enforces it.
-    if scope == "project" and section.get(_KEY_DISABLE_BUILTIN):
+    # Builtin opt-out/modes are global-only, because a project scope may only
+    # ever TIGHTEN. A project-scope entry is a loud error, not a silent no-op:
+    # the UI must never claim a builtin is off while evaluation enforces it.
+    if scope == "project" and (section.get(_KEY_DISABLE_BUILTIN)
+                               or section.get(_KEY_BUILTIN_MODE)):
         return _CORRUPT
+    if scope == "global":
+        # A glob spelled in BOTH disable_builtin and builtin_mode is
+        # ambiguous. Ambiguity is a hard error, never a precedence puzzle.
+        legacy = {_norm_builtin(g)
+                  for g in section.get(_KEY_DISABLE_BUILTIN, [])
+                  if isinstance(g, str)}
+        modes = section.get(_KEY_BUILTIN_MODE, {})
+        moded = {_norm_builtin(g) for g in modes} \
+            if isinstance(modes, dict) else set()
+        if legacy & moded:
+            return _CORRUPT
     rules = []
     for kind in _LIST_KINDS:
         globs = section.get(kind, [])
@@ -510,9 +682,8 @@ def _global_base() -> Path | None:
 
 def load_all(project_path: str = ".") -> tuple:
     """(rules, mask_rules, corrupt_scopes) — one read per scope."""
-    disabled = disabled_builtins()
     rules = list(_ABSOLUTE_RULES)
-    rules.extend(r for r in _BUILTIN_RULES if r.glob not in disabled)
+    rules.extend(_builtin_rules_effective())
     inst = _install_dir_rule()
     if inst:
         rules.append(inst)
@@ -556,7 +727,7 @@ def has_active_rules(project_path: str = ".") -> bool:
     # checkout it is absent, and a fixed "+1" made a single user rule
     # invisible to S4 (footer suppressed while filtering was active).
     n_baseline = (len(_ABSOLUTE_RULES)
-                  + len(_BUILTIN_RULES) - len(disabled_builtins())
+                  + len(_builtin_rules_effective())
                   + (1 if _install_dir_rule() else 0))
     return bool(corrupt) or bool(mask_rules) or len(rules) > n_baseline
 
@@ -637,12 +808,13 @@ def canonicalize(path, project_root=".") -> tuple:
 def verdict(path, operation: str, project_path: str = ".") -> Verdict:
     """Full policy answer, including the ``masked`` outcome.
 
-    Precedence: ``deny`` > ``mask`` > ``confirm`` > ``read_only``
-    (docs/mask-guard.md §4, docs/confirm-guard.md §2). A mask rule denies
-    every write-class operation — masked content is read-only, always, with
-    no override (§3) — and mask beats confirm deliberately: an edit expressed
-    against a transformed view cannot be trusted against the real file, so no
-    confirmation flow may authorise it.
+    Precedence: ``deny`` > ``mask`` > ``read_only`` > ``confirm``
+    (docs/mask-guard.md §4, docs/confirm-guard.md §2). Confirm is the
+    LOOSEST non-allow outcome — a hold can be approved, a read_only cannot —
+    so under the scopes-only-tighten invariant everything stricter beats it:
+    a user's read_only rule must never be shadowed by a builtin confirm
+    tier, and mask beats confirm because an edit expressed against a
+    transformed view cannot be trusted against the real file (§3).
 
     Overlapping mask rules that disagree on (preset, params) are a config
     error, not a precedence puzzle: rendering would depend on rule order and
@@ -690,16 +862,19 @@ def verdict(path, operation: str, project_path: str = ".") -> Verdict:
                            hit)
         return Verdict("masked", None, hit)
 
-    # Confirm sits between mask and read_only: a pause the enforcement site
-    # turns into an auto-filed Override Request. Write-class only for user
-    # rules; the internal "all" variant also pauses reads (builtin downgrades).
+    # read_only OUTRANKS confirm: a hold can be approved into a write, a
+    # read_only cannot, so a matching read_only rule (whoever wrote it) must
+    # never be softened into a pause by a confirm rule beside it.
+    if hit_ro is not None and op_write:
+        return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
+                                           hit_ro.scope, "read-only rule"))
+    # Confirm is the pause the enforcement site turns into an auto-filed
+    # Override Request. Write-class only for user rules; the internal "all"
+    # variant also pauses reads (builtin mode downgrades).
     if hit_confirm is not None and (op_write
                                     or hit_confirm.confirm_ops == "all"):
         return Verdict("confirm", Denial(hit_confirm.glob, _KIND_CONFIRM,
                                          hit_confirm.scope, "confirm rule"))
-    if hit_ro is not None and op_write:
-        return Verdict("read_only", Denial(hit_ro.glob, _KIND_READ_ONLY,
-                                           hit_ro.scope, "read-only rule"))
     return Verdict("allowed")
 
 
@@ -815,7 +990,7 @@ def _refusal_body(denial: Denial, path, operation: str, *, surface: str,
                     f"({_cap(request_note)}) — ask the user in chat.")
         else:
             tail = (" No confirmation request was filed from this surface — "
-                    "perform the change via c3_edit or a native tool (both "
+                    "retry via c3_read, c3_edit, or a native tool (those "
                     "file one), or ask the user in chat.")
         return (
             f"{TAG_CONFIRM} {operation} for {p} is held for human "
@@ -1065,25 +1240,29 @@ def list_rules(project_path: str = ".") -> dict:
     string globs are recoverable, flagged ``corrupt`` — that scope evaluates
     deny-all until the human repairs config.json by hand.
     """
-    disabled = disabled_builtins()
-    builtin_deny = list(BUILTIN_ABSOLUTE_DENY) + [
-        g for g in BUILTIN_DENY if _norm_builtin(g) not in disabled]
-    builtin_ro = [g for g in BUILTIN_WRITE_DENY
-                  if _norm_builtin(g) not in disabled]
+    modes = effective_builtin_modes()
+    builtin_deny = list(BUILTIN_ABSOLUTE_DENY)
+    builtin_ro, builtin_confirm = [], []
+    for rule in _builtin_rules_effective(modes):
+        {_KIND_DENY: builtin_deny, _KIND_READ_ONLY: builtin_ro,
+         _KIND_CONFIRM: builtin_confirm}[rule.kind].append(rule.glob)
     inst = _install_dir_rule()
     if inst:
         builtin_ro.append(inst.glob)
     out = {"builtin": {
-        # deny/read_only list what is ENFORCED right now, so a caller that
-        # only reads these two keys is never told a disabled builtin is on.
+        # deny/read_only/confirm list what is ENFORCED right now, so a caller
+        # that only reads those keys is never told a disabled builtin is on
+        # (or shown a default for a builtin running in a downgraded mode).
         "deny": builtin_deny,
         "read_only": builtin_ro,
-        "confirm": [],  # builtins gain confirm entries via mode downgrades
+        "confirm": builtin_confirm,
         "mask": [], "corrupt": False,
-        # Opt-out surface for `c3 access list` and the Access tab.
+        # Opt-out/mode surface for `c3 access list` and the Access tab.
         "absolute": list(BUILTIN_ABSOLUTE_DENY),
         "disableable": list(DISABLEABLE_BUILTINS),
-        "disabled": sorted(disabled),
+        "disabled": sorted(g for g, m in modes.items() if m == "allow"),
+        "modes": {_norm_builtin(g): modes.get(_norm_builtin(g), "default")
+                  for g in DISABLEABLE_BUILTINS},
     }}
     for scope in _VALID_SCOPES:
         try:
@@ -1208,24 +1387,34 @@ def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     return {"glob": canon, "kind": kind, "scope": scope, "added": True}
 
 
-def set_builtin_disabled(glob, disabled: bool) -> dict:
-    """Switch a Tier-1 builtin off (or back on). GLOBAL scope, human surfaces
-    only (`c3 access disable-builtin` / Access tab); callers log to the ledger.
+def set_builtin_mode(glob, mode: str) -> dict:
+    """Set a Tier-1 builtin's mode: deny | confirm | allow | default.
+    GLOBAL scope, human surfaces only (`c3 access builtin mode` / Access
+    tab); callers log to the ledger.
 
-    Writes BOTH keys — the config entry and the keyring attestation — because
-    either alone is inert: config without attestation fails closed (the
-    builtin keeps enforcing), and attestation without config is never read.
+    Two-key like the opt-out it generalises: the config names the mode and
+    the keyring attests the SAME string, written attestation-first so a
+    keyring that will not hold it leaves config untouched rather than
+    persist a claim evaluation ignores. ``default`` is the reset verb —
+    config-first removal (that alone restores the shipped behaviour), then
+    the attestation is cleared best-effort. Setting any mode also retires
+    the legacy ``disable_builtin`` spelling for that glob (lazy migration),
+    so the two keys can never disagree about one glob.
 
-    Returns {"glob", "disabled", "changed", "attested"}. Raises ValueError for
-    a Tier-0 vault glob, an unrecognized glob, an unavailable global scope, or
-    a keyring that will not hold the attestation.
+    Returns {"glob", "mode", "changed", "attested"}. Raises ValueError for a
+    Tier-0 vault glob, an unrecognized glob or mode, an unavailable global
+    scope, a malformed section, or a keyring that will not attest.
     """
+    if mode not in BUILTIN_MODES + ("default",):
+        raise ValueError(f"unknown mode '{mode}' — expected one of: "
+                         f"{', '.join(BUILTIN_MODES + ('default',))}")
     canon = _norm_builtin(glob)
     if canon in {_norm_builtin(g) for g in BUILTIN_ABSOLUTE_DENY}:
         raise ValueError(
             f"'{_norm_glob(glob)}' guards the credential vault and cannot be "
-            "disabled. Secrets are reached through `c3 creds` with the "
-            "per-entry agent_readable flag, not by widening the guard.")
+            "disabled or downgraded. Secrets are reached through `c3 creds` "
+            "with the per-entry agent_readable flag, not by widening the "
+            "guard.")
     if canon not in {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}:
         raise ValueError(
             f"'{_norm_glob(glob)}' is not a disableable builtin — expected one "
@@ -1233,35 +1422,70 @@ def set_builtin_disabled(glob, disabled: bool) -> dict:
 
     cfg = _scope_config_path("global")  # raises when there is no home
     data, section = _load_config_for_write(cfg)
-    listed = section.setdefault(_KEY_DISABLE_BUILTIN, [])
-    if not isinstance(listed, list) or not all(isinstance(g, str) for g in listed):
+    modes = section.get(_KEY_BUILTIN_MODE, {})
+    if not isinstance(modes, dict) or not all(
+            isinstance(g, str) and isinstance(m, str)
+            for g, m in modes.items()):
+        raise ValueError(
+            "access.builtin_mode must be an object of {glob: mode} strings — "
+            "the scope fails closed; fix config.json 'access' by hand")
+    legacy = section.get(_KEY_DISABLE_BUILTIN, [])
+    if not isinstance(legacy, list) or not all(isinstance(g, str)
+                                              for g in legacy):
         raise ValueError(
             "access.disable_builtin must be a list of glob strings — the scope "
             "fails closed; fix config.json 'access' by hand")
-    present = any(_norm_builtin(g) == canon for g in listed)
+    stored = next((m for g, m in modes.items()
+                   if _norm_builtin(g) == canon), None)
+    legacy_present = any(_norm_builtin(g) == canon for g in legacy)
 
-    if disabled:
-        # Attestation FIRST. If the keyring will not take it, leave config
-        # untouched rather than persist a claim that evaluation ignores.
-        if not _attest_builtin_disabled(canon, True):
-            raise ValueError(
-                "keyring unavailable, so the opt-out cannot be attested and "
-                "would not take effect. The builtin stays enforced.")
-        if not present:
-            listed.append(_norm_glob(glob))
+    if mode == "default":
+        changed = stored is not None or legacy_present
+        if changed:
+            section[_KEY_BUILTIN_MODE] = {
+                g: m for g, m in modes.items() if _norm_builtin(g) != canon}
+            if not section[_KEY_BUILTIN_MODE]:
+                section.pop(_KEY_BUILTIN_MODE)
+            section[_KEY_DISABLE_BUILTIN] = [
+                g for g in legacy if _norm_builtin(g) != canon]
+            if not section[_KEY_DISABLE_BUILTIN]:
+                section.pop(_KEY_DISABLE_BUILTIN, None)
             _write_scope_config(cfg, data)
-        return {"glob": canon, "disabled": True,
-                "changed": not present, "attested": True}
+        attested = _attest_builtin_mode(canon, "")
+        _attest_builtin_disabled(canon, False)
+        return {"glob": canon, "mode": "default",
+                "changed": changed, "attested": attested}
 
-    # Re-enabling: drop the config entry first (that alone restores
-    # enforcement), then clear the attestation best-effort.
-    if present:
-        section[_KEY_DISABLE_BUILTIN] = [
-            g for g in listed if _norm_builtin(g) != canon]
+    # Attestation FIRST — see docstring.
+    if not _attest_builtin_mode(canon, mode):
+        raise ValueError(
+            "keyring unavailable, so the mode cannot be attested and would "
+            "not take effect. The builtin keeps its current behaviour.")
+    changed = stored != mode or legacy_present
+    if changed:
+        cleaned = {g: m for g, m in modes.items()
+                   if _norm_builtin(g) != canon}
+        cleaned[canon] = mode
+        section[_KEY_BUILTIN_MODE] = cleaned
+        if legacy_present:
+            section[_KEY_DISABLE_BUILTIN] = [
+                g for g in legacy if _norm_builtin(g) != canon]
+            if not section[_KEY_DISABLE_BUILTIN]:
+                section.pop(_KEY_DISABLE_BUILTIN, None)
         _write_scope_config(cfg, data)
-    attested = _attest_builtin_disabled(canon, False)
-    return {"glob": canon, "disabled": False,
-            "changed": present, "attested": attested}
+    if legacy_present:
+        _attest_builtin_disabled(canon, False)
+    return {"glob": canon, "mode": mode, "changed": changed, "attested": True}
+
+
+def set_builtin_disabled(glob, disabled: bool) -> dict:
+    """Legacy verb, now a shim over :func:`set_builtin_mode` — disable is
+    mode="allow", re-enable is mode="default". Return shape preserved for the
+    CLI, mobile route, and existing tests.
+    """
+    out = set_builtin_mode(glob, "allow" if disabled else "default")
+    return {"glob": out["glob"], "disabled": disabled,
+            "changed": out["changed"], "attested": out["attested"]}
 
 
 def remove_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:

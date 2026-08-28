@@ -538,6 +538,10 @@ class ArtifactStore:
             # kind=read_only) is exempt here: restore is the audited,
             # versioned surface for exactly those files (settings/instruction
             # docs) and would otherwise be structurally impossible. Builtin
+            # CONFIRM holds (the agent-config tier, docs/confirm-guard.md §7)
+            # are exempt for the same reason: a restore writes back a version
+            # the store itself captured, on a human-triggerable audited path —
+            # pausing it would only ever re-approve its own history. Builtin
             # hard denies and every user rule still enforce.
             pending = [("write", m["path"]) for m in ver["members"]]
             pending += [("delete", m["path"]) for m in entry.get("members", [])
@@ -546,7 +550,7 @@ class ArtifactStore:
                 denial = access_guard.check(str(self.project_path / rel_p), op,
                                             str(self.project_path))
                 if denial and not (denial.scope == "builtin"
-                                   and denial.kind == "read_only"):
+                                   and denial.kind in ("read_only", "confirm")):
                     raise access_guard.AccessDenied(
                         denial, access_guard.refusal(denial, rel_p, op))
 

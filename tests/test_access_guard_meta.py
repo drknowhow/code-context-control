@@ -109,9 +109,8 @@ class TestToolIoRoutesThroughGuard(unittest.TestCase):
 # confirm denial without filing leaves the agent a dead S8 with no request
 # behind it.
 _CONFIRM_REFUSE_ONLY = {
-    "read.py":        "read surface — user confirm rules are write-class "
-                      "only; revisit when builtin_mode ships all-ops confirm",
-    "compress.py":    "read surface — same as read.py",
+    "compress.py":    "read surface — refuse-only for the all-ops builtin "
+                      "confirm variant; S8 points to c3_read, which files",
     "filter.py":      "refuse-only surface (S8 points to c3_edit)",
     "impact.py":      "refuse-only surface",
     "validate.py":    "refuse-only surface",

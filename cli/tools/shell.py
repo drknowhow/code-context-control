@@ -495,11 +495,30 @@ def _sweep_new_ghost_files(root: Path, before: set[str]) -> list[str]:
     return swept
 
 
+def _shell_warn_grant(svc, work_cwd: str) -> str | None:
+    """The `[c3-override:granted]` line when a live shell_warn grant covers
+    this cwd, or None to keep the ordinary caveat (docs/confirm-guard.md §7).
+
+    Lazy import, fail-closed to warn-on: a broken grant store keeps the
+    caveat, never removes it. Consumes a use — called only when the warn
+    would actually print.
+    """
+    try:
+        from cli.tools import _grants  # noqa: PLC0415 — lazy
+        from services import override_grants as og  # noqa: PLC0415 — lazy
+        return og.gate_shell(svc.project_path, path=work_cwd,
+                             session_id=_grants.session_id(svc))
+    except Exception:
+        return None
+
+
 async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                        log: bool, svc, finalize, env_creds: str = "",
                        enable_creds: bool = True) -> str:
     if not cmd or not cmd.strip():
         return "[c3_shell:error] empty command"
+    # _BLOCKED never consults grants — no approval flow reaches the
+    # catastrophic tier, by spec (docs/confirm-guard.md §7).
     if _BLOCKED.search(cmd):
         return (
             "[c3_shell:error] blocked pattern — use native Bash with explicit "
@@ -690,7 +709,12 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
 
     warn = ""
     if _SOFT_WARN.search(cmd):
-        warn = "[c3_shell:warn] destructive pattern detected — verify before re-running\n"
+        granted = _shell_warn_grant(svc, work_cwd)
+        if granted:
+            # An approved shell_warn grant replaces the caveat, once per use.
+            warn = granted + "\n"
+        else:
+            warn = "[c3_shell:warn] destructive pattern detected — verify before re-running\n"
     if capped_from:
         # Named at the moment of the mistake, not in documentation nobody
         # reads at the moment they need it. The alternative IS the escape

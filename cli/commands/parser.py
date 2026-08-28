@@ -809,6 +809,21 @@ def build_parser(version: str, parse_cli_ide_arg):
             _p.add_argument("--yes", action="store_true",
                             help="Skip the typed confirmation (scripts/CI)")
 
+    # Granular per-builtin mode (docs/confirm-guard.md §7): deny tightens a
+    # write-deny to a full deny, confirm turns the block into a pause that
+    # auto-files an approval request, allow switches it off (same two-key
+    # construction as disable), default restores the shipped behaviour.
+    bm = builtin_subs.add_parser(
+        "mode", help="Set a built-in guard to deny | confirm | allow | default")
+    bm.add_argument("glob", help="One of: **/.env*, **/.c3/**, **/.claude/settings*.json, **/.git/**")
+    bm.add_argument("mode", choices=["deny", "confirm", "allow", "default"],
+                    help="deny = full block (tighten); confirm = pause for your "
+                         "approval; allow = off (two-key); default = shipped behaviour")
+    bm.add_argument("--path", dest="project_path", default=".",
+                    help="Project directory used for the audit log (default: current)")
+    bm.add_argument("--yes", action="store_true",
+                    help="Skip the typed confirmation (scripts/CI)")
+
     # ── Mask Guard (v2.63.0, docs/mask-guard.md) ────────────────────────
     # Masking exposes a path but transforms what the agent sees. Rules are
     # human-only, like the rest of Access Guard.

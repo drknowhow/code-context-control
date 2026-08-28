@@ -3017,6 +3017,30 @@ def api_access_remove():
     return jsonify(result)
 
 
+@app.route('/api/access/builtin_mode', methods=['POST'])
+def api_access_builtin_mode():
+    """Set a Tier-1 builtin's mode {glob, mode: deny|confirm|allow|default}.
+
+    Human surface, GLOBAL scope by construction (set_builtin_mode writes
+    ~/.c3 and attests in the keyring — the two-key rule). The typed-glob
+    confirmation for widening modes lives in the UI; the irreversible parts
+    (Tier-0 refusal, attestation-first ordering) are enforced in the service
+    regardless of what the client believes.
+    """
+    from services import access_guard
+    data = request.get_json() or {}
+    glob = str(data.get("glob") or "")
+    mode = str(data.get("mode") or "").strip()
+    try:
+        result = access_guard.set_builtin_mode(glob, mode)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["changed"]:
+        _access_route_audit(f"builtin_mode_{result['mode']}",
+                            result["glob"], "builtin", "global")
+    return jsonify(result)
+
+
 @app.route('/api/access/check', methods=['GET', 'POST'])
 def api_access_check():
     """Test-path probe: verdict + matched rule + scope + exact refusal string.

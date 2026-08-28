@@ -132,7 +132,13 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     if _verdict.denial and not _grants.allow(svc, _verdict.denial,
                                              tool="c3_read", op="read",
                                              path=file_path):
-        resp = access_guard.refusal(_verdict.denial, file_path, "read")
+        # A confirm hold (a builtin downgraded to mode=confirm — user rules
+        # never confirm reads) files its own request so S8 can name it.
+        rid, note = _grants.confirm_request(svc, _verdict.denial,
+                                            tool="c3_read", op="read",
+                                            path=file_path)
+        resp = access_guard.refusal(_verdict.denial, file_path, "read",
+                                    request_id=rid, request_note=note)
         if finalize is None:
             return resp
         return finalize("c3_read", {"file": file_path}, resp, "access-denied")

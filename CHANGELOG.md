@@ -4,6 +4,126 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.101.0] - 2026-08-28
+
+### Added — the shell_warn layer existed on paper; nothing consulted it
+
+Since 2.69.0 a user could turn on `override.layers.shell_warn`, an agent
+could file a request against it, a human could approve — and
+`cli/tools/shell.py` never looked at the grant. The layer is now wired:
+an approved grant replaces the `[c3_shell:warn]` caveat with the
+`[c3-override:granted]` line, exactly once per use. The grant binds to
+the effective cwd, not the command text — a stated limitation that is
+acceptable because the soft-warn is a caveat on an already-executed
+command, never a block. `_BLOCKED` never consults grants: no approval
+flow reaches the catastrophic tier, and a test now pins that.
+
+Also fixed on the way: `c3_override(action='request', layer='shell')`
+fell into the ACCESS branch and produced a request no gate could ever
+satisfy — it now files with the fixed shell identity (`tool=c3_shell`,
+`op=run`, `rule=<shell:soft-warn>`) the gate actually looks for.
+
+With this, every layer in docs/confirm-guard.md §7 is live: confirm
+rules (2.97.0), the Hub approval surface (2.98.0), per-builtin modes
+(2.99.0), the agent-config confirm tier (2.100.0), and shell_warn.
+
+## [2.100.0] - 2026-08-28
+
+### Added — an agent could add an MCP server, rewrite a hook body, or edit its own instructions without tripping any rule
+
+A new builtin tier, `BUILTIN_CONFIRM_WRITE`: `.mcp.json`, the instruction
+docs (CLAUDE.md / AGENTS.md / GEMINI.md), and the `.claude`
+hooks/skills/agents/commands bodies — the agent-config surfaces that were
+fully writable until now, with only after-the-fact artifact capture
+watching. The default is a pause, not a block: a write holds for one-tap
+approval (the confirm flow 2.97.0 built), reads stay open — an agent must
+always be able to read its own instructions. The tier is mode-governable
+like the rest of Tier 1; it governs writes only, so `deny` hardens to a
+write-deny rather than a full deny, and `allow` restores the old
+behaviour. The `settings*.json` write-deny stays where it was, out of
+this tier: hook REGISTRATION remains hard while hook BODIES pause,
+because registration is what decides code execution.
+`artifact_store.restore()` exempts builtin confirm exactly as it exempts
+builtin read_only — restore writes back a version the store itself
+captured, on an audited human-triggerable path.
+
+### Fixed — a builtin confirm could shadow a stricter user rule
+
+Building the tier surfaced a precedence flaw in 2.97.0: `confirm` sat
+above `read_only`, so the new builtin confirm on CLAUDE.md outranked a
+user's `read_only: ["CLAUDE.md"]` — an artifact restore sailed past a
+rule that should have refused it (caught by the restore wiring tests).
+A hold can be approved into a write; a read_only cannot — confirm is the
+loosest non-allow outcome and everything stricter must beat it. The
+precedence is now `deny > mask > read_only > confirm`, and a user
+`confirm` glob over `**/.c3/**` no longer outranks the builtin
+write-deny either (the sanctioned route to a confirm-mode builtin is
+`c3 access builtin mode`). docs/confirm-guard.md §2 records the
+correction.
+
+## [2.99.0] - 2026-08-28
+
+### Added — a builtin guard was on or off; now each one takes a mode
+
+The two-key opt-out generalises to per-builtin modes: `c3 access builtin
+mode <glob> {deny,confirm,allow,default}` (docs/confirm-guard.md §7). So
+`**/.env*` can pause-and-ask instead of refusing, `**/.git/**` can be
+switched off, and a write-deny like `**/.claude/settings*.json` can be
+tightened to a full deny — each independently, each requiring the config
+entry AND a keyring attestation carrying the same mode string, written
+attestation-first so a keyring that will not hold it leaves config
+untouched. Every failure path — hand-edited config, forged attestation
+with the wrong value, keyring gone — enforces the shipped default.
+
+A mode never widens the op class the builtin governs. On the full-deny
+tier, `confirm` covers reads too (a write-only confirm would silently turn
+deny-all into allow-read), and the hook and `c3_read` file the approval
+request on a held read; enumeration surfaces keep excluding and never
+auto-file, so there is still no existence oracle. Tier-0 vault globs take
+no mode at any price, and even under a confirm-mode `**/.c3/**` the
+policy/grant files can never become a request.
+
+`disable_builtin` survives as the legacy spelling of `allow`
+(`set_builtin_disabled` is now a shim); one glob named in both spellings
+makes the global scope corrupt — ambiguity is a hard error, never a
+precedence puzzle — and `set_builtin_mode` retires the legacy entry
+lazily so the API cannot create that state. Project-scope `builtin_mode`
+is corrupt too: project scopes only tighten.
+
+Surfaces: the CLI (typed-glob confirmation for the widening modes), `POST
+/api/access/builtin_mode`, and a mode selector in the Access tab — where
+builtins previously read "cannot be edited", and where a builtin at
+`allow` now still renders (as `off`) so there is a row to reset it from.
+
+## [2.98.0] - 2026-08-28
+
+### Added — approvals lived on the phone and the CLI; the desktop could only watch
+
+The Hub gains an Access tab — the desktop half of Override Requests
+(override-requests.md P5, and the natural home for the confirm rules
+2.97.0 added). Pending requests across every project on the machine render
+as cards with Approve / Deny / Deny+mute; approving an `access_deny` or
+`access_builtin` request demands the rule glob typed by hand, in a modal
+the UI computes and `decide()` re-enforces server-side regardless — two
+places compute, one enforces, same as the mobile route. A request that
+lapsed while the page showed it answers 409 and the card refreshes to its
+real status rather than silently minting a grant. The agent-supplied
+justification renders quoted under an untrusted-input label and never
+reaches the activity log or the edit ledger — the audit trail carries
+identifiers and rule globs only, `decided_by="desktop"`.
+
+Under the cards, a read-only policy matrix shows any project's effective
+rules (builtin tiers, disabled builtins, all four kinds, mask presets) and
+its override-layer switches. Rule mutation stays where it was — the
+per-project Access tab and `c3 access`; the Hub approves and reads, it
+does not edit policy.
+
+Routes: `GET /api/hub/overrides` (cross-project, with per-row
+`needs_typed_confirm` / `escalatable` so a card can decide without a
+second fetch), `POST /api/hub/overrides/<id>`, `GET /api/hub/access`.
+Also fixed in passing: the Tokens tab never survived a reload — `tokens`
+was missing from the persisted-view allowlist in `app.js`.
+
 ## [2.97.0] - 2026-08-28
 
 ### Added — a path could be blocked or open, never "ask me first"
