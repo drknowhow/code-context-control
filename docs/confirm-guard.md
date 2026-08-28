@@ -200,7 +200,14 @@ access-guard §6's, unchanged.
    writes back a version the store itself captured, on an audited
    human-triggerable path.
 
-Not yet shipped, not yet frozen:
-
-4. **`shell_warn` grant wiring** — suppress the c3_shell soft-warn once per
-   approved use; `_BLOCKED` never consults grants.
+4. **`shell_warn` grant wiring** — SHIPPED v2.101.0. Grant identity is
+   fixed: `layer=shell`, `rule=<shell:soft-warn>`, `tool="c3_shell"`,
+   `op="run"`, `path_key`=the effective cwd. Stated limitation: the grant
+   binds to the CWD, not the command text — acceptable because the
+   soft-warn is a caveat on an already-executed command, never a block. An
+   approved grant replaces the caveat with the `[c3-override:granted]`
+   line, once per use. Normal layer semantics (`override.enabled` AND
+   `layers.shell_warn` — NOT confirm-class). `_BLOCKED` never consults
+   grants: no approval flow reaches the catastrophic tier. This also fixed
+   `c3_override(action='request', layer='shell')`, which previously fell
+   into the access branch and produced an unsatisfiable request.

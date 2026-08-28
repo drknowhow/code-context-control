@@ -122,6 +122,20 @@ class TestCreate(RequestBase):
         with self.assertRaises(orq.OverrideError):
             self.request()
 
+    def test_shell_layer_files_a_shell_request(self):
+        # layer='shell' used to fall into the access branch and produce an
+        # unsatisfiable request; it must carry the fixed shell identity the
+        # gate looks for (tool=c3_shell, op=run, rule=<shell:soft-warn>).
+        resp = self.tool("request", path=str(self.proj),
+                         layer=opol.GATE_SHELL, why="need one force push")
+        self.assertIn("Requested", resp)
+        row = orq.list_requests(project_path=str(self.proj))[0]
+        self.assertEqual(row["layer"], opol.GATE_SHELL)
+        self.assertEqual(row["rule"], opol.RULE_SHELL_WARN)
+        self.assertEqual(row["rule_class"], opol.LAYER_SHELL_WARN)
+        self.assertEqual(row["tool"], "c3_shell")
+        self.assertEqual(row["op"], "run")
+
     def test_vault_target_never_becomes_a_request(self):
         vault = self.proj / ".c3" / "secrets.enc"
         vault.write_text("x", encoding="utf-8")

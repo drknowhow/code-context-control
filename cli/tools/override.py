@@ -80,6 +80,15 @@ def handle_override(action: str, path: str, tool: str, op: str, why: str,
                 row = orq.create(project, session_id=session, tool=tool_name,
                                  op="write", path=path,
                                  layer=opol.GATE_DISCIPLINE, justification=why)
+            elif layer == opol.GATE_SHELL:
+                # The soft-warn layer. Identity is fixed (tool=c3_shell,
+                # op=run, path=the cwd the command will run in) so the grant
+                # the approval mints is the one gate_shell will look for —
+                # before this branch, layer='shell' fell into the access
+                # branch below and produced an unsatisfiable request.
+                row = orq.create(project, session_id=session, tool="c3_shell",
+                                 op="run", path=path,
+                                 layer=opol.GATE_SHELL, justification=why)
             else:
                 denial = ag.check(path, operation, project)
                 if denial is None:

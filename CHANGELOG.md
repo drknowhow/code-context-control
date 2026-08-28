@@ -4,6 +4,29 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.101.0] - 2026-08-28
+
+### Added — the shell_warn layer existed on paper; nothing consulted it
+
+Since 2.69.0 a user could turn on `override.layers.shell_warn`, an agent
+could file a request against it, a human could approve — and
+`cli/tools/shell.py` never looked at the grant. The layer is now wired:
+an approved grant replaces the `[c3_shell:warn]` caveat with the
+`[c3-override:granted]` line, exactly once per use. The grant binds to
+the effective cwd, not the command text — a stated limitation that is
+acceptable because the soft-warn is a caveat on an already-executed
+command, never a block. `_BLOCKED` never consults grants: no approval
+flow reaches the catastrophic tier, and a test now pins that.
+
+Also fixed on the way: `c3_override(action='request', layer='shell')`
+fell into the ACCESS branch and produced a request no gate could ever
+satisfy — it now files with the fixed shell identity (`tool=c3_shell`,
+`op=run`, `rule=<shell:soft-warn>`) the gate actually looks for.
+
+With this, every layer in docs/confirm-guard.md §7 is live: confirm
+rules (2.97.0), the Hub approval surface (2.98.0), per-builtin modes
+(2.99.0), the agent-config confirm tier (2.100.0), and shell_warn.
+
 ## [2.100.0] - 2026-08-28
 
 ### Added — an agent could add an MCP server, rewrite a hook body, or edit its own instructions without tripping any rule

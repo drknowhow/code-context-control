@@ -520,3 +520,25 @@ def gate_discipline(project_path, *, tool: str, path, session_id: str) -> str | 
     if not grant:
         return None
     return granted_context(grant, "tool discipline")
+
+
+def gate_shell(project_path, *, path, session_id: str) -> str | None:
+    """Consult grants for the c3_shell soft-warn (docs/confirm-guard.md §7).
+
+    Grant identity is fixed: layer=shell, rule=<shell:soft-warn>,
+    tool="c3_shell", op="run", path_key=the effective cwd. The stated
+    limitation: the grant binds to the CWD, not the command text — acceptable
+    because the soft-warn is a caveat on an already-executed command, never a
+    block. `_BLOCKED` never consults grants and never will (spec §2).
+    Normal layer semantics apply: `override.enabled` AND `layers.shell_warn`.
+    """
+    policy = op_policy.resolve(project_path)
+    if not policy.escalatable(op_policy.LAYER_SHELL_WARN):
+        return None
+    grant = consume(project_path, session_id=session_id,
+                    layer=op_policy.GATE_SHELL,
+                    rule=op_policy.RULE_SHELL_WARN, tool="c3_shell", op="run",
+                    path=path)
+    if not grant:
+        return None
+    return granted_context(grant, "shell soft-warn")

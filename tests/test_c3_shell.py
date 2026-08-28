@@ -486,5 +486,81 @@ class TestShellSelection(unittest.TestCase):
         self.assertIn("python -m json.tool", hint)
 
 
+class TestShellWarnGrants(unittest.TestCase):
+    """shell_warn grant wiring (docs/confirm-guard.md §7): an approved grant
+    suppresses the soft-warn exactly once; `_BLOCKED` never consults grants."""
+
+    def setUp(self):
+        import json
+        from unittest import mock
+        from services import override_policy as opol
+        self._tmp = tempfile.TemporaryDirectory()
+        self.proj = Path(self._tmp.name).resolve()
+        (self.proj / ".c3").mkdir()
+        (self.proj / ".c3" / "config.json").write_text(json.dumps({
+            "override": {"enabled": True,
+                         "layers": {k: True for k in opol.LAYER_KEYS}},
+        }), encoding="utf-8")
+        self._patch = mock.patch.object(opol, "_global_base",
+                                        return_value=None)
+        self._patch.start()
+        self.svc, _, _ = _fake_svc(self.proj)
+        self.session = f"pid-{os.getpid()}"  # _grants.session_id fallback
+        self.fake = {"exit_code": 0, "stdout": "done\n", "stderr": "",
+                     "duration_ms": 1, "timed_out": False}
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def _mint(self, path=None):
+        from services import override_grants as og
+        from services import override_policy as opol
+        return og.mint(str(self.proj), session_id=self.session,
+                       layer=opol.GATE_SHELL, rule=opol.RULE_SHELL_WARN,
+                       tool="c3_shell", op="run",
+                       path=str(path or self.proj))
+
+    def _shell(self, cmd, cwd=""):
+        with patch.object(shell_mod, "_run_sync", return_value=dict(self.fake)):
+            return _run(shell_mod.handle_shell(
+                cmd, cwd, 10, False, False, self.svc, _finalize_passthrough))
+
+    def test_grant_suppresses_the_warn_exactly_once(self):
+        self._mint()
+        out = self._shell("git push --force")
+        self.assertNotIn("[c3_shell:warn]", out)
+        self.assertIn("[c3-override:granted]", out)
+        # Single-use: the next run warns again.
+        out = self._shell("git push --force")
+        self.assertIn("[c3_shell:warn]", out)
+        self.assertNotIn("[c3-override:granted]", out)
+
+    def test_wrong_cwd_grant_keeps_the_warn(self):
+        other = self.proj / "sub"
+        other.mkdir()
+        self._mint(path=other)  # grant bound to a different cwd
+        out = self._shell("git push --force")  # runs in project root
+        self.assertIn("[c3_shell:warn]", out)
+
+    def test_layer_off_voids_a_live_grant(self):
+        import json
+        self._mint()
+        (self.proj / ".c3" / "config.json").write_text(json.dumps({
+            "override": {"enabled": True, "layers": {"shell_warn": False}},
+        }), encoding="utf-8")
+        out = self._shell("git push --force")
+        self.assertIn("[c3_shell:warn]", out)
+
+    def test_blocked_never_consults_grants(self):
+        self._mint()
+        with patch.object(shell_mod, "_run_sync") as runner:
+            out = _run(shell_mod.handle_shell(
+                "rm -rf /", "", 10, False, False, self.svc,
+                _finalize_passthrough))
+            runner.assert_not_called()
+        self.assertIn("blocked pattern", out)
+
+
 if __name__ == "__main__":
     unittest.main()
