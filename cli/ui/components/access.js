@@ -6,7 +6,7 @@
 const ACCESS_EMPTY_FORM = { glob: "", kind: "deny", scope: "project" };
 const ACCESS_SCOPE_ORDER = ["builtin", "global", "project"];
 const ACCESS_SCOPE_NOTES = {
-  builtin: "hardcoded, always on, fail-closed — cannot be edited",
+  builtin: "hardcoded, on by default, fail-closed — Tier-1 guards take a mode (deny / confirm / allow); the vault never does",
   global: "~/.c3/config.json — applies to every C3 project",
   project: ".c3/config.json — this project only",
 };
@@ -222,14 +222,51 @@ const AccessPanel = () => {
     (sec.mask || []).forEach(e => rows.push({
       kind: "mask", glob: e.glob, preset: e.preset, params: e.params,
     }));
+    // Builtins running at mode=allow are not enforced, so they appear in no
+    // kind list — surface them anyway or the UI would have no row to reset
+    // them from.
+    if (scope === "builtin") {
+      (sec.disabled || []).forEach(g => rows.push({ kind: "off", glob: g }));
+    }
     return rows;
+  };
+
+  const builtinModes = (scopes && scopes.builtin && scopes.builtin.modes) || {};
+  const builtinModeFor = (glob) => builtinModes[(glob || "").toLowerCase()] || "";
+
+  const setBuiltinMode = async (glob, mode) => {
+    // Widening (confirm / allow) gets the same typed-glob beat of friction
+    // as the CLI; deny / default are tightening or reset and just confirm.
+    if (mode === "confirm" || mode === "allow") {
+      const what = mode === "allow"
+        ? "STOP enforcing entirely"
+        : "PAUSE and file an approval request instead of blocking";
+      const typed = window.prompt(
+        `The builtin guard on '${glob}' will ${what}.\n\nType the glob exactly to confirm:`);
+      if (typed === null) return;
+      if (typed.trim() !== glob) {
+        setError("Confirmation text did not match — builtin unchanged.");
+        return;
+      }
+    } else if (!window.confirm(`Set builtin '${glob}' to ${mode}?`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await api.post("/api/access/builtin_mode", { glob, mode });
+      if (resp && resp.error) setError(resp.error);
+      else flash(`Builtin '${glob}' mode = ${mode}`);
+      load();
+    } catch (e) { setError(String(e)); }
+    setBusy(false);
   };
 
   const verdictColor = (v) =>
     v === "allowed" ? T.accent : v === "read_only" || v === "confirm" ? T.warn
       : v === "masked" ? T.blue : T.error;
   const kindColorFull = (kind) =>
-    kind === "deny" ? T.error : kind === "mask" ? T.blue : T.warn;
+    kind === "deny" ? T.error : kind === "mask" ? T.blue
+      : kind === "off" ? T.textDim : T.warn;
 
   // Activation banner: masking that has not been through the purge is NOT in
   // effect for derived artifacts, and the UI must never imply otherwise.
@@ -634,8 +671,24 @@ const AccessPanel = () => {
                         → {r.preset}{maskParamSummary(r)}
                       </span>
                     )}
-                    {isBuiltin && (
-                      <span style={{ fontSize: 11, color: T.textDim }}>built-in — read-only</span>
+                    {isBuiltin && !builtinModeFor(r.glob) && (
+                      <span style={{ fontSize: 11, color: T.textDim }}>built-in — cannot be edited</span>
+                    )}
+                    {isBuiltin && builtinModeFor(r.glob) && (
+                      <React.Fragment>
+                        <span style={{ fontSize: 11, color: T.textDim }}>built-in — mode:</span>
+                        <select value={builtinModeFor(r.glob)} disabled={busy}
+                          onChange={e => setBuiltinMode(r.glob, e.target.value)}
+                          style={{
+                            background: T.surfaceAlt, color: T.text, fontSize: 11,
+                            border: `1px solid ${T.border}`, borderRadius: 5, padding: "2px 6px",
+                          }}>
+                          <option value="default">default — shipped behaviour</option>
+                          <option value="deny">deny — full block</option>
+                          <option value="confirm">confirm — pause for your approval</option>
+                          <option value="allow">allow — off</option>
+                        </select>
+                      </React.Fragment>
                     )}
                     <div style={{ flex: 1 }} />
                     {!isBuiltin && r.kind === "mask" && (

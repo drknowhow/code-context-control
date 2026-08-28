@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.98.0"
+__version__ = "2.99.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -7287,12 +7287,22 @@ def _access_cmd_list(args, project_path: str) -> None:
                 for glob in off:
                     print(f"    {'off':<10} {glob}")
                 print("    re-enable: c3 access builtin enable <glob>")
+            moded = {g: m for g, m in (sec.get("modes") or {}).items()
+                     if m not in ("default", "allow")}
+            if moded:
+                print("  MODE set by you (departs from the shipped default):")
+                for glob, m in sorted(moded.items()):
+                    print(f"    {m:<10} {glob}")
+                print("    reset: c3 access builtin mode <glob> default")
             can = [g for g in (sec.get("disableable") or [])
-                   if access_guard._norm_builtin(g) not in set(off)]
+                   if access_guard._norm_builtin(g) not in set(off)
+                   and access_guard._norm_builtin(g) not in moded]
             if can:
                 print("  disableable (currently on): "
                       + ", ".join(can))
-                print("    disable: c3 access builtin disable <glob>")
+                print("    disable: c3 access builtin disable <glob>  ·  "
+                      "granular: c3 access builtin mode <glob> "
+                      "{deny,confirm,allow}")
             if sec.get("absolute"):
                 print("  absolute (credential vault, cannot be disabled): "
                       + ", ".join(sec["absolute"]))
@@ -7319,10 +7329,15 @@ def _access_cmd_builtin(args, project_path: str) -> None:
 
     action = getattr(args, "builtin_cmd", None)
     glob = getattr(args, "glob", None)
-    if action not in ("disable", "enable") or not glob:
+    if action not in ("disable", "enable", "mode") or not glob:
         print("Usage: c3 access builtin {disable,enable} <glob>")
+        print("       c3 access builtin mode <glob> {deny,confirm,allow,default}")
         print("       disableable: "
               + ", ".join(access_guard.DISABLEABLE_BUILTINS))
+        return
+
+    if action == "mode":
+        _access_cmd_builtin_mode(args, glob, project_path)
         return
 
     disabling = action == "disable"
@@ -7358,6 +7373,63 @@ def _access_cmd_builtin(args, project_path: str) -> None:
         if not result["attested"]:
             print("     [warn] keyring attestation could not be cleared; the "
                   "builtin is enforced anyway (config entry removed).")
+
+
+_BUILTIN_MODE_HELP = {
+    "deny": "full block — read, write and enumeration all refuse (tightens "
+            "a write-only guard)",
+    "confirm": "each governed operation pauses and files an approval request "
+               "you answer from the Hub, phone, or `c3 override`",
+    "allow": "the guard stops enforcing entirely (same as disable)",
+    "default": "the shipped behaviour",
+}
+
+
+def _access_cmd_builtin_mode(args, glob: str, project_path: str) -> None:
+    """`c3 access builtin mode <glob> <mode>` — granular builtin control.
+
+    `deny` and `default` never prompt (tightening / reset). `confirm` and
+    `allow` weaken the guard, so they get the same typed-glob beat of
+    friction as `builtin disable`, unless --yes.
+    """
+    from services import access_guard
+
+    mode = getattr(args, "mode", None)
+    if mode in ("confirm", "allow") and not getattr(args, "yes", False):
+        widening = ("STOP enforcing" if mode == "allow"
+                    else "PAUSE (not block) and ask you to approve")
+        print(f"About to make the builtin guard on {glob} {widening}.")
+        if mode == "allow":
+            print("  While off, any agent with C3 tools can touch those paths.")
+        else:
+            print("  Each hit files an Override Request; one tap approves one "
+                  "single-use retry.")
+        if glob.endswith("settings*.json") or ".claude" in glob:
+            print("  This guards the file that configures the agent itself — "
+                  "hooks, permissions, model.")
+        reply = input("Type the glob again to confirm: ").strip()
+        if reply != glob:
+            print("[abort] Not confirmed; nothing changed.")
+            return
+
+    try:
+        result = access_guard.set_builtin_mode(glob, mode)
+    except ValueError as exc:
+        print(f"[error] {exc}")
+        return
+
+    _access_audit(f"builtin_mode_{result['mode']}", result["glob"],
+                  "builtin", "global", project_path)
+    if not result["changed"]:
+        print(f"[=] {result['glob']} — already {result['mode']}")
+        return
+    print(f"[OK] Builtin '{result['glob']}' mode = {result['mode']} "
+          f"(global scope): {_BUILTIN_MODE_HELP[result['mode']]}.")
+    if result["mode"] != "default":
+        print(f"     Reset with: c3 access builtin mode {result['glob']} default")
+    if not result["attested"]:
+        print("     [warn] keyring attestation could not be cleared; the "
+              "default is enforced anyway (config entry removed).")
 
 
 def _access_cmd_add(args, project_path: str) -> None:

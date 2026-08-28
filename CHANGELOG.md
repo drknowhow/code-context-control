@@ -4,6 +4,40 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.99.0] - 2026-08-28
+
+### Added — a builtin guard was on or off; now each one takes a mode
+
+The two-key opt-out generalises to per-builtin modes: `c3 access builtin
+mode <glob> {deny,confirm,allow,default}` (docs/confirm-guard.md §7). So
+`**/.env*` can pause-and-ask instead of refusing, `**/.git/**` can be
+switched off, and a write-deny like `**/.claude/settings*.json` can be
+tightened to a full deny — each independently, each requiring the config
+entry AND a keyring attestation carrying the same mode string, written
+attestation-first so a keyring that will not hold it leaves config
+untouched. Every failure path — hand-edited config, forged attestation
+with the wrong value, keyring gone — enforces the shipped default.
+
+A mode never widens the op class the builtin governs. On the full-deny
+tier, `confirm` covers reads too (a write-only confirm would silently turn
+deny-all into allow-read), and the hook and `c3_read` file the approval
+request on a held read; enumeration surfaces keep excluding and never
+auto-file, so there is still no existence oracle. Tier-0 vault globs take
+no mode at any price, and even under a confirm-mode `**/.c3/**` the
+policy/grant files can never become a request.
+
+`disable_builtin` survives as the legacy spelling of `allow`
+(`set_builtin_disabled` is now a shim); one glob named in both spellings
+makes the global scope corrupt — ambiguity is a hard error, never a
+precedence puzzle — and `set_builtin_mode` retires the legacy entry
+lazily so the API cannot create that state. Project-scope `builtin_mode`
+is corrupt too: project scopes only tighten.
+
+Surfaces: the CLI (typed-glob confirmation for the widening modes), `POST
+/api/access/builtin_mode`, and a mode selector in the Access tab — where
+builtins previously read "cannot be edited", and where a builtin at
+`allow` now still renders (as `off`) so there is a row to reset it from.
+
 ## [2.98.0] - 2026-08-28
 
 ### Added — approvals lived on the phone and the CLI; the desktop could only watch

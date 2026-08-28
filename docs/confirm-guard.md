@@ -101,7 +101,7 @@ Machine tag: `[c3-access:confirm]`. Base:
 - not filed: ` A confirmation request could not be filed ({reason}) — ask
   the user in chat.`
 - refuse-only surface: ` No confirmation request was filed from this
-  surface — perform the change via c3_edit or a native tool (both file
+  surface — retry via c3_read, c3_edit, or a native tool (those file
   one), or ask the user in chat.`
 
 S8 never carries the override-requests §6 offer line — it would be a second,
@@ -151,11 +151,34 @@ access-guard §6's, unchanged.
    /api/hub/access`, `cli/hub_ui/components/hub_access.js`. Audit mirrors
    the mobile route: identifiers only, never the justification.
 
+2. **`builtin_mode`** — SHIPPED v2.99.0. Per-builtin mode
+   `deny | confirm | allow` (plus `default`, the reset verb), GLOBAL scope
+   only, in `access.builtin_mode: {glob: mode}`. Two-key attested exactly
+   like the opt-out it generalises: keyring account `builtin_mode|<glob>`
+   must hold the SAME mode string, written attestation-first; every failure
+   path enforces the shipped default. A mode never widens the op class the
+   builtin governs:
+
+   | Tier | default | deny | confirm | allow |
+   |---|---|---|---|---|
+   | `BUILTIN_DENY` (`**/.env*`) — all ops | deny-all | deny-all | confirm ALL ops (`confirm_ops="all"` — a write-only confirm would silently become allow-read) | off |
+   | `BUILTIN_WRITE_DENY` (`**/.c3/**`, `**/.claude/settings*.json`, `**/.git/**`) | read_only | full deny (tightens) | confirm-write | off |
+
+   Tier-0 vault globs take no mode at any price (`set_builtin_mode`
+   raises), and even under a confirm-mode `.c3/**` the `forbidden_target()`
+   files can never become a request. `disable_builtin` survives as the
+   legacy spelling of `allow` (`set_builtin_disabled` is a shim); a glob
+   named in BOTH spellings makes the global scope corrupt (deny-all), and
+   `set_builtin_mode` lazily retires the legacy entry so the state cannot
+   arise through the API. Project-scope `builtin_mode` ⇒ corrupt. Reads on
+   a confirm-held builtin file a request from the hook and `c3_read`;
+   enumeration surfaces exclude and never auto-file (no existence leak).
+   Surfaces: `c3 access builtin mode <glob> <mode>` (typed-glob confirm for
+   the widening modes), `POST /api/access/builtin_mode` + a mode selector in
+   the Access tab, `list_rules()["builtin"]["modes"]`.
+
 Not yet shipped, not yet frozen:
 
-2. **`builtin_mode`** — per-builtin downgrade `deny|confirm|allow`
-   (global-only, two-key attested, Tier-0 and forbidden targets excluded;
-   `disable_builtin` becomes the legacy alias of `allow`).
 3. **Agent-config confirm tier** — `.mcp.json`, CLAUDE.md/AGENTS.md,
    `.claude/hooks|skills|agents|commands/**` as builtin confirm-write.
 4. **`shell_warn` grant wiring** — suppress the c3_shell soft-warn once per

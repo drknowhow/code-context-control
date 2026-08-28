@@ -73,6 +73,10 @@ section `access`:
   not "alternate data stream" (#50).
 - Corrupt/unparseable access section ⇒ that scope evaluates deny-all with a
   loud warning. Builtins apply even with no config at all.
+- > Implementation note (v2.99.0): Tier-1 builtins gained granular modes —
+  > `access.builtin_mode: {glob: deny|confirm|allow}`, global-only, two-key
+  > attested, Tier-0 excluded; `disable_builtin` survives as the legacy
+  > spelling of `allow`. Spec: docs/confirm-guard.md §7.
 - Internal service writes (credential_store, the guard's own state, ledger,
   activity log) use privileged paths that bypass tool-layer checks — the
   audit writer never consults the evaluator.
