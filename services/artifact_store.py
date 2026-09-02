@@ -507,14 +507,34 @@ class ArtifactStore:
 
     # ── Restore ────────────────────────────────────────────────────
 
-    def restore(self, artifact: str, version: int, session_id: str = "") -> dict:
+    def restore(self, artifact: str, version: int, session_id: str = "",
+                *, confirm: str = "human") -> dict:
         """Write a previous version's bytes back to disk.
 
         Forward-only: appends a NEW manifest version + history event
         (event=restored); history is never rewritten. Removes currently
         tracked members absent from the target version — never touches
         untracked strays.
+
+        ``confirm`` says how a confirm-kind Access Guard denial is treated
+        (docs/confirm-guard.md §7.3, revised v2.102.0):
+
+        - ``"human"`` (default — the CLI, the Hub, the REST route): the
+          builtin agent-config tier is exempt. That tier pauses AGENTS; a
+          human clicking restore IS the approval. User confirm rules still
+          hold, because a user rule holds everyone.
+        - ``"hold"`` (``c3_artifacts``, i.e. an agent): every confirm
+          denial raises, so the tool can file the request and name it in
+          S8. Until 2.102.0 the agent path shared the human exemption,
+          which made ``restore`` the one unheld write to CLAUDE.md,
+          .mcp.json and every hook body — an agent could revert a user's
+          tightened instructions with nothing but a ledger row.
+        - ``"approved"`` (``c3_artifacts`` after consuming a grant): confirm
+          denials of either scope are exempt for this one restore. deny,
+          read_only and mask enforce in every mode.
         """
+        if confirm not in ("human", "hold", "approved"):
+            raise ValueError(f"confirm must be human|hold|approved, not {confirm!r}")
         with self._lock:
             manifest = self._load_manifest()
             entry = None
@@ -539,20 +559,27 @@ class ArtifactStore:
             # versioned surface for exactly those files (settings/instruction
             # docs) and would otherwise be structurally impossible. Builtin
             # CONFIRM holds (the agent-config tier, docs/confirm-guard.md §7)
-            # are exempt for the same reason: a restore writes back a version
-            # the store itself captured, on a human-triggerable audited path —
-            # pausing it would only ever re-approve its own history. Builtin
-            # hard denies and every user rule still enforce.
+            # are exempt only for a HUMAN caller — that tier exists to pause
+            # agents, and a human's click is the approval. An agent's restore
+            # holds like any other agent write to those files (see the
+            # ``confirm`` parameter). Builtin hard denies and every user rule
+            # enforce for everyone.
             pending = [("write", m["path"]) for m in ver["members"]]
             pending += [("delete", m["path"]) for m in entry.get("members", [])
                         if m["path"] not in target_paths]
             for op, rel_p in pending:
                 denial = access_guard.check(str(self.project_path / rel_p), op,
                                             str(self.project_path))
-                if denial and not (denial.scope == "builtin"
-                                   and denial.kind in ("read_only", "confirm")):
-                    raise access_guard.AccessDenied(
-                        denial, access_guard.refusal(denial, rel_p, op))
+                if denial is None:
+                    continue
+                if denial.scope == "builtin" and denial.kind == "read_only":
+                    continue
+                if denial.kind == "confirm" and (
+                        confirm == "approved"
+                        or (confirm == "human" and denial.scope == "builtin")):
+                    continue
+                raise access_guard.AccessDenied(
+                    denial, access_guard.refusal(denial, rel_p, op))
 
             for m in ver["members"]:
                 if not m.get("blob"):

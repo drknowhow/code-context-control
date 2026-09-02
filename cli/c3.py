@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.101.0"
+__version__ = "2.102.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -4212,6 +4212,7 @@ def cmd_pipe(args):
 
 
 from services.claude_md import C3_COMPACT_WORKFLOW as _SHARED_C3_COMPACT_WORKFLOW
+from services.claude_md import VSCODE_INSTRUCTIONS_FILE
 from services.claude_md import VSCODE_SESSION_INIT as _VSCODE_SESSION_INIT
 from services.claude_md import adapt_workflow_for_ide as _adapt_workflow_for_ide
 
@@ -4433,20 +4434,41 @@ def _toml_section_bool_value(toml_path: Path, section: str, key: str) -> bool | 
     return None
 
 
-def _ensure_instruction_workflow(instructions_path: Path, template: str, required_markers: list[str]) -> str:
-    """Ensure an instructions file has required C3 workflow markers.
+def _ensure_instruction_workflow(instructions_path: Path, template: str,
+                                 required_markers: list[str],
+                                 project_path: str = "") -> str:
+    """Ensure an instructions file carries the CURRENT C3 workflow.
 
     Returns one of: "written", "updated", "kept".
+
+    Marker PRESENCE used to mean "up to date", which is why this function
+    could report `kept` on a doc generated four releases ago: the markers are
+    stable words like "SEARCH FIRST" and "c3_edit", so they survive every
+    template change. A doc carrying the managed sentinels is now refreshed
+    through ``merge_c3_block`` — the same non-destructive regeneration
+    CLAUDE.md and AGENTS.md get — and `kept` means the block already matches
+    byte for byte (v2.102.0). A marker-less legacy doc keeps the old
+    prepend-and-preserve path, which ``write_c3_instruction_doc`` handles.
     """
+    from services.claude_md import C3_BLOCK_BEGIN, merge_c3_block, wrap_c3_block, write_c3_instruction_doc
+
     if not instructions_path.exists():
-        instructions_path.parent.mkdir(parents=True, exist_ok=True)
-        instructions_path.write_text(template, encoding="utf-8")
+        write_c3_instruction_doc(instructions_path, template,
+                                 project_path=project_path or None)
         return "written"
 
     try:
         existing = instructions_path.read_text(encoding="utf-8")
     except Exception:
         existing = ""
+
+    # Managed doc → regenerate the block in place, preserving user content.
+    if C3_BLOCK_BEGIN in existing:
+        if merge_c3_block(existing, wrap_c3_block(template)) == existing:
+            return "kept"
+        write_c3_instruction_doc(instructions_path, template,
+                                 project_path=project_path or None)
+        return "updated"
 
     if all(marker in existing for marker in required_markers):
         return "kept"
@@ -4460,7 +4482,8 @@ def _ensure_instruction_workflow(instructions_path: Path, template: str, require
     return "updated"
 
 
-def _ensure_codex_agents_workflow(agents_md_path: Path) -> str:
+def _ensure_codex_agents_workflow(agents_md_path: Path,
+                                  project_path: str = "") -> str:
     """Ensure AGENTS.md contains the mandatory C3 workflow for Codex sessions."""
     required_markers = [
         "C3 Tools",
@@ -4474,10 +4497,12 @@ def _ensure_codex_agents_workflow(agents_md_path: Path) -> str:
         "c3_memory",
         "c3_filter",
     ]
-    return _ensure_instruction_workflow(agents_md_path, _AGENTS_MD_CONTENT, required_markers)
+    return _ensure_instruction_workflow(agents_md_path, _AGENTS_MD_CONTENT,
+                                        required_markers, project_path)
 
 
-def _ensure_vscode_instructions_workflow(instructions_path: Path) -> str:
+def _ensure_vscode_instructions_workflow(instructions_path: Path,
+                                         project_path: str = "") -> str:
     """Ensure VS Code Copilot instructions include the latest C3 workflow markers."""
     required_markers = [
         "C3 Tools",
@@ -4491,7 +4516,9 @@ def _ensure_vscode_instructions_workflow(instructions_path: Path) -> str:
         "c3_memory",
         "c3_filter",
     ]
-    return _ensure_instruction_workflow(instructions_path, _COPILOT_INSTRUCTIONS_CONTENT, required_markers)
+    return _ensure_instruction_workflow(instructions_path,
+                                        _COPILOT_INSTRUCTIONS_CONTENT,
+                                        required_markers, project_path)
 
 
 def _safe_read_json(path: Path, label: str = "") -> dict:
@@ -4957,6 +4984,7 @@ back to native tools as the task progresses.
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
 - **Masked paths** (v2.63.0+): content prefixed `[c3-mask:transformed]` is a policy-transformed VIEW, not the file. Values may be synthetic, rows withheld, bodies stripped — don't copy literals out of it or infer completeness from it. Masked paths are read-only and refuse shell/git/validate/impact/filter/delegate (`[c3-mask:unsupported]`). That's policy, not a transient error — report the block instead of routing around it.
+- **Confirm holds** (v2.97.0+): `[c3-access:confirm]` is a PAUSE, not a block — a human must approve this exact write. Since v2.100.0 the agent-config files (`.mcp.json`, instruction docs, `.claude` hook/skill/agent/command bodies) hold by default in EVERY C3 project, reads stay open. Read the S8 tail: it names the filed request (`c3_override(action='wait', request_id='...', timeout_s=180)`, then retry the same call once if approved), or names a surface that files one, or gives a reason to obey. Never retry before a decision and never route around a hold via the shell.
 
 ## Self-Check
 If you haven't called a c3_* tool in several turns during active development, re-engage
@@ -5034,10 +5062,20 @@ def _instruction_documents_for_project() -> list[tuple[str, str]]:
 
     Used by uninstall/cleanup paths, so it must keep listing legacy docs
     (GEMINI.md — profile removed in v2.52; empty template, never generated).
+
+    ``.github/copilot-instructions.md`` was absent from this list until
+    v2.102.0, and that absence was the whole bug: the managed-block sync
+    that regenerates CLAUDE.md and AGENTS.md on every install-mcp never
+    touched it, while ``_ensure_vscode_instructions_workflow`` reported
+    `kept` on marker presence alone. In a vscode-primary project the third
+    git-tracked instruction doc silently drifted a release behind on every
+    template change — v2.100.0's agent-config confirm tier reached the
+    Claude Code and Codex docs and never reached Copilot's.
     """
     return [
         ("CLAUDE.md", _CLAUDE_MD_CONTENT),
         ("AGENTS.md", _AGENTS_MD_CONTENT),
+        (VSCODE_INSTRUCTIONS_FILE, _COPILOT_INSTRUCTIONS_CONTENT),
         ("GEMINI.md", ""),
     ]
 
@@ -5692,7 +5730,8 @@ def cmd_install_mcp(args):
     if profile.name == "vscode":
         # 1. Ensure copilot-instructions.md has the latest C3 workflow markers
         instructions_path = target / ".github" / "copilot-instructions.md"
-        vs_state = _ensure_vscode_instructions_workflow(instructions_path)
+        vs_state = _ensure_vscode_instructions_workflow(instructions_path,
+                                                        str(target))
         if vs_state == "written":
             print(f"Wrote {instructions_path}")
         elif vs_state == "updated":
@@ -5731,7 +5770,8 @@ def cmd_install_mcp(args):
     # â”€â”€ Codex AGENTS.md enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if profile.name == "codex":
         agents_md_path = target / "AGENTS.md"
-        agents_state = _ensure_codex_agents_workflow(agents_md_path)
+        agents_state = _ensure_codex_agents_workflow(agents_md_path,
+                                                     str(target))
         if agents_state == "written":
             print(f"Wrote {agents_md_path}")
         elif agents_state == "updated":

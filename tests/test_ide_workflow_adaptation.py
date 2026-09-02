@@ -7,15 +7,19 @@ blocked" line the agent can disprove undermines the whole document) and must
 not leave a hole in the numbered workflow where an unsupported step was cut.
 """
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
 from services.claude_md import (
+    C3_BLOCK_BEGIN,
     C3_COMPACT_WORKFLOW,
     C3_NANO_WORKFLOW,
     NO_HOOK_HEADER,
     VSCODE_INSTRUCTIONS_FILE,
     VSCODE_SESSION_INIT,
     adapt_workflow_for_ide,
+    write_c3_instruction_doc,
 )
 
 
@@ -92,6 +96,116 @@ class TestVSCodeSessionInit(unittest.TestCase):
 
         self.assertIn("enforced by hooks", _CLAUDE_MD_CONTENT)
         self.assertNotIn("tool_search_tool_regex", _CLAUDE_MD_CONTENT)
+
+
+class TestHookOnlyClaimsAreRestated(unittest.TestCase):
+    """v2.100.0 shipped "WRITES to these files PAUSE by default" into every
+    instruction doc, including the ones for IDEs where no hook intercepts a
+    native write. That is the same disprovable-line problem the header and
+    lede already avoid, one paragraph lower down."""
+
+    def test_hookless_docs_do_not_claim_native_writes_are_intercepted(self):
+        adapted = _hookless()
+        self.assertIn("agent-config", adapted.lower())
+        self.assertNotIn("native writes via hooks", adapted)
+        self.assertIn("no PreToolUse hooks", adapted)
+
+    def test_claude_code_keeps_the_full_claim(self):
+        self.assertIn("native writes via hooks", C3_COMPACT_WORKFLOW)
+
+    def test_both_docs_still_teach_the_confirm_flow(self):
+        for doc in (C3_COMPACT_WORKFLOW, _hookless()):
+            self.assertIn("CONFIRM HOLDS", doc)
+            self.assertIn("[c3-access:confirm]", doc)
+            self.assertIn("timeout_s=180", doc)
+
+    def test_the_nano_workflow_teaches_it_too(self):
+        # Nano is what a line-limited IDE gets; a hold it has never heard of
+        # reads as an unexplained refusal.
+        self.assertIn("[c3-access:confirm]", C3_NANO_WORKFLOW)
+
+
+class TestManagedDocsStayInSync(unittest.TestCase):
+    """`_ensure_instruction_workflow` treated marker PRESENCE as up to date,
+    and `.github/copilot-instructions.md` was missing from the managed-block
+    sync list — so the third git-tracked instruction doc silently drifted a
+    release behind on every template change."""
+
+    def _project(self, td):
+        root = Path(td)
+        (root / ".c3").mkdir()
+        return root, root / ".github" / "copilot-instructions.md"
+
+    #: The step heading, not the bare phrase: item 12 cross-references
+    #: "the CONFIRM HOLDS flow above", so the phrase alone is present even
+    #: in a doc whose step 11.6 has been doctored away.
+    STEP = "11.6. **CONFIRM HOLDS**"
+
+    def _stale(self):
+        """A doc an OLDER C3 generated: managed markers, every marker the
+        presence check looks for, and a body missing a current step."""
+        from cli.c3 import _COPILOT_INSTRUCTIONS_CONTENT
+
+        return _COPILOT_INSTRUCTIONS_CONTENT.replace(
+            self.STEP, "11.6. **SOMETHING ELSE**")
+
+    def test_copilot_doc_is_in_the_managed_sync_list(self):
+        from cli.c3 import _instruction_documents_to_generate
+
+        names = [name for name, _ in _instruction_documents_to_generate()]
+        self.assertIn(VSCODE_INSTRUCTIONS_FILE, names)
+
+    def test_a_stale_managed_doc_is_regenerated_not_kept(self):
+        from cli.c3 import _ensure_vscode_instructions_workflow
+
+        with tempfile.TemporaryDirectory() as td:
+            root, doc = self._project(td)
+            write_c3_instruction_doc(doc, self._stale(), project_path=str(root))
+            self.assertNotIn(self.STEP, doc.read_text(encoding="utf-8"))
+
+            state = _ensure_vscode_instructions_workflow(doc, str(root))
+            self.assertEqual(state, "updated")
+            self.assertIn(self.STEP, doc.read_text(encoding="utf-8"))
+
+    def test_an_up_to_date_doc_is_kept(self):
+        from cli.c3 import _COPILOT_INSTRUCTIONS_CONTENT, _ensure_vscode_instructions_workflow
+
+        with tempfile.TemporaryDirectory() as td:
+            root, doc = self._project(td)
+            write_c3_instruction_doc(doc, _COPILOT_INSTRUCTIONS_CONTENT,
+                                     project_path=str(root))
+            self.assertEqual(
+                _ensure_vscode_instructions_workflow(doc, str(root)), "kept")
+
+    def test_user_content_outside_the_block_survives_a_refresh(self):
+        from cli.c3 import _ensure_vscode_instructions_workflow
+
+        with tempfile.TemporaryDirectory() as td:
+            root, doc = self._project(td)
+            write_c3_instruction_doc(doc, self._stale(), project_path=str(root))
+            doc.write_text(
+                doc.read_text(encoding="utf-8")
+                + "\n# Team Notes\n\nAsk before touching infra.\n",
+                encoding="utf-8")
+
+            _ensure_vscode_instructions_workflow(doc, str(root))
+            text = doc.read_text(encoding="utf-8")
+            self.assertIn("Ask before touching infra.", text)
+            self.assertIn(self.STEP, text)
+            self.assertEqual(text.count(C3_BLOCK_BEGIN), 1)
+
+    def test_a_legacy_markerless_doc_still_takes_the_prepend_path(self):
+        from cli.c3 import _ensure_vscode_instructions_workflow
+
+        with tempfile.TemporaryDirectory() as td:
+            root, doc = self._project(td)
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            doc.write_text("# My own notes\n", encoding="utf-8")
+            self.assertEqual(
+                _ensure_vscode_instructions_workflow(doc, str(root)), "updated")
+            text = doc.read_text(encoding="utf-8")
+            self.assertIn("My own notes", text)
+            self.assertIn("Existing Project Instructions", text)
 
 
 class TestGeneratorWiring(unittest.TestCase):

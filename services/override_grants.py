@@ -485,12 +485,19 @@ def granted_context(grant: dict, rule: str) -> str:
 # ── The gate the hooks call ────────────────────────────────────────────────
 
 def gate_access(project_path, denial, *, tool: str, op: str, path,
-                session_id: str) -> str | None:
+                session_id: str, peek: bool = False) -> str | None:
     """Consult grants for an access/mask ``Denial``. ``None`` ⇒ stay denied.
 
     Order is load-bearing: **policy first, grants second**. A live grant is
     voided the moment `override.enabled` (or its layer) is switched off
     (§12.8), and a non-escalatable denial never reaches the store at all.
+
+    ``peek=True`` answers the same question WITHOUT burning a use, for a
+    caller that must not consume until it knows the call will proceed. The
+    hook dispatcher settles grants only after every PreToolUse sub-hook has
+    voted (v2.102.0): before that, this gate consumed the use first and a
+    strict-mode discipline deny from the next sub-hook then won the merge —
+    grant spent, nothing written, user asked twice for one edit.
     """
     layer_key = op_policy.rule_class_for_denial(denial)
     if layer_key is None:
@@ -500,23 +507,27 @@ def gate_access(project_path, denial, *, tool: str, op: str, path,
         return None
     gate = op_policy.GATE_FOR_LAYER_KEY[layer_key]
     rule = str(getattr(denial, "rule", "") or "")
-    grant = consume(project_path, session_id=session_id, layer=gate, rule=rule,
-                    tool=tool, op=op, path=path)
+    lookup = find if peek else consume
+    grant = lookup(project_path, session_id=session_id, layer=gate, rule=rule,
+                   tool=tool, op=op, path=path)
     return granted_context(grant, rule) if grant else None
 
 
-def gate_discipline(project_path, *, tool: str, path, session_id: str) -> str | None:
+def gate_discipline(project_path, *, tool: str, path, session_id: str,
+                    peek: bool = False) -> str | None:
     """Consult grants for the tool-discipline native-write block.
 
-    Runs **after** the vault guard, which stays unconditional.
+    Runs **after** the vault guard, which stays unconditional. ``peek`` as
+    in :func:`gate_access`.
     """
     policy = op_policy.resolve(project_path)
     if not policy.escalatable(op_policy.LAYER_DISCIPLINE):
         return None
-    grant = consume(project_path, session_id=session_id,
-                    layer=op_policy.GATE_DISCIPLINE,
-                    rule=op_policy.RULE_DISCIPLINE, tool=tool, op="write",
-                    path=path)
+    lookup = find if peek else consume
+    grant = lookup(project_path, session_id=session_id,
+                   layer=op_policy.GATE_DISCIPLINE,
+                   rule=op_policy.RULE_DISCIPLINE, tool=tool, op="write",
+                   path=path)
     if not grant:
         return None
     return granted_context(grant, "tool discipline")

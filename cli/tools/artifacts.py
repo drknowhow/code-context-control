@@ -1,5 +1,8 @@
 """c3_artifacts — agent-config tracking: inventory, history, diff, restore."""
 
+from pathlib import Path
+
+from cli.tools import _grants
 from services import access_guard
 
 READ_ACTIONS = {"scan", "list", "history", "show", "diff", "status"}
@@ -139,8 +142,35 @@ def handle_artifacts(action, svc, finalize, *, artifact="", cls="", provider="",
         if not version:
             return done_resp("[artifacts:error] restore requires version.", "error")
         session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        sid = session.get("id", "")
+        granted = ""
         try:
-            res = store.restore(artifact, version, session_id=session.get("id", ""))
+            try:
+                res = store.restore(artifact, version, session_id=sid,
+                                    confirm="hold")
+            except access_guard.AccessDenied as exc:
+                if exc.denial.kind != "confirm":
+                    raise
+                # An agent-issued restore of a held file pauses like any
+                # other agent write to it (v2.102.0): the hold is filed
+                # against the artifact's ROOT so one approval covers a
+                # multi-file unit (a skill directory), and the retry — this
+                # same call — consumes that grant and restores under it.
+                entry = store.resolve(artifact) or {}
+                root = str(Path(str(svc.project_path))
+                           / str(entry.get("root") or artifact))
+                granted = _grants.allow(svc, exc.denial, tool="c3_artifacts",
+                                        op="write", path=root) or ""
+                if not granted:
+                    rid, note = _grants.confirm_request(
+                        svc, exc.denial, tool="c3_artifacts", op="write",
+                        path=root)
+                    return done_resp(
+                        access_guard.refusal(exc.denial, root, "write",
+                                             request_id=rid, request_note=note),
+                        "access-confirm")
+                res = store.restore(artifact, version, session_id=sid,
+                                    confirm="approved")
         except access_guard.AccessDenied as exc:
             # Service layer raises; the tool boundary converts to the S1/S2
             # refusal string (docs/access-guard.md §3).
@@ -157,7 +187,8 @@ def handle_artifacts(action, svc, finalize, *, artifact="", cls="", provider="",
                                     session_id=session.get("id", ""))
             except Exception:
                 pass
-        lines = [f"[artifacts:restored] {res['id']} v{version} -> live as "
+        lines = ([granted] if granted else []) + [
+                 f"[artifacts:restored] {res['id']} v{version} -> live as "
                  f"v{res['new_version']} — {len(res['files_written'])} file(s) written"
                  + (f", {len(res['files_removed'])} removed" if res["files_removed"] else "")]
         for w in res["warnings"]:

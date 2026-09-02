@@ -25,6 +25,8 @@ import sys
 import time
 from pathlib import Path
 
+from cli._shell_writes import shell_write_targets
+from cli.tools import _grants
 from cli.tools.filter import handle_filter
 from core import count_tokens
 from services import access_guard
@@ -443,6 +445,72 @@ def _advisory_guard_scan(command: str, work_cwd: str, project_path: str):
     return None, ""
 
 
+def _write_scan(cmd: str, exec_cmd: str, work_cwd: str, svc) -> tuple:
+    """WRITE-class Access Guard verdict for the files the command writes.
+
+    ``(refusal, granted_lines)`` — a non-empty refusal means do not run.
+
+    The read scan above asks "read" of every token, and a confirm hold, a
+    read_only rule and the builtin write-denies are all write-class — so a
+    heredoc into CLAUDE.md, ``sed -i`` on .mcp.json or ``cp`` over a hook
+    body ran with no hold, the one route the doc could only ask the agent
+    not to take (v2.102.0). Targets come from the extractor the edit ledger
+    already trusts after the fact (cli/_shell_writes); same best-effort
+    caveat as the read scan, and the same skip of synthetic spelling denials
+    (a token that is not a path must not veto the command).
+
+    Two passes on purpose: every target is judged first, and grants are
+    consumed only when EVERY held target has one — so a refusal never spends
+    a grant on a command that does not run. Grant identity is
+    ``tool="c3_shell", op="write", path=<target>``: bound to the file, not
+    the command text (the shell_warn layer's stated limitation, shared).
+    """
+    project = str(svc.project_path)
+    held: list = []
+    seen: set = set()
+    for text in ([cmd] if exec_cmd == cmd else [cmd, exec_cmd]):
+        for target in shell_write_targets(text, work_cwd):
+            key = os.path.normcase(os.path.normpath(target))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                denial = access_guard.check(target, "write", project)
+            except Exception as exc:  # fail closed — mirror the read scan
+                denial = access_guard.Denial(
+                    "<evaluator-error>", "deny", "builtin",
+                    f"evaluator error: {type(exc).__name__}")
+            if denial is None:
+                continue
+            if denial.rule.startswith("<") and denial.rule != "<corrupt-config>":
+                continue
+            held.append((target, denial))
+    if not held:
+        return "", []
+    for target, denial in held:
+        if _grants.allow(svc, denial, tool="c3_shell", op="write",
+                         path=target, peek=True):
+            continue
+        rid, note = _grants.confirm_request(svc, denial, tool="c3_shell",
+                                            op="write", path=target)
+        _log_access_denied(svc, work_cwd, denial, "write_scan")
+        return (access_guard.refusal(denial, target, "write", request_id=rid,
+                                     request_note=note)
+                + "\n[c3_shell:note] shell write scanning is best-effort "
+                "(advisory) — a held or denied write target refuses the whole "
+                "command, but a clean scan is not enforcement."), []
+    lines = []
+    for target, denial in held:
+        line = _grants.allow(svc, denial, tool="c3_shell", op="write",
+                             path=target)
+        if not line:  # spent between peek and use by a concurrent call
+            return (f"[c3-override:spent] the grant covering {target} was "
+                    "used up before this command ran. The rule stands — ask "
+                    "again with c3_override if it is still needed."), []
+        lines.append(line)
+    return "", lines
+
+
 def _log_access_denied(svc, work_cwd: str, denial, surface: str) -> None:
     """Record a guard refusal — with the effective cwd — in the activity log."""
     if not getattr(svc, "activity_log", None):
@@ -628,6 +696,18 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                     pass
             return msg
 
+    # ── Access Guard WRITE-class scan (v2.102.0) — see _write_scan. Runs
+    # after the read scan so a denied READ still reports as the read denial
+    # it is; the same raw-and-expanded pair is scanned.
+    write_refusal, write_grants = _write_scan(cmd, exec_cmd, work_cwd, svc)
+    if write_refusal:
+        if enable_creds:
+            try:
+                write_refusal = _creds.redact_text(write_refusal)
+            except Exception:
+                pass
+        return write_refusal
+
     ghost_root = Path(work_cwd)
     _ghosts_before = _list_root_files(ghost_root)
     git_before = (
@@ -707,7 +787,8 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             except Exception:
                 pass
 
-    warn = ""
+    # Approved write-target grants report themselves, once per use.
+    warn = "".join(line + "\n" for line in write_grants)
     if _SOFT_WARN.search(cmd):
         granted = _shell_warn_grant(svc, work_cwd)
         if granted:

@@ -6,9 +6,11 @@ dispatcher's deny-beats-allow merge makes a deny here final. hook_dispatch
 treats this module as _FAIL_CLOSED: if it fails to import or raises, write-
 class native tools are denied instead of sailing through.
 
-Bash coverage is a best-effort, existence-gated token scan — advisory by
-design (docs/access-guard.md §3/§6); it catches an agent naming a denied
-path, not an adversary hiding one.
+Bash coverage is a best-effort token scan — advisory by design
+(docs/access-guard.md §3/§6); it catches an agent naming a denied path, not
+an adversary hiding one. Two passes: every path-shaped token as a READ
+(existence-gated), then the command's WRITE targets as writes (v2.102.0), so
+a redirect into a confirm-held or read-only file holds like any other write.
 """
 import os
 import re
@@ -28,6 +30,16 @@ try:
     from services import access_telemetry
 except Exception:  # pragma: no cover — telemetry is never load-bearing
     access_telemetry = None
+
+# The same write-target extractor the edit ledger uses after the fact. Its
+# absence degrades the shell branch to the read-only scan, never to a crash.
+try:
+    from _shell_writes import shell_write_targets
+except Exception:  # pragma: no cover — package-style import (dispatcher, tests)
+    try:
+        from cli._shell_writes import shell_write_targets
+    except Exception:
+        shell_write_targets = None
 
 _WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 _READ_TOOLS = {"Read", "SearchText"}
@@ -206,19 +218,39 @@ def _record(denial, tool: str, operation: str, path: str,
 
 
 def _override_allows(base: str, denial, *, tool: str, op: str, path: str,
-                     session_id: str):
+                     session_id: str, peek: bool = False):
     """A live override grant covering this exact call, or None (spec §5).
 
     Lazy import and policy-before-grants ordering keep the hot path free: a
     project that never turned overrides on pays one dict lookup and never
     opens the grants file. Any failure returns None — the denial stands.
+
+    ``peek`` looks without consuming; see ``_granted`` for why.
     """
     try:
         from services import override_grants as og  # noqa: PLC0415 — lazy
         return og.gate_access(base, denial, tool=tool, op=op, path=path,
-                              session_id=session_id)
+                              session_id=session_id, peek=peek)
     except Exception:
         return None  # fail closed: no grant, ordinary denial
+
+
+def _granted(line: str, defer: bool, consume) -> dict:
+    """The allow-by-grant output.
+
+    Under the dispatcher (``defer`` True) the use is NOT burned here: the
+    provisional line goes out with an ``_on_allow`` callable, and
+    hook_dispatch runs it only once every PreToolUse sub-hook has voted
+    allow. Before v2.102.0 this hook consumed first and a strict-mode
+    discipline deny from hook_pretool_enforce then won the merge — grant
+    spent, nothing written, and the user asked twice for one edit. Run
+    standalone (``defer`` False) the use was already consumed by the peek-
+    less lookup, so the line is final.
+    """
+    out = {"additionalContext": line}
+    if defer:
+        out["_on_allow"] = consume
+    return out
 
 
 def _confirm_request(base: str, denial, *, tool: str, op: str, path: str,
@@ -349,7 +381,68 @@ def _scan_shell(cmd: str, base: str):
     return None, ""
 
 
-def run(payload: dict, project_path: Path | None = None) -> dict | None:
+def _scan_shell_writes(cmd: str, base: str, session_id: str,
+                       defer: bool) -> dict | None:
+    """WRITE-class verdict for the files a shell command writes (v2.102.0).
+
+    ``_scan_shell`` evaluates every token as a READ. Confirm holds, read_only
+    rules and the builtin write-denies are all write-class, so ``cat >>
+    CLAUDE.md``, ``sed -i`` on .mcp.json or a heredoc into a hook body sailed
+    through with no hold — the one bypass docs/confirm-guard.md could only
+    ask the agent not to use. Targets come from the extractor the edit
+    ledger already trusts after the fact (cli/_shell_writes), with the same
+    best-effort caveat: a missed target costs a missed hold, a false one
+    costs a hold the human clears in one tap. Synthetic spelling denials are
+    skipped exactly as the read scan skips them (a token that is not a path
+    must not veto the command); the corrupt-config deny-all still refuses.
+
+    Grant identity is ``tool="Bash", op="write", path=<target>`` — bound to
+    the file, not the command text, the same stated limitation as the
+    shell_warn layer. Several held targets need several grants; the command
+    runs only when every one is covered, and the uses are burned together
+    (or not at all) by the dispatcher's settle step.
+    """
+    if shell_write_targets is None:
+        return None
+    lines, consumers = [], []
+    for target in shell_write_targets(cmd, base):
+        denial = ag.check(target, "write", base)
+        if denial is None:
+            continue
+        if denial.rule.startswith("<") and denial.rule != "<corrupt-config>":
+            continue
+        granted = _override_allows(base, denial, tool="Bash", op="write",
+                                   path=target, session_id=session_id,
+                                   peek=defer)
+        if granted:
+            lines.append(granted)
+            if defer:
+                consumers.append(lambda t=target, d=denial: _override_allows(
+                    base, d, tool="Bash", op="write", path=t,
+                    session_id=session_id))
+            continue
+        _record(denial, "Bash", "write", target, base, session_id)
+        if denial.kind == "confirm":
+            rid, note = _confirm_request(base, denial, tool="Bash", op="write",
+                                         path=target, session_id=session_id)
+            return _deny(ag.refusal(denial, target, "write", surface="hook",
+                                    tool="Bash", request_id=rid,
+                                    request_note=note)
+                         + " (best-effort shell scan)")
+        return _deny(ag.refusal(denial, target, "write", surface="hook",
+                                tool="Bash") + " (best-effort shell scan)")
+    if not lines:
+        return None
+
+    def _settle():
+        got = [fn() for fn in consumers]
+        return "\n".join(got) if all(got) else None
+
+    return _granted("\n".join(lines), bool(consumers), _settle)
+
+
+def run(payload: dict, project_path: Path | None = None,
+        defer_consume: bool = False) -> dict | None:
     tool = normalize_tool_name(payload.get("tool_name", ""))
     tool_input = payload.get("tool_input", {}) or {}
     base = str(project_path if project_path is not None else Path.cwd())
@@ -363,9 +456,13 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         denial = ag.check(fp, op, base)
         if denial:
             granted = _override_allows(base, denial, tool=tool, op=op,
-                                       path=fp, session_id=session_id)
+                                       path=fp, session_id=session_id,
+                                       peek=defer_consume)
             if granted:
-                return {"additionalContext": granted}
+                return _granted(granted, defer_consume,
+                                lambda: _override_allows(
+                                    base, denial, tool=tool, op=op, path=fp,
+                                    session_id=session_id))
             _record(denial, tool, op, fp, base, session_id)
             if denial.kind == "confirm":
                 # A confirm hold files its own request (grants were consulted
@@ -401,6 +498,6 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
             return _deny(ag.refusal(denial, tok, "read",
                                     surface="hook", tool=tool)
                          + " (best-effort shell scan)")
-        return None
+        return _scan_shell_writes(cmd, base, session_id, defer_consume)
 
     return None

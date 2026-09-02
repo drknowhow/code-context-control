@@ -25,27 +25,43 @@ import os
 def session_id(svc) -> str:
     """This agent's identity, for leases and for grants.
 
-    Falls back to the process id, never to "". Two agents that both resolved
-    to "" would count as ONE session and stop blocking each other — the exact
-    opposite of what a lock is for. Each Claude Code session runs its own
-    c3-mcp process, so the pid is a faithful stand-in.
+    Prefers the HOST session id (``current_session["host_session_id"]``,
+    from ``CLAUDE_CODE_SESSION_ID`` — services.session_manager) over C3's
+    own timestamp id. The PreToolUse hooks file requests and consume grants
+    under the id the host puts in every hook payload, which is that same
+    value; until v2.102.0 this surface used C3's own id instead, so every
+    hook-filed confirm hold answered ``c3_override(action='wait')`` with
+    "belongs to another session" and the flow CLAUDE.md mandates could not
+    complete. One id on both surfaces is what makes it true.
+
+    Falls back to C3's session id, then to the process id, never to "". Two
+    agents that both resolved to "" would count as ONE session and stop
+    blocking each other — the exact opposite of what a lock is for. Each
+    Claude Code session runs its own c3-mcp process, so the pid is a
+    faithful stand-in.
 
     It is also the right identity for c3_project: that proxy builds a runtime
     for the TARGET project but runs inside the CALLER's process, so the pid
     keeps the edit attributed to the agent that actually asked for it.
     """
     session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+    host = str(session.get("host_session_id") or "").strip()
+    if host:
+        return host
     return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
 
 
-def allow(svc, denial, *, tool: str, op: str, path) -> str | None:
+def allow(svc, denial, *, tool: str, op: str, path,
+          peek: bool = False) -> str | None:
     """The `[c3-override:granted]` line when a live grant permits this exact
     call, or None to stay denied.
 
     Consumes a use on success — so callers must invoke this only when they
-    are about to proceed, never speculatively. Ordering inside `gate_access`
-    is policy first, grants second, so a grant is void the instant the policy
-    or its layer is switched off (§12.8).
+    are about to proceed, never speculatively; ``peek=True`` is the
+    speculative form (a look, no burn) for a caller that has to check
+    several targets before it knows whether the call runs at all. Ordering
+    inside `gate_access` is policy first, grants second, so a grant is void
+    the instant the policy or its layer is switched off (§12.8).
 
     Fail-closed by construction: any error resolving the grant store leaves
     the caller on its ordinary refusal path. A grant that cannot be read is
@@ -56,7 +72,8 @@ def allow(svc, denial, *, tool: str, op: str, path) -> str | None:
     try:
         from services import override_grants as og  # noqa: PLC0415 — lazy
         return og.gate_access(svc.project_path, denial, tool=tool, op=op,
-                              path=str(path), session_id=session_id(svc))
+                              path=str(path), session_id=session_id(svc),
+                              peek=peek)
     except Exception:
         return None
 

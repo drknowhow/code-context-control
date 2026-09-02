@@ -4,6 +4,119 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.102.0] - 2026-09-02
+
+A review of the instruction block C3 generates for itself — the one that
+tells the agent what to do when a write is held — checked each claim against
+the code behind it. Most of what follows is that gap, closed.
+
+### Fixed — the confirm flow the docs mandate failed on its most common path
+
+`CLAUDE.md` step 11.6 says: C3 filed the request, wait on the id, retry once
+if approved. The wait step could not run. The PreToolUse hook files under the
+session id Claude Code puts in the hook payload; `c3_override` compared
+against C3's own `YYYYmmdd_HHMMSS` session id, so **every hook-filed hold** —
+which since 2.100.0 means every native write to `.mcp.json`, an instruction
+doc or a hook body — answered `wait`, `status` and `withdraw` with *"that
+request belongs to another session"*. The agent could not wait, could not
+check, and was told never to retry blind. Dedup keys on the session id too,
+so a follow-up `c3_edit` filed a **second** card for the same blocked write,
+and "duplicates collapse into the pending request" was false.
+
+Both surfaces now resolve one identity: the host's. Claude Code exports
+`CLAUDE_CODE_SESSION_ID` to the MCP server and puts the same value in every
+hook payload, so `start_session` records it and `cli/tools/_grants.session_id`
+prefers it. Where a host exports nothing (Codex, Antigravity) C3's own id
+serves, then the pid — the identity is never empty, and a genuinely foreign
+request is still refused, now naming both ids so a mismatch is diagnosable.
+
+### Fixed — an agent could still add an MCP server, through a neighbouring IDE
+
+2.100.0's confirm tier listed the Claude Code files only, while
+`services/artifact_defs` tracks every profile's instruction doc and
+project-scoped MCP config as agent-affecting. `.cursor/mcp.json`,
+`.vscode/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`,
+`.github/copilot-instructions.md`, `.cursorrules` and `.claude/plugins/**`
+were all writable with no hold — the exact threat the tier was created to
+close, reachable through a file belonging to an IDE the agent was not even
+running in. All seven join `BUILTIN_CONFIRM_WRITE`, and a test now derives
+the expectation from the artifact table itself rather than restating the
+list, so the two cannot drift apart the next time a profile lands.
+
+### Fixed — "writes pause by default" was false for the shell
+
+Both shell scanners asked the access evaluator for `"read"`. Confirm holds,
+`read_only` rules and the builtin write-denies are all write-class, so they
+were invisible to the one route an agent reaches for when a write is blocked:
+`echo >> CLAUDE.md`, `sed -i` on `.mcp.json` and a heredoc into a hook body
+all ran with no hold, from `c3_shell` and from native `Bash` alike. The files
+a command writes are now evaluated as writes at both surfaces, using
+`cli/_shell_writes` — the extractor the edit ledger already trusts after the
+fact. Reads are unchanged, and the best-effort caveat is unchanged and still
+stated in the refusal: a clean scan is not enforcement.
+
+### Fixed — an approved override could be spent on a call that never ran
+
+`hook_access_guard` consumed the grant, then `hook_pretool_enforce` denied on
+tool discipline and won the deny-beats-allow merge. The grant was gone, the
+write never happened, and the user was asked twice for one edit. PreToolUse
+sub-hooks now *peek*; `hook_dispatch` settles the uses only once every
+sub-hook has voted allow, and a deny leaves the grant live for the retry. A
+grant spent by a concurrent call between peek and settle turns the allow into
+a `[c3-override:spent]` deny rather than proceeding ungranted. The dispatcher
+also stops after the first deny, since nothing below it can change the answer.
+
+### Fixed — `restore` was the one unheld agent write to the files it protects
+
+Item 12 advertises `c3_artifacts restore` in the same sentence that says
+these writes pause, but restore was exempt from the confirm tier and is
+agent-callable: an agent could revert a user's tightened `CLAUDE.md`, or any
+captured `.mcp.json` or hook body, with nothing but a ledger row.
+`artifact_store.restore()` now takes a `confirm` mode. A human clicking
+restore (CLI, Hub, REST) keeps the exemption — the click *is* the approval.
+An agent's restore holds, files, and completes on the approved retry. `deny`,
+`read_only` and `mask` still refuse everyone.
+
+### Fixed — the third instruction doc had been drifting for releases
+
+`.github/copilot-instructions.md` is git-tracked, generated from the same
+template as `CLAUDE.md` and `AGENTS.md`, and was absent from the managed-block
+sync — while `_ensure_instruction_workflow` treated marker *presence* as
+"up to date". The markers are stable words like `SEARCH FIRST`, so they
+survive every template change and the file reported `Kept` forever. In this
+vscode-primary repo it was a release behind: no 11.6, no agent-config tier.
+The doc joins the sync list, and a doc carrying the managed sentinels is now
+compared against the current block and regenerated when it differs, with user
+content outside the markers preserved as always.
+
+### Changed — S8 says what it means
+
+Four corrections to the pinned confirm refusal, each one a place an agent was
+told something untrue:
+
+- the wait call now carries `timeout_s=180`; the bare call waits **60 s**,
+  so an agent that hit the timeout believed the decision window had closed;
+- it says a "still pending" answer is not a denial, and that the retry must
+  be on the **same surface** (a grant matches on tool, so a `c3_edit` retry
+  of a hook-filed `Edit` hold matches nothing and files a second card);
+- "could not be filed" now defers to the reason's own instruction instead of
+  overriding it — a deny+mute says *do not ask again*, a rate limit says
+  withdraw one or wait, and the old tail said "ask the user in chat" to both;
+- the `Rules:` pointer follows the scope: `c3 access builtin mode` for a
+  builtin-tier hold, which is not in `c3 access list` at all.
+
+`c3_project` gets its own tail: the proxy files nothing and a retry through
+it refuses again, so pointing at `c3_edit` there was unreachable advice.
+
+### Changed — the generated docs stop claiming what an IDE cannot do
+
+The hookless adaptation already restates "blocked by hooks" honestly for
+Codex, Antigravity and Copilot; 2.100.0's "WRITES to these files PAUSE by
+default" slipped past it one paragraph lower, and a native write there is
+never intercepted. Those docs now say so. The global `~/.claude/CLAUDE.md`
+and the nano workflow — neither of which had heard of confirm holds, though
+the builtin tier fires in every C3 project — get the rule too.
+
 ## [2.101.0] - 2026-08-28
 
 ### Added — the shell_warn layer existed on paper; nothing consulted it

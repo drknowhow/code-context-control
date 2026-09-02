@@ -36,6 +36,7 @@ emit a short "[c3:hook-error] ..." additionalContext warning so enforcement
 cannot silently stop enforcing.
 """
 import importlib
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -166,6 +167,16 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
 
 _RUN_CACHE: dict = {}
 
+# PreToolUse sub-hooks that consult override grants. Under the dispatcher
+# they are asked to DEFER consumption (`defer_consume=True`): each returns a
+# provisional allow carrying an `_on_allow` callable, and `_settle_grants`
+# runs those only once every sub-hook has voted allow. Before v2.102.0 the
+# access guard consumed a grant first and a strict-mode discipline deny from
+# the next sub-hook then won the merge — grant spent, nothing written, the
+# user asked twice for one edit. The same hole ran the other way for a
+# discipline grant followed by a policy deny.
+_DEFER_CONSUME = {"hook_access_guard", "hook_pretool_enforce"}
+
 # Modules whose failure must DENY rather than fall through (fail closed).
 # Scoped to write-class tools + shell: a broken guard must not let mutations
 # sail through, but read-class fail-open avoids bricking whole sessions.
@@ -187,6 +198,77 @@ def _fail_closed_deny(module_name: str, err: str) -> dict:
             ),
         }
     }
+
+
+def _is_deny(out) -> bool:
+    hso = out.get("hookSpecificOutput") if isinstance(out, dict) else None
+    return isinstance(hso, dict) and hso.get("permissionDecision") == "deny"
+
+
+def _call_run(run_fn, module_name: str, event: str, payload: dict,
+              project_path):
+    """Invoke a sub-hook, asking the grant-aware ones to defer consumption.
+
+    Signature-checked rather than assumed: tests stub these modules with
+    two-argument lambdas, and a legacy single-file hook must keep working.
+    """
+    if event == "pretool" and module_name in _DEFER_CONSUME:
+        try:
+            accepts = "defer_consume" in inspect.signature(run_fn).parameters
+        except (TypeError, ValueError):
+            accepts = False
+        if accepts:
+            return run_fn(payload, project_path, defer_consume=True)
+    return run_fn(payload, project_path)
+
+
+def _grant_lost_deny() -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "[c3-override:spent] the override grant that would have "
+                "allowed this call was used up between check and use (a "
+                "concurrent call spent it). The rule stands — ask again "
+                "with c3_override if it is still needed."
+            ),
+        }
+    }
+
+
+def _settle_grants(outputs: list) -> list:
+    """Burn deferred grant uses — only when the merged verdict is allow.
+
+    Any deny among the outputs means the call will not run, so every
+    `_on_allow` is dropped unrun and the grants stay live for the retry. On
+    an allow each consumer runs; the line it returns replaces the
+    provisional one (it carries the post-consumption uses count). A consumer
+    that finds nothing left — the grant was spent by a concurrent call
+    between peek and settle — turns its allow into a deny: the call must
+    not proceed on a grant that no longer exists.
+    """
+    denied = any(_is_deny(o) for o in outputs)
+    settled = []
+    for out in outputs:
+        if not isinstance(out, dict):
+            settled.append(out)
+            continue
+        consume = out.pop("_on_allow", None)
+        if consume is None or denied:
+            settled.append(out)
+            continue
+        try:
+            line = consume()
+        except Exception as exc:
+            log_hook_error("hook_dispatch:settle", exc)
+            line = None
+        if line:
+            out["additionalContext"] = str(line)
+            settled.append(out)
+        else:
+            settled.append(_grant_lost_deny())
+    return settled
 
 
 def _load_run(module_name: str):
@@ -353,7 +435,7 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
                 outputs.append(_fail_closed_deny(module_name, err))
             continue
         try:
-            out = run_fn(payload, project_path)
+            out = _call_run(run_fn, module_name, event, payload, project_path)
             if out:
                 outputs.append(out)
         except Exception as exc:
@@ -368,7 +450,15 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
         # Critical state-layer warnings (corrupt enforcement_state.json)
         # become visible instead of silently disabling enforcement.
         warnings.extend(_hook_utils.drain_state_warnings())
+        # A PreToolUse deny is final — merge keeps the first deny and no
+        # allow readmits it — so the sub-hooks after it have nothing to add,
+        # and running them could only spend a grant or log a block for a
+        # call that will not happen.
+        if event == "pretool" and outputs and _is_deny(outputs[-1]):
+            break
 
+    if event == "pretool":
+        outputs = _settle_grants(outputs)
     return merge_outputs(outputs, warnings, event=event, host=host)
 
 
