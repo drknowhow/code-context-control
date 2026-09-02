@@ -160,22 +160,62 @@ class TestRefusal(ConfirmBase):
         self.assertIn("held for human confirmation", text)
         self.assertIn("This is a pause, not a refusal", text)
         self.assertIn("Confirmation request ovr_abc123 is pending", text)
-        self.assertIn("c3_override(action='wait', request_id='ovr_abc123')",
-                      text)
-        self.assertIn("retry this exact call once if approved", text)
+        self.assertIn("retry this exact call once", text)
 
-    def test_s8_with_failure_note(self):
+    def test_s8_names_the_wait_timeout_it_means(self):
+        # The bare `wait` call defaults to 60s (mcp_server.c3_override) while
+        # 180 is only the clamp ceiling. S8 used to print the bare call under
+        # a doc line promising 180, so an agent that hit the 60s timeout had
+        # been told the decision window had closed when it had not.
+        text = ag.refusal(self._denial(), str(self.held), "write",
+                          request_id="ovr_abc123")
+        self.assertIn("c3_override(action='wait', request_id='ovr_abc123', "
+                      "timeout_s=180)", text)
+        self.assertIn("not a denial", text)
+
+    def test_s8_retry_is_pinned_to_the_filing_surface(self):
+        # A grant matches on tool (§4 condition 5), so a c3_edit retry of a
+        # hook-filed `Edit` hold mints nothing and files a second card.
+        text = ag.refusal(self._denial(), str(self.held), "write",
+                          request_id="ovr_abc123")
+        self.assertIn("on this same surface", text)
+
+    def test_s8_with_failure_note_defers_to_the_reason(self):
+        # "ask the user in chat" is wrong for the two reasons that actually
+        # occur: a deny+mute says do not ask again, a rate limit says
+        # withdraw one or wait. The tail now defers to the reason's own
+        # instruction rather than overriding it.
         text = ag.refusal(self._denial(), str(self.held), "write",
                           request_note="rate limit: 3 pending")
         self.assertIn("could not be filed (rate limit: 3 pending)", text)
-        self.assertIn("ask the user in chat", text)
-        self.assertNotIn("is pending", text)
+        self.assertIn("do what that reason says", text)
+        self.assertIn("only if it gives no instruction", text)
+        self.assertNotIn("is pending —", text)
 
     def test_s8_refuse_only_surface(self):
         text = ag.refusal(self._denial(), str(self.held), "write")
         self.assertIn("No confirmation request was filed from this surface",
                       text)
         self.assertIn("c3_edit", text)
+
+    def test_s8_proxy_surface_does_not_point_at_a_filing_tool(self):
+        # c3_project files nothing and a retry through it refuses again, so
+        # tail (d)'s "retry via c3_edit" is unreachable advice there.
+        text = ag.refusal(self._denial(), str(self.held), "write",
+                          surface="proxy", project="other")
+        self.assertIn("the c3_project proxy is refuse-only for holds", text)
+        self.assertNotIn("retry via c3_read", text)
+
+    def test_s8_points_at_the_surface_that_owns_the_rule(self):
+        # A builtin-tier hold is not in `c3 access list`; sending the agent
+        # there had it hunt for a user rule that does not exist.
+        user = ag.refusal(self._denial(), str(self.held), "write")
+        self.assertIn("`c3 access list`", user)
+        builtin = ag.refusal(
+            ag.Denial("**/claude.md", "confirm", "builtin", "confirm rule"),
+            "CLAUDE.md", "write")
+        self.assertIn("c3 access builtin mode", builtin)
+        self.assertNotIn("`c3 access list`", builtin)
 
     def test_s8_never_carries_the_override_offer(self):
         # S8 self-contains the instruction; the §6 offer line would be a

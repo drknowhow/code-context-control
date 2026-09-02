@@ -504,11 +504,12 @@ def _agent_cannot_comply(payload: dict, base: Path) -> str | None:
 
 
 def _override_allows(base: Path, tool_name: str, tool_input: dict,
-                     session_id: str) -> str | None:
+                     session_id: str, peek: bool = False) -> str | None:
     """A live discipline grant for this exact write, or None (spec §5).
 
     Runs AFTER `_vault_denial`, which stays unconditional: no grant, no
     config value and no approval can open a native write path to the vault.
+    ``peek`` looks without consuming (see hook_dispatch's settle step).
     """
     target = str(tool_input.get("file_path")
                  or tool_input.get("notebook_path") or "")
@@ -517,16 +518,23 @@ def _override_allows(base: Path, tool_name: str, tool_input: dict,
     try:
         from services import override_grants as og  # noqa: PLC0415 — lazy
         return og.gate_discipline(base, tool=tool_name, path=target,
-                                  session_id=session_id)
+                                  session_id=session_id, peek=peek)
     except Exception:
         return None  # fail closed: no grant, ordinary block
 
 
-def run(payload: dict, project_path: Path | None = None) -> dict | None:
+def run(payload: dict, project_path: Path | None = None,
+        defer_consume: bool = False) -> dict | None:
     """Core enforcement logic — importable by the dispatcher and tests.
 
     Returns a hook-output dict ({"additionalContext": ...} or a deny
     {"hookSpecificOutput": ...}) or None when the call passes silently.
+
+    ``defer_consume`` (dispatcher only): a discipline grant is peeked, not
+    burned, and the output carries an ``_on_allow`` callable the dispatcher
+    runs once the whole PreToolUse verdict is allow — so a policy deny from
+    hook_access_guard can no longer spend a grant on a write that never
+    happens (v2.102.0).
     """
     tool_name = normalize_tool_name(payload.get("tool_name", ""))
 
@@ -591,9 +599,20 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
     # the ledger stays complete either way; what is lost is the pre-edit
     # snapshot c3_edit would have taken.
     if tool_name in blocked_tools and mode == "strict":
-        granted = _override_allows(base, tool_name, tool_input, session_id)
+        granted = _override_allows(base, tool_name, tool_input, session_id,
+                                   peek=defer_consume)
         if granted:
-            return _with_warnings({"additionalContext": granted}, policy)
+            out = _with_warnings({"additionalContext": granted}, policy)
+            if defer_consume:
+                def _consume():
+                    line = _override_allows(base, tool_name, tool_input,
+                                            session_id)
+                    if not line:
+                        return None
+                    return _with_warnings({"additionalContext": line},
+                                          policy)["additionalContext"]
+                out["_on_allow"] = _consume
+            return out
         cannot = _agent_cannot_comply(payload, base)
         if cannot:
             return _with_warnings({

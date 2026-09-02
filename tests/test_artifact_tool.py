@@ -2,8 +2,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cli.tools.artifacts import READ_ACTIONS, handle_artifacts
+from services import access_guard as ag
+from services import override_policy as opol
+from services import override_requests as orq
 from services.artifact_store import ArtifactStore
 from services.edit_ledger import EditLedger
 
@@ -30,9 +34,24 @@ class ArtifactToolBase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         (self.root / ".c3").mkdir()
+        # An agent-issued restore of an agent-config file now pauses and
+        # FILES an override request (v2.102.0), so this suite must not write
+        # to the developer's real ~/.c3 store — nor read their rules.
+        self._patches = [
+            mock.patch.object(opol, "_global_base", return_value=None),
+            mock.patch.object(ag, "_global_base", return_value=None),
+            mock.patch.object(orq, "store_path",
+                              return_value=Path(self._tmp.name) / "ovr.json"),
+            mock.patch.object(orq, "mutes_path",
+                              return_value=Path(self._tmp.name) / "mutes.json"),
+        ]
+        for p in self._patches:
+            p.start()
         self.svc = _StubSvc(self.root)
 
     def tearDown(self):
+        for p in self._patches:
+            p.stop()
         self._tmp.cleanup()
 
     def write(self, rel, content):
@@ -84,12 +103,30 @@ class TestRouting(ArtifactToolBase):
         self._run("scan")
         self.assertIn("[artifacts:error]", self._run("diff", artifact="CLAUDE.md"))
 
+    def _two_versions(self, rel="CLAUDE.md"):
+        self.write(rel, "original")
+        self._run("scan")
+        self.write(rel, "changed")
+        self._run("scan")
+
+    def test_agent_restore_of_an_agent_config_file_holds(self):
+        """CLAUDE.md is in the builtin confirm tier, and an agent's restore
+        is an agent write to it (v2.102.0) — it pauses and files, rather
+        than being exempt the way a human-triggered restore is."""
+        self.svc = _StubSvc(self.root, with_ledger=True)
+        self._two_versions()
+        out = self._run("restore", artifact="CLAUDE.md", version=1)
+        self.assertIn(ag.TAG_CONFIRM, out)
+        self.assertEqual((self.root / "CLAUDE.md").read_text(encoding="utf-8"),
+                         "changed", "a held restore must not write")
+        self.assertEqual(len(orq.list_requests(project_path=str(self.root))), 1)
+
     def test_restore_round_trip_and_ledger_log(self):
         self.svc = _StubSvc(self.root, with_ledger=True)
-        self.write("CLAUDE.md", "original")
-        self._run("scan")
-        self.write("CLAUDE.md", "changed")
-        self._run("scan")
+        self._two_versions()
+        self._run("restore", artifact="CLAUDE.md", version=1)  # files the hold
+        row = orq.list_requests(project_path=str(self.root))[0]
+        orq.decide(row["id"], orq.DECISION_APPROVE)
         out = self._run("restore", artifact="CLAUDE.md", version=1)
         self.assertIn("[artifacts:restored]", out)
         self.assertEqual((self.root / "CLAUDE.md").read_text(encoding="utf-8"),

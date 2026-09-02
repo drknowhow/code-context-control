@@ -832,7 +832,7 @@ async def c3_override(action: str = "list", path: str = "", tool: str = "",
                       layer: str = "", timeout_s: int = 60,
                       ctx: Context = None) -> str:
     """ASK A HUMAN to allow ONE blocked call — never a policy change.
-    actions: request, status, wait (blocks <=180s), list, withdraw.
+    actions: request, status, wait (blocks timeout_s: default 60, max 180), list, withdraw.
     request: path = the exact blocked path; why = one concrete sentence for the human.
     A yes mints a single-use, session-bound, path-exact grant with a short TTL; the
     rule that blocked you stays in force. There is NO approve action here — only the

@@ -101,6 +101,18 @@ BUILTIN_CONFIRM_WRITE = (
     "**/.claude/skills/**",
     "**/.claude/agents/**",
     "**/.claude/commands/**",
+    # v2.102.0 — the rest of what services/artifact_defs tracks as
+    # agent-affecting: every IDE profile's instruction doc and project-scoped
+    # MCP config, plus plugin bodies. 2.100.0 covered the Claude Code set
+    # only, so an agent could add an MCP server through the IDE it was NOT
+    # running in (.cursor/mcp.json from a Claude Code session) or rewrite
+    # the Copilot instructions with no hold — the exact threat the tier
+    # closed. tests/test_builtin_modes.py pins this list against the
+    # artifact table so the two cannot drift apart again.
+    "**/.github/copilot-instructions.md", "**/.cursorrules",
+    "**/.vscode/mcp.json", "**/.cursor/mcp.json", "**/.codex/config.toml",
+    "**/.gemini/settings.json",
+    "**/.claude/plugins/**",
 )
 
 #: Globs `c3 access builtin {disable,mode}` accepts. Order is display order.
@@ -979,26 +991,50 @@ def _refusal_body(denial: Denial, path, operation: str, *, surface: str,
         # S8 (docs/confirm-guard.md §4). A pause, not a refusal: the denial
         # site auto-files an Override Request and the tail names it — or says
         # exactly why one could not be filed, or where filing happens when
-        # this surface is refuse-only.
+        # this surface is refuse-only. Four tails, each pinned by tests:
+        #  (a) filed: the id, the wait call WITH timeout_s=180 (the bare
+        #      call waits 60s — the doc said 180 and agents concluded a
+        #      "still pending" answer was a denial), and "same surface" —
+        #      the grant binds to the tool that filed, so a c3_edit retry of
+        #      a hook-filed Edit hold is a different card, not a duplicate;
+        #  (b) not filed: the reason carries its own instruction (a
+        #      deny+mute says "do not ask again"; a rate limit says withdraw
+        #      or wait) — obey that, and ask in chat only when it has none;
+        #  (c) proxy: c3_project files nothing, and a retry through it would
+        #      only refuse again — say so instead of pointing at c3_edit;
+        #  (d) every other refuse-only surface: name the ones that file.
         if request_id:
             tail = (f" Confirmation request {request_id} is pending — wait "
                     f"with c3_override(action='wait', "
-                    f"request_id='{request_id}'), then retry this exact call "
-                    "once if approved.")
+                    f"request_id='{request_id}', timeout_s=180), then retry "
+                    "this exact call once, on this same surface, if "
+                    "approved. A 'still pending' answer is not a denial: "
+                    "wait again or do unaffected work.")
         elif request_note:
             tail = (f" A confirmation request could not be filed "
-                    f"({_cap(request_note)}) — ask the user in chat.")
+                    f"({_cap(request_note)}) — do what that reason says; "
+                    "only if it gives no instruction, ask the user in chat.")
+        elif surface == "proxy":
+            tail = (" No confirmation request was filed: the c3_project "
+                    "proxy is refuse-only for holds — ask the user in chat, "
+                    "or make the change from a session rooted in that "
+                    "project.")
         else:
             tail = (" No confirmation request was filed from this surface — "
                     "retry via c3_read, c3_edit, or a native tool (those "
                     "file one), or ask the user in chat.")
+        # A builtin hold is not in the user's rule list; pointing at
+        # `c3 access list` sent agents to remove a rule that is not there.
+        rules = ("`c3 access builtin mode` (builtin tier) or the Access tab"
+                 if scope == "builtin"
+                 else "`c3 access list` or the Access tab")
         return (
             f"{TAG_CONFIRM} {operation} for {p} is held for human "
             f"confirmation by Access Guard rule '{glob}' ({scope} scope). "
             "This is a pause, not a refusal — a human must approve this "
             f"exact {operation}. Do not retry until a decision arrives, and "
             "do not route around the hold via the shell or another tool."
-            f"{tail} Rules: `c3 access list` or the Access tab."
+            f"{tail} Rules: {rules}."
         )
     if denial.kind == _KIND_MASK:
         if operation in ("write", "create", "delete"):

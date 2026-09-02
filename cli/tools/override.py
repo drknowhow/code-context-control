@@ -21,6 +21,7 @@ from services import override_requests as orq
 
 #: `wait` blocks inside the MCP server, which is allowed to be slow — but not
 #: forever. Past this the agent should do something else and check back.
+#: The per-call default is 60 (mcp_server.c3_override); this is the ceiling.
 _MAX_WAIT_S = 180
 _POLL_S = 1.0
 
@@ -117,8 +118,9 @@ def handle_override(action: str, path: str, tool: str, op: str, why: str,
             f"  {row['tool']} {row['op']} on {row['path']}\n"
             f"  blocked by {row['rule']} ({row['rule_class']})\n"
             "The user decides on their phone or desktop; you cannot approve "
-            "this yourself. Use action='wait' to block up to 180s, or carry "
-            "on with unaffected work and check action='status' later.",
+            "this yourself. Use action='wait' (timeout_s up to 180, default "
+            "60) to block for the decision, or carry on with unaffected work "
+            "and check action='status' later.",
             f"requested {row['id']}")
 
     if action in ("status", "wait"):
@@ -134,8 +136,13 @@ def handle_override(action: str, path: str, tool: str, op: str, why: str,
                 return finalize(name, args, f"no request '{request_id}'.",
                                 "not found")
             if row.get("session_id") != session:
+                # Both ids are named so a mismatch is diagnosable instead of
+                # a dead end: the request was filed under one identity and
+                # this surface resolved another (cli/tools/_grants.session_id).
                 return finalize(name, args,
-                                "that request belongs to another session.",
+                                "that request belongs to another session "
+                                f"(filed by {row.get('session_id') or '?'}; "
+                                f"this session is {session}).",
                                 "wrong session")
             if row.get("status") != orq.STATUS_PENDING:
                 break
@@ -148,8 +155,11 @@ def handle_override(action: str, path: str, tool: str, op: str, why: str,
             return finalize(name, args, _retry_hint(row), "approved")
         if status == orq.STATUS_PENDING:
             return finalize(name, args,
-                            f"Still pending (expires {row['expires_at']}). "
-                            "Do something else and check back — do not spin.",
+                            f"Still pending (expires {row['expires_at']}) — "
+                            "not a denial. Wait again (action='wait', "
+                            "timeout_s=180) or do unaffected work and check "
+                            "action='status'; do not spin, and do not retry "
+                            "the held call before a decision.",
                             "pending")
         note = f" — {row['decision_note']}" if row.get("decision_note") else ""
         return finalize(name, args,

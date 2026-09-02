@@ -1,10 +1,10 @@
 # Confirm Rules — a declarative "pause for a human" access mode
 
-Status: FROZEN for the parts shipped in 2.97.0 (§1–§6). §7 records the
-phases that build on this and are NOT yet shipped; they freeze when they
-land. Companion specs: `docs/access-guard.md` (the evaluator this extends),
-`docs/override-requests.md` (the request/grant machinery this reuses),
-`docs/mask-guard.md` (the precedence neighbour).
+Status: FROZEN (§1–§6), amended in v2.102.0 — the S8 tails (§4), the
+shell write coverage and grant settling (§6), and §3's session identity.
+Every phase in §7 has shipped. Companion specs: `docs/access-guard.md` (the
+evaluator this extends), `docs/override-requests.md` (the request/grant
+machinery this reuses), `docs/mask-guard.md` (the precedence neighbour).
 
 ## 0. Why
 
@@ -81,8 +81,22 @@ via one shared helper (`override_requests.auto_file`):
   unchanged) or a short reason S8 embeds.
 - Auto-filed rows carry an **empty justification**: the card renders from
   the denial's trusted identity (tool, op, path, rule) and nothing the agent
-  composed. Filing and consuming happen under the same session id on the
-  same surface.
+  composed.
+- **Session identity is the HOST's** (v2.102.0). The hook files under the
+  `session_id` Claude Code puts in every hook payload; the MCP tools resolve
+  the same value from `CLAUDE_CODE_SESSION_ID`, which the host exports to the
+  server process (`session_manager.host_session_id`, read once at
+  `start_session` into `current_session["host_session_id"]`, preferred by
+  `cli/tools/_grants.session_id`). Before that, `c3_override` compared against
+  C3's own `YYYYmmdd_HHMMSS` id, so **every hook-filed hold answered `wait`
+  with "that request belongs to another session"** — the mandated flow could
+  not run on its most common path, and dedup (which keys on session id) filed
+  a second card for the same blocked write. Where the host exports nothing
+  (Codex, Antigravity), C3's own id serves, then the pid; the identity is
+  never empty.
+- Filing and consuming happen on the **same surface**: a grant matches on
+  `tool` (§4 condition 5), so retrying a hook-filed `Edit` hold through
+  `c3_edit` matches nothing and files a second card. S8 says so.
 - Never inside `verdict()`/`check()` — the evaluator stays pure and the
   hook hot path stays one config read.
 - Request creation still refuses `forbidden_target()` paths outright: even
@@ -100,16 +114,33 @@ Machine tag: `[c3-access:confirm]`. Base:
 > a decision arrives, and do not route around the hold via the shell or
 > another tool.{tail} Rules: ``c3 access list`` or the Access tab.`
 
-`{tail}`, one of three:
+`{tail}`, one of four (the first three revised in v2.102.0):
 
 - filed: ` Confirmation request {id} is pending — wait with
-  c3_override(action='wait', request_id='{id}'), then retry this exact call
-  once if approved.`
-- not filed: ` A confirmation request could not be filed ({reason}) — ask
-  the user in chat.`
+  c3_override(action='wait', request_id='{id}', timeout_s=180), then retry
+  this exact call once, on this same surface, if approved. A 'still pending'
+  answer is not a denial: wait again or do unaffected work.`
+  The explicit `timeout_s` is load-bearing: the bare call defaults to **60 s**
+  (`mcp_server.c3_override`) while 180 is only the clamp ceiling, so a doc
+  promising 180 taught agents to read a 60-second timeout as a decision.
+- not filed: ` A confirmation request could not be filed ({reason}) — do what
+  that reason says; only if it gives no instruction, ask the user in chat.`
+  The reasons that actually occur carry their own instruction and contradict a
+  blanket "ask in chat": a deny+mute says *"Do not ask again"*, a rate limit
+  says withdraw one or wait.
 - refuse-only surface: ` No confirmation request was filed from this
   surface — retry via c3_read, c3_edit, or a native tool (those file
   one), or ask the user in chat.`
+- proxy surface (`c3_project`): ` No confirmation request was filed: the
+  c3_project proxy is refuse-only for holds — ask the user in chat, or make
+  the change from a session rooted in that project.` The generic tail's
+  "retry via c3_edit" is unreachable advice there: the proxy answers for
+  another project's policy and a retry through it refuses again.
+
+The `Rules:` pointer follows the rule's scope — `c3 access builtin mode` for
+a `builtin`-scope hold, `c3 access list` for a user rule. Sending an agent to
+`c3 access list` for a builtin-tier hold had it hunt for a rule that is not in
+the user's config at all.
 
 S8 never carries the override-requests §6 offer line — it would be a second,
 contradictory invitation on a refusal that already names the filed request.
@@ -144,10 +175,44 @@ override-requests §3.1 property 1 ("default off, everywhere"):
 ## 6. Coverage
 
 Enforced everywhere the access evaluator runs: c3_* tools, native tools via
-hooks, the shell scan (a confirm rule never hard-denies a shell read —
-write-class only). Requests are approved from `c3 override approve`, the
-mobile Guard tab, and (planned, §7) the Hub. Residual risks are
-access-guard §6's, unchanged.
+hooks, and the shell — in **both** op classes since v2.102.0. A confirm rule
+still never hard-denies a shell *read* (write-class only), but the files a
+command *writes* are now evaluated as writes, at both shell surfaces:
+
+| surface | reads | writes |
+|---|---|---|
+| `c3_shell` | `_advisory_guard_scan` (deny-kind only) | `_write_scan` → hold/refuse |
+| native `Bash` (hook) | `_scan_shell` (deny-kind only) | `_scan_shell_writes` → hold/refuse |
+
+Write targets come from `cli/_shell_writes.shell_write_targets`, the extractor
+the edit ledger already trusts after the fact — redirects, `tee`, `sed -i`,
+`cp`/`mv`/`install`, `touch`/`rm`, and inline Python `open(...,'w')`. Until
+this landed, both scanners asked the evaluator for `"read"`, and every
+write-class outcome (confirm, `read_only`, the builtin write-denies) was
+therefore invisible to them: `echo >> CLAUDE.md`, `sed -i` on `.mcp.json` and
+a heredoc into a hook body all ran unheld, which made §7.3's "writes pause by
+default" false for the one route an agent reaches for when a write is blocked.
+
+The same best-effort caveat as the read scan applies and is stated in the
+refusal: subshells, variables and globs are invisible to a token scan, so a
+clean scan is **not** enforcement. It is mistake-and-injection containment, not
+a sandbox — which is why the instruction docs still say to route agent-config
+edits through `c3_edit`.
+
+**Grant consumption is settled, not eager** (v2.102.0). PreToolUse sub-hooks
+that consult grants are asked to *peek*; `hook_dispatch._settle_grants` burns
+the uses only once every sub-hook has voted allow, and a deny leaves the grant
+live for the retry. Previously `hook_access_guard` consumed first and a
+strict-mode discipline deny from `hook_pretool_enforce` then won the
+deny-beats-allow merge: grant spent, nothing written, and the user asked twice
+for one edit. A grant spent by a concurrent call between peek and settle turns
+the allow into a `[c3-override:spent]` deny rather than proceeding ungranted.
+`c3_shell._write_scan` applies the same two-pass rule for its own reason: a
+command with several held targets must not spend a grant on one of them and
+then refuse on another.
+
+Requests are approved from `c3 override approve`, the mobile Guard tab, and
+the Hub (§7.1). Residual risks are access-guard §6's, unchanged.
 
 ## 7. Phases building on this
 
@@ -184,21 +249,46 @@ access-guard §6's, unchanged.
    the widening modes), `POST /api/access/builtin_mode` + a mode selector in
    the Access tab, `list_rules()["builtin"]["modes"]`.
 
-3. **Agent-config confirm tier** — SHIPPED v2.100.0. `BUILTIN_CONFIRM_WRITE`
-   = `**/.mcp.json`, `**/claude.md`, `**/agents.md`, `**/gemini.md`,
-   `**/.claude/{hooks,skills,agents,commands}/**` — the previously
-   UNGUARDED agent-config surfaces (an agent could add an MCP server or
-   rewrite a hook body silently; only artifact capture saw it, after the
-   fact). Default is a pause, not a block: writes hold for one-tap approval,
-   reads stay open — an agent must always be able to read its own
-   instructions. Mode-governable: this tier governs writes only, so `deny`
-   hardens to a write-deny (never a full deny) and `allow` restores the
-   pre-2.100 behaviour. The `settings*.json` write-deny is deliberately NOT
-   in this tier — hook REGISTRATION stays hard while hook BODIES pause,
-   because registration decides code execution. `artifact_store.restore()`
-   exempts builtin confirm exactly as it exempts builtin read_only: restore
-   writes back a version the store itself captured, on an audited
-   human-triggerable path.
+3. **Agent-config confirm tier** — SHIPPED v2.100.0, completed v2.102.0.
+   `BUILTIN_CONFIRM_WRITE` is the previously UNGUARDED agent-config surface
+   (an agent could add an MCP server or rewrite a hook body silently; only
+   artifact capture saw it, after the fact). Default is a pause, not a block:
+   writes hold for one-tap approval, reads stay open — an agent must always
+   be able to read its own instructions. Mode-governable: this tier governs
+   writes only, so `deny` hardens to a write-deny (never a full deny) and
+   `allow` restores the pre-2.100 behaviour.
+
+   **Membership is the artifact table, not a subset of it.** 2.100.0 listed
+   the Claude Code files only (`.mcp.json`, `claude.md`, `agents.md`,
+   `gemini.md`, `.claude/{hooks,skills,agents,commands}/**`), while
+   `services/artifact_defs` tracks every IDE profile's instruction doc and
+   project-scoped MCP config as agent-affecting. The gap was reachable from
+   any session: an agent could add an MCP server to `.cursor/mcp.json` or
+   `.vscode/mcp.json`, or rewrite `.github/copilot-instructions.md`, with no
+   hold at all — the exact threat the tier was created to close, through a
+   neighbouring IDE's file. v2.102.0 adds
+   `**/.github/copilot-instructions.md`, `**/.cursorrules`,
+   `**/.vscode/mcp.json`, `**/.cursor/mcp.json`, `**/.codex/config.toml`,
+   `**/.gemini/settings.json` and `**/.claude/plugins/**`, and a test derives
+   the expectation *from* `artifact_defs._FILE_TABLE` (every `instructions`
+   or `mcp` class artifact must resolve to a confirm) so the two cannot drift
+   apart the next time a profile lands.
+
+   The `settings*.json` write-deny is deliberately NOT in this tier — hook
+   REGISTRATION stays hard while hook BODIES pause, because registration
+   decides code execution.
+
+   **`restore` is exempt for a human, held for an agent** (corrected
+   v2.102.0). `artifact_store.restore()` takes a `confirm` mode:
+   `"human"` (the CLI, the Hub, the REST route) keeps the builtin-confirm
+   exemption, because a person clicking restore *is* the approval;
+   `"hold"` (`c3_artifacts`, i.e. an agent) raises on every confirm denial so
+   the tool files the request and names it in S8; `"approved"` is the retry
+   after a grant is consumed. Sharing the human exemption made `restore` the
+   one unheld agent write to `CLAUDE.md`, `.mcp.json` and every hook body —
+   an agent could revert a user's tightened instructions to any captured
+   version with nothing but a ledger row. `deny`, `read_only` and `mask`
+   enforce in every mode, so a user rule still refuses everyone.
 
 4. **`shell_warn` grant wiring** — SHIPPED v2.101.0. Grant identity is
    fixed: `layer=shell`, `rule=<shell:soft-warn>`, `tool="c3_shell"`,

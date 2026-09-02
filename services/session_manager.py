@@ -21,6 +21,16 @@ from services.git_context import GitContext
 from services.telemetry import append_telemetry_record
 
 
+def host_session_id() -> str:
+    """The host IDE's session id for this process, or ''.
+
+    Read from the environment at session start rather than cached at import:
+    a runtime built for another project inside the same MCP process (the
+    c3_project proxy) must inherit the same host identity.
+    """
+    return str(os.environ.get(SessionManager.HOST_SESSION_ENV) or "").strip()
+
+
 class SessionManager:
     """Manages session state and generates CLAUDE.md files."""
 
@@ -40,6 +50,13 @@ class SessionManager:
         "gemini": "gemini",
         "antigravity": "antigravity",
     }
+
+    # The host IDE's own session id, when the host exposes one. Claude Code
+    # exports CLAUDE_CODE_SESSION_ID to every child process — the MCP server
+    # AND every hook subprocess — and puts the same value in each hook payload
+    # as ``session_id``. It is therefore the one identity both surfaces can
+    # agree on; cli/tools/_grants.session_id prefers it (v2.102.0).
+    HOST_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 
     # Default context budget threshold (overridable via .c3/config.json "context_budget" key)
     DEFAULT_BUDGET_THRESHOLDS = {
@@ -129,6 +146,7 @@ class SessionManager:
         source_system_value = normalized_source or self._SOURCE_BY_IDE.get(source_ide, "manual")
         self.current_session = {
             "id": session_id,
+            "host_session_id": host_session_id(),
             "started": datetime.now(timezone.utc).isoformat(),
             "description": description,
             "source_system": source_system_value,
