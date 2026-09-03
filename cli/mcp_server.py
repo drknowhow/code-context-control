@@ -479,9 +479,12 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
 @mcp.tool()
 async def c3_search(query: str, action: str = "code", top_k: int = 3,
               max_tokens: int = 1200, prefetch: bool = False,
-              scope: str = "", ctx: Context = None) -> str:
+              scope: str = "", ignore_case: bool = False, ctx: Context = None) -> str:
     """FIND candidates. Use to discover which files/symbols are relevant (read-only, plan-mode safe).
-    action: 'code' (TF-IDF content), 'exact' (regex), 'files' (by name), 'transcript', 'semantic'.
+    action: 'code' (ranked chunks by content; a query that IS a symbol name puts its definition first;
+    an oversized chunk comes back as a window), 'exact' (regex over every indexed file; ignore_case=True
+    for case-insensitive), 'files' (by filename: exact name, glob like 'configs/*.yml', or substring),
+    'semantic' (embeddings; falls back to code search when empty), 'transcript'.
     scope: '' current project | 'all' also searches linked sub-projects | '<name>' one sub-project.
     prefetch: auto-compress top results. Next step: c3_compress/c3_read on hits."""
     svc = _svc(ctx)
@@ -491,7 +494,7 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
 
     return await asyncio.to_thread(handle_search, query, action, top_k, max_tokens, svc,
                                    finalize, maybe_related_facts, prefetch=prefetch,
-                                   scope=scope)
+                                   scope=scope, ignore_case=ignore_case)
 
 
 @mcp.tool()

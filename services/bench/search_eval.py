@@ -74,6 +74,7 @@ class QueryCase:
     top_k: int = DEFAULT_TOP_K
     max_tokens: int = DEFAULT_MAX_TOKENS
     tags: list[str] = field(default_factory=list)
+    params: dict = field(default_factory=dict)  # extra handle_search kwargs, e.g. ignore_case
 
     @classmethod
     def from_dict(cls, d: dict) -> "QueryCase":
@@ -98,6 +99,7 @@ class QueryCase:
             top_k=int(d.get("top_k", DEFAULT_TOP_K)),
             max_tokens=int(d.get("max_tokens", DEFAULT_MAX_TOKENS)),
             tags=list(d.get("tags", [])),
+            params=dict(d.get("params") or {}),
         )
 
 
@@ -181,7 +183,7 @@ class IndexStats:
     build_seconds: float | None = None
     file_memory_seconds: float | None = None
     tracked_files: int = 0
-    exact_coverage: float | None = None
+    file_memory_coverage: float | None = None
     index_bytes: int = 0
     semantic: str = "off"  # off | ready | unavailable:<reason>
 
@@ -267,7 +269,7 @@ def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
     tracked = [t for t in file_memory.list_tracked() if t]
     stats.tracked_files = len(tracked)
     if stats.files_indexed:
-        stats.exact_coverage = round(len(tracked) / stats.files_indexed, 3)
+        stats.file_memory_coverage = round(len(tracked) / stats.files_indexed, 3)
 
     embedding_index = None
     if semantic in ("auto", "on"):
@@ -388,7 +390,7 @@ def run_case(case: QueryCase, rt: EvalRuntime) -> QueryResult:
     t0 = time.perf_counter()
     try:
         response = handle_search(case.query, case.action, case.top_k, case.max_tokens,
-                                 rt.svc, _noop_finalize, _noop_facts)
+                                 rt.svc, _noop_finalize, _noop_facts, **case.params)
     except Exception as exc:
         result.status = "fail"
         result.reason = f"{type(exc).__name__}: {exc}"
@@ -518,7 +520,7 @@ class EvalReport:
         s = self.stats
         lines.append(
             f"index: files={s.files_indexed} chunks={s.chunks} oversize(>{DEFAULT_MAX_TOKENS}tok)="
-            f"{s.oversize_chunks} build={s.build_seconds}s exact_coverage={s.exact_coverage} "
+            f"{s.oversize_chunks} build={s.build_seconds}s file_memory_coverage={s.file_memory_coverage} "
             f"semantic={s.semantic}")
         lines.append("")
         lines.append(f"{'id':<28} {'action':<8} {'gate':<9} {'status':<5} {'rank':>4} {'ms':>7}  note")
