@@ -83,13 +83,13 @@ improvement is a deliberate, reviewed edit.
  "require_symbol": true, "k": 3, "gate": "must_pass", "tags": ["symbol"], "why": "..."}
 ```
 
-- `action`: `code` (default), `exact`, `files`, `semantic`.
+- `action`: `code` (default, hybrid when embeddings are ready), `lexical`,
+  `exact`, `files`, `semantic`.
 - `expect.files`: any listed file counts as relevant. `expect.symbols`: graded
   separately; with `require_symbol` the symbol, not the file, decides.
 - `expect.none: true`: the query has no valid answer; passing means 0 hits.
 - `forbid_text`: strings that must never appear in the response body (the
   query's own echo in headers is ignored).
-- `filters`: reserved for P2; a case with filters is recorded as skipped.
 - `k`, `top_k`, `max_tokens`: per-case overrides.
 
 ## Workflow
