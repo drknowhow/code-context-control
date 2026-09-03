@@ -23,6 +23,7 @@ be updated), ``info`` (measured, never gates).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import statistics
@@ -206,6 +207,17 @@ def prepare_fixture(fixture_src: str | Path, work_dir: str | Path,
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
+    # Pin every file to one mtime. The indexer multiplies scores by a recency
+    # factor derived from mtime/max_mtime; after a checkout the spread is
+    # microseconds, which is invisible in a score but decides EXACT ties. A
+    # gate that flips with checkout timing is not a gate.
+    pinned = 1_600_000_000
+    for p in dest.rglob("*"):
+        if p.is_file():
+            try:
+                os.utime(p, (pinned, pinned))
+            except OSError:
+                pass
     c3_dir = dest / ".c3"
     c3_dir.mkdir(exist_ok=True)
     (c3_dir / "config.json").write_text(

@@ -107,14 +107,47 @@ class TestFixtureGate:
     def test_must_pass_cases_pass(self, report):
         failed = report.aggregates["must_pass_failed"]
         detail = "\n".join(f"{r.id}: {r.reason}" for r in report.results if r.id in failed)
-        assert not failed, f"must_pass regressions:\n{detail}"
+        assert not failed, f"must_pass regressions:\n{detail}\n\n{report.render()}"
 
     def test_no_forbidden_text_leaks(self, report):
         assert not report.aggregates["forbidden_hits"], report.aggregates["forbidden_hits"]
 
     def test_aggregates_meet_floors(self, report):
+        # The full table rides along so a CI log names the queries that moved,
+        # not just the aggregate that fell.
         floors = [v for v in report.baseline_violations if "below floor" in v]
-        assert not floors, "\n".join(floors)
+        assert not floors, "\n".join(floors) + "\n\n" + report.render()
+
+    def test_ranking_is_deterministic_across_hash_seeds(self, report, tmp_path_factory):
+        """Same fixture in a second PROCESS with a different PYTHONHASHSEED:
+        every rank must repeat.
+
+        Ties in the scorer fall back to insertion order, and the co-occurrence
+        synonym map used to be built from a bare ``set`` whose order follows
+        the per-process hash seed — so the same repo ranked differently from
+        one CI job to the next (macOS py3.10 read recall@1 0.708 while the
+        other eight cells read 0.771, PR #142). A same-process rerun shares
+        the seed and cannot see this; a subprocess with a forced seed can.
+        """
+        import os
+        import subprocess
+        import sys
+
+        work = tmp_path_factory.mktemp("search_eval_seeded")
+        seed = "12345" if os.environ.get("PYTHONHASHSEED") != "12345" else "54321"
+        code = (
+            "import json, sys; from services.bench import search_eval as se; "
+            f"r = se.run_suite('fixture', work_dir={str(work)!r}, semantic='off'); "
+            "print(json.dumps({x.id: [x.status, x.rank] for x in r.results}))"
+        )
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": str(Path(se.__file__).resolve().parents[2])}
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                              env=env, timeout=300)
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        second = json.loads(proc.stdout.strip().splitlines()[-1])
+        first = {r.id: [r.status, r.rank] for r in report.results}
+        moved = {k: (first[k], second.get(k)) for k in first if first[k] != second.get(k)}
+        assert not moved, f"ranks changed under a different hash seed: {moved}"
 
     def test_xfail_and_regressions_are_visible(self, report):
         for w in report.baseline_warnings:

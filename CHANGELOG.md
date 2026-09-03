@@ -45,13 +45,15 @@ refreshes aggregates and per-query status and keeps the floors.
 `tests/test_search_eval.py` is the CI gate: must-pass cases, no canary leak,
 floors, and a baseline that knows every case id.
 
-Baseline on the fixture at 2.103.0: recall@1 0.771, recall@3 0.875, recall@10
-0.896, MRR 0.825, symbol recall@3 0.926, zero-result accuracy 1.0; 48 scored,
-5 skipped (semantic needs Ollama; filters land in P2). Six cases are recorded
+Baseline on the fixture at 2.103.0: recall@1 0.729, recall@3 0.875, recall@10
+0.896, MRR 0.807, symbol recall@3 0.926, zero-result accuracy 1.0; 48 scored,
+5 skipped (semantic needs Ollama; filters land in P2). Seven cases are recorded
 as known failures with their fix phase: the oversized `Ledger` class chunk is
 skipped rather than windowed (P1), `exact` has no ignore-case (P1), `files`
 matches whole path tokens only so `Invoi` and `limit` find nothing (P1), and
-the tokenizer drops digits so `v2` and `S256` vanish (P2). On the C3 tree the
+the tokenizer drops digits so `v2` and `S256` vanish (P2), and the masked
+`customers.csv` ranks fourth behind a CHANGELOG heading because co-occurrence
+synonyms outweigh its own path tokens (P2). On the C3 tree the
 golden suite reads recall@3 0.65 for `code` against 1.0 for `semantic`, and a
 test's `_FakeCodeIndex` outranks `CodeIndex` itself.
 
@@ -64,6 +66,13 @@ and is gated as `must_pass`. See `docs/search-eval.md`.
 
 ### Changed
 
+- Co-occurrence synonym selection is deterministic. `_build_cooccurrence`
+  iterated a bare `set` of tokens, so `Counter.most_common` ties followed the
+  per-process hash seed and the same repository produced different synonyms,
+  and different ranks, from one process to the next: the suite's first CI run
+  read recall@1 0.708 on one matrix cell and 0.771 on the other eight. Tokens
+  are now sorted before counting and ties break alphabetically. Same intent,
+  same budget, one answer.
 - `pytest` no longer recurses into `tests/fixtures/**`; a fixture repo's own
   `test_*.py` files are data.
 

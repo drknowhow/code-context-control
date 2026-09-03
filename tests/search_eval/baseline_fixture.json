@@ -1,16 +1,16 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T12:15:36",
+  "generated_at": "2026-09-03T12:36:30",
   "c3_version": "2.103.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
-    "build_seconds": 0.225,
+    "build_seconds": 0.251,
     "file_memory_seconds": 0.026,
     "tracked_files": 39,
     "exact_coverage": 1.0,
-    "index_bytes": 257480,
+    "index_bytes": 257878,
     "semantic": "off"
   },
   "aggregates": {
@@ -18,14 +18,14 @@
     "n_executed": 52,
     "n_scored": 48,
     "n_skipped": 5,
-    "recall_at_1": 0.7708,
+    "recall_at_1": 0.7292,
     "recall_at_3": 0.875,
     "recall_at_10": 0.8958,
-    "mrr": 0.8247,
+    "mrr": 0.8073,
     "symbol_recall_at_3": 0.9259,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 15.1,
-    "latency_p95_ms": 37.6,
+    "latency_p50_ms": 14.7,
+    "latency_p95_ms": 39.4,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []
@@ -33,7 +33,7 @@
   "by_action": {
     "code": {
       "n": 35,
-      "recall_at_3": 0.9143
+      "recall_at_3": 0.9429
     },
     "exact": {
       "n": 5,
@@ -41,14 +41,14 @@
     },
     "files": {
       "n": 8,
-      "recall_at_3": 0.75
+      "recall_at_3": 0.625
     }
   },
   "floors": {
-    "recall_at_1": 0.72,
+    "recall_at_1": 0.69,
     "recall_at_3": 0.84,
     "recall_at_10": 0.86,
-    "mrr": 0.78,
+    "mrr": 0.77,
     "symbol_recall_at_3": 0.89,
     "zero_result_accuracy": 1.0
   },
@@ -209,8 +209,8 @@
       "gate": "info"
     },
     "doc_migrations_before_deploy": {
-      "status": "fail",
-      "rank": 4,
+      "status": "pass",
+      "rank": 2,
       "gate": "info"
     },
     "src_over_test_exchange_code": {
@@ -220,12 +220,12 @@
     },
     "files_invoice": {
       "status": "pass",
-      "rank": 1,
+      "rank": 2,
       "gate": "must_pass"
     },
     "files_limiter": {
       "status": "pass",
-      "rank": 1,
+      "rank": 2,
       "gate": "must_pass"
     },
     "files_useauth": {
@@ -239,9 +239,9 @@
       "gate": "must_pass"
     },
     "files_customers_csv_masked": {
-      "status": "pass",
-      "rank": 3,
-      "gate": "must_pass"
+      "status": "fail",
+      "rank": 4,
+      "gate": "xfail"
     },
     "files_glob_yml": {
       "status": "pass",

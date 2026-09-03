@@ -24,6 +24,16 @@ The response is parsed back into ordered hits and graded:
 index; on a real project the two sets differ (427 vs 513 on this repo when
 the harness was written).
 
+Ranks must repeat exactly between runs and machines, or floors mean nothing.
+Two tie-breakers used to be environmental: the recency factor (mtimes after a
+checkout differ by microseconds, enough to order an exact tie) and the
+co-occurrence synonym map (built from a bare `set`, so its ties followed the
+per-process hash seed; the first CI run of the suite read recall@1 0.708 on
+one cell and 0.771 on the other eight). The harness pins every fixture mtime
+and the indexer now sorts tokens before counting co-occurrence;
+`test_ranking_is_deterministic_across_hash_seeds` re-runs the suite in a
+subprocess with a forced `PYTHONHASHSEED` and requires identical ranks.
+
 ## Two suites
 
 **Fixture** (`tests/search_eval/fixture_suite.jsonl`) — a synthetic repo,
@@ -105,5 +115,7 @@ the new id.
   happen to be path terms; globs are not interpreted.
 - `digits_v2_migration`, `digits_s256_challenge_method`: the tokenizer drops
   digits, so `v2` and `S256` vanish (P2).
+- `files_customers_csv_masked`: the masked CSV ranks fourth for its own
+  filename; co-occurrence synonyms lift a CHANGELOG heading above it (P2).
 - `filter_tests_only`: no `kind`/`path`/`lang` filters (P2).
 - Semantic cases run only where Ollama and chromadb are present.
