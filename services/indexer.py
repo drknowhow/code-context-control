@@ -6,15 +6,20 @@ Retrieves only the most relevant code snippets for a given query, dramatically r
 the amount of code Claude needs to read.
 """
 import json
+import logging
 import math
 import os
 import re
+import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
 from core import count_tokens
-from services.lexical_index import Filters, LexicalIndex, doc_kind, intent_prior, tokenize_code
+from services.index_store import IndexStore, content_hash
+from services.lexical_index import Filters, doc_kind, intent_prior, tokenize_code
 from services.scanner import SKIP_DIRS, iter_files
+
+log = logging.getLogger("c3.indexer")
 
 
 def _masked_content(fpath, project_path):
@@ -90,12 +95,6 @@ DEFAULT_CODE_EXTS = frozenset({
     '.makefile', '.cmake',
 })
 
-# index.json layout/tokenizer version. A loaded index from an older schema is
-# rebuilt on the spot: its chunk_tfidf was computed with the old tokenizer
-# (digits dropped), so new-tokenizer queries would silently miss, and the
-# FTS5 side table would not exist at all.
-INDEX_SCHEMA = 2
-
 # A chunk larger than the caller's token budget used to be skipped outright,
 # so a class with many methods could never be returned for its own name (231
 # such chunks on this repo at the default budget). Now a window of at most
@@ -144,7 +143,11 @@ class CodeIndex:
             for k, vals in (cfg.get("search_synonyms") or {}).items()
             if isinstance(vals, (list, tuple))
         }
-        self._lexical = LexicalIndex(self.index_dir)
+        # Persistence: services/index_store (SQLite; FTS5 table when available).
+        # index.json is gone since 2.107.0 — a legacy one is rebuilt into the
+        # store on first load.
+        self._store = IndexStore(self.index_dir)
+        self._hashes: dict = {}   # doc_id -> content hash; drives refresh()
         self._lexical_ok = False
 
         # Config - shared pruned-walk skip set (services/scanner.py)
@@ -177,7 +180,18 @@ class CodeIndex:
         return "fts5" if self._lexical_ok else "tfidf"
 
     def _lexical_wanted(self) -> bool:
-        return self._engine_pref != "tfidf" and self._lexical.available
+        return self._engine_pref != "tfidf" and self._store.fts
+
+    def index_exists(self) -> bool:
+        """A usable store, or a legacy index.json that a load would migrate."""
+        return self._store.exists() or (self.index_dir / "index.json").exists()
+
+    def needs_migration(self) -> bool:
+        """True when only a pre-2.107.0 layout is on disk: loading it triggers
+        a full rebuild, which callers on a latency-sensitive path (the MCP
+        handshake) should move to a background thread."""
+        return (not self._store.exists()) and (
+            (self.index_dir / "index.json").exists() or (self.index_dir / "lexical.sqlite").exists())
 
     def _configured_max_files(self) -> int:
         """``index_max_files`` from .c3/config.json; default 2000."""
@@ -205,7 +219,10 @@ class CodeIndex:
         self.documents = {}
         self.chunks = {}
         self.symbols = {}
+        self._hashes = {}
+        self._file_mtimes = {}
         self._search_cache: OrderedDict = OrderedDict()
+        self._expand_cache = {}
 
         files_indexed = 0
         chunks_created = 0
@@ -263,62 +280,15 @@ class CodeIndex:
                 continue
 
             rel_path = str(fpath.relative_to(self.project_path))
-            doc_id = rel_path
-
-            # Create document entry
-            self.documents[doc_id] = {
-                "path": rel_path,
-                "full_path": str(fpath),
-                "lines": len(content.splitlines()),
-                "tokens": count_tokens(content),
-            }
-
-            # Chunk the file
-            file_chunks = self._chunk_file(content, fpath.suffix.lower(), doc_id)
-            for chunk in file_chunks:
-                self.chunks[chunk["id"]] = chunk
-                chunks_created += 1
-
-                # Index symbols
-                if chunk.get("name"):
-                    sym = chunk["name"].lower()
-                    if sym not in self.symbols:
-                        self.symbols[sym] = []
-                    self.symbols[sym].append(chunk["id"])
-
-            # Track file modification time for recency bias
-            try:
-                self._file_mtimes[doc_id] = os.path.getmtime(str(fpath))
-            except Exception:
-                pass
-
+            self._ingest_file(rel_path, fpath, content)
+            chunks_created = len(self.chunks)
             files_indexed += 1
             _report()
 
-        # Build TF-IDF; co-occurrence synonyms only when asked for.
-        self._build_tfidf()
-        if self._cooccurrence_wanted():
-            self._build_cooccurrence()
-        else:
-            self._cooccurrence = {}
-            self._cooccurrence_stats = {"disabled": True, "chunks_skipped": 0,
-                                        "pair_updates": 0, "budget_exhausted": False}
-        self._rebuild_symbol_tail()
-
-        # Lexical (FTS5) index — the query engine when available.
-        lexical_rows = 0
-        self._lexical_ok = False
-        if self._lexical_wanted():
-            try:
-                lexical_rows = self._lexical.rebuild(self.chunks, self.documents)
-                self._lexical_ok = lexical_rows > 0
-            except Exception as exc:  # pragma: no cover - environment dependent
-                import logging
-                logging.getLogger("c3.indexer").warning(
-                    "FTS5 index build failed (%s); searches use the TF-IDF fallback", exc)
-
-        # Save index
-        self._save_index()
+        self._finish_build()
+        rows = self._save_index()
+        self._lexical_ok = self._lexical_wanted() and rows > 0
+        legacy_removed = self._store.remove_legacy_files()
 
         return {
             "files_indexed": files_indexed,
@@ -329,8 +299,204 @@ class CodeIndex:
             "files_capped": files_capped,
             "max_files": max_files,
             "cooccurrence": getattr(self, "_cooccurrence_stats", {}),
-            "lexical": {"engine": self.lexical_engine, "rows": lexical_rows},
+            "lexical": {"engine": self.lexical_engine, "rows": rows},
+            "store": str(self._store.path),
+            "legacy_removed": legacy_removed,
+            "mode": "full",
         }
+
+    # ── Shared build steps ─────────────────────────────────────────────────
+
+    def _ingest_file(self, doc_id: str, fpath: Path, content: str) -> list:
+        """Register one file: document entry, chunks, hash, mtime. Returns its chunks."""
+        self.documents[doc_id] = {
+            "path": doc_id,
+            "full_path": str(fpath),
+            "lines": len(content.splitlines()),
+            "tokens": count_tokens(content),
+        }
+        self._hashes[doc_id] = content_hash(content)
+        file_chunks = self._chunk_file(content, fpath.suffix.lower(), doc_id)
+        for chunk in file_chunks:
+            self.chunks[chunk["id"]] = chunk
+        try:
+            self._file_mtimes[doc_id] = os.path.getmtime(str(fpath))
+        except Exception:
+            pass
+        return file_chunks
+
+    def _rebuild_symbols(self) -> None:
+        """``symbols`` (lowercased name -> chunk ids) is derived from chunks,
+        never persisted."""
+        symbols: dict = {}
+        for chunk_id, chunk in self.chunks.items():
+            name = chunk.get("name")
+            if name:
+                symbols.setdefault(name.lower(), []).append(chunk_id)
+        self.symbols = symbols
+        self._rebuild_symbol_tail()
+
+    def _finish_build(self) -> None:
+        """Derived structures after chunks changed: symbols, co-occurrence,
+        and — only when FTS5 will not answer — the TF-IDF vectors."""
+        self._rebuild_symbols()
+        # TF-IDF is the fallback engine. It re-tokenizes every chunk, so it is
+        # built eagerly only when FTS5 is unavailable; otherwise on demand.
+        self.chunk_tfidf, self.idf = {}, {}
+        if not self._lexical_wanted():
+            self._build_tfidf()
+        if self._cooccurrence_wanted():
+            self._build_cooccurrence()
+        else:
+            self._cooccurrence = {}
+            self._cooccurrence_stats = {"disabled": True, "chunks_skipped": 0,
+                                        "pair_updates": 0, "budget_exhausted": False}
+        self._search_cache = OrderedDict()
+        self._expand_cache = {}
+
+    def _ensure_tfidf(self) -> None:
+        if not self.chunk_tfidf and self.chunks:
+            self._build_tfidf()
+
+    def _read_indexable(self, fpath: Path, mask_active: bool):
+        try:
+            if mask_active:
+                return _masked_content(fpath, self.project_path)
+            return fpath.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            return None
+
+    def _exclude_parts_fn(self):
+        if self.exclude_prefixes and self._is_excluded is not None:
+            def exclude_parts(parts, _c=self._is_excluded, _p=self.exclude_prefixes):
+                return _c(parts, _p)
+            return exclude_parts
+        return None
+
+    def refresh(self, paths=None, on_progress=None) -> dict:
+        """Incremental update: re-chunk only files whose content hash changed.
+
+        ``paths``: absolute or project-relative paths the caller knows changed
+        (the watcher's list); a path that no longer exists drops its document.
+        ``None`` walks the whole manifest and compares every file's hash —
+        reading and hashing, not chunking and tokenizing, so it stays cheap.
+        Falls back to :meth:`build_index` when no store exists yet, when only a
+        legacy layout is on disk, or when the incremental write fails.
+        """
+        t0 = time.perf_counter()
+        if not self.chunks and not self._load_index():
+            result = self.build_index(on_progress=on_progress)
+            return result
+        if not self._store.exists():
+            return self.build_index(on_progress=on_progress)
+
+        exclude_parts = self._exclude_parts_fn()
+        try:
+            from services import access_guard as _ag
+            mask_active = _ag.has_mask_rules(str(self.project_path))
+        except Exception:
+            mask_active = False
+
+        candidates: list = []
+        removed: list = []
+        if paths is None:
+            max_files = self._configured_max_files()
+            seen = 0
+            for fpath in iter_files(self.project_path, exts=self.code_exts,
+                                    skip_dirs=self.skip_dirs, exclude_parts=exclude_parts):
+                if seen >= max_files:
+                    break
+                seen += 1
+                candidates.append(fpath)
+            current = {str(p.relative_to(self.project_path)) for p in candidates}
+            removed = [d for d in self.documents if d not in current]
+        else:
+            root = self.project_path.resolve()
+            for raw in paths:
+                fp = Path(raw)
+                if not fp.is_absolute():
+                    fp = self.project_path / fp
+                try:
+                    rel = str(fp.resolve().relative_to(root))
+                except (ValueError, OSError):
+                    continue
+                fp = self.project_path / rel
+                if fp.is_file() and fp.suffix.lower() in self.code_exts:
+                    parts = Path(rel).parts
+                    if any(part in self.skip_dirs for part in parts[:-1]):
+                        continue
+                    if exclude_parts is not None and exclude_parts(parts):
+                        continue
+                    candidates.append(fp)
+                elif rel in self.documents:
+                    removed.append(rel)
+
+        by_doc: dict = {}
+        for cid, chunk in self.chunks.items():
+            by_doc.setdefault(chunk.get("doc_id"), []).append(cid)
+
+        upserts: dict = {}
+        changed = added = unchanged = skipped = 0
+        for fpath in candidates:
+            rel = str(fpath.relative_to(self.project_path))
+            content = self._read_indexable(fpath, mask_active)
+            if content is None:
+                skipped += 1
+                continue
+            digest = content_hash(content)
+            if rel in self.documents and self._hashes.get(rel) == digest:
+                unchanged += 1
+                continue
+            existed = rel in self.documents
+            for cid in by_doc.pop(rel, []):
+                self.chunks.pop(cid, None)
+            file_chunks = self._ingest_file(rel, fpath, content)
+            upserts[rel] = (self.documents[rel], [(c["id"], c) for c in file_chunks])
+            if existed:
+                changed += 1
+            else:
+                added += 1
+            if on_progress is not None:
+                try:
+                    on_progress(len(candidates), changed + added, len(self.chunks))
+                except Exception:
+                    pass
+        for rel in removed:
+            for cid in by_doc.pop(rel, []):
+                self.chunks.pop(cid, None)
+            self.documents.pop(rel, None)
+            self._hashes.pop(rel, None)
+            self._file_mtimes.pop(rel, None)
+
+        rows = 0
+        if upserts or removed:
+            self._finish_build()
+            try:
+                rows = self._store.apply(upserts, removed, self._file_mtimes, self._hashes,
+                                         meta=self._store_meta())
+            except Exception as exc:
+                log.warning("incremental index write failed (%s); rebuilding", exc)
+                return self.build_index(on_progress=on_progress)
+            self._lexical_ok = self._lexical_wanted() and bool(self.chunks)
+
+        return {
+            "mode": "incremental",
+            "files_checked": len(candidates),
+            "files_changed": changed,
+            "files_added": added,
+            "files_removed": len(removed),
+            "files_unchanged": unchanged,
+            "files_skipped": skipped,
+            "chunks_written": rows,
+            "chunks_total": len(self.chunks),
+            "files_indexed": len(self.documents),
+            "seconds": round(time.perf_counter() - t0, 3),
+            "lexical": {"engine": self.lexical_engine},
+        }
+
+    def _store_meta(self) -> dict:
+        return {"cooccurrence": getattr(self, "_cooccurrence_stats", {}),
+                "cooccurrence_map": self._cooccurrence}
 
     def _chunk_file(self, content: str, ext: str, doc_id: str) -> list:
         """Split a file into meaningful chunks (functions, classes, blocks)."""
@@ -882,8 +1048,8 @@ class CodeIndex:
         if filters.paths:
             allowed_docs = [d for d in self.documents if filters.path_ok(d)]
         try:
-            candidates = self._lexical.search(query_tokens, limit=max(40, want * 8),
-                                              filters=filters, allowed_docs=allowed_docs)
+            candidates = self._store.search(query_tokens, limit=max(40, want * 8),
+                                            filters=filters, allowed_docs=allowed_docs)
         except Exception:
             return None
         if not candidates and not exact_ids:
@@ -909,6 +1075,7 @@ class CodeIndex:
     def _rank_tfidf(self, query: str, query_tokens: list, query_bigrams: list,
                     filters: Filters, exact_ids: set, max_mtime: float):
         """The pre-FTS5 scorer: a linear scan over every chunk."""
+        self._ensure_tfidf()
         scores = {}
         for chunk_id in self.chunk_tfidf:
             chunk = self.chunks.get(chunk_id)
@@ -1040,64 +1207,41 @@ class CodeIndex:
         header = f"# Relevant Code Context ({total_tokens} tokens, {len(results)} chunks)\n"
         return header + '\n\n'.join(sections)
 
-    def _save_index(self):
-        """Save index to disk."""
-        # Strip in-memory caches (fields prefixed with _) before persisting —
-        # they're regenerated on demand and would bloat index.json.
-        data = {
-            "index_schema": INDEX_SCHEMA,
-            "documents": self.documents,
-            "chunks": {
-                k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
-                for k, v in self.chunks.items()
-            },
-            "symbols": self.symbols,
-            "idf": self.idf,
-            "chunk_tfidf": self.chunk_tfidf,
-            # Persisted since 2.105.0: without it the recency factor was
-            # silently zero after every server restart.
-            "file_mtimes": self._file_mtimes,
-        }
-        index_file = self.index_dir / "index.json"
-        with open(index_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+    def _save_index(self) -> int:
+        """Write the whole in-memory index to the SQLite store (atomic swap).
+        Returns chunk rows written."""
+        return self._store.write_all(self.documents, self.chunks, self._file_mtimes,
+                                     self._hashes, meta=self._store_meta())
 
     def _load_index(self) -> bool:
-        """Load index from disk."""
-        index_file = self.index_dir / "index.json"
-        if not index_file.exists():
-            return False
+        """Load the index from the SQLite store.
 
-        try:
-            with open(index_file, encoding='utf-8') as f:
-                data = json.load(f)
-            if int(data.get("index_schema") or 1) != INDEX_SCHEMA:
-                # Older layout: rebuild rather than serve a tokenizer mismatch.
-                import logging
-                logging.getLogger("c3.indexer").info(
-                    "index.json schema %s != %s; rebuilding the code index",
-                    data.get("index_schema") or 1, INDEX_SCHEMA)
+        A pre-2.107.0 layout (index.json, or the 2.106.0 lexical.sqlite side
+        table) has no store to load: it is rebuilt, and the legacy files are
+        removed once the store is written.
+        """
+        data = self._store.load()
+        if data is None:
+            if self.needs_migration():
+                log.info("legacy index layout in %s; rebuilding into %s",
+                         self.index_dir, self._store.path.name)
                 self.build_index()
                 return bool(self.chunks)
-            self.documents = data["documents"]
-            self.chunks = data["chunks"]
-            self.symbols = data.get("symbols", {})
-            self.idf = data.get("idf", {})
-            self.chunk_tfidf = data.get("chunk_tfidf", {})
-            self._file_mtimes = data.get("file_mtimes", {}) or {}
-            self._rebuild_symbol_tail()
-            self._lexical_ok = self._lexical_wanted() and self._lexical.ready()
-            mutated = False
-            for chunk in self.chunks.values():
-                if "tokens" not in chunk:
-                    chunk["tokens"] = count_tokens(chunk.get("content", ""))
-                    mutated = True
-            self._search_cache = OrderedDict()
-            if mutated:
-                self._save_index()
-            return True
-        except Exception:
             return False
+        self.documents = data["documents"]
+        self.chunks = data["chunks"]
+        self._file_mtimes = data["mtimes"]
+        self._hashes = data["hashes"]
+        meta = data.get("meta") or {}
+        self._cooccurrence = meta.get("cooccurrence_map") or {}
+        self._cooccurrence_stats = meta.get("cooccurrence") or {}
+        self._rebuild_symbols()
+        # TF-IDF vectors are not persisted: built on demand by the fallback path.
+        self.chunk_tfidf, self.idf = {}, {}
+        self._lexical_ok = self._lexical_wanted() and data.get("fts_rows", 0) > 0
+        self._search_cache = OrderedDict()
+        self._expand_cache = {}
+        return True
 
     def get_stats(self) -> dict:
         """Get index statistics."""
@@ -1111,7 +1255,5 @@ class CodeIndex:
             "total_tokens_in_codebase": total_tokens,
             "unique_symbols": len(self.symbols),
             "lexical_engine": self.lexical_engine,
-            "index_size_kb": round(
-                (self.index_dir / "index.json").stat().st_size / 1024, 1
-            ) if (self.index_dir / "index.json").exists() else 0
+            "index_size_kb": round(self._store.size_bytes() / 1024, 1),
         }

@@ -881,8 +881,19 @@ def _project_summary(path: Path) -> dict:
         "notification_count": _notification_count(path),
         "sessions": sessions,
         "edit_ledger_entries": _count_lines(c3 / "edit_ledger.jsonl"),
-        "has_index": (c3 / "index" / "index.json").exists(),
+        "has_index": _has_index(c3 / "index"),
     }
+
+
+def _has_index(index_dir: Path) -> bool:
+    """The SQLite store (2.107.0+) or a legacy index.json still to be migrated."""
+    try:
+        from services.index_store import IndexStore
+        if IndexStore(index_dir).exists():
+            return True
+    except Exception:
+        pass
+    return (index_dir / "index.json").exists()
 
 
 def _detect_nested(path: Path, linked: set) -> list:

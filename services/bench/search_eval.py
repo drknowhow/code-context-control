@@ -185,6 +185,7 @@ class IndexStats:
     tracked_files: int = 0
     file_memory_coverage: float | None = None
     index_bytes: int = 0
+    lexical_engine: str = ""  # fts5 | tfidf
     semantic: str = "off"  # off | ready | unavailable:<reason>
 
 
@@ -243,8 +244,7 @@ def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
     stats = IndexStats()
 
     indexer = CodeIndex(project)
-    index_file = indexer.index_dir / "index.json"
-    if rebuild or not index_file.exists():
+    if rebuild or not indexer.index_exists():
         t0 = time.perf_counter()
         indexer.build_index()
         stats.build_seconds = round(time.perf_counter() - t0, 3)
@@ -254,8 +254,8 @@ def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
     stats.chunks = len(indexer.chunks)
     stats.oversize_chunks = sum(
         1 for c in indexer.chunks.values() if int(c.get("tokens") or 0) > max_tokens)
-    if index_file.exists():
-        stats.index_bytes = index_file.stat().st_size
+    stats.index_bytes = indexer._store.size_bytes()
+    stats.lexical_engine = indexer.lexical_engine
 
     file_memory = FileMemoryStore(project)
     if populate_file_memory:
@@ -526,7 +526,7 @@ class EvalReport:
         lines.append(
             f"index: files={s.files_indexed} chunks={s.chunks} oversize(>{DEFAULT_MAX_TOKENS}tok)="
             f"{s.oversize_chunks} build={s.build_seconds}s file_memory_coverage={s.file_memory_coverage} "
-            f"semantic={s.semantic}")
+            f"engine={s.lexical_engine} semantic={s.semantic}")
         lines.append("")
         lines.append(f"{'id':<28} {'action':<8} {'gate':<9} {'status':<5} {'rank':>4} {'ms':>7}  note")
         for r in self.results:
