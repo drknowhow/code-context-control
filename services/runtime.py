@@ -218,6 +218,18 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
         except Exception:
             pass
 
+    # Optional reranker (2.109.0): opt-in via `search_rerank: "auto"`; the
+    # model loads on the first natural-language query, not here.
+    if str(hybrid_config.get("search_rerank") or "off").lower() != "off":
+        try:
+            from services.reranker import FlashRankReranker
+            indexer.reranker = FlashRankReranker(
+                model_name=hybrid_config.get("search_rerank_model") or None,
+                cache_dir=hybrid_config.get("search_rerank_cache_dir") or None,
+            )
+        except Exception:
+            pass
+
     # Doc index for Local RAG Pipeline
     doc_index = None
     rag_config = hybrid_config.get("rag", {})

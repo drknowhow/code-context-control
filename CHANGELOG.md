@@ -4,6 +4,50 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.109.0] - 2026-09-03
+
+Phase P4 of the search plan: the optional reranker, measured and left off.
+The plan's condition was that a cross-encoder "becomes default only on a
+held-out relevance gain with acceptable cold start, download size and p95".
+It was measured on both suites with fusion on, and it lost on every
+aggregate. What ships is the contract, the adapter, the measurement flag,
+and the numbers, so the next candidate can be judged the same way.
+
+### Added — a reranker contract, a FlashRank adapter, and `search_rerank` (opt-in)
+
+`services/reranker.py`: `Reranker` (`ready`, `rerank(query, [(id, text)]) ->
+[(id, score)]`), a natural-language gate (three or more words, at least two
+plain — `compute_total`, `OAuth2Client` and `sha256 digest` are lookups and
+are never reranked), and `FlashRankReranker` over ONNX cross-encoders of
+4-22 MB downloaded once into `~/.c3/models/flashrank` (`pip install
+"code-context-control[rerank]"`). The model loads on the first query, not at
+startup. With `search_rerank: "auto"` in the hybrid config, `code` queries
+that pass the gate have their top 16 fused candidates reordered by the
+model; exact-symbol matches keep their place ahead of the block; a failure
+or empty answer leaves the fused order. `search_rerank_model`,
+`search_rerank_top_n` and `search_rerank_cache_dir` tune it. `c3 search-eval
+--rerank on` attaches the adapter regardless of config; the report line
+says `rerank=flashrank`.
+
+### Measured — and it stays off
+
+On this repository's golden suite with fusion on (26 cases, FTS5 + v2
+embeddings): recall@1 0.800 / recall@3 0.967 / MRR 0.878 without a
+reranker; 0.733 / 0.933 / 0.835 with ms-marco-TinyBERT-L-2 (p95 443 ms);
+0.733 / 0.967 / 0.844 with ms-marco-MiniLM-L-12 (p95 1116 ms). On the
+fixture: 0.933 / 1.0 / 0.961 without; 0.900 / 0.983 / 0.943 and 0.900 / 1.0
+/ 0.947 with. These MS MARCO models are trained on web passages and
+mis-rank code: for "how are session cookies expired after inactivity" they
+can prefer a rate limiter's `Allow` over `SessionStore.expire`. The default
+is `off`; the docs carry the table so a code-trained cross-encoder or an
+LLM judge can be measured against the same baseline.
+
+`tests/test_search_p4.py` pins the gate, reordering through the contract,
+the exact-symbol override, the bypass for identifier queries, failure and
+empty answers, off-by-default, the harness flag, and the adapter's laziness
+and unavailability paths; one real-model test runs where FlashRank is
+installed.
+
 ## [2.108.0] - 2026-09-03
 
 Phase P3 of the search plan: hybrid retrieval. Since 2.106.0 `code` queries

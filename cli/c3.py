@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.108.0"
+__version__ = "2.109.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -1511,7 +1511,8 @@ def cmd_search_eval(args):
 
     try:
         report = se.run_suite(args.suite, repo=args.repo, rebuild=args.rebuild,
-                              semantic=args.semantic, baseline=args.baseline)
+                              semantic=args.semantic, baseline=args.baseline,
+                              rerank=getattr(args, "rerank", "off"))
     except FileNotFoundError as e:
         raise RuntimeError(str(e))
 

@@ -1,18 +1,19 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T16:34:24",
-  "c3_version": "2.108.0",
+  "generated_at": "2026-09-03T17:01:03",
+  "c3_version": "2.109.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
-    "build_seconds": 0.216,
-    "file_memory_seconds": 0.026,
+    "build_seconds": 0.26,
+    "file_memory_seconds": 0.028,
     "tracked_files": 39,
     "file_memory_coverage": 1.0,
     "index_bytes": 311296,
     "lexical_engine": "fts5",
     "fusion": "off",
+    "rerank": "off",
     "semantic": "off"
   },
   "aggregates": {
@@ -26,8 +27,8 @@
     "mrr": 0.9702,
     "symbol_recall_at_3": 1.0,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 11.9,
-    "latency_p95_ms": 61.2,
+    "latency_p50_ms": 15.8,
+    "latency_p95_ms": 68.9,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []

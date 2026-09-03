@@ -187,6 +187,7 @@ class IndexStats:
     index_bytes: int = 0
     lexical_engine: str = ""  # fts5 | tfidf
     fusion: str = "off"  # rrf | off — whether code queries fuse the dense backend
+    rerank: str = "off"  # reranker name | off
     semantic: str = "off"  # off | ready | unavailable:<reason>
 
 
@@ -231,7 +232,7 @@ def prepare_fixture(fixture_src: str | Path, work_dir: str | Path,
 
 def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
                        semantic: str = "off", populate_file_memory: bool = True,
-                       max_tokens: int = DEFAULT_MAX_TOKENS) -> EvalRuntime:
+                       max_tokens: int = DEFAULT_MAX_TOKENS, rerank: str = "off") -> EvalRuntime:
     """Build the minimal ``svc`` ``handle_search`` needs, plus index stats.
 
     ``semantic``: ``off`` never touches Ollama/chromadb; ``auto`` uses the
@@ -282,6 +283,16 @@ def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
     if embedding_index is not None:
         indexer.dense = embedding_index
     stats.fusion = indexer.fusion
+    # `rerank="on"` attaches the FlashRank adapter regardless of the project's
+    # config so the two configurations can be measured side by side.
+    if rerank == "on":
+        try:
+            from services.reranker import FlashRankReranker
+            indexer.reranker = FlashRankReranker()
+            indexer._rerank_pref = "auto"
+        except Exception:
+            pass
+    stats.rerank = indexer.rerank
 
     svc = types.SimpleNamespace(
         project_path=project,
@@ -533,7 +544,7 @@ class EvalReport:
         lines.append(
             f"index: files={s.files_indexed} chunks={s.chunks} oversize(>{DEFAULT_MAX_TOKENS}tok)="
             f"{s.oversize_chunks} build={s.build_seconds}s file_memory_coverage={s.file_memory_coverage} "
-            f"engine={s.lexical_engine} fusion={s.fusion} semantic={s.semantic}")
+            f"engine={s.lexical_engine} fusion={s.fusion} rerank={s.rerank} semantic={s.semantic}")
         lines.append("")
         lines.append(f"{'id':<28} {'action':<8} {'gate':<9} {'status':<5} {'rank':>4} {'ms':>7}  note")
         for r in self.results:
@@ -575,7 +586,8 @@ class EvalReport:
 
 def run_suite(suite: str | Path = "fixture", *, repo: str | Path | None = None,
               work_dir: str | Path | None = None, rebuild: bool | None = None,
-              semantic: str = "off", baseline: str | Path | None = None) -> EvalReport:
+              semantic: str = "off", baseline: str | Path | None = None,
+              rerank: str = "off") -> EvalReport:
     """Load a suite, build its runtime, run every case, compare to a baseline.
 
     For a fixture suite the repo is copied into ``work_dir`` (a temp dir when
@@ -606,10 +618,10 @@ def run_suite(suite: str | Path = "fixture", *, repo: str | Path | None = None,
             work_dir = tmp
         project = prepare_fixture(project, work_dir, header.get("c3_config"))
         rt = build_eval_runtime(project, rebuild=True, semantic=semantic,
-                                populate_file_memory=True)
+                                populate_file_memory=True, rerank=rerank)
     else:
         rt = build_eval_runtime(project, rebuild=bool(rebuild), semantic=semantic,
-                                populate_file_memory=False)
+                                populate_file_memory=False, rerank=rerank)
 
     results = [run_case(c, rt) for c in cases]
     try:

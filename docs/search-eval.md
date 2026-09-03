@@ -156,6 +156,32 @@ nomic-embed-text is embedded with its task prefixes (`search_document:` /
 the v1 collection is dropped best-effort on first init and its vectors
 rebuild lazily.
 
+### Reranker (2.109.0): measured, and off by default
+
+`services/reranker.py` defines a reranker contract (`ready`,
+`rerank(query, [(id, text)]) -> [(id, score)]`) and a FlashRank adapter
+(ONNX cross-encoders, 4-22 MB, downloaded once into
+`~/.c3/models/flashrank`; the `rerank` extra installs the package). With
+`search_rerank: "auto"` the top 16 fused candidates of a natural-language
+query (three or more words, at least two plain) are reordered by the model;
+identifier queries are never reranked and exact-symbol matches keep their
+place ahead of the block. `c3 search-eval --rerank on` attaches it
+regardless of config so the two can be compared.
+
+Compared, on 2026-09-03, with fusion on:
+
+| Suite | No reranker | ms-marco-TinyBERT-L-2 | ms-marco-MiniLM-L-12 |
+|---|---|---|---|
+| Golden (C3, 26 cases): recall@1 / recall@3 / MRR | 0.800 / 0.967 / 0.878 | 0.733 / 0.933 / 0.835 | 0.733 / 0.967 / 0.844 |
+| Golden p95 latency | 420 ms | 443 ms | 1116 ms |
+| Fixture: recall@1 / recall@3 / MRR | 0.933 / 1.0 / 0.961 | 0.900 / 0.983 / 0.943 | 0.900 / 1.0 / 0.947 |
+
+Both models make every aggregate worse. They are trained on web passages
+and mis-rank code chunks — a limiter's `Allow` over a session store for a
+question about expiring sessions is the shape of the errors. The reranker
+therefore stays off; the contract and the flag exist so a code-trained
+cross-encoder, or an LLM judge, can be measured the same way later.
+
 ## Known gaps this suite documents (2.106.0)
 
 - Semantic cases run only where Ollama and chromadb are present.
