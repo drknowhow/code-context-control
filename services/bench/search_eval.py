@@ -186,6 +186,7 @@ class IndexStats:
     file_memory_coverage: float | None = None
     index_bytes: int = 0
     lexical_engine: str = ""  # fts5 | tfidf
+    fusion: str = "off"  # rrf | off — whether code queries fuse the dense backend
     semantic: str = "off"  # off | ready | unavailable:<reason>
 
 
@@ -276,6 +277,11 @@ def build_eval_runtime(project_path: str | Path, *, rebuild: bool = True,
         embedding_index, stats.semantic = _embedding_index(project, indexer, build=(semantic == "on"))
     else:
         stats.semantic = "off"
+    # The runtime attaches the embedding index as the dense backend of the
+    # code index (hybrid fusion, P3); the harness must measure the same wiring.
+    if embedding_index is not None:
+        indexer.dense = embedding_index
+    stats.fusion = indexer.fusion
 
     svc = types.SimpleNamespace(
         project_path=project,
@@ -297,7 +303,8 @@ def _embedding_index(project: str, indexer, *, build: bool):
 
         cfg = load_hybrid_config(project) or {}
         client = OllamaClient(cfg.get("ollama_base_url", "http://localhost:11434"))
-        ei = EmbeddingIndex(project, client, embed_model=cfg.get("embed_model", "nomic-embed-text"))
+        ei = EmbeddingIndex(project, client, embed_model=cfg.get("embed_model", "nomic-embed-text"),
+                            min_score=cfg.get("search_dense_min_score"))
         probe = ei.probe()
         if not probe.get("ready"):
             return None, f"unavailable:{ei.unavailable_reason() or 'backends not ready'}"
@@ -526,7 +533,7 @@ class EvalReport:
         lines.append(
             f"index: files={s.files_indexed} chunks={s.chunks} oversize(>{DEFAULT_MAX_TOKENS}tok)="
             f"{s.oversize_chunks} build={s.build_seconds}s file_memory_coverage={s.file_memory_coverage} "
-            f"engine={s.lexical_engine} semantic={s.semantic}")
+            f"engine={s.lexical_engine} fusion={s.fusion} semantic={s.semantic}")
         lines.append("")
         lines.append(f"{'id':<28} {'action':<8} {'gate':<9} {'status':<5} {'rank':>4} {'ms':>7}  note")
         for r in self.results:

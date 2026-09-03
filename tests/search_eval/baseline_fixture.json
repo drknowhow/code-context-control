@@ -1,31 +1,33 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T15:15:15",
-  "c3_version": "2.106.0",
+  "generated_at": "2026-09-03T16:34:24",
+  "c3_version": "2.108.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
-    "build_seconds": 0.226,
-    "file_memory_seconds": 0.025,
+    "build_seconds": 0.216,
+    "file_memory_seconds": 0.026,
     "tracked_files": 39,
     "file_memory_coverage": 1.0,
-    "index_bytes": 317185,
+    "index_bytes": 311296,
+    "lexical_engine": "fts5",
+    "fusion": "off",
     "semantic": "off"
   },
   "aggregates": {
-    "n_cases": 63,
-    "n_executed": 59,
-    "n_scored": 54,
+    "n_cases": 65,
+    "n_executed": 61,
+    "n_scored": 56,
     "n_skipped": 4,
-    "recall_at_1": 0.9444,
+    "recall_at_1": 0.9464,
     "recall_at_3": 1.0,
     "recall_at_10": 1.0,
-    "mrr": 0.9691,
+    "mrr": 0.9702,
     "symbol_recall_at_3": 1.0,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 11.3,
-    "latency_p95_ms": 52.4,
+    "latency_p50_ms": 11.9,
+    "latency_p95_ms": 61.2,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []
@@ -41,6 +43,10 @@
     },
     "files": {
       "n": 9,
+      "recall_at_3": 1.0
+    },
+    "lexical": {
+      "n": 2,
       "recall_at_3": 1.0
     }
   },
@@ -192,6 +198,16 @@
       "status": "pass",
       "rank": 1,
       "gate": "info"
+    },
+    "lexical_compute_total": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "lexical_token_bucket": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     },
     "test_intent_exchange_code": {
       "status": "pass",

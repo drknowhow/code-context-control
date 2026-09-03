@@ -114,9 +114,10 @@ def handle_search(query: str, action: str, top_k: int, max_tokens: int,
         resp = _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
                                 filters=filters)
     else:
-        # Default: Code Search
+        # Default: Code Search — hybrid when a dense backend is attached;
+        # action='lexical' asks for the lexical ranking alone.
         resp = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
-                            filters=filters)
+                            filters=filters, fusion=(action != "lexical"))
         if prefetch:
             resp = _append_prefetch(resp, query, top_k, svc)
         resp = _cap_response(resp)
@@ -531,10 +532,10 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
 
 
 def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
-                 filters: Filters | None = None):
+                 filters: Filters | None = None, fusion: bool = True):
     results = svc.indexer.search(query, top_k=max(top_k + 1, top_k * 2),
                                  max_tokens=max_tokens, include_content=True,
-                                 **_filter_kwargs(filters))
+                                 fusion=fusion, **_filter_kwargs(filters))
     # Access Guard pre-filter BEFORE dedup/top_k (R2 deny-ENUMERATE).
     results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:

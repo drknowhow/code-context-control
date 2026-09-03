@@ -150,6 +150,18 @@ class CodeIndex:
         self._hashes: dict = {}   # doc_id -> content hash; drives refresh()
         self._lexical_ok = False
 
+        # Hybrid fusion (services/retrieval, plan P3): a dense backend — any
+        # object with `.ready` and `.candidates(query, limit)`, in practice the
+        # EmbeddingIndex the runtime attaches — is fused with the lexical
+        # ranking by Reciprocal Rank Fusion. `search_fusion: "off"` disables it;
+        # `search_rrf_k` tunes the constant (60).
+        self.dense = None
+        self._fusion_pref = str(cfg.get("search_fusion") or "auto").lower()
+        try:
+            self._rrf_k = int(cfg.get("search_rrf_k") or 60)
+        except (TypeError, ValueError):
+            self._rrf_k = 60
+
         # Config - shared pruned-walk skip set (services/scanner.py)
         self.skip_dirs = set(SKIP_DIRS)
         self.code_exts = set(DEFAULT_CODE_EXTS)
@@ -178,6 +190,59 @@ class CodeIndex:
     def lexical_engine(self) -> str:
         """``fts5`` when queries go through SQLite FTS5, else ``tfidf``."""
         return "fts5" if self._lexical_ok else "tfidf"
+
+    def _dense_ready(self) -> bool:
+        dense = self.dense
+        if dense is None or self._fusion_pref == "off":
+            return False
+        try:
+            return bool(getattr(dense, "ready", False))
+        except Exception:
+            return False
+
+    @property
+    def fusion(self) -> str:
+        """``rrf`` when a ready dense backend is fused into ``code`` queries, else ``off``."""
+        return "rrf" if self._dense_ready() else "off"
+
+    def _fuse_dense(self, query: str, lexical_ranked: list, filters: Filters,
+                    exact_ids: set, want: int) -> list:
+        """RRF of the lexical ranking with the dense backend's candidates.
+
+        Each list contributes its top ``n`` (20..50, from ``want``); dense ids
+        that no longer exist in the index (stale vectors after a refresh) or
+        fail the filters are dropped before fusion. Exact-symbol matches keep
+        their override through the rank key. Lexical candidates beyond ``n``
+        trail the fused block so budget filling can continue past it. Any
+        backend failure returns the lexical ranking unchanged.
+        """
+        from services.retrieval import rrf
+
+        n = max(20, min(50, int(want) * 8))
+        try:
+            raw = self.dense.candidates(query, limit=n * 2)
+        except Exception as exc:
+            log.debug("dense candidates failed (%s); lexical only", exc)
+            return lexical_ranked
+        dense = []
+        for cid, _score in raw or []:
+            chunk = self.chunks.get(cid)
+            if chunk is None:
+                continue
+            if not filters.chunk_ok(chunk["doc_id"], chunk.get("type") or ""):
+                continue
+            dense.append(cid)
+            if len(dense) >= n:
+                break
+        if not dense:
+            return lexical_ranked
+        lexical = [cid for cid, _ in lexical_ranked[:n]]
+        fused = rrf([lexical, dense], k=self._rrf_k)
+        for cid in exact_ids:
+            fused.setdefault(cid, 0.0)
+        ranked = sorted(fused.items(), key=self._rank_key(exact_ids), reverse=True)
+        tail = [(cid, score) for cid, score in lexical_ranked[n:] if cid not in fused]
+        return ranked + tail
 
     def _lexical_wanted(self) -> bool:
         return self._engine_pref != "tfidf" and self._store.fts
@@ -1090,14 +1155,16 @@ class CodeIndex:
         return sorted(scores.items(), key=self._rank_key(exact_ids), reverse=True)
 
     def search(self, query: str, top_k: int = 5, max_tokens: int = 4000,
-               include_content: bool = True, path=None, lang=None, kind=None) -> list:
+               include_content: bool = True, path=None, lang=None, kind=None,
+               fusion: bool = True) -> list:
         """Search the index and return most relevant chunks.
 
         Set include_content=False to get metadata only (saves ~70% tokens).
         A chunk whose symbol name equals the query ranks first; a chunk too
         large for the budget is returned as a window (``windowed: True``)
         instead of being skipped. ``path`` / ``lang`` / ``kind`` narrow the
-        candidates (services/lexical_index.Filters).
+        candidates (services/lexical_index.Filters). ``fusion=False`` returns
+        the lexical ranking alone even when a dense backend is attached.
         """
         if not self.chunks:
             self._load_index()
@@ -1105,7 +1172,8 @@ class CodeIndex:
                 return []
 
         filters = Filters(path=path, lang=lang, kind=kind)
-        cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key())
+        fuse = bool(fusion) and self._dense_ready()
+        cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key(), fuse)
         cached = self._search_cache.get(cache_key)
         if cached is not None:
             self._search_cache.move_to_end(cache_key)
@@ -1130,6 +1198,8 @@ class CodeIndex:
         if ranked is None:
             ranked = self._rank_tfidf(query, query_tokens, query_bigrams, filters,
                                       exact_ids, max_mtime)
+        if fuse:
+            ranked = self._fuse_dense(query, ranked, filters, exact_ids, want=top_k)
 
         # Collect results up to token budget
         results = []

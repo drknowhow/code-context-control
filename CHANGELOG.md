@@ -4,6 +4,71 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.108.0] - 2026-09-03
+
+Phase P3 of the search plan: hybrid retrieval. Since 2.106.0 `code` queries
+were answered by BM25 alone while the embedding index sat behind a separate
+`semantic` action nobody was told to reach for — and on this repository's
+own golden suite the two disagreed in the dense engine's favour on every
+natural-language query. They are now fused.
+
+### Added — reciprocal rank fusion of the lexical and dense rankings
+
+`services/retrieval.py` defines the backend contract (`ready`,
+`candidates(query, limit) -> [(chunk_id, score)]`) and Reciprocal Rank
+Fusion. The runtime attaches the embedding index to the code index as
+`CodeIndex.dense`; when its backends are ready, `code` queries fuse the top
+20-50 of the lexical ranking with the top 20-50 dense candidates by
+`Σ 1/(k + rank)`, `k = 60` (`search_rrf_k`). Scores from the two engines are
+never compared directly. Exact-symbol matches keep their override after
+fusion; dense ids that no longer exist after a refresh, or fail the
+`path`/`lang`/`kind` filters, are dropped first; a backend failure leaves the
+lexical ranking untouched. `action='lexical'` asks for the BM25 ranking
+alone; `search_fusion: "off"` disables fusion; `search-eval` reports
+`fusion=rrf` when it was active.
+
+On this repository's golden suite (26 cases, real queries, FTS5 + v2
+embeddings): recall@1 0.654 → 0.767, recall@3 0.846 → 0.933, MRR 0.756 →
+0.844, `code` recall@3 0.818 → 0.909. On the keyword-heavy fixture the
+figures move within a point (recall@3 1.0 either way; recall@1 0.946
+lexical-only, 0.933 fused, MRR 0.970 → 0.961); the fixture was built to
+measure lexical defects and fusion has little to add there.
+
+### Fixed — a dense index always has nearest neighbours, so fusion invented answers
+
+The first fused run turned every zero-result query into ten hits: an
+embedding index cannot say "no match", only "these are closest". The
+embedding backend now applies an admission floor on cosine similarity before
+anyone sees its candidates — `EmbeddingIndex.min_score`, `search_dense_min_score`
+in the hybrid config — in both `candidates()` (fusion) and `search()` (the
+`semantic` action). Default 0.62 for nomic-embed-text with task prefixes,
+measured on the fixture: unanswerable queries top out at 0.47-0.58, real
+answers start at 0.70. 0.55 for other models until measured. Zero-result
+accuracy is back at 1.0 with fusion on, and `semantic` now returns nothing
+rather than neighbours for a query with no valid answer.
+
+### Changed — nomic task prefixes and a v2 embedding collection
+
+nomic-embed-text is trained with task prefixes and loses retrieval quality
+without them; C3 had never sent any. Documents are embedded as
+`search_document: …` and queries as `search_query: …` (other models get no
+prefix). Because prefixed and unprefixed vectors are not comparable, the
+collection is `code_embeddings_v2` with its own `file_hashes_v2.json`, so
+existing projects re-embed lazily (174 s for this repository's 12,247
+chunks, in the background the MCP server already uses). The v1 collection
+and hash file are removed best-effort on first init — the drop runs in a
+daemon thread with a two-second bound, because this backend has hung inside
+its bindings before and a hang must be abandoned, never waited on.
+
+### Relevance suite
+
+Two `lexical`-action cases gate `must_pass`. `tests/test_search_p3.py` pins
+RRF, fusion through the contract with a fake backend (shared candidates rise,
+exact-symbol override survives, stale and filtered ids are dropped, backend
+failure is harmless, `fusion=False`, config off, `lexical` action), the task
+prefixes, the v2 collection, the admission floor and its defaults, and the
+bounded legacy drop.
+
 ## [2.107.0] - 2026-09-03
 
 Phase P2b of the search plan: the index stops being a blob. `index.json`
