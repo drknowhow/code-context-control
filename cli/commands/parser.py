@@ -34,7 +34,9 @@ def build_parser(version: str, parse_cli_ide_arg):
                            help="Only report whether a newer version exists; don't install")
 
     p_index = subparsers.add_parser("index", help="Rebuild code index")
-    p_index.add_argument("--max-files", type=int, default=500)
+    p_index.add_argument("--max-files", type=int, default=None,
+                         help="Cap files indexed this run. Unset reads "
+                              "index_max_files from .c3/config.json (2000).")
 
     p_search_eval = subparsers.add_parser(
         "search-eval", help="Run the c3_search relevance suite (docs/search-eval.md)")
