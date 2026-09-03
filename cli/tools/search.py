@@ -14,6 +14,7 @@ from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
 from services import access_guard
 from services.indexer import DEFAULT_CODE_EXTS
+from services.lexical_index import Filters
 from services.scanner import SKIP_DIRS, iter_files
 
 # Hard cap: responses above this are truncated to avoid filling context.
@@ -78,9 +79,11 @@ def _cap_response(resp: str) -> str:
 
 def handle_search(query: str, action: str, top_k: int, max_tokens: int,
                   svc, finalize, maybe_facts, prefetch: bool = False,
-                  scope: str = "", ignore_case: bool = False) -> str:
+                  scope: str = "", ignore_case: bool = False,
+                  path: str = "", lang: str = "", kind: str = "") -> str:
     top_k = max(1, min(int(top_k), 10))
     max_tokens = min(max(200, int(max_tokens)), _RESPONSE_TOKEN_CAP)
+    filters = Filters(path=path, lang=lang, kind=kind)
 
     # Sub-project fan-out: scope='all' (parent + children) or '<child name>'.
     scope = (scope or "").strip()
@@ -94,22 +97,26 @@ def handle_search(query: str, action: str, top_k: int, max_tokens: int,
         if fanout_enabled:
             from cli.tools.federate import federated_search
             return federated_search(query, action, top_k, max_tokens, svc,
-                                    finalize, maybe_facts, scope, ignore_case=ignore_case)
+                                    finalize, maybe_facts, scope, ignore_case=ignore_case,
+                                    path=path, lang=lang, kind=kind)
 
     if action == "exact":
-        resp = _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case=ignore_case)
+        resp = _exact_search(query, top_k, max_tokens, svc, finalize,
+                             ignore_case=ignore_case, filters=filters)
     elif action == "files":
-        resp = _files_search(query, top_k, svc, finalize)
+        resp = _files_search(query, top_k, svc, finalize, filters=filters)
         if prefetch:
             resp = _append_prefetch(resp, query, top_k, svc)
         resp = _cap_response(resp)
     elif action == "transcript":
         resp = _transcript_search(query, top_k, max_tokens, svc, finalize)
     elif action == "semantic":
-        resp = _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+        resp = _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
+                                filters=filters)
     else:
         # Default: Code Search
-        resp = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+        resp = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
+                            filters=filters)
         if prefetch:
             resp = _append_prefetch(resp, query, top_k, svc)
         resp = _cap_response(resp)
@@ -216,7 +223,8 @@ def _rg_candidate_files(rg: str, project: Path, pattern: str, ignore_case: bool)
 # ── exact ───────────────────────────────────────────────────────────────────
 
 
-def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = False):
+def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = False,
+                  filters: Filters | None = None):
     try:
         pat = re.compile(query, re.IGNORECASE if ignore_case else 0)
     except re.error as e:
@@ -225,6 +233,8 @@ def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = F
 
     project = Path(svc.project_path)
     manifest = _search_manifest(svc)
+    if filters:
+        manifest = [rel for rel in manifest if filters.doc_ok(rel) and filters.kind_ok(rel, "")]
     targets = manifest
     rg = _ripgrep_path(svc)
     if rg and manifest and not _guard_rules_active(svc):
@@ -384,9 +394,11 @@ def _first_file_map(rel: str, svc) -> str:
         return ""
 
 
-def _files_search(query, top_k, svc, finalize):
+def _files_search(query, top_k, svc, finalize, filters: Filters | None = None):
     docs = _indexed_documents(svc)
     ranked = _rank_filenames(query, docs) if docs else []
+    if filters:
+        ranked = [r for r in ranked if filters.doc_ok(r["file"]) and filters.kind_ok(r["file"], "")]
     # Access Guard pre-filter before any map-building (R2 deny-ENUMERATE).
     ranked = [r for r in ranked if not _read_denied(r["file"], svc)]
     if ranked:
@@ -401,7 +413,8 @@ def _files_search(query, top_k, svc, finalize):
 
     # No path names the query: fall back to content terms (path tokens are
     # part of the TF-IDF vocabulary, so `docker compose` still finds the file).
-    res = svc.indexer.search(query, top_k=top_k, include_content=False)
+    res = svc.indexer.search(query, top_k=top_k, include_content=False,
+                             **_filter_kwargs(filters))
     res = [r for r in res if not _read_denied(r.get("file", ""), svc)]
     if not res:
         return finalize("c3_search", {"action": "files"},
@@ -470,19 +483,35 @@ def _transcript_search(query, top_k, max_tokens, svc, finalize):
     return finalize("c3_search", {"action": "transcript"}, resp, f"{emitted}r")
 
 
-def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
+def _filter_kwargs(filters: Filters | None) -> dict:
+    """``path``/``lang``/``kind`` kwargs for ``CodeIndex.search`` (empty when unset)."""
+    if not filters:
+        return {}
+    return {"path": ",".join(filters.paths), "lang": ",".join(sorted(filters.langs)),
+            "kind": ",".join(sorted(filters.kinds))}
+
+
+def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
+                     filters: Filters | None = None):
     ei = getattr(svc, "embedding_index", None)
     if not ei or not ei.ready:
         # Fallback to TF-IDF code search when embeddings unavailable
-        return _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+        return _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts, filters=filters)
 
-    results = ei.search(query, top_k=top_k, max_tokens=max_tokens)
+    # Over-fetch when filtering: the embedding index knows nothing about
+    # paths or kinds, so the cut happens here.
+    fetch = top_k * 4 if filters else top_k
+    results = ei.search(query, top_k=fetch, max_tokens=max_tokens * (4 if filters else 1))
+    if filters:
+        results = [r for r in results
+                   if filters.chunk_ok(r.get("file", ""), r.get("type") or "")][:top_k]
     # Access Guard pre-filter before result assembly (R2 deny-ENUMERATE).
     results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:
         # The header used to promise this fallback and then return without
         # it; now it happens.
-        fallback = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts)
+        fallback = _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
+                                filters=filters)
         return f"[semantic:{query}] 0 results; code search instead:\n{fallback}"
 
     lines = []
@@ -501,9 +530,11 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
         optimized_tokens=total_tokens, response_tokens=total_tokens)
 
 
-def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts):
+def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
+                 filters: Filters | None = None):
     results = svc.indexer.search(query, top_k=max(top_k + 1, top_k * 2),
-                                 max_tokens=max_tokens, include_content=True)
+                                 max_tokens=max_tokens, include_content=True,
+                                 **_filter_kwargs(filters))
     # Access Guard pre-filter BEFORE dedup/top_k (R2 deny-ENUMERATE).
     results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:

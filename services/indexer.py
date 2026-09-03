@@ -13,6 +13,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 
 from core import count_tokens
+from services.lexical_index import Filters, LexicalIndex, doc_kind, intent_prior, tokenize_code
 from services.scanner import SKIP_DIRS, iter_files
 
 
@@ -89,6 +90,12 @@ DEFAULT_CODE_EXTS = frozenset({
     '.makefile', '.cmake',
 })
 
+# index.json layout/tokenizer version. A loaded index from an older schema is
+# rebuilt on the spot: its chunk_tfidf was computed with the old tokenizer
+# (digits dropped), so new-tokenizer queries would silently miss, and the
+# FTS5 side table would not exist at all.
+INDEX_SCHEMA = 2
+
 # A chunk larger than the caller's token budget used to be skipped outright,
 # so a class with many methods could never be returned for its own name (231
 # such chunks on this repo at the default budget). Now a window of at most
@@ -126,6 +133,20 @@ class CodeIndex:
         self._cooccurrence_enabled = cooccurrence
         self._file_mtimes = {}    # doc_id -> mtime for recency bias (persisted)
 
+        # Lexical engine (services/lexical_index): SQLite FTS5 / BM25 when
+        # available, else the TF-IDF scan below. `search_engine: "tfidf"` in
+        # .c3/config.json forces the fallback; `search_synonyms` is the only
+        # synonym source (the hardcoded C3-vocabulary map is gone).
+        cfg = self._project_config()
+        self._engine_pref = str(cfg.get("search_engine") or "auto").lower()
+        self._synonyms = {
+            str(k).lower(): [str(v).lower() for v in (vals or [])]
+            for k, vals in (cfg.get("search_synonyms") or {}).items()
+            if isinstance(vals, (list, tuple))
+        }
+        self._lexical = LexicalIndex(self.index_dir)
+        self._lexical_ok = False
+
         # Config - shared pruned-walk skip set (services/scanner.py)
         self.skip_dirs = set(SKIP_DIRS)
         self.code_exts = set(DEFAULT_CODE_EXTS)
@@ -142,6 +163,21 @@ class CodeIndex:
             self._is_excluded = None
 
     _DEFAULT_MAX_FILES = 2000
+
+    def _project_config(self) -> dict:
+        try:
+            cfg = json.loads((self.project_path / '.c3' / 'config.json').read_text(encoding='utf-8'))
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
+    @property
+    def lexical_engine(self) -> str:
+        """``fts5`` when queries go through SQLite FTS5, else ``tfidf``."""
+        return "fts5" if self._lexical_ok else "tfidf"
+
+    def _lexical_wanted(self) -> bool:
+        return self._engine_pref != "tfidf" and self._lexical.available
 
     def _configured_max_files(self) -> int:
         """``index_max_files`` from .c3/config.json; default 2000."""
@@ -269,6 +305,18 @@ class CodeIndex:
                                         "pair_updates": 0, "budget_exhausted": False}
         self._rebuild_symbol_tail()
 
+        # Lexical (FTS5) index — the query engine when available.
+        lexical_rows = 0
+        self._lexical_ok = False
+        if self._lexical_wanted():
+            try:
+                lexical_rows = self._lexical.rebuild(self.chunks, self.documents)
+                self._lexical_ok = lexical_rows > 0
+            except Exception as exc:  # pragma: no cover - environment dependent
+                import logging
+                logging.getLogger("c3.indexer").warning(
+                    "FTS5 index build failed (%s); searches use the TF-IDF fallback", exc)
+
         # Save index
         self._save_index()
 
@@ -281,6 +329,7 @@ class CodeIndex:
             "files_capped": files_capped,
             "max_files": max_files,
             "cooccurrence": getattr(self, "_cooccurrence_stats", {}),
+            "lexical": {"engine": self.lexical_engine, "rows": lexical_rows},
         }
 
     def _chunk_file(self, content: str, ext: str, doc_id: str) -> list:
@@ -490,12 +539,14 @@ class CodeIndex:
         return chunks
 
     def _tokenize(self, text: str) -> list:
-        """Simple tokenization for TF-IDF."""
-        # Split camelCase and snake_case
-        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-        text = text.replace('_', ' ').replace('-', ' ')
-        tokens = re.findall(r'[a-zA-Z]{2,}', text.lower())
-        return tokens
+        """Code tokens: identifiers verbatim plus their parts, digits kept.
+
+        Shared with the FTS5 engine (services/lexical_index.tokenize_code) so
+        both paths agree on what a term is. The previous ``[a-zA-Z]{2,}``
+        tokenizer turned ``sha256`` into ``sha`` and lost ``v2`` and ``S256``
+        entirely.
+        """
+        return tokenize_code(text)
 
     def _expand_query_tokens(self, query: str) -> tuple:
         """Expand query with synonyms + return phrase bigrams.
@@ -509,34 +560,21 @@ class CodeIndex:
         if cached is not None:
             return cached
 
-        base_tokens = self._tokenize(query)
+        base_tokens = tokenize_code(query, dedupe=True)
         if not base_tokens:
             self._expand_cache[query] = ([], [])
             if len(self._expand_cache) > 256:
                 self._expand_cache.pop(next(iter(self._expand_cache)))
             return [], []
 
-        synonyms = {
-            "endpoint": ["route", "handler", "api"],
-            "api": ["endpoint", "route", "handler"],
-            "helper": ["util", "utils", "common"],
-            "registry": ["profile", "profiles", "config"],
-            "profile": ["registry", "config", "ide"],
-            "compress": ["compression", "compressor"],
-            "metrics": ["stats", "summary"],
-            "summary": ["metrics", "stats"],
-            "delegate": ["ollama", "model"],
-            "search": ["index", "retrieval"],
-            "file": ["path", "filepath"],
-            "path": ["file", "filepath"],
-            "mcp": ["server", "tool"],
-        }
-
         expanded = list(base_tokens)
         seen = set(base_tokens)
         for token in base_tokens:
-            # Hardcoded synonyms
-            for related in synonyms.get(token, []):
+            # Configured synonyms only (`search_synonyms` in .c3/config.json).
+            # The map that used to live here was C3's own vocabulary
+            # (registry->profile->ide, delegate->ollama) and shipped to every
+            # project.
+            for related in self._synonyms.get(token, []):
                 if related not in seen:
                     expanded.append(related)
                     seen.add(related)
@@ -798,21 +836,109 @@ class CodeIndex:
         return {"content": content, "line_start": abs_start, "line_end": abs_end,
                 "tokens": count_tokens(content)}
 
+    def _rank_key(self, exact_ids: set):
+        """Exact symbol matches first; then score; then named/structural
+        chunks and shorter paths on ties."""
+        def key(item):
+            chunk = self.chunks[item[0]]
+            return (
+                1 if item[0] in exact_ids else 0,
+                item[1],
+                1 if chunk.get("name") else 0,
+                1 if chunk.get("type") in {"function", "class", "method", "declaration"} else 0,
+                -len(chunk["doc_id"]),
+            )
+        return key
+
+    @staticmethod
+    def _additive_boosts(chunk: dict, base_tokens: list) -> float:
+        """Small, capped, additive: BM25 already weights the symbol and path
+        columns, so these only settle near-ties in favour of a chunk whose
+        whole name or path the query spelled out."""
+        boost = 0.0
+        name_tokens = set(tokenize_code(chunk.get("name") or ""))
+        if name_tokens and name_tokens <= set(base_tokens):
+            boost += 0.25
+        doc_id = chunk.get("doc_id") or ""
+        path_tokens = set(tokenize_code(doc_id.replace("\\", "/").replace("/", " ").replace(".", " ")))
+        hits = sum(1 for t in base_tokens if t in path_tokens)
+        boost += min(0.15, 0.05 * hits)
+        return boost
+
+    def _recency_factor(self, doc_id: str, max_mtime: float) -> float:
+        mtime = self._file_mtimes.get(doc_id, 0)
+        if mtime > 0 and max_mtime > 0:
+            return 0.9 + 0.2 * (mtime / max_mtime)
+        return 1.0
+
+    def _rank_lexical(self, query_tokens: list, base_tokens: list, filters: Filters,
+                      exact_ids: set, max_mtime: float, want: int):
+        """FTS5/BM25 candidates -> normalised score + boosts + intent prior.
+
+        Returns None when the engine produced nothing usable, so the caller
+        can fall back to the TF-IDF scan for this query.
+        """
+        allowed_docs = None
+        if filters.paths:
+            allowed_docs = [d for d in self.documents if filters.path_ok(d)]
+        try:
+            candidates = self._lexical.search(query_tokens, limit=max(40, want * 8),
+                                              filters=filters, allowed_docs=allowed_docs)
+        except Exception:
+            return None
+        if not candidates and not exact_ids:
+            return []
+        best = max((s for _, s in candidates), default=0.0)
+        scores = {}
+        for cid, raw in candidates:
+            chunk = self.chunks.get(cid)
+            if chunk is None:
+                continue
+            doc_id = chunk["doc_id"]
+            if not filters.chunk_ok(doc_id, chunk.get("type") or ""):
+                continue
+            score = (raw / best) if best > 0 else 0.0
+            score += self._additive_boosts(chunk, base_tokens)
+            score += intent_prior(base_tokens, doc_kind(doc_id))
+            score *= self._recency_factor(doc_id, max_mtime)
+            scores[cid] = score
+        for cid in exact_ids:
+            scores.setdefault(cid, 0.001)
+        return sorted(scores.items(), key=self._rank_key(exact_ids), reverse=True)
+
+    def _rank_tfidf(self, query: str, query_tokens: list, query_bigrams: list,
+                    filters: Filters, exact_ids: set, max_mtime: float):
+        """The pre-FTS5 scorer: a linear scan over every chunk."""
+        scores = {}
+        for chunk_id in self.chunk_tfidf:
+            chunk = self.chunks.get(chunk_id)
+            if chunk is None or not filters.chunk_ok(chunk["doc_id"], chunk.get("type") or ""):
+                continue
+            score = self._score_chunk(chunk_id, query, query_tokens, query_bigrams,
+                                      max_mtime=max_mtime)
+            if score > 0:
+                scores[chunk_id] = score
+        for cid in exact_ids:
+            scores.setdefault(cid, 0.001)
+        return sorted(scores.items(), key=self._rank_key(exact_ids), reverse=True)
+
     def search(self, query: str, top_k: int = 5, max_tokens: int = 4000,
-               include_content: bool = True) -> list:
+               include_content: bool = True, path=None, lang=None, kind=None) -> list:
         """Search the index and return most relevant chunks.
 
         Set include_content=False to get metadata only (saves ~70% tokens).
         A chunk whose symbol name equals the query ranks first; a chunk too
         large for the budget is returned as a window (``windowed: True``)
-        instead of being skipped.
+        instead of being skipped. ``path`` / ``lang`` / ``kind`` narrow the
+        candidates (services/lexical_index.Filters).
         """
         if not self.chunks:
             self._load_index()
             if not self.chunks:
                 return []
 
-        cache_key = (query, int(top_k), int(max_tokens), bool(include_content))
+        filters = Filters(path=path, lang=lang, kind=kind)
+        cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key())
         cached = self._search_cache.get(cache_key)
         if cached is not None:
             self._search_cache.move_to_end(cache_key)
@@ -821,33 +947,22 @@ class CodeIndex:
         query_tokens, query_bigrams = self._expand_query_tokens(query)
         if not query_tokens:
             return []
+        base_tokens = tokenize_code(query, dedupe=True)
 
         max_mtime = max(self._file_mtimes.values()) if self._file_mtimes else 0.0
-        exact_ids = {cid for cid in self._exact_symbol_ids(query) if cid in self.chunks}
+        exact_ids = {
+            cid for cid in self._exact_symbol_ids(query)
+            if cid in self.chunks
+            and filters.chunk_ok(self.chunks[cid]["doc_id"], self.chunks[cid].get("type") or "")
+        }
 
-        # Score each chunk
-        scores = {}
-        for chunk_id in self.chunk_tfidf:
-            score = self._score_chunk(chunk_id, query, query_tokens, query_bigrams,
-                                      max_mtime=max_mtime)
-            if score > 0:
-                scores[chunk_id] = score
-        for cid in exact_ids:
-            scores.setdefault(cid, 0.001)
-
-        # Exact symbol matches first; then score; then prefer named/structural
-        # chunks and shorter paths on ties.
-        ranked = sorted(
-            scores.items(),
-            key=lambda item: (
-                1 if item[0] in exact_ids else 0,
-                item[1],
-                1 if self.chunks[item[0]].get("name") else 0,
-                1 if self.chunks[item[0]].get("type") in {"function", "class", "method", "declaration"} else 0,
-                -len(self.chunks[item[0]]["doc_id"]),
-            ),
-            reverse=True,
-        )
+        ranked = None
+        if self._lexical_ok:
+            ranked = self._rank_lexical(query_tokens, base_tokens, filters, exact_ids,
+                                        max_mtime, want=top_k)
+        if ranked is None:
+            ranked = self._rank_tfidf(query, query_tokens, query_bigrams, filters,
+                                      exact_ids, max_mtime)
 
         # Collect results up to token budget
         results = []
@@ -930,6 +1045,7 @@ class CodeIndex:
         # Strip in-memory caches (fields prefixed with _) before persisting —
         # they're regenerated on demand and would bloat index.json.
         data = {
+            "index_schema": INDEX_SCHEMA,
             "documents": self.documents,
             "chunks": {
                 k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
@@ -955,6 +1071,14 @@ class CodeIndex:
         try:
             with open(index_file, encoding='utf-8') as f:
                 data = json.load(f)
+            if int(data.get("index_schema") or 1) != INDEX_SCHEMA:
+                # Older layout: rebuild rather than serve a tokenizer mismatch.
+                import logging
+                logging.getLogger("c3.indexer").info(
+                    "index.json schema %s != %s; rebuilding the code index",
+                    data.get("index_schema") or 1, INDEX_SCHEMA)
+                self.build_index()
+                return bool(self.chunks)
             self.documents = data["documents"]
             self.chunks = data["chunks"]
             self.symbols = data.get("symbols", {})
@@ -962,6 +1086,7 @@ class CodeIndex:
             self.chunk_tfidf = data.get("chunk_tfidf", {})
             self._file_mtimes = data.get("file_mtimes", {}) or {}
             self._rebuild_symbol_tail()
+            self._lexical_ok = self._lexical_wanted() and self._lexical.ready()
             mutated = False
             for chunk in self.chunks.values():
                 if "tokens" not in chunk:
@@ -985,6 +1110,7 @@ class CodeIndex:
             "total_chunks": len(self.chunks),
             "total_tokens_in_codebase": total_tokens,
             "unique_symbols": len(self.symbols),
+            "lexical_engine": self.lexical_engine,
             "index_size_kb": round(
                 (self.index_dir / "index.json").stat().st_size / 1024, 1
             ) if (self.index_dir / "index.json").exists() else 0

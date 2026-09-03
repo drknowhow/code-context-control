@@ -4,6 +4,76 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.106.0] - 2026-09-03
+
+Phase P2 of the search plan: the lexical engine. Until now `c3_search`
+scored every chunk on every query with a hand-rolled TF-IDF whose tokenizer
+dropped digits (`sha256` became `sha`; `v2` and `S256` vanished), stacked
+multiplicative boosts, and expanded queries through a synonym map written for
+C3's own vocabulary. This release replaces the engine and keeps the surface.
+Fixture baseline: recall@1 0.833 → 0.944, recall@3 0.958 → 1.0, MRR 0.892 →
+0.969 across 54 scored cases. On this repository's own index (golden suite,
+26 cases): recall@3 0.739 → 0.808, MRR 0.672 → 0.736.
+
+### Added — SQLite FTS5 / BM25 as the `code` engine, with the old scan as fallback
+
+`services/lexical_index.py` keeps a per-project `lexical.sqlite` beside
+`index.json`: an FTS5 table with four weighted columns — path (3), symbol
+(6), kind (1), body (1) — ranked by SQLite's BM25, plus per-chunk metadata for
+the filters below. `CodeIndex.search` takes its candidates from there
+(normalised BM25, then small additive boosts: whole symbol name spelled out
++0.25, path tokens up to +0.15; an intent prior of +0.15 for test files when
+the query names tests and for docs when it asks a how-to; the weak recency
+factor), then assembles results exactly as before — symbol fast path, windows
+for oversized chunks, token budget. Connections are opened per call so the
+MCP server, the hub and a CLI can share the file; rebuilds write a temp
+database and swap it atomically.
+
+FTS5 is a compile-time option of SQLite. `fts5_available()` probes once; when
+it is missing, or `search_engine: "tfidf"` is set in `.c3/config.json`, the
+pre-2.106.0 scan runs — with the new tokenizer, so `v2` still resolves.
+`CodeIndex.lexical_engine`, `c3 stats` and `search-eval` say which engine
+answered.
+
+### Changed — the tokenizer keeps identifiers whole AND split, digits included, no stemming
+
+`parseIso8601` indexes as `parseiso8601 parse iso8601`; `sha256_digest` as
+`sha256_digest sha256 digest`; `v2`, `S256`, `oauth2`, `utf8` are tokens. A
+letter/digit boundary is never a split. There is no stemming: `embed`,
+`embedding` and `embeddings` stay three terms, because identifiers are not
+prose. Both engines share `tokenize_code`, so the fallback agrees with FTS5
+on what a term is. `index.json` now carries `index_schema: 2`; an index from
+the old layout is rebuilt on first load rather than served with a tokenizer
+mismatch.
+
+### Added — `path`, `lang`, `kind` filters on every action
+
+`c3_search(..., path='src/**,*.go', lang='python,go', kind='test,doc')`,
+comma-separated, propagated to federated children. `path` takes globs or
+substrings against the relative path; `lang` takes names or bare extensions;
+`kind` takes `source` / `test` / `doc` / `config` (classified from the path)
+and/or chunk types (`function`, `class`, `method`, `heading`). `code` applies
+them in SQL, `files` and `exact` on the manifest, `semantic` on the embedding
+results after over-fetching. The relevance suite's `filters` field, recorded
+as skipped since 2.103.0, now runs: six filter cases gate `must_pass`.
+
+### Removed — the hardcoded synonym map
+
+`endpoint → route/handler/api`, `registry → profile → ide`, `delegate →
+ollama`, `mcp → server` and the rest were C3's vocabulary and shipped to every
+project. Synonyms now come only from `search_synonyms` in `.c3/config.json`
+(`{"endpoint": ["route"]}`). Co-occurrence expansion stays opt-in (2.105.0).
+
+### Relevance suite
+
+`digits_v2_migration` and `digits_s256_challenge_method` promoted to
+`must_pass`; `filter_tests_only` runs and gates, joined by `filter_path_src`,
+`filter_lang_go`, `filter_kind_doc`, `filter_files_glob_lang`,
+`filter_exact_kind_source`. Floors raised to three points under the new
+figures (recall@1 0.91, recall@3 0.97, MRR 0.93). `tests/test_search_p2.py`
+pins the tokenizer, classification, filters, the FTS5 store, the fallback
+paths and the schema-triggered rebuild.
+
 ## [2.105.0] - 2026-09-03
 
 Phase P1 of the search plan: the data-loss and correctness defects the
