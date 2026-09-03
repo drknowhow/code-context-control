@@ -26,24 +26,47 @@ class CommandDeps:
 
 
 def cmd_index(args, deps: CommandDeps):
-    """Rebuild the code index."""
+    """Rebuild the code index.
+
+    ``--max-files`` defaults to None so an unset flag falls through to
+    ``CodeIndex.build_index``, which reads ``index_max_files`` from
+    ``.c3/config.json`` (2000 by default). Passing a hard-coded number here
+    would shadow that config for every caller who did not type the flag.
+
+    A truncated index is reported, never silent: the caller who sees only
+    "Files Indexed: 500" has no way to know 1400 files were skipped, and a
+    partial index answers searches with confident absences.
+    """
     config = deps.load_config()
     project_path = config.get("project_path", ".")
 
     deps.print_header("Rebuilding Code Index")
     indexer = deps.CodeIndex(project_path)
-    result = indexer.build_index(max_files=args.max_files or 500)
+    result = indexer.build_index(max_files=args.max_files)
+
+    capped = result.get("files_capped", 0) or 0
+    candidates = result["files_indexed"] + capped
 
     if deps.HAS_RICH:
         table = deps.Table(title="Index Results")
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="green")
-        table.add_row("Files Indexed", str(result["files_indexed"]))
+        files_cell = str(result["files_indexed"])
+        if capped:
+            files_cell = f"{result['files_indexed']} of {candidates}"
+        table.add_row("Files Indexed", files_cell)
         table.add_row("Chunks Created", str(result["chunks_created"]))
         table.add_row("Unique Symbols", str(result["unique_symbols"]))
+        if capped:
+            table.add_row("Files Skipped (cap)", str(capped))
         deps.console.print(table)
     else:
         print(f"  Files: {result['files_indexed']}, Chunks: {result['chunks_created']}, Symbols: {result['unique_symbols']}")
+
+    if capped:
+        print(f"  [!] Indexed {result['files_indexed']} of {candidates} candidate files "
+              f"(cap: index_max_files={result.get('max_files')}). {capped} skipped.")
+        print("      Raise index_max_files in .c3/config.json for full coverage.")
 
 
 def cmd_compress(args, deps: CommandDeps):

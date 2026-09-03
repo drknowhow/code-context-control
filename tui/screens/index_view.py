@@ -15,7 +15,12 @@ class IndexWidget(Vertical):
         with Card("Configuration", ""):
             with Horizontal(id="index-config-row"):
                 yield Label("Max Files to Index: ", classes="input-label")
-                yield Input("500", placeholder="500", id="max_files_input")
+                # Empty by default: an unset cap falls through to
+                # index_max_files in .c3/config.json (2000). Pre-filling a
+                # number here silently truncated every index started from
+                # the TUI on any repo larger than that number.
+                yield Input("", placeholder="config default (2000)",
+                            id="max_files_input")
             with Horizontal(id="index-actions-row"):
                 yield Button("Start Indexing", id="start_btn", variant="primary")
                 yield Button("Stop", id="stop_btn", variant="error")
@@ -29,9 +34,11 @@ class IndexWidget(Vertical):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "start_btn":
-            max_files = self.query_one("#max_files_input").value or "500"
+            max_files = self.query_one("#max_files_input").value.strip()
             self.query_one("#index_log").clear()
-            self.query_one("#index_log").write_line(f"Starting indexer with max files: {max_files}...")
+            self.query_one("#index_log").write_line(
+                f"Starting indexer with max files: {max_files}..." if max_files
+                else "Starting indexer (cap: index_max_files from .c3/config.json)...")
             self.query_one("#start_btn").disabled = True
             self.query_one("#stop_btn").disabled = False
             self.run_indexer(max_files)
@@ -48,7 +55,9 @@ class IndexWidget(Vertical):
         env = os.environ.copy()
         env["PYTHONPATH"] = root_dir
 
-        cmd = [sys.executable, c3_path, "index", "--max-files", max_files]
+        cmd = [sys.executable, c3_path, "index"]
+        if max_files:
+            cmd += ["--max-files", max_files]
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,

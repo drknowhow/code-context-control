@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.104.0] - 2026-09-03
+
+### Fixed — `c3 index` capped every run at 500 files and reported the truncated total as the result
+
+`CodeIndex.build_index(max_files=None)` reads `index_max_files` from
+`.c3/config.json`, default 2000, and returns `files_capped` so a caller can
+tell a complete index from a partial one. Nothing that ran from the CLI ever
+got there. `cli/commands/parser.py` defaulted `--max-files` to `500` and
+`cmd_index` passed `args.max_files or 500`, so the config was unreachable
+from the command line and the flag had to be typed on every invocation to
+exceed a cap nobody chose. `files_capped` was discarded, so the rich table
+printed `Files Indexed: 500` with no denominator.
+
+Measured on a 1933-file repository: a bare `c3 index` indexed 500 files, and
+the partial index left the symbol map referencing chunks the run never
+wrote — `c3_search` then raised `KeyError` on those ids rather than
+returning fewer results. A truncated index does not degrade gracefully; it
+answers with confident absences and occasionally crashes.
+
+- `--max-files` now defaults to `None`. Unset means "read
+  `index_max_files`"; an explicit value is still honoured verbatim.
+- `cmd_index` reports truncation instead of hiding it: the table shows
+  `500 of 1933` plus a `Files Skipped (cap)` row, and a `[!]` line names
+  `index_max_files` as the knob. A complete index prints no warning, so the
+  channel does not cry wolf.
+- The TUI's index screen pre-filled `500` in "Max Files to Index" and always
+  passed it, giving the same silent truncation to anyone indexing from the
+  UI. It now starts empty with a `config default (2000)` placeholder and
+  omits the flag unless a number is typed.
+- `tests/test_index_cap_not_hardcoded.py` guards the invariant rather than
+  the literal: an unset flag must reach the indexer as `None`, an explicit
+  one must pass through, a capped result must print its population, and an
+  uncapped one must stay quiet. All four fail against the previous code.
+
+Every other `build_index()` caller — hub, MCP server, watcher, subprojects,
+mask activation, web API — already relied on the config default and was
+never affected.
+
 ## [2.103.0] - 2026-09-03
 
 A review of `c3_search` against this repository found that no test anywhere
@@ -75,7 +113,6 @@ and is gated as `must_pass`. See `docs/search-eval.md`.
   same budget, one answer.
 - `pytest` no longer recurses into `tests/fixtures/**`; a fixture repo's own
   `test_*.py` files are data.
-
 ## [2.102.0] - 2026-09-02
 
 A review of the instruction block C3 generates for itself — the one that
