@@ -4,6 +4,69 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.103.0] - 2026-09-03
+
+A review of `c3_search` against this repository found that no test anywhere
+measured whether search returned the right thing. Every search test checked
+wiring — access-guard filtering, federation sections, response headers — so a
+change that put the wrong file first passed the whole suite. Measured on the
+C3 tree the same day: the default `code` action put a test file or a
+CHANGELOG heading first on 4 of 6 queries while `semantic` put the right
+source symbol first on 3 of 3; `exact` could see 427 of 513 indexed files;
+231 chunks were larger than the default token budget and therefore never
+returnable. This release adds the instrument. It changes no ranking.
+
+### Added — `c3 search-eval`: a relevance suite with per-query gates and floors
+
+`services/bench/search_eval.py` runs a JSONL suite of queries through
+`cli.tools.search.handle_search` — the function the MCP tool calls, not a
+re-implementation — parses the response back into ranked hits and grades
+them: recall@1/3/10, MRR, symbol recall@3, zero-result accuracy, latency
+p50/p95, index build cost, and `exact_coverage` (files `exact` can see ÷
+files indexed). Two suites ship:
+
+- **Fixture** — `tests/fixtures/search_eval_repo`, a synthetic LedgerLite
+  service in Python, TypeScript, Go, Markdown, YAML and CSV, copied to a temp
+  dir and indexed from scratch on every run. 57 cases: symbol lookups,
+  digit-bearing identifiers (`sha256_digest`, `migrate_v2`, `S256`), a
+  source/test name collision, an oversized class, a masked CSV with a canary
+  column, zero-result queries, filters. It carries an `access.mask` rule, so
+  a redacted value reaching a response fails the suite.
+- **Golden** — `tests/search_eval/golden_c3.jsonl`, real queries against the
+  C3 tree run on the live `.c3` index and `file_memory` as an agent sees
+  them. CLI only (`c3 search-eval --suite golden`); environment-bound.
+
+Every case declares a gate. `must_pass` fails CI; `xfail` names the plan
+phase that fixes it and is reported when it starts passing; `info` is
+measured only. Aggregates are held to absolute floors in
+`tests/search_eval/baseline_fixture.json`, set once, three points under the
+measured value, with zero-result accuracy pinned at 1.0. `--update-baseline`
+refreshes aggregates and per-query status and keeps the floors.
+`tests/test_search_eval.py` is the CI gate: must-pass cases, no canary leak,
+floors, and a baseline that knows every case id.
+
+Baseline on the fixture at 2.103.0: recall@1 0.75, recall@3 0.875, recall@10
+0.896, MRR 0.814, symbol recall@3 0.926, zero-result accuracy 1.0; 48 scored,
+5 skipped (semantic needs Ollama; filters land in P2). Six cases are recorded
+as known failures with their fix phase: the oversized `Ledger` class chunk is
+skipped rather than windowed (P1), `exact` has no ignore-case (P1), `files`
+matches whole path tokens only so `Invoi` and `limit` find nothing (P1), and
+the tokenizer drops digits so `v2` and `S256` vanish (P2). On the C3 tree the
+golden suite reads recall@3 0.65 for `code` against 1.0 for `semantic`, and a
+test's `_FakeCodeIndex` outranks `CodeIndex` itself.
+
+Two things the first run corrected in the suite, not the engine: a canary
+used as the query tripped its own check because the tool echoes the query in
+its zero-result header (the harness now grades only what came back from the
+index), and five `files` cases predicted to fail passed, because path tokens
+are indexed — whole-token and camelCase-segment filename lookup works today
+and is gated as `must_pass`. See `docs/search-eval.md`.
+
+### Changed
+
+- `pytest` no longer recurses into `tests/fixtures/**`; a fixture repo's own
+  `test_*.py` files are data.
+
 ## [2.102.0] - 2026-09-02
 
 A review of the instruction block C3 generates for itself — the one that

@@ -1,0 +1,10 @@
+services:
+  api:
+    image: ledgerlite/api:1.4.0
+    ports: ["8080:8080"]
+    volumes: ["ledger-data:/data"]
+  ledgerd:
+    image: ledgerlite/ledgerd:1.4.0
+    ports: ["8081:8081"]
+volumes:
+  ledger-data: {}
