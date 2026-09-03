@@ -172,8 +172,8 @@ Compared, on 2026-09-03, with fusion on:
 
 | Suite | No reranker | ms-marco-TinyBERT-L-2 | ms-marco-MiniLM-L-12 |
 |---|---|---|---|
-| Golden (C3, 26 cases): recall@1 / recall@3 / MRR | 0.800 / 0.967 / 0.878 | 0.733 / 0.933 / 0.835 | 0.733 / 0.967 / 0.844 |
-| Golden p95 latency | 420 ms | 443 ms | 1116 ms |
+| Golden (C3, 26 cases): recall@1 / recall@3 / MRR | 0.800 / 0.967 / 0.878 | 0.767 / 0.933 / 0.857 | 0.733 / 0.967 / 0.844 |
+| Golden p95 latency | 404 ms | 513 ms | 1142 ms |
 | Fixture: recall@1 / recall@3 / MRR | 0.933 / 1.0 / 0.961 | 0.900 / 0.983 / 0.943 | 0.900 / 1.0 / 0.947 |
 
 Both models make every aggregate worse. They are trained on web passages

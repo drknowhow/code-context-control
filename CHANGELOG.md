@@ -33,7 +33,7 @@ says `rerank=flashrank`.
 
 On this repository's golden suite with fusion on (26 cases, FTS5 + v2
 embeddings): recall@1 0.800 / recall@3 0.967 / MRR 0.878 without a
-reranker; 0.733 / 0.933 / 0.835 with ms-marco-TinyBERT-L-2 (p95 443 ms);
+reranker; 0.767 / 0.933 / 0.857 with ms-marco-TinyBERT-L-2 (p95 513 ms);
 0.733 / 0.967 / 0.844 with ms-marco-MiniLM-L-12 (p95 1116 ms). On the
 fixture: 0.933 / 1.0 / 0.961 without; 0.900 / 0.983 / 0.943 and 0.900 / 1.0
 / 0.947 with. These MS MARCO models are trained on web passages and
