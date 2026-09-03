@@ -1,0 +1,5 @@
+database_path: ledger.db
+session_ttl_seconds: 1800
+oauth2:
+  client_id: ledgerlite-web
+  redirect_uri: https://app.example.com/oauth/callback

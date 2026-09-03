@@ -1,0 +1,342 @@
+{
+  "suite": "fixture",
+  "generated_at": "2026-09-03T12:36:30",
+  "c3_version": "2.103.0",
+  "index": {
+    "files_indexed": 39,
+    "chunks": 167,
+    "oversize_chunks": 1,
+    "build_seconds": 0.251,
+    "file_memory_seconds": 0.026,
+    "tracked_files": 39,
+    "exact_coverage": 1.0,
+    "index_bytes": 257878,
+    "semantic": "off"
+  },
+  "aggregates": {
+    "n_cases": 57,
+    "n_executed": 52,
+    "n_scored": 48,
+    "n_skipped": 5,
+    "recall_at_1": 0.7292,
+    "recall_at_3": 0.875,
+    "recall_at_10": 0.8958,
+    "mrr": 0.8073,
+    "symbol_recall_at_3": 0.9259,
+    "zero_result_accuracy": 1.0,
+    "latency_p50_ms": 14.7,
+    "latency_p95_ms": 39.4,
+    "must_pass_failed": [],
+    "xfail_passing": [],
+    "forbidden_hits": []
+  },
+  "by_action": {
+    "code": {
+      "n": 35,
+      "recall_at_3": 0.9429
+    },
+    "exact": {
+      "n": 5,
+      "recall_at_3": 0.8
+    },
+    "files": {
+      "n": 8,
+      "recall_at_3": 0.625
+    }
+  },
+  "floors": {
+    "recall_at_1": 0.69,
+    "recall_at_3": 0.84,
+    "recall_at_10": 0.86,
+    "mrr": 0.77,
+    "symbol_recall_at_3": 0.89,
+    "zero_result_accuracy": 1.0
+  },
+  "per_query": {
+    "sym_oauth2client": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_compute_total": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_lrucache": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_invoicetable_tsx": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_retry_with_backoff": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_limiter_allow_go": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_register_routes": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "sym_parse_iso8601": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "sym_sha256_digest": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "sym_migrate_v2": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "sym_base64url_encode": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "sym_utf8_decode": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "info"
+    },
+    "code_exchange_code_for_token": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_refresh_rotation": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "info"
+    },
+    "code_vat_apply": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_invoice_total_rounding": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_lru_evict": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_token_bucket": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_session_expiry": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_sqlite_wal": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "info"
+    },
+    "code_load_yaml_settings": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_backoff_jitter": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_format_currency_ts": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_fetch_invoices_ts": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_healthz_go": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "info"
+    },
+    "code_ledger_post_entry": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "code_ledger_class_oversize": {
+      "status": "fail",
+      "rank": 1,
+      "gate": "xfail"
+    },
+    "code_pkce_challenge": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "test_intent_exchange_code": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "test_intent_burst_go": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "doc_redirect_uri": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "doc_migrations_before_deploy": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "info"
+    },
+    "src_over_test_exchange_code": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "files_invoice": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "must_pass"
+    },
+    "files_limiter": {
+      "status": "pass",
+      "rank": 2,
+      "gate": "must_pass"
+    },
+    "files_useauth": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "files_docker_compose": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "files_customers_csv_masked": {
+      "status": "fail",
+      "rank": 4,
+      "gate": "xfail"
+    },
+    "files_glob_yml": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "info"
+    },
+    "files_substring": {
+      "status": "fail",
+      "rank": null,
+      "gate": "xfail"
+    },
+    "files_prefix_limit": {
+      "status": "fail",
+      "rank": null,
+      "gate": "xfail"
+    },
+    "digits_v2_migration": {
+      "status": "fail",
+      "rank": null,
+      "gate": "xfail"
+    },
+    "digits_s256_challenge_method": {
+      "status": "fail",
+      "rank": null,
+      "gate": "xfail"
+    },
+    "exact_def_exchange_code": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "exact_go_method": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "exact_ts_export": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "exact_case_insensitive": {
+      "status": "fail",
+      "rank": null,
+      "gate": "xfail"
+    },
+    "exact_masked_canary_absent": {
+      "status": "pass",
+      "rank": null,
+      "gate": "must_pass"
+    },
+    "exact_masked_header_discoverable": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "none_kubernetes": {
+      "status": "pass",
+      "rank": null,
+      "gate": "must_pass"
+    },
+    "none_graphql": {
+      "status": "pass",
+      "rank": null,
+      "gate": "must_pass"
+    },
+    "none_websocket": {
+      "status": "pass",
+      "rank": null,
+      "gate": "must_pass"
+    },
+    "sem_refresh_rotation": {
+      "status": "skip",
+      "rank": null,
+      "gate": "info"
+    },
+    "sem_vat_on_invoice": {
+      "status": "skip",
+      "rank": null,
+      "gate": "info"
+    },
+    "sem_flaky_provider": {
+      "status": "skip",
+      "rank": null,
+      "gate": "info"
+    },
+    "sem_ledger_class": {
+      "status": "skip",
+      "rank": null,
+      "gate": "info"
+    },
+    "filter_tests_only": {
+      "status": "skip",
+      "rank": null,
+      "gate": "info"
+    }
+  }
+}

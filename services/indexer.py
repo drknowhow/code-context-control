@@ -654,7 +654,11 @@ class CodeIndex:
         updates = 0
         budget_hit = False
         for chunk in self.chunks.values():
-            tokens = set(self._tokenize(chunk["content"]))
+            # Sorted, not a bare set: Counter insertion order decides ties in
+            # most_common() below, and set order follows the per-process hash
+            # seed. Unsorted, the same repo yielded different synonyms — and
+            # different ranks — from one process to the next.
+            tokens = sorted(set(self._tokenize(chunk["content"])))
             if len(tokens) > _COOC_MAX_CHUNK_TOKENS:
                 skipped += 1
                 continue
@@ -676,7 +680,10 @@ class CodeIndex:
         # Prune: keep only top-5 co-occurring terms per token (minimum 3 co-occurrences)
         pruned = {}
         for term, counts in self._cooccurrence.items():
-            top = [(t, c) for t, c in counts.most_common(5) if c >= 3]
+            # Ties broken alphabetically so the pruned map is identical on
+            # every machine and every run (see the sorted() above).
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            top = [(t, c) for t, c in ranked[:5] if c >= 3]
             if top:
                 pruned[term] = dict(top)
         self._cooccurrence = pruned

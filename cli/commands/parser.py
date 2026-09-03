@@ -36,6 +36,24 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_index = subparsers.add_parser("index", help="Rebuild code index")
     p_index.add_argument("--max-files", type=int, default=500)
 
+    p_search_eval = subparsers.add_parser(
+        "search-eval", help="Run the c3_search relevance suite (docs/search-eval.md)")
+    p_search_eval.add_argument("--suite", default="fixture",
+                               help="'fixture' (synthetic repo, CI gate), 'golden' (this repo), or a .jsonl path")
+    p_search_eval.add_argument("--repo", default=None,
+                               help="Project to evaluate; overrides the suite header (real repos only)")
+    p_search_eval.add_argument("--semantic", choices=["off", "auto", "on"], default="auto",
+                               help="off: skip semantic cases; auto: run when embeddings are ready; "
+                                    "on: build embeddings first (needs Ollama)")
+    p_search_eval.add_argument("--rebuild", action="store_true",
+                               help="Rebuild the code index before running (real repos; fixtures always rebuild)")
+    p_search_eval.add_argument("--baseline", default=None, help="Baseline JSON to compare against / write")
+    p_search_eval.add_argument("--update-baseline", action="store_true",
+                               help="Write aggregates + per-query status to the baseline (floors are kept)")
+    p_search_eval.add_argument("--floors", default=None,
+                               help='With --update-baseline: JSON object of metric floors, e.g. \'{"mrr": 0.85}\'')
+    p_search_eval.add_argument("--json", action="store_true", help="Emit the full report as JSON")
+
     p_compress = subparsers.add_parser("compress", help="Compress a file")
     p_compress.add_argument("file", help="File to compress")
     p_compress.add_argument("--mode", choices=["map", "dense_map", "smart", "diff"], default="smart")
