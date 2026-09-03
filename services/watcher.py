@@ -191,10 +191,22 @@ class CodeWatcher:
         return changes
 
     def rebuild_if_needed(self, indexer, threshold: int = 10) -> dict | None:
-        """Trigger index rebuild if enough changes have accumulated."""
+        """Refresh the index once enough changes have accumulated.
+
+        Since 2.107.0 this is incremental: the changed paths go to
+        ``CodeIndex.refresh``, which re-chunks only files whose content hash
+        moved and drops deleted ones. Before, every tenth change rebuilt the
+        whole index (~12 s on a 500-file project). An indexer without
+        ``refresh`` (a stub in tests) still gets ``build_index``.
+        """
         if self._handler.change_count >= threshold:
             changes = self.get_changes()
-            result = indexer.build_index()
+            paths = [c.get("path") for c in changes if isinstance(c, dict) and c.get("path")]
+            refresh = getattr(indexer, "refresh", None)
+            if callable(refresh) and paths:
+                result = refresh(paths=paths)
+            else:
+                result = indexer.build_index()
             result["triggered_by_changes"] = len(changes)
             return result
         return None

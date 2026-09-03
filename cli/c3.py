@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.106.0"
+__version__ = "2.107.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -591,21 +591,21 @@ def _check_c3_health(project_path: str) -> dict:
         issues.append(f"missing directories: {', '.join(missing_dirs)}")
         info["missing_dirs"] = missing_dirs
 
-    # Index presence and basic stats
-    index_file = c3_dir / "index" / "index.json"
-    if not index_file.exists():
-        issues.append("code index not built")
-        info["index_files"] = 0
-        info["index_chunks"] = 0
-    else:
-        try:
-            data = json.loads(index_file.read_text(encoding="utf-8"))
-            info["index_files"] = len(data.get("documents", {}))
-            info["index_chunks"] = len(data.get("chunks", {}))
-        except Exception:
-            issues.append("code index corrupt")
-            info["index_files"] = 0
-            info["index_chunks"] = 0
+    # Index presence and basic stats (services/index_store; index.json is
+    # the pre-2.107.0 layout and counts as "present, needs a rebuild").
+    try:
+        from services.index_store import IndexStore
+        store = IndexStore(c3_dir / "index")
+        n_docs, n_chunks = store.counts()
+    except Exception:
+        store, n_docs, n_chunks = None, 0, 0
+    info["index_files"] = n_docs
+    info["index_chunks"] = n_chunks
+    if n_docs == 0:
+        if (c3_dir / "index" / "index.json").exists():
+            issues.append("code index in the pre-2.107.0 layout; run `c3 index` to migrate")
+        else:
+            issues.append("code index not built")
 
     # Stale file changes (tracked by the watcher inside CodeIndex)
     # The watcher writes pending changes to .c3/index/changes.json

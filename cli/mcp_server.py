@@ -121,7 +121,10 @@ async def lifespan(server):
             transcript_index._load_index()
             transcript_index._load_manifest()
 
-    if not (Path(project) / ".c3" / "index" / "index.json").exists():
+    # No store yet, or only a pre-2.107.0 layout (index.json / lexical.sqlite)
+    # that a load would rebuild: either way the ~10 s build must stay off the
+    # MCP handshake path.
+    if (not services.indexer.index_exists()) or services.indexer.needs_migration():
         import threading
 
         def _bg_build():

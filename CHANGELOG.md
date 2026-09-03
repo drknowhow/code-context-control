@@ -4,6 +4,63 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.107.0] - 2026-09-03
+
+Phase P2b of the search plan: the index stops being a blob. `index.json`
+held every chunk's content plus the TF-IDF vectors in one JSON document — 30
+MB for this repository, ~120 MB at the file cap — parsed whole on load and
+rewritten whole on every rebuild, and every rebuild was whole: the watcher
+triggered one after ten file changes. The 2.106.0 FTS5 table lived in a
+second file beside it. Both are replaced by one SQLite store that is updated
+per document.
+
+### Changed — `index.sqlite` replaces `index.json` and `lexical.sqlite`
+
+`services/index_store.py` keeps `docs` (with a content hash and mtime per
+file), `chunks` (content, line range, symbol, kind, language) and the FTS5
+table in `.c3/index/index.sqlite`. `CodeIndex` loads from it, writes a full
+build to a temp file and swaps it in atomically, and applies incremental
+changes in one transaction. Symbols are derived from chunks on load; TF-IDF
+vectors are not persisted at all — they belong to the fallback engine and are
+built on demand the first time a query needs them. On this repository (563
+files, 12,247 chunks): cold load 0.06 s where the JSON parse took 0.21 s;
+the store is 40 MB where the JSON was 30 MB, because it now carries the
+FTS5 index, and it is never rewritten whole again.
+
+A pre-2.107.0 layout is migrated on first load: `CodeIndex._load_index`
+sees no store, rebuilds, and removes `index.json` and `lexical.sqlite` once
+the store is written. `CodeIndex.index_exists()` and `needs_migration()`
+replace the `index.json` existence checks in the MCP server startup, `c3
+doctor` and the sub-project inspector; the MCP server keeps a migration off
+the handshake path exactly as it keeps a first build off it.
+
+### Added — `CodeIndex.refresh()`: re-chunk only what changed
+
+`refresh(paths=None)` walks the manifest, hashes each file's content (the
+masked view where a mask rule applies) and re-chunks only files whose hash
+moved, adds new files, drops deleted ones, and writes the difference to the
+store in one transaction; `refresh(paths=[...])` checks only the paths given.
+Unchanged files are never re-chunked or re-tokenized — a test spies on the
+chunker to prove it. When no store exists, when only a legacy layout is on
+disk, or when the incremental write fails, it falls back to a full build and
+says so in `mode`. On this repository: 0.16 s to confirm nothing changed
+across 563 files, 0.14 s to re-index one changed file, against 5.3 s for a
+full build.
+
+`CodeWatcher.rebuild_if_needed` hands its accumulated changed paths to
+`refresh` instead of calling `build_index`, so the watcher's tenth change now
+costs a fraction of a second rather than a rebuild. A stub indexer without
+`refresh` still gets `build_index`.
+
+### Relevance suite
+
+`search-eval` reports the engine per run (`engine=fts5`) and sizes the store
+instead of the JSON. Baseline unchanged: recall@1 0.944, recall@3 1.0, MRR
+0.969. `tests/test_search_p2b.py` pins the store round-trip, legacy
+migration and cleanup, the lazy TF-IDF fallback, incremental change / add /
+delete, explicit-path refresh, the no-op path, the full-build fallback, and
+the watcher wiring.
+
 ## [2.106.0] - 2026-09-03
 
 Phase P2 of the search plan: the lexical engine. Until now `c3_search`

@@ -110,7 +110,13 @@ the new id.
 - `filters`: `{"path": "src/**", "lang": "go", "kind": "test"}` — passed to
   the tool as its `path` / `lang` / `kind` parameters.
 
-## The engine under test (2.106.0)
+## The engine under test (2.106.0, store 2.107.0)
+
+The index lives in `.c3/index/index.sqlite` (`services/index_store.py`):
+documents with a content hash, chunks with their content, and the FTS5 table.
+`CodeIndex.refresh()` re-chunks only files whose hash changed and the watcher
+calls it instead of rebuilding; a full build writes a temp store and swaps
+it in. `index.json` from earlier releases is migrated on first load.
 
 `code` queries go through SQLite FTS5 when this Python's SQLite has it
 (`CodeIndex.lexical_engine == "fts5"`; `c3 stats` and `search-eval` report

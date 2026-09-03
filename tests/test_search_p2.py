@@ -87,10 +87,11 @@ class TestClassification(unittest.TestCase):
 
 
 @unittest.skipUnless(lx.fts5_available(), "SQLite built without FTS5")
-class TestLexicalIndex(unittest.TestCase):
+class TestIndexStoreSearch(unittest.TestCase):
     def setUp(self):
+        from services.index_store import IndexStore
         self._tmp = tempfile.TemporaryDirectory()
-        self.idx = lx.LexicalIndex(Path(self._tmp.name))
+        self.idx = IndexStore(Path(self._tmp.name))
         self.chunks = {
             "src/auth.py::sha256_digest": {"doc_id": "src/auth.py", "name": "sha256_digest", "type": "function",
                                             "content": "def sha256_digest(data):\n    return hashlib.sha256(data)"},
@@ -107,10 +108,13 @@ class TestLexicalIndex(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def _write(self, chunks, docs):
+        return self.idx.write_all(docs, chunks, {d: 1.0 for d in docs}, {d: "h" for d in docs})
+
     def test_rebuild_and_search(self):
-        rows = self.idx.rebuild(self.chunks, self.docs)
+        rows = self._write(self.chunks, self.docs)
         self.assertEqual(rows, 4)
-        self.assertTrue(self.idx.ready())
+        self.assertTrue(self.idx.exists())
         hits = self.idx.search(["sha256"])
         self.assertEqual(hits[0][0], "src/auth.py::sha256_digest", hits)
         self.assertGreater(hits[0][1], 0)
@@ -118,7 +122,7 @@ class TestLexicalIndex(unittest.TestCase):
         self.assertEqual([h[0] for h in v2], ["src/store.py::migrate_v2"])
 
     def test_filters_in_sql_and_allowed_docs(self):
-        self.idx.rebuild(self.chunks, self.docs)
+        self._write(self.chunks, self.docs)
         only_tests = self.idx.search(["sha256"], filters=lx.Filters(kind="test"))
         self.assertEqual([h[0] for h in only_tests], ["tests/test_auth.py::test_digest"])
         only_md = self.idx.search(["migrate"], filters=lx.Filters(lang="markdown"))
@@ -128,9 +132,9 @@ class TestLexicalIndex(unittest.TestCase):
         self.assertEqual(self.idx.search(["sha256"], allowed_docs=[]), [])
 
     def test_rebuild_is_atomic_swap(self):
-        self.idx.rebuild(self.chunks, self.docs)
-        self.idx.rebuild({"only::one": self.chunks["src/auth.py::sha256_digest"]}, {"src/auth.py": {}})
-        self.assertEqual(self.idx.row_count(), 1)
+        self._write(self.chunks, self.docs)
+        self._write({"only::one": self.chunks["src/auth.py::sha256_digest"]}, {"src/auth.py": {}})
+        self.assertEqual(self.idx.counts(), (1, 1))
         self.assertFalse(self.idx.path.with_suffix(".sqlite.tmp").exists())
 
 
@@ -191,19 +195,19 @@ class TestCodeIndexLexical(_Project):
         fresh._load_index()
         self.assertEqual(fresh.lexical_engine, expected, "readiness survives a reload")
 
-    def test_older_index_schema_rebuilds_on_load(self):
-        """An index.json written before the tokenizer change carries TF-IDF
-        terms the new queries cannot hit; loading it must rebuild, not serve it."""
+    def test_legacy_index_json_rebuilds_on_load(self):
+        """A pre-2.107.0 index.json (old tokenizer, no store) must be rebuilt
+        into the store on load, not served, and then removed."""
         svc = self.svc()
-        index_file = svc.indexer.index_dir / "index.json"
-        data = json.loads(index_file.read_text(encoding="utf-8"))
-        data.pop("index_schema", None)
-        data["chunk_tfidf"] = {cid: {"stale": 1.0} for cid in data["chunks"]}
-        index_file.write_text(json.dumps(data), encoding="utf-8")
-        svc.indexer._lexical.path.unlink(missing_ok=True)
+        store_path = svc.indexer._store.path
+        legacy = svc.indexer.index_dir / "index.json"
+        legacy.write_text(json.dumps({"index_schema": 1, "documents": {}, "chunks": {}}), encoding="utf-8")
+        store_path.unlink()
         fresh = CodeIndex(str(self.root))
+        self.assertTrue(fresh.needs_migration())
         self.assertTrue(fresh._load_index())
-        self.assertEqual(json.loads(index_file.read_text(encoding="utf-8")).get("index_schema"), 2)
+        self.assertTrue(store_path.exists())
+        self.assertFalse(legacy.exists(), "legacy index.json removed after the store is written")
         self.assertEqual(self.files(fresh.search("S256", top_k=3, max_tokens=1200))[0], "src/auth/oauth2.py")
 
     def test_digit_tokens_find_their_definitions(self):

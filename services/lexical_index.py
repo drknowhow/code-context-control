@@ -10,39 +10,25 @@ vocabulary. This module gives the index:
   camelCase/snake_case parts, digits preserved, no stemming. ``parseIso8601``
   yields ``parseiso8601 parse iso8601``; a query for ``iso8601`` or the whole
   name both hit.
-* :class:`LexicalIndex` — an FTS5 table with weighted columns (path, symbol,
-  kind, body) ranked by SQLite's own BM25, plus per-chunk metadata for
-  ``path`` / ``lang`` / ``kind`` filters. Opened per call: the MCP server,
-  the hub and a CLI may all hold the same project, and SQLite handles that
-  better than a shared connection would.
+* :class:`Filters` — ``path`` / ``lang`` / ``kind`` narrowing, shared by every
+  search action.
 * :func:`doc_kind` / :func:`lang_of` — the classification the filters and the
   intent priors use.
-
-FTS5 is a compile-time option of SQLite. :func:`fts5_available` probes it
-once; when it is missing ``CodeIndex`` keeps its TF-IDF path, with the same
-tokenizer, so the fallback still finds ``v2``.
+* :func:`fts5_available` — FTS5 is a compile-time option of SQLite; probed
+  once. The FTS5 table itself lives in :mod:`services.index_store` beside the
+  documents and chunks (2.107.0); when FTS5 is missing ``CodeIndex`` keeps its
+  TF-IDF path, with the same tokenizer, so the fallback still finds ``v2``.
 """
 
 from __future__ import annotations
 
 import fnmatch
-import logging
 import re
 import sqlite3
-from pathlib import Path
-
-log = logging.getLogger("c3.lexical_index")
-
-SCHEMA_VERSION = 1
-DB_NAME = "lexical.sqlite"
-
-# BM25 column weights: chunk_id (unindexed, 0), path, symbol, kind, body.
-_WEIGHTS = (0.0, 3.0, 6.0, 1.0, 1.0)
 
 _IDENT_RE = re.compile(r"[A-Za-z0-9_]+")
 _CAMEL_1 = re.compile(r"([a-z0-9])([A-Z])")
 _CAMEL_2 = re.compile(r"([A-Z]+)([A-Z][a-z])")
-_TOKEN_OK = re.compile(r"^[a-z0-9_]+$")
 
 _fts5_probe: bool | None = None
 
@@ -257,172 +243,3 @@ def fts5_available() -> bool:
         except Exception:
             _fts5_probe = False
     return _fts5_probe
-
-
-class LexicalIndex:
-    """FTS5-backed candidate retrieval for CodeIndex chunks."""
-
-    def __init__(self, index_dir):
-        self.path = Path(index_dir) / DB_NAME
-        self.available = fts5_available()
-
-    # -- connection -----------------------------------------------------------
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
-
-    def ready(self) -> bool:
-        """An index exists, at this schema, with at least one row."""
-        if not self.available or not self.path.exists():
-            return False
-        try:
-            conn = self._connect()
-            try:
-                if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
-                    return False
-                return conn.execute("SELECT COUNT(*) FROM chunk_meta").fetchone()[0] > 0
-            finally:
-                conn.close()
-        except Exception:
-            return False
-
-    def row_count(self) -> int:
-        if not self.available or not self.path.exists():
-            return 0
-        try:
-            conn = self._connect()
-            try:
-                return int(conn.execute("SELECT COUNT(*) FROM chunk_meta").fetchone()[0])
-            finally:
-                conn.close()
-        except Exception:
-            return 0
-
-    # -- build ----------------------------------------------------------------
-
-    @staticmethod
-    def _fts_text(chunk: dict, doc_id: str) -> tuple[str, str, str, str]:
-        path_tokens = tokenize_code(doc_id.replace("\\", "/").replace("/", " ").replace(".", " "))
-        name = chunk.get("name") or ""
-        symbol_tokens = tokenize_code(name)
-        kind = f"{doc_kind(doc_id)} {chunk.get('type') or 'block'} {lang_of(doc_id)}".strip()
-        body_tokens = tokenize_code(chunk.get("content") or "")
-        return (" ".join(path_tokens), " ".join(symbol_tokens), kind, " ".join(body_tokens))
-
-    def rebuild(self, chunks: dict, documents: dict) -> int:
-        """Drop and re-create every table from ``chunks``. Returns rows written."""
-        if not self.available:
-            return 0
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".sqlite.tmp")
-        for stale in (tmp, tmp.with_name(tmp.name + "-wal"), tmp.with_name(tmp.name + "-shm")):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        conn = sqlite3.connect(str(tmp))
-        try:
-            conn.execute("PRAGMA journal_mode=MEMORY")
-            conn.execute("PRAGMA synchronous=OFF")
-            conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
-            conn.execute(
-                "CREATE TABLE chunk_meta(chunk_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, "
-                "doc_kind TEXT NOT NULL, lang TEXT NOT NULL, chunk_type TEXT NOT NULL)")
-            conn.execute(
-                "CREATE VIRTUAL TABLE chunk_fts USING fts5(chunk_id UNINDEXED, path, symbol, kind, body, "
-                "tokenize=\"unicode61 tokenchars '_'\")")
-            rows = 0
-            meta_rows = []
-            fts_rows = []
-            for chunk_id, chunk in chunks.items():
-                doc_id = chunk.get("doc_id") or ""
-                if not doc_id:
-                    continue
-                path_t, sym_t, kind_t, body_t = self._fts_text(chunk, doc_id)
-                meta_rows.append((chunk_id, doc_id, doc_kind(doc_id), lang_of(doc_id),
-                                  (chunk.get("type") or "block").lower()))
-                fts_rows.append((chunk_id, path_t, sym_t, kind_t, body_t))
-                rows += 1
-                if len(meta_rows) >= 500:
-                    conn.executemany("INSERT INTO chunk_meta VALUES (?,?,?,?,?)", meta_rows)
-                    conn.executemany("INSERT INTO chunk_fts VALUES (?,?,?,?,?)", fts_rows)
-                    meta_rows, fts_rows = [], []
-            if meta_rows:
-                conn.executemany("INSERT INTO chunk_meta VALUES (?,?,?,?,?)", meta_rows)
-                conn.executemany("INSERT INTO chunk_fts VALUES (?,?,?,?,?)", fts_rows)
-            conn.execute("INSERT INTO meta VALUES ('docs', ?)", (str(len(documents)),))
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            conn.commit()
-        finally:
-            conn.close()
-        # Atomic swap so a concurrent reader sees the old index or the new one.
-        for stale in (self.path.with_name(self.path.name + "-wal"),
-                      self.path.with_name(self.path.name + "-shm")):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        try:
-            tmp.replace(self.path)
-        except OSError as exc:
-            log.warning("lexical index swap failed (%s); keeping the previous index", exc)
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            return 0
-        return rows
-
-    # -- query ----------------------------------------------------------------
-
-    @staticmethod
-    def _match_expr(tokens: list[str]) -> str:
-        safe = [t for t in tokens if _TOKEN_OK.match(t)]
-        return " OR ".join(f'"{t}"' for t in safe)
-
-    def search(self, query_tokens: list[str], limit: int = 40,
-               filters: Filters | None = None, allowed_docs=None) -> list[tuple[str, float]]:
-        """``[(chunk_id, score)]`` best first; score is ``-bm25`` (positive, larger is better).
-
-        ``allowed_docs`` (an iterable of doc_ids) restricts candidates when a
-        path filter is active; lang/kind filters are applied in SQL.
-        """
-        if not self.available:
-            return []
-        expr = self._match_expr(query_tokens)
-        if not expr:
-            return []
-        filters = filters or Filters()
-        conn = self._connect()
-        try:
-            params: list = [*_WEIGHTS, expr]
-            sql = (
-                "SELECT f.chunk_id, bm25(chunk_fts, ?, ?, ?, ?, ?) AS rank "
-                "FROM chunk_fts f JOIN chunk_meta m ON m.chunk_id = f.chunk_id "
-                "WHERE chunk_fts MATCH ?")
-            if filters.langs:
-                sql += " AND m.lang IN (%s)" % ",".join("?" * len(filters.langs))
-                params.extend(sorted(filters.langs))
-            if filters.kinds:
-                sql += " AND (m.doc_kind IN (%s) OR m.chunk_type IN (%s))" % (
-                    ",".join("?" * len(filters.kinds)), ",".join("?" * len(filters.kinds)))
-                params.extend(sorted(filters.kinds))
-                params.extend(sorted(filters.kinds))
-            if allowed_docs is not None:
-                allowed = list(allowed_docs)
-                if not allowed:
-                    return []
-                conn.execute("CREATE TEMP TABLE allowed_docs(doc_id TEXT PRIMARY KEY)")
-                conn.executemany("INSERT OR IGNORE INTO allowed_docs VALUES (?)", [(d,) for d in allowed])
-                sql += " AND m.doc_id IN (SELECT doc_id FROM allowed_docs)"
-            sql += " ORDER BY rank, f.chunk_id LIMIT ?"
-            params.append(int(limit))
-            rows = conn.execute(sql, params).fetchall()
-        except sqlite3.Error as exc:
-            log.debug("lexical search failed: %s", exc)
-            return []
-        finally:
-            conn.close()
-        return [(cid, -float(rank)) for cid, rank in rows]
