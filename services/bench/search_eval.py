@@ -373,9 +373,14 @@ def run_case(case: QueryCase, rt: EvalRuntime) -> QueryResult:
     result = QueryResult(id=case.id, action=case.action, query=case.query, gate=case.gate,
                          status="skip", expect_none=case.expect_none,
                          has_symbols=bool(case.expect_symbols))
-    if case.filters:
-        result.reason = "filters are not a c3_search parameter yet (P2)"
+    kwargs = dict(case.params)
+    unknown = [k for k in case.filters if k not in ("path", "lang", "kind")]
+    if unknown:
+        result.reason = f"unsupported filter(s): {', '.join(unknown)}"
         return result
+    for key, value in case.filters.items():
+        if value:
+            kwargs[key] = value
     if case.action == "transcript":
         result.reason = "transcript search is out of scope for this harness"
         return result
@@ -390,7 +395,7 @@ def run_case(case: QueryCase, rt: EvalRuntime) -> QueryResult:
     t0 = time.perf_counter()
     try:
         response = handle_search(case.query, case.action, case.top_k, case.max_tokens,
-                                 rt.svc, _noop_finalize, _noop_facts, **case.params)
+                                 rt.svc, _noop_finalize, _noop_facts, **kwargs)
     except Exception as exc:
         result.status = "fail"
         result.reason = f"{type(exc).__name__}: {exc}"

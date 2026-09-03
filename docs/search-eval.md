@@ -107,16 +107,35 @@ the new id.
 
 - `params`: extra `handle_search` keyword arguments for the case, e.g.
   `{"ignore_case": true}`.
+- `filters`: `{"path": "src/**", "lang": "go", "kind": "test"}` — passed to
+  the tool as its `path` / `lang` / `kind` parameters.
 
-## Known gaps this suite documents (2.105.0)
+## The engine under test (2.106.0)
 
-- `digits_v2_migration`, `digits_s256_challenge_method`: the tokenizer drops
-  digits, so `v2` and `S256` vanish (P2).
-- `filter_tests_only`: no `kind`/`path`/`lang` filters (P2).
+`code` queries go through SQLite FTS5 when this Python's SQLite has it
+(`CodeIndex.lexical_engine == "fts5"`; `c3 stats` and `search-eval` report
+it): BM25 over four weighted columns — path (3), symbol (6), kind (1), body
+(1) — followed by small additive boosts (whole symbol name spelled out
++0.25, path tokens up to +0.15), an intent prior (+0.15 for test files when
+the query names tests, for docs when it asks a how-to), and the weak recency
+factor. Without FTS5, or with `search_engine: "tfidf"` in `.c3/config.json`,
+the pre-2.106.0 TF-IDF scan runs with the same tokenizer.
+
+The tokenizer keeps every identifier verbatim and adds its camelCase /
+snake_case parts, digits included, no stemming: `parseIso8601` indexes as
+`parseiso8601 parse iso8601`, so `iso8601`, `parse iso8601` and the whole
+name all hit; `sha256`, `oauth2`, `v2`, `S256` are tokens. Synonyms come
+only from `search_synonyms` in `.c3/config.json` (`{"endpoint": ["route"]}`).
+
+## Known gaps this suite documents (2.106.0)
+
 - Semantic cases run only where Ollama and chromadb are present.
+- The golden suite's remaining failures are natural-language queries where a
+  test file outranks the source it exercises; the intent prior helps when the
+  query names tests, and `kind=source` settles it, but an unfiltered how-to
+  question still lands on tests sometimes. Hybrid fusion (P3) is next.
 
-Closed in 2.105.0 (P1) and now gated `must_pass`: the oversized `Ledger`
-class chunk comes back as a window; `exact` has `ignore_case`; `files` is a
-real filename search (exact name, glob, substring), so `Invoi`, `limit`,
-`configs/*.yml` and the masked `customers.csv` all resolve; co-occurrence
-synonyms are off by default.
+Closed in 2.105.0 (P1) and 2.106.0 (P2), all gated `must_pass`: the
+oversized `Ledger` class chunk comes back as a window; `exact` has
+`ignore_case`; `files` is a real filename search; `v2` and `S256` are tokens;
+`path` / `lang` / `kind` filters work on every action.

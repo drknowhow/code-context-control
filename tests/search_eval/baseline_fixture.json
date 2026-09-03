@@ -1,55 +1,55 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T14:22:35",
-  "c3_version": "2.105.0",
+  "generated_at": "2026-09-03T15:15:15",
+  "c3_version": "2.106.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
-    "build_seconds": 0.245,
-    "file_memory_seconds": 0.026,
+    "build_seconds": 0.226,
+    "file_memory_seconds": 0.025,
     "tracked_files": 39,
     "file_memory_coverage": 1.0,
-    "index_bytes": 278607,
+    "index_bytes": 317185,
     "semantic": "off"
   },
   "aggregates": {
-    "n_cases": 58,
-    "n_executed": 53,
-    "n_scored": 48,
-    "n_skipped": 5,
-    "recall_at_1": 0.8333,
-    "recall_at_3": 0.9583,
-    "recall_at_10": 0.9583,
-    "mrr": 0.8924,
-    "symbol_recall_at_3": 0.963,
+    "n_cases": 63,
+    "n_executed": 59,
+    "n_scored": 54,
+    "n_skipped": 4,
+    "recall_at_1": 0.9444,
+    "recall_at_3": 1.0,
+    "recall_at_10": 1.0,
+    "mrr": 0.9691,
+    "symbol_recall_at_3": 1.0,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 10.0,
-    "latency_p95_ms": 58.2,
+    "latency_p50_ms": 11.3,
+    "latency_p95_ms": 52.4,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []
   },
   "by_action": {
     "code": {
-      "n": 35,
-      "recall_at_3": 0.9429
+      "n": 39,
+      "recall_at_3": 1.0
     },
     "exact": {
-      "n": 5,
+      "n": 6,
       "recall_at_3": 1.0
     },
     "files": {
-      "n": 8,
+      "n": 9,
       "recall_at_3": 1.0
     }
   },
   "floors": {
-    "recall_at_1": 0.8,
-    "recall_at_3": 0.92,
-    "recall_at_10": 0.92,
-    "mrr": 0.86,
-    "symbol_recall_at_3": 0.93,
+    "recall_at_1": 0.91,
+    "recall_at_3": 0.97,
+    "recall_at_10": 0.97,
+    "mrr": 0.93,
+    "symbol_recall_at_3": 0.97,
     "zero_result_accuracy": 1.0
   },
   "per_query": {
@@ -115,12 +115,12 @@
     },
     "code_exchange_code_for_token": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "code_refresh_rotation": {
       "status": "pass",
-      "rank": 3,
+      "rank": 1,
       "gate": "info"
     },
     "code_vat_apply": {
@@ -130,7 +130,7 @@
     },
     "code_invoice_total_rounding": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "code_lru_evict": {
@@ -140,7 +140,7 @@
     },
     "code_token_bucket": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "code_session_expiry": {
@@ -259,14 +259,14 @@
       "gate": "must_pass"
     },
     "digits_v2_migration": {
-      "status": "fail",
-      "rank": null,
-      "gate": "xfail"
+      "status": "pass",
+      "rank": 3,
+      "gate": "must_pass"
     },
     "digits_s256_challenge_method": {
-      "status": "fail",
-      "rank": null,
-      "gate": "xfail"
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     },
     "exact_def_exchange_code": {
       "status": "pass",
@@ -339,9 +339,34 @@
       "gate": "info"
     },
     "filter_tests_only": {
-      "status": "skip",
-      "rank": null,
-      "gate": "info"
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "filter_path_src": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "filter_lang_go": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "filter_kind_doc": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "filter_files_glob_lang": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
+    },
+    "filter_exact_kind_source": {
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     }
   }
 }

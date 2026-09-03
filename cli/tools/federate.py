@@ -64,7 +64,8 @@ def subproject_scopes(svc, scope: str = "all") -> list:
 
 def federated_search(query: str, action: str, top_k: int, max_tokens: int,
                      svc, finalize, maybe_facts, scope: str,
-                     ignore_case: bool = False) -> str:
+                     ignore_case: bool = False, path: str = "", lang: str = "",
+                     kind: str = "") -> str:
     """Sectioned fan-out search: parent (scope='all') + linked children.
 
     A child failure renders as a one-line error inside its section — it never
@@ -74,11 +75,12 @@ def federated_search(query: str, action: str, top_k: int, max_tokens: int,
 
     targets = subproject_scopes(svc, scope)
     parts = []
+    extra = {"ignore_case": ignore_case, "path": path, "lang": lang, "kind": kind}
 
     if scope == "all":
         parent_budget = max(200, int(max_tokens * _PARENT_BUDGET_SHARE)) if targets else max_tokens
         parts.append(handle_search(query, action, top_k, parent_budget, svc,
-                                   _noop_finalize, maybe_facts, ignore_case=ignore_case))
+                                   _noop_finalize, maybe_facts, **extra))
 
     if not targets:
         if scope != "all":
@@ -93,7 +95,7 @@ def federated_search(query: str, action: str, top_k: int, max_tokens: int,
             try:
                 fsvc = _child_runtime(t["path"])
                 body = handle_search(query, action, child_k, child_budget, fsvc,
-                                     _noop_finalize, _noop_facts, ignore_case=ignore_case)
+                                     _noop_finalize, _noop_facts, **extra)
             except Exception as e:
                 body = f"[error] {type(e).__name__}: {e}"
             parts.append(f"=== [sub:{t['name']}] ===\n{body}")
