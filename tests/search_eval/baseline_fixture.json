@@ -1,16 +1,16 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T12:10:57",
+  "generated_at": "2026-09-03T12:15:36",
   "c3_version": "2.103.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
     "build_seconds": 0.225,
-    "file_memory_seconds": 0.027,
+    "file_memory_seconds": 0.026,
     "tracked_files": 39,
     "exact_coverage": 1.0,
-    "index_bytes": 255862,
+    "index_bytes": 257480,
     "semantic": "off"
   },
   "aggregates": {
@@ -18,14 +18,14 @@
     "n_executed": 52,
     "n_scored": 48,
     "n_skipped": 5,
-    "recall_at_1": 0.75,
+    "recall_at_1": 0.7708,
     "recall_at_3": 0.875,
     "recall_at_10": 0.8958,
-    "mrr": 0.8142,
+    "mrr": 0.8247,
     "symbol_recall_at_3": 0.9259,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 15.7,
-    "latency_p95_ms": 36.2,
+    "latency_p50_ms": 15.1,
+    "latency_p95_ms": 37.6,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []
@@ -220,7 +220,7 @@
     },
     "files_invoice": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "must_pass"
     },
     "files_limiter": {
