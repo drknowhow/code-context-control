@@ -53,7 +53,7 @@ except ImportError:
 
 # Bump this any time extract_sections_ast / _walk_* logic changes so that
 # file_memory records extracted with an older version are force-refreshed.
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"  # 3: markdown headings span their section body
 
 def get_parser(ext: str) -> Optional['tree_sitter.Parser']:
     if not HAS_TREE_SITTER or ext not in LANGUAGES:
@@ -83,6 +83,7 @@ def extract_sections_ast(content: str, ext: str) -> Optional[List[Dict[str, Any]
             _walk_html(tree.root_node, lines, sections)
         elif ext == '.md':
             _walk_markdown(tree.root_node, lines, sections)
+            _extend_markdown_headings(sections, len(lines))
         elif ext == '.css':
             _walk_css(tree.root_node, lines, sections)
         elif ext == '.go':
@@ -464,6 +465,31 @@ def _walk_markdown(node, lines: List[str], sections: List[Dict[str, Any]]):
 
         # Recurse if needed (atx headings are top level usually, but just in case)
         _walk_markdown(child, lines, sections)
+
+
+def _extend_markdown_headings(sections: List[Dict[str, Any]], total_lines: int) -> None:
+    """Give each heading the body it introduces.
+
+    ``_walk_markdown`` records a heading as its own single line, so a CHANGELOG
+    entry became an 18-token chunk holding nothing but its title — short,
+    name-boosted, and outranking the source files it described. A heading now
+    runs to the line before the next heading of the same or a higher level
+    (else end of file), which is also what a reader means by "that section".
+    """
+    heads = [s for s in sections if s.get("type") == "heading"]
+
+    def _level(sec) -> int:
+        name = sec.get("name") or ""
+        return int(name[1]) if len(name) > 1 and name[0] == "h" and name[1].isdigit() else 1
+
+    for i, head in enumerate(heads):
+        lv = _level(head)
+        end = total_lines
+        for nxt in heads[i + 1:]:
+            if _level(nxt) <= lv:
+                end = max(head["line_start"], nxt["line_start"] - 1)
+                break
+        head["line_end"] = max(int(head.get("line_end") or 0), end)
 
 def _walk_css(node, lines: List[str], sections: List[Dict[str, Any]]):
     """Extract rulesets from CSS AST."""

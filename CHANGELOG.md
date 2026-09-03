@@ -4,6 +4,96 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.105.0] - 2026-09-03
+
+Phase P1 of the search plan: the data-loss and correctness defects the
+2.103.0 review measured, fixed one by one, each with a case in the relevance
+suite that failed before and passes now. No scorer was retuned; the fixture
+baseline still moved from recall@1 0.729 / MRR 0.807 to 0.833 / 0.892 because
+results that used to be dropped or missed are now returned.
+
+### Fixed — `exact` searched the files an agent had happened to read, not the index
+
+`_exact_search` iterated `file_memory.list_tracked()` — the records written
+when an agent reads a file — and opened every one of those JSON records per
+query to learn its path. On this repository that universe was 427 files
+against 513 indexed; a regex could miss a file simply because nobody had read
+it yet. It now walks the same pruned manifest `build_index` uses (Access
+Guard prunes denied subtrees inside that walk; sub-project folders are
+excluded), so `exact`, `files` and `code` agree on what exists. The zero-result
+line says how many files were scanned.
+
+Two long-standing gaps closed on the way: `ignore_case=True` (a new
+`c3_search` parameter, propagated to federated children) and a per-file cap —
+after 20 matching lines the rest are counted (`[+N more matching lines …]`),
+so one log-like file no longer spends the whole token budget and hides every
+other hit.
+
+When ripgrep is on `PATH` (or named by `ripgrep_path` in config / `C3_RIPGREP`)
+and the project has **no** access rules at all, `rg --json` pre-filters the
+manifest to the files that can match; every candidate is then re-scanned in
+Python through the guard/mask view, so the output is byte-identical to the
+pure-Python path and ripgrep never decides what is shown. With any deny,
+read-only or mask rule active the fast path is skipped entirely: ripgrep
+reads raw bytes, and a denied subtree must not be read even to discard the
+result.
+
+### Fixed — `files` was the content search with the content hidden
+
+Documented as "by name", `files` ran the TF-IDF content search and dropped
+the snippets. Whole path tokens happened to work (`invoice`, `docker
+compose`), so the gap hid; `Invoi`, `limit` and `configs/*.yml` found nothing,
+and the masked `customers.csv` lost to a CHANGELOG heading for its own name.
+It is now a filename search over the indexed paths — exact basename or stem,
+then glob, then basename substring, then path substring, shorter paths first,
+case-insensitive — with the content-term search kept as the fallback when no
+path names the query. Each row says why it matched.
+
+### Fixed — the semantic zero-result header promised a fallback that never ran
+
+`[semantic:…] 0 results (falling back to code search)` returned right there.
+The fallback now runs, under a header that says so.
+
+### Fixed — a chunk larger than the budget was skipped, so a class could never be found by its name
+
+231 chunks on this repository exceeded the default 1200-token budget and
+`CodeIndex.search` skipped them outright; asking for `Ledger` returned
+`Ledger.version`, never the class. An oversized chunk now comes back as a
+window of at most 400 tokens anchored three lines above the first line that
+mentions a query term (the class header, for a class-name query), closed with
+`[window Lx-Ly of class La-Lb, N tok; c3_read(lines=...) for the rest]`, and
+its `lines` field names the window. `windowed: True` marks such results.
+
+### Fixed — recency bias died on every restart; the symbol map was never consulted
+
+`_file_mtimes` fed the recency factor but was never written to `index.json`,
+so after any server restart the factor was silently 1.0 for every file — and
+while it was populated, `max()` over all files ran once per chunk per query.
+It is persisted now and the normaliser is computed once per query.
+
+`self.symbols` was built, saved and loaded, and never read at query time. A
+query that IS a symbol name (one identifier, any case, dotted or bare) now
+ranks that symbol's definition ahead of every scored chunk: a test file that
+mentions `exchange_code` thirty times no longer outranks `def exchange_code`.
+
+### Changed
+
+- **Co-occurrence synonyms are off by default.** The pass exhausted its
+  20M-pair budget on a 513-file repository and its picks (`customers.csv` →
+  `export`, `as`, `append`) lifted CHANGELOG headings over source files.
+  `search_cooccurrence_synonyms: true` in `.c3/config.json` (or
+  `CodeIndex(..., cooccurrence=True)`) turns it back on; the hardcoded synonym
+  map is unchanged and is P2's concern.
+- **Markdown headings span their section.** `_walk_markdown` recorded a
+  heading as its own single line, so a CHANGELOG entry was an 18-token chunk
+  holding nothing but its title — short, name-boosted, first. A heading now
+  runs to the line before the next heading of the same or a higher level.
+  `PARSER_VERSION` 2 → 3, so file_memory records refresh.
+- `c3_search` docstring describes what each action actually does.
+- Relevance suite: `params` per case (`{"ignore_case": true}`); the P1 cases
+  promoted from `xfail` to `must_pass`; floors raised to three points under
+  the new measurements. `tests/test_search_p1.py` pins each fix in isolation.
+
 ## [2.104.0] - 2026-09-03
 
 ### Fixed — `c3 index` capped every run at 500 files and reported the truncated total as the result

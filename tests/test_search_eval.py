@@ -100,9 +100,9 @@ class TestParseHits:
 
 
 class TestFixtureGate:
-    def test_index_built_and_exact_universe_complete(self, report):
+    def test_index_built_and_file_memory_populated(self, report):
         assert report.stats.files_indexed >= 35
-        assert report.stats.exact_coverage == 1.0, "fixture file_memory should track every indexed file"
+        assert report.stats.file_memory_coverage == 1.0, "fixture file_memory should track every indexed file"
 
     def test_must_pass_cases_pass(self, report):
         failed = report.aggregates["must_pass_failed"]

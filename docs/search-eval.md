@@ -18,11 +18,12 @@ The response is parsed back into ordered hits and graded:
 | `symbol_recall_at_3` | for cases naming a symbol: the symbol itself within top 3 |
 | `zero_result_accuracy` | share of "no valid answer" cases that returned nothing |
 | `latency_p50_ms`, `latency_p95_ms` | wall time of `handle_search` per case |
-| index stats | files, chunks, chunks over the default budget, build seconds, `exact_coverage` (files `exact` can see ÷ files indexed) |
+| index stats | files, chunks, chunks over the default budget, build seconds, `file_memory_coverage` (files tracked by `file_memory` ÷ files indexed) |
 
-`exact_coverage` is reported because `exact` iterates `file_memory`, not the
-index; on a real project the two sets differ (427 vs 513 on this repo when
-the harness was written).
+`file_memory_coverage` was called `exact_coverage` in 2.103.0, when `exact`
+iterated `file_memory` and could only see the files an agent had read (427 of
+513 on this repo). Since 2.105.0 `exact` walks the indexed manifest; the stat
+stays as a health signal for `file_memory` itself.
 
 Ranks must repeat exactly between runs and machines, or floors mean nothing.
 Two tie-breakers used to be environmental: the recency factor (mtimes after a
@@ -104,18 +105,18 @@ Adding a case: append a line, run `c3 search-eval --update-baseline`, commit
 both files. `test_baseline_covers_every_case` fails until the baseline knows
 the new id.
 
-## Known gaps this suite documents (2.103.0)
+- `params`: extra `handle_search` keyword arguments for the case, e.g.
+  `{"ignore_case": true}`.
 
-- `code_ledger_class_oversize`: a class chunk larger than the token budget is
-  skipped rather than windowed (P1).
-- `exact_case_insensitive`: `exact` has no ignore-case option (P1).
-- `files_substring`, `files_prefix_limit`: `files` matches whole path tokens
-  (and camelCase segments) only; a partial name such as `Invoi` or `limit`
-  finds nothing (P1). `files_glob_yml` passes only because the glob's tokens
-  happen to be path terms; globs are not interpreted.
+## Known gaps this suite documents (2.105.0)
+
 - `digits_v2_migration`, `digits_s256_challenge_method`: the tokenizer drops
   digits, so `v2` and `S256` vanish (P2).
-- `files_customers_csv_masked`: the masked CSV ranks fourth for its own
-  filename; co-occurrence synonyms lift a CHANGELOG heading above it (P2).
 - `filter_tests_only`: no `kind`/`path`/`lang` filters (P2).
 - Semantic cases run only where Ollama and chromadb are present.
+
+Closed in 2.105.0 (P1) and now gated `must_pass`: the oversized `Ledger`
+class chunk comes back as a window; `exact` has `ignore_case`; `files` is a
+real filename search (exact name, glob, substring), so `Invoi`, `limit`,
+`configs/*.yml` and the masked `customers.csv` all resolve; co-occurrence
+synonyms are off by default.

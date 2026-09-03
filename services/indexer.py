@@ -50,11 +50,58 @@ _COOC_MAX_CHUNK_TOKENS = 200
 # this step unbounded. ~10s of CPU on the boxes this runs on.
 _COOC_MAX_PAIR_UPDATES = 20_000_000
 
+# The file universe c3 indexes. Module-level so the search tool's `exact` and
+# `files` actions can walk the SAME set without a live CodeIndex (tests hand
+# them a mock indexer; before 2.105.0 `exact` walked file_memory instead and
+# saw 427 of 513 indexed files on this repo).
+DEFAULT_CODE_EXTS = frozenset({
+    # Python
+    '.py', '.pyi', '.pyx',
+    # JavaScript / TypeScript
+    '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+    # Web
+    '.html', '.htm', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
+    # Markdown
+    '.md', '.mdx',
+    # Data / Config
+    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.env.example',
+    '.xml', '.csv',
+    # Systems
+    '.c', '.h', '.cpp', '.cxx', '.cc', '.hpp', '.hxx',
+    '.rs', '.go', '.java', '.kt', '.kts', '.scala',
+    '.cs', '.fs', '.vb',
+    # Scripting
+    '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+    '.rb', '.pl', '.pm', '.lua', '.php',
+    '.r', '.R', '.jl',
+    # Query / Schema
+    '.sql', '.graphql', '.gql', '.prisma',
+    # Functional
+    '.hs', '.ex', '.exs', '.erl', '.clj', '.cljs', '.elm', '.ml', '.mli',
+    # Mobile
+    '.swift', '.m', '.mm', '.dart',
+    # Docs / Markup
+    '.rst', '.tex', '.adoc',
+    # DevOps / IaC
+    '.tf', '.hcl', '.dockerfile', '.nix',
+    # Other
+    '.proto', '.thrift', '.zig', '.nim', '.v',
+    '.makefile', '.cmake',
+})
+
+# A chunk larger than the caller's token budget used to be skipped outright,
+# so a class with many methods could never be returned for its own name (231
+# such chunks on this repo at the default budget). Now a window of at most
+# this many tokens, anchored on the first line that mentions a query term,
+# stands in for it.
+_WINDOW_MAX_TOKENS = 400
+
 
 class CodeIndex:
     """TF-IDF based code search index with structural awareness."""
 
-    def __init__(self, project_path: str, index_dir: str = ".c3/index"):
+    def __init__(self, project_path: str, index_dir: str = ".c3/index",
+                 cooccurrence: "bool | None" = None):
         self.project_path = Path(project_path)
         self.index_dir = self.project_path / index_dir
         self.index_dir.mkdir(parents=True, exist_ok=True)
@@ -64,51 +111,24 @@ class CodeIndex:
         self.chunks = {}          # chunk_id -> {doc_id, content, type, name, line_start, line_end}
         self.idf = {}             # term -> IDF score
         self.chunk_tfidf = {}     # chunk_id -> {term: tfidf_score}
-        self.symbols = {}         # symbol_name -> [chunk_ids]
+        self.symbols = {}         # symbol_name (lowercased, dotted) -> [chunk_ids]
+        self._symbol_tail = {}    # last dotted segment -> [chunk_ids]; derived from symbols
         # Bounded LRU — an unbounded dict grew indefinitely over long sessions.
         self._search_cache: "OrderedDict" = OrderedDict()
         self._search_cache_max = 128
         # Memoized query expansion + bigrams. Agents repeat the same queries.
         self._expand_cache: dict = {}
         self._cooccurrence = {}   # term -> {term: count} for auto-synonyms
-        self._file_mtimes = {}    # doc_id -> mtime for recency bias
+        self._cooccurrence_stats = {}
+        # None -> read `search_cooccurrence_synonyms` from .c3/config.json
+        # (default off: the pass exhausted its 20M-pair budget on a 513-file
+        # repo and its picks lifted CHANGELOG headings over source files).
+        self._cooccurrence_enabled = cooccurrence
+        self._file_mtimes = {}    # doc_id -> mtime for recency bias (persisted)
 
         # Config - shared pruned-walk skip set (services/scanner.py)
         self.skip_dirs = set(SKIP_DIRS)
-        self.code_exts = {
-            # Python
-            '.py', '.pyi', '.pyx',
-            # JavaScript / TypeScript
-            '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
-            # Web
-            '.html', '.htm', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
-            # Markdown
-            '.md', '.mdx',
-            # Data / Config
-            '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.env.example',
-            '.xml', '.csv',
-            # Systems
-            '.c', '.h', '.cpp', '.cxx', '.cc', '.hpp', '.hxx',
-            '.rs', '.go', '.java', '.kt', '.kts', '.scala',
-            '.cs', '.fs', '.vb',
-            # Scripting
-            '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-            '.rb', '.pl', '.pm', '.lua', '.php',
-            '.r', '.R', '.jl',
-            # Query / Schema
-            '.sql', '.graphql', '.gql', '.prisma',
-            # Functional
-            '.hs', '.ex', '.exs', '.erl', '.clj', '.cljs', '.elm', '.ml', '.mli',
-            # Mobile
-            '.swift', '.m', '.mm', '.dart',
-            # Docs / Markup
-            '.md', '.mdx', '.rst', '.tex', '.adoc',
-            # DevOps / IaC
-            '.tf', '.hcl', '.dockerfile', '.nix',
-            # Other
-            '.proto', '.thrift', '.zig', '.nim', '.v',
-            '.makefile', '.cmake',
-        }
+        self.code_exts = set(DEFAULT_CODE_EXTS)
 
         # Sub-project exclusion: designated child folders carry their own
         # .c3 index, so the parent skips them (relative-path-prefix match —
@@ -239,9 +259,15 @@ class CodeIndex:
             files_indexed += 1
             _report()
 
-        # Build TF-IDF and co-occurrence synonyms
+        # Build TF-IDF; co-occurrence synonyms only when asked for.
         self._build_tfidf()
-        self._build_cooccurrence()
+        if self._cooccurrence_wanted():
+            self._build_cooccurrence()
+        else:
+            self._cooccurrence = {}
+            self._cooccurrence_stats = {"disabled": True, "chunks_skipped": 0,
+                                        "pair_updates": 0, "budget_exhausted": False}
+        self._rebuild_symbol_tail()
 
         # Save index
         self._save_index()
@@ -533,8 +559,13 @@ class CodeIndex:
         return expanded, bigrams
 
     def _score_chunk(self, chunk_id: str, query: str, query_tokens: list,
-                     query_bigrams: list = None) -> float:
-        """Combine TF-IDF relevance with path/name heuristics, bigrams, and recency."""
+                     query_bigrams: list = None, max_mtime: float = 0.0) -> float:
+        """Combine TF-IDF relevance with path/name heuristics, bigrams, and recency.
+
+        ``max_mtime`` is computed once per query by :meth:`search`; before it
+        was a parameter this method recomputed ``max()`` over every file for
+        every chunk scored.
+        """
         tfidf = self.chunk_tfidf.get(chunk_id, {})
         chunk = self.chunks[chunk_id]
         doc_id = chunk["doc_id"]
@@ -593,13 +624,12 @@ class CodeIndex:
                         score *= 1.5
                         break
 
-        # Recency bias — recently modified files get a small boost (1d)
+        # Recency bias — recently modified files get a small boost (kept weak:
+        # "recent" is not reliably "relevant").
         mtime = self._file_mtimes.get(doc_id, 0)
-        if mtime > 0 and self._file_mtimes:
-            max_mtime = max(self._file_mtimes.values())
-            if max_mtime > 0:
-                age_ratio = mtime / max_mtime  # 1.0 for newest, lower for older
-                score *= (0.9 + 0.2 * age_ratio)  # up to 1.1x for newest files
+        if mtime > 0 and max_mtime > 0:
+            age_ratio = mtime / max_mtime  # 1.0 for newest, lower for older
+            score *= (0.9 + 0.2 * age_ratio)  # up to 1.1x for newest files
 
         score += min(len(path_parts), 6) * 0.02
         size_penalty = 1.0 + max(0.0, chunk_tokens - 450) / 1200.0
@@ -688,11 +718,94 @@ class CodeIndex:
                 pruned[term] = dict(top)
         self._cooccurrence = pruned
 
+    def _cooccurrence_wanted(self) -> bool:
+        """Constructor flag wins; else ``search_cooccurrence_synonyms`` in
+        .c3/config.json; default off."""
+        if self._cooccurrence_enabled is not None:
+            return bool(self._cooccurrence_enabled)
+        try:
+            cfg = json.loads((self.project_path / '.c3' / 'config.json')
+                             .read_text(encoding='utf-8'))
+            return bool(cfg.get('search_cooccurrence_synonyms', False))
+        except Exception:
+            return False
+
+    def _rebuild_symbol_tail(self):
+        """``symbols`` keys are dotted (``invoice.compute_total``); agents ask
+        for the tail. Derived, never persisted."""
+        tail: dict = {}
+        for name, chunk_ids in self.symbols.items():
+            tail.setdefault(name.rsplit(".", 1)[-1], []).extend(chunk_ids)
+        self._symbol_tail = tail
+
+    def _exact_symbol_ids(self, query: str) -> set:
+        """Chunks whose symbol name IS the query (one identifier, any case).
+
+        These rank ahead of every scored chunk: an agent typing a symbol
+        name wants its definition, not the chunk that mentions it most.
+        """
+        q = query.strip().lower()
+        if not q or " " in q:
+            return set()
+        ids = set(self.symbols.get(q, ()))
+        ids.update(self._symbol_tail.get(q, ()))
+        return ids
+
+    def _window_chunk(self, chunk: dict, query_tokens: list, budget_tokens: int):
+        """Budget-sized window of an oversized chunk.
+
+        Anchored a few lines above the first line that mentions a query term
+        (the class header, for a class-name query), grown downward until the
+        window would exceed ``min(_WINDOW_MAX_TOKENS, budget)``, and closed
+        with a note naming the full range so the agent can ``c3_read`` it.
+        Returns None when nothing fits.
+        """
+        lines = (chunk.get("content") or "").split("\n")
+        if not lines or budget_tokens < 40:
+            return None
+        target = max(40, min(_WINDOW_MAX_TOKENS, budget_tokens))
+        terms = [t for t in query_tokens if t]
+        anchor = 0
+        for i, line in enumerate(lines):
+            low = line.lower()
+            if any(t in low for t in terms):
+                anchor = i
+                break
+        start = max(0, anchor - 3)
+        end, used = start, 0
+        while end < len(lines):
+            cost = max(1, len(lines[end]) // 4)
+            if used + cost > target and end > start:
+                break
+            used += cost
+            end += 1
+        window = lines[start:end]
+        base = int(chunk.get("line_start") or 0)
+        note_len = 40  # reserve for the trailer
+        text = "\n".join(window)
+        tokens = count_tokens(text)
+        while tokens + note_len > budget_tokens and len(window) > 1:
+            window = window[: max(1, len(window) * 3 // 4)]
+            text = "\n".join(window)
+            tokens = count_tokens(text)
+        if tokens + note_len > budget_tokens:
+            return None
+        abs_start, abs_end = base + start, base + start + len(window) - 1
+        note = (f"[window L{abs_start}-{abs_end} of {chunk.get('type', 'chunk')} "
+                f"L{chunk.get('line_start')}-{chunk.get('line_end')}, "
+                f"{chunk.get('tokens')} tok; c3_read(lines=...) for the rest]")
+        content = text + "\n" + note
+        return {"content": content, "line_start": abs_start, "line_end": abs_end,
+                "tokens": count_tokens(content)}
+
     def search(self, query: str, top_k: int = 5, max_tokens: int = 4000,
                include_content: bool = True) -> list:
         """Search the index and return most relevant chunks.
 
         Set include_content=False to get metadata only (saves ~70% tokens).
+        A chunk whose symbol name equals the query ranks first; a chunk too
+        large for the budget is returned as a window (``windowed: True``)
+        instead of being skipped.
         """
         if not self.chunks:
             self._load_index()
@@ -709,17 +822,25 @@ class CodeIndex:
         if not query_tokens:
             return []
 
+        max_mtime = max(self._file_mtimes.values()) if self._file_mtimes else 0.0
+        exact_ids = {cid for cid in self._exact_symbol_ids(query) if cid in self.chunks}
+
         # Score each chunk
         scores = {}
         for chunk_id in self.chunk_tfidf:
-            score = self._score_chunk(chunk_id, query, query_tokens, query_bigrams)
+            score = self._score_chunk(chunk_id, query, query_tokens, query_bigrams,
+                                      max_mtime=max_mtime)
             if score > 0:
                 scores[chunk_id] = score
+        for cid in exact_ids:
+            scores.setdefault(cid, 0.001)
 
-        # Sort by score, then prefer named/structural chunks and shorter paths on ties.
+        # Exact symbol matches first; then score; then prefer named/structural
+        # chunks and shorter paths on ties.
         ranked = sorted(
             scores.items(),
             key=lambda item: (
+                1 if item[0] in exact_ids else 0,
                 item[1],
                 1 if self.chunks[item[0]].get("name") else 0,
                 1 if self.chunks[item[0]].get("type") in {"function", "class", "method", "declaration"} else 0,
@@ -736,26 +857,39 @@ class CodeIndex:
         for chunk_id, score in ranked[:top_k * 4]:
             chunk = self.chunks[chunk_id]
             chunk_tokens = chunk.get("tokens") or count_tokens(chunk["content"])
+            window = None
 
             if chunk_tokens > token_budget:
-                continue
+                window = self._window_chunk(chunk, query_tokens, token_budget)
+                if window is None:
+                    continue
+                chunk_tokens = window["tokens"]
 
             if chunk["doc_id"] in seen_docs and len(results) >= max(2, top_k // 2):
                 continue
 
             doc = self.documents.get(chunk["doc_id"], {})
+            line_start = window["line_start"] if window else chunk['line_start']
+            line_end = window["line_end"] if window else chunk['line_end']
             result = {
                 "chunk_id": chunk_id,
                 "file": chunk["doc_id"],
                 "name": chunk.get("name"),
                 "type": chunk["type"],
-                "lines": f"{chunk['line_start']}-{chunk['line_end']}",
+                "lines": f"{line_start}-{line_end}",
                 "tokens": chunk_tokens,
                 "file_tokens": doc.get("tokens", chunk_tokens),
                 "score": round(score, 3),
             }
+            if window:
+                result["windowed"] = True
+            if chunk_id in exact_ids:
+                # Callers that filter on relative score must keep this one:
+                # a windowed class scores low on TF-IDF and is still the
+                # definition the query named.
+                result["exact_symbol"] = True
             if include_content:
-                result["content"] = chunk["content"]
+                result["content"] = window["content"] if window else chunk["content"]
 
             results.append(result)
 
@@ -804,6 +938,9 @@ class CodeIndex:
             "symbols": self.symbols,
             "idf": self.idf,
             "chunk_tfidf": self.chunk_tfidf,
+            # Persisted since 2.105.0: without it the recency factor was
+            # silently zero after every server restart.
+            "file_mtimes": self._file_mtimes,
         }
         index_file = self.index_dir / "index.json"
         with open(index_file, 'w', encoding='utf-8') as f:
@@ -823,6 +960,8 @@ class CodeIndex:
             self.symbols = data.get("symbols", {})
             self.idf = data.get("idf", {})
             self.chunk_tfidf = data.get("chunk_tfidf", {})
+            self._file_mtimes = data.get("file_mtimes", {}) or {}
+            self._rebuild_symbol_tail()
             mutated = False
             for chunk in self.chunks.values():
                 if "tokens" not in chunk:

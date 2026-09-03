@@ -34,7 +34,9 @@ class TestCooccurrenceBounds(unittest.TestCase):
         self._tmp.cleanup()
 
     def _build(self):
-        idx = CodeIndex(str(self.root), str(self.root / ".c3" / "index"))
+        # Co-occurrence is off by default since 2.105.0; these tests are about
+        # its bounds, so they opt in.
+        idx = CodeIndex(str(self.root), str(self.root / ".c3" / "index"), cooccurrence=True)
         return idx, idx.build_index()
 
     def test_token_dense_chunks_are_skipped_and_reported(self):

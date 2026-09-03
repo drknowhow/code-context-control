@@ -1,31 +1,31 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-03T12:36:30",
-  "c3_version": "2.103.0",
+  "generated_at": "2026-09-03T14:22:35",
+  "c3_version": "2.105.0",
   "index": {
     "files_indexed": 39,
     "chunks": 167,
     "oversize_chunks": 1,
-    "build_seconds": 0.251,
+    "build_seconds": 0.245,
     "file_memory_seconds": 0.026,
     "tracked_files": 39,
-    "exact_coverage": 1.0,
-    "index_bytes": 257878,
+    "file_memory_coverage": 1.0,
+    "index_bytes": 278607,
     "semantic": "off"
   },
   "aggregates": {
-    "n_cases": 57,
-    "n_executed": 52,
+    "n_cases": 58,
+    "n_executed": 53,
     "n_scored": 48,
     "n_skipped": 5,
-    "recall_at_1": 0.7292,
-    "recall_at_3": 0.875,
-    "recall_at_10": 0.8958,
-    "mrr": 0.8073,
-    "symbol_recall_at_3": 0.9259,
+    "recall_at_1": 0.8333,
+    "recall_at_3": 0.9583,
+    "recall_at_10": 0.9583,
+    "mrr": 0.8924,
+    "symbol_recall_at_3": 0.963,
     "zero_result_accuracy": 1.0,
-    "latency_p50_ms": 14.7,
-    "latency_p95_ms": 39.4,
+    "latency_p50_ms": 10.0,
+    "latency_p95_ms": 58.2,
     "must_pass_failed": [],
     "xfail_passing": [],
     "forbidden_hits": []
@@ -37,19 +37,19 @@
     },
     "exact": {
       "n": 5,
-      "recall_at_3": 0.8
+      "recall_at_3": 1.0
     },
     "files": {
       "n": 8,
-      "recall_at_3": 0.625
+      "recall_at_3": 1.0
     }
   },
   "floors": {
-    "recall_at_1": 0.69,
-    "recall_at_3": 0.84,
-    "recall_at_10": 0.86,
-    "mrr": 0.77,
-    "symbol_recall_at_3": 0.89,
+    "recall_at_1": 0.8,
+    "recall_at_3": 0.92,
+    "recall_at_10": 0.92,
+    "mrr": 0.86,
+    "symbol_recall_at_3": 0.93,
     "zero_result_accuracy": 1.0
   },
   "per_query": {
@@ -110,17 +110,17 @@
     },
     "sym_utf8_decode": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "code_exchange_code_for_token": {
       "status": "pass",
-      "rank": 1,
+      "rank": 2,
       "gate": "info"
     },
     "code_refresh_rotation": {
       "status": "pass",
-      "rank": 2,
+      "rank": 3,
       "gate": "info"
     },
     "code_vat_apply": {
@@ -130,7 +130,7 @@
     },
     "code_invoice_total_rounding": {
       "status": "pass",
-      "rank": 1,
+      "rank": 2,
       "gate": "info"
     },
     "code_lru_evict": {
@@ -140,7 +140,7 @@
     },
     "code_token_bucket": {
       "status": "pass",
-      "rank": 1,
+      "rank": 2,
       "gate": "info"
     },
     "code_session_expiry": {
@@ -175,7 +175,7 @@
     },
     "code_healthz_go": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "code_ledger_post_entry": {
@@ -184,9 +184,9 @@
       "gate": "info"
     },
     "code_ledger_class_oversize": {
-      "status": "fail",
+      "status": "pass",
       "rank": 1,
-      "gate": "xfail"
+      "gate": "must_pass"
     },
     "code_pkce_challenge": {
       "status": "pass",
@@ -210,7 +210,7 @@
     },
     "doc_migrations_before_deploy": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "info"
     },
     "src_over_test_exchange_code": {
@@ -220,12 +220,12 @@
     },
     "files_invoice": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "must_pass"
     },
     "files_limiter": {
       "status": "pass",
-      "rank": 2,
+      "rank": 1,
       "gate": "must_pass"
     },
     "files_useauth": {
@@ -239,24 +239,24 @@
       "gate": "must_pass"
     },
     "files_customers_csv_masked": {
-      "status": "fail",
-      "rank": 4,
-      "gate": "xfail"
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     },
     "files_glob_yml": {
       "status": "pass",
       "rank": 1,
-      "gate": "info"
+      "gate": "must_pass"
     },
     "files_substring": {
-      "status": "fail",
-      "rank": null,
-      "gate": "xfail"
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     },
     "files_prefix_limit": {
-      "status": "fail",
-      "rank": null,
-      "gate": "xfail"
+      "status": "pass",
+      "rank": 1,
+      "gate": "must_pass"
     },
     "digits_v2_migration": {
       "status": "fail",
@@ -284,9 +284,14 @@
       "gate": "must_pass"
     },
     "exact_case_insensitive": {
-      "status": "fail",
+      "status": "pass",
+      "rank": 2,
+      "gate": "must_pass"
+    },
+    "exact_case_sensitive_default": {
+      "status": "pass",
       "rank": null,
-      "gate": "xfail"
+      "gate": "must_pass"
     },
     "exact_masked_canary_absent": {
       "status": "pass",
