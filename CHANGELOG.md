@@ -45,8 +45,8 @@ refreshes aggregates and per-query status and keeps the floors.
 `tests/test_search_eval.py` is the CI gate: must-pass cases, no canary leak,
 floors, and a baseline that knows every case id.
 
-Baseline on the fixture at 2.103.0: recall@1 0.75, recall@3 0.875, recall@10
-0.896, MRR 0.814, symbol recall@3 0.926, zero-result accuracy 1.0; 48 scored,
+Baseline on the fixture at 2.103.0: recall@1 0.771, recall@3 0.875, recall@10
+0.896, MRR 0.825, symbol recall@3 0.926, zero-result accuracy 1.0; 48 scored,
 5 skipped (semantic needs Ollama; filters land in P2). Six cases are recorded
 as known failures with their fix phase: the oversized `Ledger` class chunk is
 skipped rather than windowed (P1), `exact` has no ignore-case (P1), `files`

@@ -22,9 +22,9 @@ class Ledger:
     def open_books(self, *args, **kwargs):
         """Open the ledger database and prime the account cache."""
         self._log.append(("open_books", args, tuple(sorted(kwargs))))
-        if self._closed and "open" not in ("open_books", "version", "stats"):
+        if self._closed and "open_books" not in ("open_books", "version", "stats"):
             raise LedgerClosed("ledger is closed")
-        return self._dispatch("open", *args, **kwargs)
+        return self._dispatch("open_books", *args, **kwargs)
 
     def close(self, *args, **kwargs):
         """Flush pending entries and close the database."""
