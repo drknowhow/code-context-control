@@ -14,6 +14,12 @@ from pathlib import Path
 
 log = logging.getLogger("c3.embedding_index")
 _SEARCH_INIT_WAIT_SECONDS = 0.25
+# v2 collection: task-prefixed embeddings (2.108.0). The v1 collection is
+# dropped best-effort on first init; its vectors are not comparable.
+COLLECTION_NAME = "code_embeddings_v2"
+LEGACY_COLLECTION_NAME = "code_embeddings"
+DEFAULT_MIN_SCORE_NOMIC = 0.62
+DEFAULT_MIN_SCORE_OTHER = 0.55
 # Upper bound on how long a caller will park waiting for an in-flight build.
 # A redundant build is worth far less than a responsive server, so we give up
 # and degrade rather than block. See _acquire_build_lock().
@@ -29,15 +35,26 @@ class EmbeddingIndex:
         ollama_client,
         embed_model: str = "nomic-embed-text",
         batch_size: int = 32,
+        min_score: "float | None" = None,
     ):
         self.project_path = Path(project_path)
         self.ollama = ollama_client
         self.embed_model = embed_model
         self.batch_size = batch_size
+        # Admission floor on cosine similarity (`search_dense_min_score`).
+        # A dense index always has nearest neighbours; without a floor a
+        # query with no valid answer returns ten of them, and fusion would
+        # carry them into `code` results (measured: zero-result accuracy
+        # 1.0 -> 0.4 on the fixture). None -> the model default.
+        self._min_score_override = None if min_score is None else float(min_score)
 
         self._index_dir = self.project_path / ".c3" / "embeddings"
         self._index_dir.mkdir(parents=True, exist_ok=True)
-        self._hash_file = self._index_dir / "file_hashes.json"
+        # v2 (2.108.0): documents are embedded with the model's task prefix
+        # (nomic: `search_document:` / `search_query:`), so vectors from the
+        # unprefixed v1 collection are not comparable and are rebuilt lazily
+        # under a new name. The hash file moves with it.
+        self._hash_file = self._index_dir / "file_hashes_v2.json"
 
         self._chroma_client = None
         self._collection = None
@@ -99,10 +116,11 @@ class EmbeddingIndex:
                 settings=Settings(anonymized_telemetry=False),
             )
             self._collection = self._chroma_client.get_or_create_collection(
-                name="code_embeddings",
+                name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
             )
             self._available = True
+            self._drop_legacy_collection()
         except Exception as e:
             log.debug("chromadb unavailable for embedding index: %s", e)
             self._available = False
@@ -116,6 +134,74 @@ class EmbeddingIndex:
             self._ollama_up = False
             self._model_ok = False
         self._ollama_ok = self._ollama_up and self._model_ok
+
+    def _drop_legacy_collection(self) -> None:
+        """Best-effort removal of the pre-2.108.0 collection and hash file.
+
+        Its vectors were embedded without task prefixes, so they cannot be
+        queried alongside v2 ones, and they cost ~200 MB on a 500-file repo.
+        ``delete_collection`` is a metadata call, but this backend has hung
+        inside its Rust bindings before (see ``_remove_file_chunks``), so the
+        call runs in a daemon thread with a bound: a hang is abandoned, never
+        waited on.
+        """
+        client = self._chroma_client
+        if client is None:
+            return
+        try:
+            listed = client.list_collections()
+            names = {c if isinstance(c, str) else getattr(c, "name", "") for c in listed}
+        except Exception:
+            return
+        legacy_hashes = self._index_dir / "file_hashes.json"
+        if LEGACY_COLLECTION_NAME not in names:
+            try:
+                legacy_hashes.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+
+        def _drop():
+            try:
+                client.delete_collection(LEGACY_COLLECTION_NAME)
+                log.info("dropped legacy embedding collection %s", LEGACY_COLLECTION_NAME)
+            except Exception as exc:
+                log.debug("legacy collection drop failed: %s", exc)
+
+        worker = threading.Thread(target=_drop, name="c3-drop-legacy-embeddings", daemon=True)
+        worker.start()
+        worker.join(2.0)
+        try:
+            legacy_hashes.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # ── Task prefixes ─────────────────────────────────────
+
+    def _uses_task_prefixes(self) -> bool:
+        """nomic-embed-text (v1/v1.5) is trained with task prefixes and loses
+        measurable retrieval quality without them; other models get none."""
+        return self.embed_model.lower().startswith("nomic-embed")
+
+    @property
+    def min_score(self) -> float:
+        """Cosine similarity below which a neighbour is not a candidate.
+
+        Measured on the relevance fixture with nomic-embed-text v1.5 and task
+        prefixes: queries with no valid answer top out at 0.47-0.58, real
+        answers start at 0.70. 0.62 splits them with margin on both sides.
+        Other models get a looser 0.55 until measured; override with
+        `search_dense_min_score` in the hybrid config.
+        """
+        if self._min_score_override is not None:
+            return self._min_score_override
+        return DEFAULT_MIN_SCORE_NOMIC if self._uses_task_prefixes() else DEFAULT_MIN_SCORE_OTHER
+
+    def _doc_text(self, text: str) -> str:
+        return f"search_document: {text}" if self._uses_task_prefixes() else text
+
+    def _query_text(self, query: str) -> str:
+        return f"search_query: {query}" if self._uses_task_prefixes() else query
 
     @property
     def ready(self) -> bool:
@@ -296,7 +382,9 @@ class EmbeddingIndex:
                     prefix = f"File: {doc_id}"
                     if name:
                         prefix += f" | {chunk.get('type', 'symbol')}: {name}"
-                    embed_text = f"{prefix}\n{text}"
+                    # Task prefix lands on the header line; search() strips
+                    # that first line when it hands content back.
+                    embed_text = self._doc_text(f"{prefix}\n{text}")
 
                     batch_ids.append(chunk_id)
                     batch_texts.append(embed_text)
@@ -413,7 +501,7 @@ class EmbeddingIndex:
             return []
 
         try:
-            query_embedding = self.ollama.embed(query, model=self.embed_model)
+            query_embedding = self.ollama.embed(self._query_text(query), model=self.embed_model)
             if not query_embedding:
                 return []
 
@@ -445,6 +533,8 @@ class EmbeddingIndex:
 
             # chromadb cosine distance: 0 = identical, 2 = opposite
             score = max(0.0, 1.0 - dist)
+            if score < self.min_score:
+                continue  # a neighbour, not an answer
 
             # Strip the prefix we added during embedding
             content = doc
@@ -474,6 +564,41 @@ class EmbeddingIndex:
                 break
 
         return output
+
+    def candidates(self, query: str, limit: int = 40) -> list[tuple[str, float]]:
+        """``[(chunk_id, similarity)]`` best first — the raw ranked list that
+        ``CodeIndex`` fuses with its lexical candidates (services/retrieval).
+
+        Chunk ids are the CodeIndex chunk ids (``build`` upserts under them),
+        so the caller can join back to its own chunks and apply filters.
+        """
+        if not self._ensure_ready(wait_timeout=_SEARCH_INIT_WAIT_SECONDS):
+            return []
+        if not self.ready or not self._collection or self._collection.count() == 0:
+            return []
+        try:
+            query_embedding = self.ollama.embed(self._query_text(query), model=self.embed_model)
+            if not query_embedding:
+                return []
+            results = self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(max(1, int(limit)), self._collection.count()),
+                include=["distances"],
+            )
+        except Exception as e:
+            log.debug("Dense candidates failed: %s", e)
+            return []
+        ids = (results.get("ids") or [[]])[0] if results else []
+        distances = (results.get("distances") or [[]])[0] if results else []
+        floor = self.min_score
+        out = []
+        for i, cid in enumerate(ids):
+            dist = distances[i] if i < len(distances) else 1.0
+            score = max(0.0, 1.0 - float(dist))
+            if score < floor:
+                break  # sorted by distance: everything after is further away
+            out.append((cid, score))
+        return out
 
     # ── Stats ─────────────────────────────────────────────
 

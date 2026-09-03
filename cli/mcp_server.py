@@ -486,11 +486,12 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
               path: str = "", lang: str = "", kind: str = "",
               ctx: Context = None) -> str:
     """FIND candidates. Use to discover which files/symbols are relevant (read-only, plan-mode safe).
-    action: 'code' (BM25 over identifiers and their parts, digits kept; a query that IS a symbol name puts
-    its definition first; an oversized chunk comes back as a window), 'exact' (regex over every indexed
-    file; ignore_case=True for case-insensitive), 'files' (by filename: exact name, glob like
-    'configs/*.yml', or substring), 'semantic' (embeddings; falls back to code search when empty),
-    'transcript'.
+    action: 'code' (default: BM25 over identifiers and their parts, digits kept, fused with the embedding
+    index by reciprocal rank when one is ready; a query that IS a symbol name puts its definition first;
+    an oversized chunk comes back as a window), 'lexical' (the BM25 ranking alone), 'exact' (regex over
+    every indexed file; ignore_case=True for case-insensitive), 'files' (by filename: exact name, glob
+    like 'configs/*.yml', or substring), 'semantic' (embeddings alone; falls back to code search when
+    empty), 'transcript'.
     Filters (all actions but transcript, comma-separated): path='src/**,*.go' (globs or substrings),
     lang='python,go' (names or extensions), kind='test,doc,config,source' and/or chunk types
     'function,class,method,heading'. A query that names tests or asks a how-to question already

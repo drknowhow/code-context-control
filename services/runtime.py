@@ -210,7 +210,11 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
             embed_model = hybrid_config.get("embed_model", "nomic-embed-text")
             embedding_index = EmbeddingIndex(
                 str(project), ollama_client, embed_model=embed_model,
+                min_score=hybrid_config.get("search_dense_min_score"),
             )
+            # Hybrid fusion (2.108.0): the code index fuses this backend's
+            # candidates into `code` queries once its backends are ready.
+            indexer.dense = embedding_index
         except Exception:
             pass
 

@@ -133,6 +133,29 @@ snake_case parts, digits included, no stemming: `parseIso8601` indexes as
 name all hit; `sha256`, `oauth2`, `v2`, `S256` are tokens. Synonyms come
 only from `search_synonyms` in `.c3/config.json` (`{"endpoint": ["route"]}`).
 
+### Hybrid fusion (2.108.0)
+
+When the embedding index is ready the runtime attaches it to the code index
+as its dense backend (`services/retrieval.RetrievalBackend`: anything with
+`ready` and `candidates(query, limit)`), and `code` queries fuse the lexical
+ranking with the dense candidates by Reciprocal Rank Fusion
+(`score = Σ 1/(k + rank)`, `k = 60`, `search_rrf_k` to tune). Each list
+contributes its top 20-50; exact-symbol matches keep their override after
+fusion; `action='lexical'` asks for the BM25 ranking alone; `search_fusion:
+"off"` disables it. The report line says `fusion=rrf` when it was active.
+
+A dense index always has nearest neighbours, so the backend applies an
+admission floor on cosine similarity before anyone sees its candidates:
+`search_dense_min_score`, default 0.62 for nomic-embed-text with task
+prefixes (measured on the fixture: unanswerable queries top out at 0.58,
+real answers start at 0.70), 0.55 for other models until measured. Without
+it, fusion turned every zero-result query into ten hits.
+
+nomic-embed-text is embedded with its task prefixes (`search_document:` /
+`search_query:`) since 2.108.0, in a new collection `code_embeddings_v2`;
+the v1 collection is dropped best-effort on first init and its vectors
+rebuild lazily.
+
 ## Known gaps this suite documents (2.106.0)
 
 - Semantic cases run only where Ollama and chromadb are present.
