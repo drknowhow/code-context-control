@@ -66,10 +66,12 @@ def _inside_project(path: str, project_path: str) -> bool:
     if path.startswith(("~", "$")) or "${" in path:
         return False                                   # home or a variable: not a project path we can name
     p = Path(path)
-    posix_absolute = path.startswith(("/", "\\"))   # Path("/var/log") is not absolute on Windows
-    if not p.is_absolute() and not posix_absolute:
+    # Path("/var/log") is not absolute on Windows and Path("C:/x") is not
+    # absolute on POSIX: treat both spellings as absolute everywhere.
+    foreign_absolute = path.startswith(("/", "\\")) or bool(re.match(r"^[A-Za-z]:[/\\]", path))
+    if not p.is_absolute() and not foreign_absolute:
         return True
-    if posix_absolute and not p.is_absolute():
+    if foreign_absolute and not p.is_absolute():
         return False
     try:
         root = Path(project_path).resolve()
