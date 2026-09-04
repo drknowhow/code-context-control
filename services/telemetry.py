@@ -276,12 +276,15 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
     by_day: dict = {}
     by_session: dict = {}
     by_target: dict = {}
+    shell_classes: dict = {}
     total_calls = 0
     total_response = 0
     total_saved = 0
 
     for rec in read_telemetry_records(project_path, since=since):
         tool = str(rec.get("tool") or "unknown")
+        if tool == "c3_shell" and isinstance(rec.get("detail"), dict):
+            _fold_shell_detail(shell_classes, rec)
         entry = by_tool.setdefault(tool, {
             "calls": 0,
             "response_tokens": 0,
@@ -348,6 +351,10 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         count = entry.pop("_duration_count")
         total = entry.pop("_duration_total")
         entry["avg_duration_ms"] = round(total / count, 1) if count else None
+    for slot in shell_classes.values():
+        durs = sorted(slot.pop("_durations"))
+        slot["p50_duration_ms"] = durs[len(durs) // 2] if durs else None
+        slot["p95_duration_ms"] = durs[min(len(durs) - 1, int(0.95 * len(durs)))] if durs else None
 
     def _top(mapping, limit):
         rows = sorted(mapping.items(),
@@ -368,7 +375,57 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         "by_session": _top(by_session, top_sessions),
         "by_target": _top(by_target, top_targets),
         "targets_tracked": len(by_target),
+        # c3_shell by command class — only records that carry a `detail`
+        # (2.111.0+). This is the before/after instrument for the shell
+        # remediation: how many calls, how many tokens, how many would
+        # exceed the S1 budget, how many were filtered, how long they ran.
+        "shell_by_class": {k: shell_classes[k] for k in sorted(shell_classes)},
+        "shell_budget_bytes": SHELL_BUDGET_BYTES,
     }
+
+
+# The response-byte budget the S1 phase of the shell remediation enforces
+# (18 KiB default, 22 KiB ceiling). Named here so the measurement of how
+# many calls WOULD exceed it exists before the cap does.
+SHELL_BUDGET_BYTES = 18 * 1024
+
+
+def _fold_shell_detail(classes: dict, rec: dict) -> None:
+    """Accumulate one c3_shell record's `detail` into its command class."""
+    detail = rec.get("detail") or {}
+    cls = str(detail.get("cmd_class") or "other")
+    slot = classes.setdefault(cls, {
+        "calls": 0, "response_tokens": 0, "response_bytes": 0,
+        "stdout_bytes": 0, "stderr_bytes": 0, "over_budget": 0,
+        "filtered": 0, "spilled": 0, "timeouts": 0, "failures": 0,
+        "longest_line_max": 0, "_durations": [],
+    })
+    slot["calls"] += 1
+    slot["response_tokens"] += _as_int(rec.get("response_tokens")) or 0
+    resp_bytes = _as_int(detail.get("response_bytes")) or 0
+    slot["response_bytes"] += resp_bytes
+    if resp_bytes > SHELL_BUDGET_BYTES:
+        slot["over_budget"] += 1
+    slot["stdout_bytes"] += _as_int(detail.get("stdout_bytes")) or 0
+    slot["stderr_bytes"] += _as_int(detail.get("stderr_bytes")) or 0
+    if detail.get("filtered"):
+        slot["filtered"] += 1
+    if detail.get("spilled"):
+        slot["spilled"] += 1
+    if detail.get("timed_out"):
+        slot["timeouts"] += 1
+    exit_code = detail.get("exit_code")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+        slot["failures"] += 1
+    longest = _as_int(detail.get("longest_line")) or 0
+    if longest > slot["longest_line_max"]:
+        slot["longest_line_max"] = longest
+    dur = rec.get("duration_ms")
+    if dur is not None and not isinstance(dur, bool):
+        try:
+            slot["_durations"].append(float(dur))
+        except (ValueError, TypeError):
+            pass
 
 
 # ── Claude Code session stats (Stop-hook rows) ───────────────────────────────

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from cli._shell_writes import shell_write_targets
 from cli.tools import _grants
+from cli.tools._helpers import finalize_with_tokens
 from cli.tools.filter import handle_filter
 from core import count_tokens
 from services import access_guard
@@ -364,6 +365,149 @@ def _dependency_hint(cmd: str, result: dict) -> str:
         "`python -m json.tool`; for field extraction use Python's `json` module, "
         "or install jq separately."
     )
+
+
+# ── Command classification (telemetry only) ─────────────────────────────────
+#
+# A coarse label per call so .c3/tool_telemetry.jsonl can say which KIND of
+# command carries the tokens and the wall time. Measured 2026-09-04 over 7,278
+# shell_exec events: file-read/search 48%, python 10%, git 10%, tests 5%,
+# ops/device 4%, build/lint 4%. Best-effort: the first word after any leading
+# `cd … &&` / `VAR=… ;` prefix, plus a few substring tells. Never used to
+# change behaviour.
+
+_CLASS_PREFIX = re.compile(
+    r"""^(?:\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*|\w+=(?:"[^"]*"|'[^']*'|\S*)\s*;?\s*))*""")
+_CLASS_TESTS = re.compile(
+    r"\b(?:pytest|python\s+-m\s+(?:pytest|unittest)|npm\s+test|vitest|jest|cargo\s+test|go\s+test)\b")
+_CLASS_TABLE = {
+    "file-read": {"cat", "head", "tail", "sed", "grep", "rg", "find", "ls", "wc",
+                  "awk", "tree", "type", "less", "more", "stat", "file", "du"},
+    "git": {"git"},
+    "python": {"python", "python3", "py", "pythonw", "pip", "uv"},
+    "build": {"npm", "npx", "node", "pnpm", "yarn", "tsc", "eslint", "vite",
+              "gradlew", "cargo", "go", "make", "ruff", "mypy", "pyright",
+              "dotnet", "mvn", "gradle"},
+    "ops": {"curl", "wget", "adb", "powershell", "pwsh", "schtasks", "tasklist",
+            "taskkill", "netstat", "ps", "kill", "sleep", "timeout", "ssh",
+            "scp", "docker", "systemctl", "sc"},
+    "echo": {"echo", "printf", "test", "[", "true", "false"},
+    "gh": {"gh"},
+    "c3": {"c3", "c3-mcp"},
+}
+
+
+def _cmd_class(cmd: str) -> str:
+    """Coarse command class for telemetry (see table above)."""
+    try:
+        if _CLASS_TESTS.search(cmd):
+            return "tests"
+        rest = _CLASS_PREFIX.sub("", cmd.strip())
+        head = rest.split(None, 1)[0] if rest.split() else ""
+        head = head.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+        if head.endswith(".exe"):
+            head = head[:-4]
+        if head.startswith("python"):
+            head = "python"
+        for label, names in _CLASS_TABLE.items():
+            if head in names:
+                return label
+        return "other"
+    except Exception:
+        return "other"
+
+
+def _longest_line(*texts: str) -> int:
+    longest = 0
+    for text in texts:
+        if not text:
+            continue
+        for line in text.split("\n"):
+            if len(line) > longest:
+                longest = len(line)
+    return longest
+
+
+def render_shell_response(cmd: str, result: dict, svc, *,
+                          filter_output: bool = True, warn: str = "",
+                          capped_note: str = "", touched_files=(),
+                          cred_names=(), swept_ghosts=()) -> tuple[str, dict]:
+    """Turn a finished command into the body the agent reads, plus its stats.
+
+    Pure with respect to the subprocess: ``result`` is the dict _run_sync
+    returns (exit_code, stdout, stderr, duration_ms, timed_out, shell), so
+    the shell-eval harness (services/bench/shell_eval.py) can feed captured
+    or synthetic streams through exactly the code path a live call uses.
+    Runs the same auto-filter handle_shell always ran — only stdout, only when
+    it has more than _FILTER_THRESHOLD_LINES newlines, never for a git
+    diagnostic — and assembles the same sections in the same order.
+
+    ``stats`` is what telemetry records about the call (see
+    SessionManager.record_tool_tokens ``detail``): stdout_bytes and
+    stderr_bytes are measured BEFORE filtering so a later budget phase can
+    size the band it changes; longest_line is the tell for the single-line
+    monsters (minified bundles, JSONL) that a newline-count trigger never
+    sees; filtered/spilled/output_id describe what this renderer did.
+    """
+    raw_stdout = result.get("stdout") or ""
+    raw_stderr = result.get("stderr") or ""
+    stats: dict = {
+        "exit_code": result.get("exit_code"),
+        "timed_out": bool(result.get("timed_out")),
+        "stdout_bytes": len(raw_stdout.encode("utf-8", errors="replace")),
+        "stderr_bytes": len(raw_stderr.encode("utf-8", errors="replace")),
+        "longest_line": _longest_line(raw_stdout, raw_stderr),
+        "filtered": False,
+        "spilled": False,
+        "output_id": None,
+        "cmd_class": _cmd_class(cmd),
+    }
+
+    stdout = raw_stdout
+    filtered_note = ""
+    if (filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES
+            and not _GIT_DIAGNOSTIC.search(cmd)):
+        try:
+            stdout = handle_filter(
+                "", raw_stdout, "", 50, "smart", True,
+                svc, lambda *a, **kw: a[2],
+            )
+            filtered_note = " [stdout filtered]"
+            stats["filtered"] = True
+        except Exception:
+            stdout = raw_stdout
+
+    if result.get("timed_out"):
+        status = "TIMEOUT"
+    elif result.get("exit_code") == 0:
+        status = "OK"
+    else:
+        status = f"FAIL({result.get('exit_code')})"
+
+    body = (
+        f"{warn}{capped_note}"
+        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{filtered_note}\n"
+        f"$ {cmd}\n"
+        f"--- stdout ---\n{stdout.rstrip()}\n"
+    )
+    if raw_stderr.strip():
+        body += f"--- stderr ---\n{raw_stderr.rstrip()}\n"
+    dependency_hint = _dependency_hint(cmd, result)
+    if dependency_hint:
+        body += f"--- hint ---\n{dependency_hint}\n"
+    if touched_files:
+        body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
+    if cred_names:
+        body += f"--- creds ---\ninjected: {', '.join(cred_names)}\n"
+    if swept_ghosts:
+        body += (
+            f"--- ghost-sweep ---\nremoved {len(swept_ghosts)} stray 0-byte "
+            f"file(s): {', '.join(swept_ghosts)}\n"
+        )
+
+    stats["response_bytes"] = len(body.encode("utf-8", errors="replace"))
+    stats["response_tokens"] = count_tokens(body) if body else 0
+    return body, stats
 
 
 # ── Access Guard advisory scanner (T2c) ────────────────────────────────────
@@ -753,22 +897,6 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                 except Exception:
                     pass
 
-    raw_stdout = result["stdout"]
-    filtered_note = ""
-    if (filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES
-            and not _GIT_DIAGNOSTIC.search(cmd)):
-        try:
-            filtered = await asyncio.to_thread(
-                handle_filter,
-                "", raw_stdout, "", 50, "smart", True,
-                svc, lambda *a, **kw: a[2],
-            )
-            result["stdout_raw_bytes"] = len(raw_stdout)
-            result["stdout"] = filtered
-            filtered_note = " [stdout filtered]"
-        except Exception:
-            pass
-
     touched_files: list[str] = []
     if log:
         touched_files = _maybe_refresh_ledger(
@@ -796,16 +924,24 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             warn = granted + "\n"
         else:
             warn = "[c3_shell:warn] destructive pattern detected — verify before re-running\n"
+    capped_note = ""
     if capped_from:
         # Named at the moment of the mistake, not in documentation nobody
         # reads at the moment they need it. The alternative IS the escape
         # hatch, so the line says which one.
-        warn += (
+        capped_note = (
             f"[c3_shell:capped] timeout={capped_from}s was requested but this "
             f"MCP client kills a tool call at {_ceiling}s; ran with {timeout}s. "
             f"For longer work use the native Bash tool with "
             f"run_in_background, which is not bound by this limit.\n"
         )
+
+    body, stats = await asyncio.to_thread(
+        render_shell_response, cmd, result, svc,
+        filter_output=filter_output, warn=warn, capped_note=capped_note,
+        touched_files=touched_files, cred_names=cred_names,
+        swept_ghosts=swept_ghosts,
+    )
 
     if result["timed_out"]:
         status = "TIMEOUT"
@@ -813,34 +949,16 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         status = "OK"
     else:
         status = f"FAIL({result['exit_code']})"
-
-    body = (
-        f"{warn}"
-        f"[c3_shell:{status}] {result['duration_ms']}ms{filtered_note}\n"
-        f"$ {cmd}\n"
-        f"--- stdout ---\n{result['stdout'].rstrip()}\n"
-    )
-    if result["stderr"].strip():
-        body += f"--- stderr ---\n{result['stderr'].rstrip()}\n"
-    dependency_hint = _dependency_hint(cmd, result)
-    if dependency_hint:
-        body += f"--- hint ---\n{dependency_hint}\n"
-    if touched_files:
-        body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
-    if cred_names:
-        body += f"--- creds ---\ninjected: {', '.join(cred_names)}\n"
-    if swept_ghosts:
-        body += (
-            f"--- ghost-sweep ---\nremoved {len(swept_ghosts)} stray 0-byte "
-            f"file(s): {', '.join(swept_ghosts)}\n"
-        )
-
     summary = f"shell {status} in {result['duration_ms']}ms"
-    resp_tokens = count_tokens(body) if body else 0
-    return finalize(
-        "c3_shell",
+    # Telemetry: duration was always measured and never recorded (null on
+    # 100% of records before 2.111.0); the stats dict is the per-call detail
+    # a later budget phase is sized against.
+    return finalize_with_tokens(
+        finalize, svc, "c3_shell",
         {"cmd": cmd[:120], "cwd": work_cwd},
         body,
         summary,
-        response_tokens=resp_tokens,
+        duration_ms=result.get("duration_ms"),
+        detail=stats,
+        response_tokens=stats.get("response_tokens", 0),
     )

@@ -81,7 +81,7 @@ def show_token_ratios(svc) -> bool:
 def finalize_with_tokens(finalize, svc, tool_name: str, args: dict,
                          response: str, summary: str = "", *,
                          raw_tokens=None, optimized_tokens=None,
-                         duration_ms=None, **finalize_kwargs) -> str:
+                         duration_ms=None, detail=None, **finalize_kwargs) -> str:
     """Finalize a tool response with STRUCTURED token accounting.
 
     This is the primary accounting path: tools pass explicitly measured
@@ -100,6 +100,10 @@ def finalize_with_tokens(finalize, svc, tool_name: str, args: dict,
     ``estimated_saved_vs_full_read`` in session token_usage and in the
     per-tool telemetry JSONL (.c3/tool_telemetry.jsonl).
 
+    ``detail`` is an optional flat dict of tool-specific facts about this
+    call; it lands under the telemetry record's ``detail`` key (see
+    SessionManager.record_tool_tokens).
+
     Failure-safe: accounting errors never break the tool response. Any extra
     keyword args (e.g. response_tokens) are forwarded to ``finalize``.
     """
@@ -107,10 +111,11 @@ def finalize_with_tokens(finalize, svc, tool_name: str, args: dict,
         session_mgr = getattr(svc, "session_mgr", None)
         if session_mgr is not None and (
                 raw_tokens is not None or optimized_tokens is not None
-                or duration_ms is not None):
+                or duration_ms is not None or detail):
             session_mgr.record_tool_tokens(
                 tool_name, raw_tokens=raw_tokens,
-                optimized_tokens=optimized_tokens, duration_ms=duration_ms)
+                optimized_tokens=optimized_tokens, duration_ms=duration_ms,
+                detail=detail)
     except Exception:
         pass
     return finalize(tool_name, args, response, summary, **finalize_kwargs)

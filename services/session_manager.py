@@ -231,7 +231,8 @@ class SessionManager:
 
     def record_tool_tokens(self, tool_name: str, raw_tokens: Optional[int] = None,
                            optimized_tokens: Optional[int] = None,
-                           duration_ms: Optional[float] = None) -> None:
+                           duration_ms: Optional[float] = None,
+                           detail: Optional[dict] = None) -> None:
         """Structured per-call token accounting — the PRIMARY path.
 
         Tools call this (via cli.tools._helpers.finalize_with_tokens) with
@@ -245,6 +246,12 @@ class SessionManager:
         token_usage["estimated_saved_vs_full_read"] — an estimate against
         that counterfactual baseline, not a measurement of real agent
         behavior.
+
+        detail is an optional flat dict of tool-specific facts about THIS
+        call (c3_shell: exit_code, timed_out, stdout_bytes, stderr_bytes,
+        longest_line, filtered, spilled, output_id, cmd_class). It lands
+        verbatim under the telemetry record's ``detail`` key so per-tool
+        analysis never has to widen the shared schema.
         """
         if not self.current_session:
             self.start_session()
@@ -261,6 +268,7 @@ class SessionManager:
             "optimized_tokens": optimized,
             "duration_ms": duration_ms,
             "source": "structured",
+            "detail": dict(detail) if isinstance(detail, dict) else None,
         }
 
     @staticmethod
@@ -1235,6 +1243,8 @@ class SessionManager:
                 "source": pending.get("source") if pending else None,
                 "target": getattr(self._tool_call_local, "target", "") or "",
             }
+            if pending and pending.get("detail"):
+                record["detail"] = pending["detail"]
             append_telemetry_record(self.project_path, record)
         except Exception:
             pass

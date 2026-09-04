@@ -59,6 +59,19 @@ def build_parser(version: str, parse_cli_ide_arg):
                                help='With --update-baseline: JSON object of metric floors, e.g. \'{"mrr": 0.85}\'')
     p_search_eval.add_argument("--json", action="store_true", help="Emit the full report as JSON")
 
+    p_shell_eval = subparsers.add_parser(
+        "shell-eval", help="Run the c3_shell output-shaping suite (docs/shell-eval.md)")
+    p_shell_eval.add_argument("--suite", default="fixture",
+                              help="'fixture' (synthetic outputs, CI gate) or a .jsonl path")
+    p_shell_eval.add_argument("--baseline", default=None, help="Baseline JSON to compare against / write")
+    p_shell_eval.add_argument("--update-baseline", action="store_true",
+                              help="Write aggregates + per-case status to the baseline (floors/ceilings are kept)")
+    p_shell_eval.add_argument("--floors", default=None,
+                              help='With --update-baseline: JSON object of metric floors, e.g. \'{"must_keep_retention": 0.9}\'')
+    p_shell_eval.add_argument("--ceilings", default=None,
+                              help='With --update-baseline: JSON object of metric ceilings, e.g. \'{"bytes_p95": 18432}\'')
+    p_shell_eval.add_argument("--json", action="store_true", help="Emit the full report as JSON")
+
     p_compress = subparsers.add_parser("compress", help="Compress a file")
     p_compress.add_argument("file", help="File to compress")
     p_compress.add_argument("--mode", choices=["map", "dense_map", "smart", "diff"], default="smart")
