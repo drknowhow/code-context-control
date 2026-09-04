@@ -1,6 +1,6 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-04T09:27:34",
+  "generated_at": "2026-09-04T10:26:56",
   "c3_version": "2.111.0",
   "renderer": "cli.tools.shell.render_shell_response",
   "default_max_bytes": 18432,
@@ -11,32 +11,21 @@
     "pass_rate_must_pass": 1.0,
     "pass_rate_xfail": 0.0,
     "pass_rate_info": 1.0,
-    "under_budget_rate": 0.7,
-    "budget_violations": [
-      "binary_single_line",
-      "cr_progress_bar",
-      "huge_stderr_empty_stdout",
-      "jsonl_grep",
-      "minified_grep_hit",
-      "sed_long_sql_lines"
-    ],
+    "under_budget_rate": 1.0,
+    "budget_violations": [],
     "must_keep_retention": 0.9537,
     "must_keep_retention_must_pass": 1.0,
-    "bytes_p50": 1178.5,
-    "bytes_p95": 1186398.0,
-    "tokens_p50": 490.0,
-    "tokens_p95": 462874.5,
-    "render_ms_p50": 3.0,
-    "render_ms_p95": 718.5,
+    "bytes_p50": 869.0,
+    "bytes_p95": 4750.4,
+    "tokens_p50": 299.0,
+    "tokens_p95": 1849.2,
+    "render_ms_p50": 1.4,
+    "render_ms_p95": 695.0,
     "must_pass_failed": [],
     "xfail_passing": [],
     "errors": []
   },
   "by_phase": {
-    "S1": {
-      "n": 5,
-      "passing": 0
-    },
     "S2": {
       "n": 4,
       "passing": 0
@@ -44,21 +33,21 @@
   },
   "floors": {
     "pass_rate_must_pass": 1.0,
-    "under_budget_rate": 0.67,
+    "under_budget_rate": 1.0,
     "must_keep_retention": 0.92,
     "must_keep_retention_must_pass": 0.97
   },
   "ceilings": {
     "bytes_p50": 2048,
-    "bytes_p95": 1200000,
-    "tokens_p95": 480000
+    "bytes_p95": 22528,
+    "tokens_p95": 8000
   },
   "per_case": {
     "minified_grep_hit": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "S1",
-      "response_bytes": 900135,
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 1896,
       "retention": 1.0
     },
     "pytest_buried_failure": {
@@ -86,14 +75,14 @@
       "status": "fail",
       "gate": "xfail",
       "phase": "S2",
-      "response_bytes": 160969,
+      "response_bytes": 719,
       "retention": 1.0
     },
     "jsonl_grep": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "S1",
-      "response_bytes": 202496,
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 2531,
       "retention": 1.0
     },
     "python_traceback": {
@@ -125,10 +114,10 @@
       "retention": null
     },
     "binary_single_line": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "S1",
-      "response_bytes": 3801311,
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 1190,
       "retention": null
     },
     "ansi_colored": {
@@ -139,10 +128,10 @@
       "retention": 1.0
     },
     "huge_stderr_empty_stdout": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "S1",
-      "response_bytes": 1048771,
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 16273,
       "retention": 1.0
     },
     "mixed_streams_small": {
@@ -167,10 +156,10 @@
       "retention": 1.0
     },
     "sed_long_sql_lines": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "S1",
-      "response_bytes": 32896,
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 2526,
       "retention": 1.0
     },
     "git_status_long": {

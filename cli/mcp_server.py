@@ -883,16 +883,28 @@ async def c3_impact(target: str, file_path: str = "", mode: str = "symbol",
 
 
 @mcp.tool()
-async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
+async def c3_shell(cmd: str = "", cwd: str = "", timeout: int = 60,
                    filter_output: bool = True, log: bool = True,
                    env_creds: str = "",
+                   output_id: str = "", output_action: str = "",
+                   pattern: str = "", lines: str = "", stream: str = "stdout",
+                   max_bytes: int = 0,
                    ctx: Context = None) -> str:
-    """EXECUTE shell command — structured returns, auto-filter, ledger-aware.
+    """EXECUTE shell command — structured returns, budgeted output, ledger-aware.
     Use for tests, git, build, scripts. Returns exit_code/stdout/stderr/duration_ms.
-    Auto-filters stdout >30 lines; auto-logs git mutations to the edit ledger.
+    The response never exceeds 18 KiB (max_bytes may only lower it): a stream that does
+    not fit is clipped line by line and windowed head/tail with a note naming an
+    output_id; the raw streams are kept for 3 days OUTSIDE the project. Page them back
+    with output_id='o-…' and output_action='read' (lines='120-180'), 'search'
+    (pattern=regex), 'tail' (lines='80') or 'delete', stream='stdout'|'stderr'; an id
+    resolves only for this project and this session under the current access rules.
+    The echoed command is its first line; a multi-line command shows (N lines, M chars,
+    sha256). Auto-filters stdout >30 lines when it fits; auto-logs git mutations to
+    the edit ledger.
     Credentials: env_creds='NAME1,NAME2' injects vault entries as env vars, and
     {{cred:NAME}} inside cmd expands server-side — decoded values never enter
-    model context (see c3_credentials; echoed values are auto-redacted).
+    model context (see c3_credentials; echoed values are auto-redacted, in the
+    response and in the kept output).
     Best-effort block of catastrophic commands (rm -rf of /, a top-level system dir, or
     $HOME/~; fork bombs; whole-drive wipes) — a guard, NOT a sandbox. Soft-warns on
     --force, --no-verify, reset --hard.
@@ -904,7 +916,10 @@ async def c3_shell(cmd: str, cwd: str = "", timeout: int = 60,
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     return await handle_shell(cmd, cwd, timeout, filter_output, log, svc, finalize,
-                              env_creds=env_creds)
+                              env_creds=env_creds, output_id=output_id,
+                              output_action=output_action, pattern=pattern,
+                              lines=lines or None, stream=stream or "stdout",
+                              max_bytes=max_bytes or None)
 
 
 @mcp.tool()
