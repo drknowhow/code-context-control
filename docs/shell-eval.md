@@ -49,7 +49,7 @@ the **22 KiB ceiling** (`CEILING_MAX_BYTES = 22528`); the loader refuses a
 case that tries. The suite header records the default so a reader of the
 JSONL sees the number without opening the module.
 
-Today (renderer `shim`, 2026-09-04) six of twenty cases exceed the budget,
+Today (2.111.0, 2026-09-04) six of twenty cases exceed the budget,
 five of them by two orders of magnitude: a 900 KB grep over minified lines,
 2 MB of JSONL hits, 1 MB of stderr, a 3.8 MB no-newline blob, a 160 KB
 progress bar. Those are the S1 cases.
@@ -189,10 +189,7 @@ project path so a spill never lands in a real `.c3`, and the real
 `OutputFilter` with the LLM pass disabled) and reports which renderer ran
 in the first line of the table (`renderer=`).
 
-TEMPORARY: while `render_shell_response` is not yet in
-`cli/tools/shell.py`, `services/bench/shell_eval.py` falls back to a shim
-that reproduces today's `handle_shell` body byte for byte (same filter
-trigger — stdout with more than 30 newlines, never a git diagnostic — same
-sections in the same order). The shim was checked against the S0 renderer
-on 2026-09-04: identical bytes and tokens on every case. It is deleted when
-S0 merges.
+The renderer is `cli.tools.shell.render_shell_response` — the function
+`handle_shell` itself calls after the subprocess finishes (same filter
+trigger: stdout with more than 30 newlines, never a git diagnostic; same
+sections in the same order). There is no second implementation to drift.

@@ -1,8 +1,8 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-04T09:14:31",
-  "c3_version": "2.110.1",
-  "renderer": "shim",
+  "generated_at": "2026-09-04T09:27:34",
+  "c3_version": "2.111.0",
+  "renderer": "cli.tools.shell.render_shell_response",
   "default_max_bytes": 18432,
   "aggregates": {
     "n_cases": 20,
@@ -26,8 +26,8 @@
     "bytes_p95": 1186398.0,
     "tokens_p50": 490.0,
     "tokens_p95": 462874.5,
-    "render_ms_p50": 2.8,
-    "render_ms_p95": 702.5,
+    "render_ms_p50": 3.0,
+    "render_ms_p95": 718.5,
     "must_pass_failed": [],
     "xfail_passing": [],
     "errors": []

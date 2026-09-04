@@ -1,8 +1,7 @@
 """c3_shell output-shaping gate.
 
 Renders the committed fixture suite (tests/shell_eval/fixture_suite.jsonl)
-through the same renderer the MCP tool uses — ``render_shell_response`` once
-it exists, the harness shim reproducing today's body until then — and
+through the same renderer the MCP tool uses (``render_shell_response``) and
 enforces the checked-in baseline:
 
 * every ``must_pass`` case passes its checks (budget, must-keep, markers),
@@ -189,9 +188,8 @@ class TestChecks:
 
 class TestRenderer:
     def test_small_output_renders_todays_body_verbatim(self, tmp_path):
-        """The shim (or the real renderer) must produce exactly the body
-        handle_shell produces for a short command — the shape every short
-        command relies on."""
+        """The renderer must produce exactly the body handle_shell produces
+        for a short command — the shape every short command relies on."""
         svc = she.build_eval_svc(tmp_path)
         renderer, _ = she.resolve_renderer()
         result = {"exit_code": 0, "stdout": "a\nb\n", "stderr": "warn\n",

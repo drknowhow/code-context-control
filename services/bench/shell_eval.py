@@ -20,11 +20,8 @@ broken, ``phase`` names the remediation phase — S1 budget/spill, S2
 content-aware keep — that fixes it; a pass is reported so the case can be
 promoted), ``info`` (measured, never gates).
 
-TEMPORARY: until ``render_shell_response`` lands in ``cli/tools/shell.py``
-(campaign c3-shell-remediation, step S0) the harness falls back to a local
-shim that reproduces today's ``handle_shell`` body byte for byte. The report
-says which renderer ran (``renderer=``); the shim is deleted once the real
-function exists.
+The report names the renderer it ran (``renderer=``) so a baseline can
+never be mistaken for one produced by a different code path.
 """
 
 from __future__ import annotations
@@ -203,79 +200,9 @@ def build_eval_svc(project_path: str | Path | None = None):
 
 
 def resolve_renderer():
-    """Return ``(callable, name)``: the real renderer when it exists, else the shim."""
-    try:
-        from cli.tools.shell import render_shell_response
-        return render_shell_response, "cli.tools.shell.render_shell_response"
-    except ImportError:
-        return _shim_render_shell_response, "shim"
-
-
-def _shim_render_shell_response(cmd: str, result: dict, svc, *, filter_output: bool = True,
-                                warn: str = "", capped_note: str = "", touched_files=(),
-                                cred_names=(), swept_ghosts=()) -> tuple[str, dict]:
-    """TEMPORARY fallback: today's ``handle_shell`` body (cli/tools/shell.py,
-    the block after ``_run_sync``), reproduced without the subprocess, plus the
-    stats the real renderer will report. Delete once
-    ``cli.tools.shell.render_shell_response`` exists."""
-    from cli.tools.filter import handle_filter
-    from cli.tools.shell import _FILTER_THRESHOLD_LINES, _GIT_DIAGNOSTIC, _dependency_hint
-    from core import count_tokens
-
-    raw_stdout = result.get("stdout") or ""
-    raw_stderr = result.get("stderr") or ""
-    stats: dict = {
-        "stdout_bytes": len(raw_stdout.encode("utf-8", errors="replace")),
-        "stderr_bytes": len(raw_stderr.encode("utf-8", errors="replace")),
-        "longest_line": max((len(line) for text in (raw_stdout, raw_stderr)
-                             for line in text.split("\n")), default=0),
-        "filtered": False,
-        "spilled": False,
-        "output_id": None,
-    }
-
-    stdout = raw_stdout
-    filtered_note = ""
-    if (filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES
-            and not _GIT_DIAGNOSTIC.search(cmd)):
-        try:
-            stdout = handle_filter("", raw_stdout, "", 50, "smart", True,
-                                   svc, lambda *a, **kw: a[2])
-            filtered_note = " [stdout filtered]"
-            stats["filtered"] = True
-        except Exception:
-            stdout = raw_stdout
-
-    if result.get("timed_out"):
-        status = "TIMEOUT"
-    elif result.get("exit_code") == 0:
-        status = "OK"
-    else:
-        status = f"FAIL({result.get('exit_code')})"
-
-    body = (
-        f"{warn}{capped_note}"
-        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{filtered_note}\n"
-        f"$ {cmd}\n"
-        f"--- stdout ---\n{stdout.rstrip()}\n"
-    )
-    if raw_stderr.strip():
-        body += f"--- stderr ---\n{raw_stderr.rstrip()}\n"
-    dependency_hint = _dependency_hint(cmd, result)
-    if dependency_hint:
-        body += f"--- hint ---\n{dependency_hint}\n"
-    if touched_files:
-        body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
-    if cred_names:
-        body += f"--- creds ---\ninjected: {', '.join(cred_names)}\n"
-    if swept_ghosts:
-        body += (
-            f"--- ghost-sweep ---\nremoved {len(swept_ghosts)} stray 0-byte "
-            f"file(s): {', '.join(swept_ghosts)}\n"
-        )
-    stats["response_bytes"] = len(body.encode("utf-8", errors="replace"))
-    stats["response_tokens"] = count_tokens(body) if body else 0
-    return body, stats
+    """Return ``(callable, name)`` — the renderer the live tool uses."""
+    from cli.tools.shell import render_shell_response
+    return render_shell_response, "cli.tools.shell.render_shell_response"
 
 
 # ── Checks ──────────────────────────────────────────────────────────────────
