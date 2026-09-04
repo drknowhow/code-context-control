@@ -30,6 +30,7 @@ from pathlib import Path
 from cli._shell_writes import shell_write_targets
 from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens
+from cli.tools.shell_nudge import bypass_hint
 from cli.tools.shell_parsers import (
     SUMMARY_MIN_LINES,
     detect_runner,
@@ -697,6 +698,18 @@ def render_shell_response(cmd: str, result: dict, svc, *,
     dependency_hint = _dependency_hint(cmd, result)
     if dependency_hint:
         body += f"--- hint ---\n{dependency_hint}\n"
+    # S4: ONE advisory line when the shell was used as a reader or a
+    # searcher over project files (48% of commands, measured 2026-09-04).
+    # Never a refusal, never a rewrite; telemetry records that it was shown
+    # so the follow rate can be measured before anything is promoted.
+    stats["hint"] = None
+    try:
+        nudge = bypass_hint(cmd, str(getattr(svc, "project_path", "") or ""))
+    except Exception:
+        nudge = None
+    if nudge:
+        body += nudge + "\n"
+        stats["hint"] = nudge.split(": ", 1)[0].replace("[c3_shell:hint] ", "")
     if touched_files:
         body += f"--- ledger ---\nlogged {len(touched_files)} file(s)\n"
     if cred_names:
