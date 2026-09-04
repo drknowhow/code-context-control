@@ -10,8 +10,8 @@ hit on a minified bundle) were invisible to any analysis. These tests pin:
 - render_shell_response reproduces the body handle_shell always produced,
   from a result dict alone (no subprocess), so the shell-eval harness can
   feed captured streams through the live code path;
-- its stats measure the RAW streams (before the auto-filter) and the longest
-  line, and classify the command;
+- its stats measure the RAW streams (before any collapse or clip) and the
+  longest line, and classify the command;
 - handle_shell hands duration_ms and the stats to the telemetry record.
 """
 from __future__ import annotations
@@ -81,13 +81,20 @@ class TestRenderer(unittest.TestCase):
                         "--- ghost-sweep ---\nremoved 1 stray"):
             self.assertIn(section, body)
 
-    def test_stats_measure_the_raw_streams_not_the_filtered_body(self):
-        long = "\n".join(f"line {i}" for i in range(200)) + "\n"
+    def test_stats_measure_the_raw_streams_not_the_shaped_body(self):
+        """S0 wrote this against the >30-line auto-filter; S2 (2.113.0)
+        removed it — 200 distinct lines now pass through whole — so the
+        reduction this pins is the duplicate collapse. The contract is the
+        same: stdout_bytes is the RAW size, ``filtered`` says the body is
+        smaller than the stream for a content reason."""
+        long = "same line\n" * 200
         body, stats = shell_mod.render_shell_response("ls -R", _result(stdout=long), _svc("."))
         self.assertTrue(stats["filtered"])
-        self.assertIn("[stdout filtered]", body)
+        self.assertIn("[collapsed 199 dup lines]", body)
         self.assertEqual(stats["stdout_bytes"], len(long.encode()))
         self.assertLess(stats["response_bytes"], stats["stdout_bytes"])
+        for key in ("runner", "ansi_stripped", "cr_collapsed", "dup_collapsed", "priority_lines"):
+            self.assertIn(key, stats)
 
     def test_filter_off_or_short_output_is_untouched(self):
         long = "\n".join(f"line {i}" for i in range(200)) + "\n"

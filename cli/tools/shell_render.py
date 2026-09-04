@@ -28,6 +28,12 @@ the fragment — so a note never shares a line with the content it interrupts
 can be paged from (services/shell_output.py), or says the output was not
 spilled when there is nothing to page.
 
+S2 (content-aware keep, cli/tools/shell_parsers.py): streams are normalised
+before shaping — ANSI stripped, ``\\r`` rewrites and duplicate runs
+collapsed — and ``shape_stream`` keeps the parser's priority regions (a
+failing test's block, a compiler error, the totals) before it spends what
+is left on head and tail. Under budget nothing is omitted.
+
 Pure functions only; ``render_shell_response`` in cli/tools/shell.py calls
 them. The shell-eval harness grades the result.
 """
@@ -225,33 +231,76 @@ def _byte_len(s: str) -> int:
     return len(s.encode("utf-8", errors="replace"))
 
 
-def _take_lines(lines: list[tuple[int, str]], limit: int, *, from_end: bool,
-                focus, output_id, number_lines: bool = True) -> tuple[list[str], int]:
-    """Render lines (with clipping) until ``limit`` bytes are used.
-
-    Returns (rendered lines in reading order, number of logical lines kept).
-    """
-    out: list[str] = []
+def _fill(entries: list[tuple[int, str]], order, limit: int, kept: dict[int, str], *,
+          focus, output_id, number_lines: bool = True, allow_one: bool = True) -> int:
+    """Render entries in ``order`` (indices) into ``kept`` until ``limit`` bytes
+    are used. Already-kept indices cost nothing and are skipped. Returns the
+    bytes used. ``allow_one``: even one line that does not fit is kept (the
+    note is what the reader needs) unless the limit is absurdly small."""
     used = 0
-    kept = 0
-    seq = reversed(lines) if from_end else lines
-    for lineno, line in seq:
+    took = 0
+    for idx in order:
+        if idx in kept:
+            continue
+        lineno, line = entries[idx]
         rendered = clip_line(line, lineno=lineno if number_lines else None,
                              focus=focus, output_id=output_id)
         cost = sum(_byte_len(r) + 1 for r in rendered)
-        if used + cost > limit and kept > 0:
-            break
-        if used + cost > limit and kept == 0:
-            # Even one line does not fit: keep it anyway (the note is what
-            # the reader needs) unless the budget is absurdly small.
-            if limit <= 0:
+        if used + cost > limit:
+            if took > 0 or not allow_one or limit <= 0:
                 break
-        out.append("\n".join(rendered))
+        kept[idx] = "\n".join(rendered)
         used += cost
-        kept += 1
-    if from_end:
-        out.reverse()
-    return out, kept
+        took += 1
+    return used
+
+
+def split_lines(text: str) -> list[str]:
+    """Logical lines of a stream: no trailing empty element for a final newline."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "" and text.endswith("\n"):
+        lines.pop()
+    return lines
+
+
+def split_preview(head: str, tail: str) -> tuple[list[str], list[str], bool]:
+    """Lines of the head and tail previews of a stream too large to hold.
+
+    The tail preview starts mid-line more often than not; its first partial
+    piece is dropped so every kept line is a whole line — the third element
+    says whether that happened, so a caller mapping line numbers can shift
+    its tail map by one. Parsers and ``shape_stream`` both use this, so a
+    region index computed over ``head_lines + tail_lines`` is the index the
+    shaper sees.
+    """
+    h = split_lines(head)
+    t = split_lines(tail)
+    torn = bool(t) and not tail.startswith("\n") and len(t) > 1
+    if torn:
+        t = t[1:]
+    return h, t, torn
+
+
+def _region_note(a: int, b: int, why: str) -> str:
+    label = f"L{a}" if a == b else f"L{a}-{b}"
+    return f"[{label}: {why}]"
+
+
+def _merge_regions(priority, n: int) -> list[tuple[int, int, str]]:
+    """Clamp, drop empties, and trim each region to the lines not already
+    covered by an earlier (more important) one — order is kept."""
+    out: list[tuple[int, int, str]] = []
+    covered: set[int] = set()
+    for a, b, why in priority or ():
+        a, b = max(0, int(a)), min(n - 1, int(b))
+        if a > b:
+            continue
+        idx = [i for i in range(a, b + 1) if i not in covered]
+        if not idx:
+            continue
+        covered.update(idx)
+        out.append((idx[0], idx[-1], str(why)))
+    return out
 
 
 def _omission_note(omitted_lines: int, omitted_bytes: int, output_id: str | None,
@@ -268,75 +317,150 @@ def _omission_note(omitted_lines: int, omitted_bytes: int, output_id: str | None
 def shape_stream(*, full_text: str | None = None, head: str = "", tail: str = "",
                  total_bytes: int, total_lines: int, alloc: int,
                  output_id: str | None = None, focus=None,
-                 number_lines: bool = True) -> tuple[str, dict]:
+                 number_lines: bool = True, priority=None, priority_share: float = 1.0,
+                 line_numbers: list[int] | None = None,
+                 tail_line_numbers: list[int] | None = None) -> tuple[str, dict]:
     """Fit one stream into ``alloc`` bytes.
 
     Either ``full_text`` (the whole stream) or ``head``/``tail`` previews (a
     stream too large to hold) is given. Under budget the text passes through
-    untouched, long lines included. Over budget: lines are clipped, then a
-    HEAD_SHARE / (1 - HEAD_SHARE) window of the allocation keeps the first and
-    last lines and an omission note stands in for the middle.
+    untouched, long lines included. Over budget: lines are clipped; then
+    ``priority`` regions — 0-based inclusive ``(start, end, why)`` ranges,
+    most important first (cli/tools/shell_parsers.py) — are kept FIRST, each
+    prefixed by a one-line ``[La-b: why]`` note when it is not contiguous
+    with what was already kept; then the remaining allocation keeps the
+    first and last lines HEAD_SHARE / (1 - HEAD_SHARE) as before, and one
+    omission note names how many lines and bytes are missing and the output
+    id they can be paged from. In the previews path, region indices refer to
+    the head lines followed by the tail lines (``split_preview``).
+    ``priority_share`` caps what regions may take of the allocation (the
+    renderer passes 0.6 for generic error anchors, so head and tail always
+    keep something; a recognised runner's regions may take it all).
+
+    ``line_numbers`` (and ``tail_line_numbers`` for the tail preview) map
+    each line to its number in the raw stream when normalisation folded
+    lines away (S2), so every ``L…`` in a note is a number ``output_action=
+    'read'`` understands.
 
     Returns ``(rendered, info)`` where info = {cut, omitted_lines,
-    omitted_bytes, clipped_lines, rendered_bytes}.
+    omitted_bytes, clipped_lines, rendered_bytes, priority_kept}.
     """
     info = {"cut": False, "omitted_lines": 0, "omitted_bytes": 0,
-            "clipped_lines": 0, "rendered_bytes": 0}
+            "clipped_lines": 0, "rendered_bytes": 0, "priority_kept": 0}
     if full_text is not None and _byte_len(full_text) <= alloc:
         info["rendered_bytes"] = _byte_len(full_text)
         return full_text, info
 
+    gap_after: int | None = None          # previews: the hole between head and tail
     if full_text is not None:
-        raw_lines = full_text.split("\n")
-        if raw_lines and raw_lines[-1] == "":
-            raw_lines.pop()
-        numbered = list(enumerate(raw_lines, 1))
-        head_lines = numbered
-        tail_lines = numbered
-        n_total = len(numbered)
+        raw_lines = split_lines(full_text)
+        numbers = list(line_numbers) if line_numbers and len(line_numbers) == len(raw_lines) \
+            else list(range(1, len(raw_lines) + 1))
+        entries = list(zip(numbers, raw_lines))
+        n_total = len(entries)
     else:
-        h = head.split("\n")
-        if h and h[-1] == "" and head.endswith("\n"):
-            h.pop()
-        t = tail.split("\n")
-        if t and t[-1] == "" and tail.endswith("\n"):
-            t.pop()
-        # The tail preview starts mid-line more often than not; the first
-        # partial piece is dropped so every kept line is a whole line.
-        if t and not tail.startswith("\n") and len(t) > 1:
-            t = t[1:]
+        h, t, torn = split_preview(head, tail)
+        t_numbers = list(tail_line_numbers) if tail_line_numbers and len(tail_line_numbers) == len(t) + int(torn) \
+            else list(range(1, len(t) + 1 + int(torn)))
+        if torn:
+            t_numbers = t_numbers[1:]
         n_total = max(total_lines, 1)
-        head_lines = list(enumerate(h, 1))
+        h_numbers = list(line_numbers) if line_numbers and len(line_numbers) == len(h) \
+            else list(range(1, len(h) + 1))
         first_tail_no = max(1, n_total - len(t) + 1)
-        tail_lines = list(enumerate(t, first_tail_no))
+        entries = list(zip(h_numbers, h)) + [(first_tail_no + (no - 1), line) for no, line in zip(t_numbers, t)]
+        gap_after = len(h) - 1 if h and t else None
 
+    n = len(entries)
     note_reserve = 240
     usable = max(0, alloc - note_reserve)
-    head_budget = int(usable * HEAD_SHARE)
-    tail_budget = usable - head_budget
+    kept: dict[int, str] = {}
+    used = 0
 
-    head_out, head_kept = _take_lines(head_lines, head_budget, from_end=False,
-                                      focus=focus, output_id=output_id,
-                                      number_lines=number_lines)
-    # Everything the head already covers is off limits to the tail.
-    remaining_tail = [pair for pair in tail_lines if pair[0] > head_kept]
-    tail_out, tail_kept = _take_lines(remaining_tail, tail_budget, from_end=True,
-                                      focus=focus, output_id=output_id,
-                                      number_lines=number_lines)
+    # 1. Priority regions, most important first; a region that does not fit
+    #    whole is skipped so a smaller one further down the list still can.
+    regions = _merge_regions(priority, n)
+    region_at: dict[int, tuple[int, int, str]] = {}
+    prio_limit = int(usable * max(0.0, min(1.0, priority_share)))
+    for a, b, why in regions:
+        note_cost = _byte_len(_region_note(entries[a][0], entries[b][0], why)) + 1
+        trial: dict[int, str] = {}
+        cost = _fill(entries, range(a, b + 1), prio_limit, trial, focus=focus, output_id=output_id,
+                     number_lines=number_lines, allow_one=False)
+        if len(trial) != b - a + 1 or used + cost + note_cost > prio_limit:
+            continue
+        kept.update(trial)
+        used += cost + note_cost
+        region_at[a] = (entries[a][0], entries[b][0], why)
+    info["priority_kept"] = len(kept)
 
-    kept_total = head_kept + tail_kept
-    omitted_lines = max(0, n_total - kept_total)
-    info["clipped_lines"] = sum(1 for chunk in head_out + tail_out if "\n" in chunk)
-    if omitted_lines == 0 and (full_text is not None):
-        rendered = "\n".join(head_out + tail_out)
+    # 2. Head / tail on what is left.
+    remaining = max(0, usable - used)
+    head_budget = int(remaining * HEAD_SHARE)
+    tail_budget = remaining - head_budget
+    _fill(entries, range(n), head_budget, kept, focus=focus, output_id=output_id,
+          number_lines=number_lines, allow_one=not kept)
+    _fill(entries, range(n - 1, -1, -1), tail_budget, kept, focus=focus, output_id=output_id,
+          number_lines=number_lines, allow_one=not kept)
+
+    def _render(kept_now: dict[int, str]) -> tuple[str, int, int]:
+        order = sorted(kept_now)
+        omitted = max(0, n_total - len(order))
+        kept_bytes = sum(_byte_len(kept_now[i]) + 1 for i in order)
+        omitted_b = max(0, total_bytes - kept_bytes)
+        chunks: list[str] = []
+        prev = -1
+        total_note_done = False
+        for idx in order:
+            is_gap = idx != prev + 1 or (gap_after is not None and prev == gap_after)
+            if is_gap and omitted > 0:
+                if not total_note_done:
+                    chunks.append(_omission_note(omitted, omitted_b, output_id, focus))
+                    total_note_done = True
+                elif idx not in region_at:
+                    lo = entries[prev][0] + 1 if prev >= 0 else 1
+                    hi = entries[idx][0] - 1
+                    chunks.append(f"[… L{lo}-L{hi} omitted …]" if hi > lo else f"[… L{lo} omitted …]")
+            if is_gap and idx in region_at:
+                chunks.append(_region_note(*region_at[idx]))
+            chunks.append(kept_now[idx])
+            prev = idx
+        if omitted > 0 and not total_note_done:
+            chunks.append(_omission_note(omitted, omitted_b, output_id, focus))
+        return "\n".join(chunks), omitted, omitted_b
+
+    rendered, omitted_lines, omitted_bytes = _render(kept)
+    # Notes were reserved for approximately; if the stream still overflows,
+    # thin the head window from its end, then the tail window from its
+    # start — never a priority line.
+    prio = {i for a, b, _ in regions for i in range(a, b + 1)}
+    while _byte_len(rendered) > alloc:
+        head_run: list[int] = []
+        i = 0
+        while i in kept:
+            head_run.append(i)
+            i += 1
+        tail_run: list[int] = []
+        i = n - 1
+        while i in kept and i not in head_run:
+            tail_run.append(i)
+            i -= 1
+        head_cands = [i for i in head_run if i not in prio]
+        tail_cands = [i for i in tail_run if i not in prio]
+        if head_cands:
+            victim = head_cands[-1]
+        elif tail_cands:
+            victim = tail_cands[-1]
+        else:
+            break
+        kept.pop(victim)
+        rendered, omitted_lines, omitted_bytes = _render(kept)
+
+    info["clipped_lines"] = sum(1 for chunk in kept.values() if "\n" in chunk)
+    if omitted_lines == 0 and full_text is not None:
         info["cut"] = info["clipped_lines"] > 0
         info["rendered_bytes"] = _byte_len(rendered)
         return rendered, info
-
-    rendered_bytes_kept = sum(_byte_len(c) + 1 for c in head_out + tail_out)
-    omitted_bytes = max(0, total_bytes - rendered_bytes_kept)
-    note = _omission_note(omitted_lines, omitted_bytes, output_id, focus)
-    rendered = "\n".join(head_out + [note] + tail_out)
     info.update(cut=True, omitted_lines=omitted_lines, omitted_bytes=omitted_bytes,
                 rendered_bytes=_byte_len(rendered))
     return rendered, info

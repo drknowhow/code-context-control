@@ -2,8 +2,10 @@
 
 Wraps subprocess.Popen with the Windows-safe pattern from
 services/edit_ledger.py::_git_combined (Popen + taskkill /F /T + stdin=DEVNULL).
-Auto-filters long stdout via handle_filter, auto-logs git mutations
-to the edit ledger, and accounts stdout tokens against session budget.
+Budgets and shapes the response (cli/tools/shell_render.py + shell_parsers.py:
+normalised streams, runner-aware priority regions, omission only over budget),
+auto-logs git mutations to the edit ledger, and accounts stdout tokens against
+session budget.
 
 Shell selection: on Windows, commands are run through Git Bash (bash.exe) when
 it is available, so c3_shell speaks the same POSIX dialect as the native Bash
@@ -28,7 +30,13 @@ from pathlib import Path
 from cli._shell_writes import shell_write_targets
 from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens
-from cli.tools.filter import handle_filter
+from cli.tools.shell_parsers import (
+    SUMMARY_MIN_LINES,
+    detect_runner,
+    normalize_stream,
+    priority_regions,
+    structured_tail,
+)
 from cli.tools.shell_render import (
     allocate,
     cmd_display,
@@ -36,6 +44,8 @@ from cli.tools.shell_render import (
     grep_pattern,
     human_bytes,
     shape_stream,
+    split_lines,
+    split_preview,
 )
 from core import count_tokens
 from services import access_guard
@@ -477,6 +487,39 @@ def _stream_facts(result: dict, stream: str) -> dict:
             "longest": _longest_line(text)}
 
 
+_ZERO_NORM = {"ansi_stripped": 0, "cr_collapsed": 0, "dup_collapsed": 0}
+
+
+def _normalised(facts: dict, *, collapse: bool, fuzzy: bool) -> dict:
+    """One stream after ``normalize_stream``: the text (or previews), its
+    logical lines in the index space ``shape_stream`` uses, the raw line
+    numbers of those lines when folding shifted them, and the counters."""
+    info = dict(_ZERO_NORM)
+    if facts["text"] is not None:
+        text, ni = normalize_stream(facts["text"], collapse=collapse, fuzzy_dups=fuzzy)
+        for k in _ZERO_NORM:
+            info[k] = ni[k]
+        return {"text": text, "head": "", "tail": "", "lines": split_lines(text),
+                "bytes": len(text.encode("utf-8", errors="replace")),
+                "total_lines": facts["lines"], "numbers": ni["line_numbers"],
+                "tail_numbers": None, "info": info}
+    head, hi = normalize_stream(facts["head"], collapse=collapse, fuzzy_dups=fuzzy)
+    tail, ti = normalize_stream(facts["tail"], collapse=collapse, fuzzy_dups=fuzzy)
+    for k in _ZERO_NORM:
+        info[k] = hi[k] + ti[k]
+    h_lines, t_lines, _torn = split_preview(head, tail)
+    return {"text": None, "head": head, "tail": tail, "lines": h_lines + t_lines,
+            "bytes": facts["bytes"], "total_lines": facts["lines"],
+            "numbers": hi["line_numbers"], "tail_numbers": ti["line_numbers"], "info": info}
+
+
+def _region_line_count(regions) -> int:
+    seen: set[int] = set()
+    for a, b, _why in regions:
+        seen.update(range(a, b + 1))
+    return len(seen)
+
+
 def render_shell_response(cmd: str, result: dict, svc, *,
                           filter_output: bool = True, warn: str = "",
                           capped_note: str = "", touched_files=(),
@@ -494,21 +537,46 @@ def render_shell_response(cmd: str, result: dict, svc, *,
     Budget (2.112.0, cli/tools/shell_render.py): the rendered body never
     exceeds ``effective_budget()`` bytes — 18 KiB by default, 22 KiB ceiling,
     ``max_bytes`` and ``hybrid.shell_budget_bytes`` may only lower it,
-    ``filter_output=False`` never lifts it. A stream that fits its share
-    passes through untouched (and, when it has more than
-    _FILTER_THRESHOLD_LINES newlines and is not a git diagnostic, through the
-    same auto-filter as before); a stream that does not is clipped line by
-    line and windowed head/tail with an omission note naming the output id.
-    Whenever anything was dropped — clipped, windowed or filtered — the raw
-    streams are kept in the spill store and ``stats["needs_spill"]`` tells
-    handle_shell to promote them.
+    ``filter_output=False`` never lifts it.
+
+    Shaping (2.113.0, S2, cli/tools/shell_parsers.py) — the Cod rule: strip
+    ANSI and collapse ``\\r`` rewrites always, otherwise preserve complete
+    under-budget output, run the parsers always but omit only over budget:
+
+    1. Both streams are normalised: ``\\r\\n`` → ``\\n``, ANSI escape and
+       control sequences stripped (not a loss), each line's ``\\r``
+       progress rewrites collapsed to the final state, runs of three or
+       more identical consecutive lines folded to the first plus
+       `` [x N]``. The last two are a loss: the header says
+       ``[collapsed …]``, ``stats["filtered"]`` is set and the raw streams
+       are spilled. ``filter_output=False`` skips the two collapses (ANSI
+       is always stripped) and, as before, never lifts the byte cap.
+    2. The runner is detected (pytest, unittest, cargo/rustc, tsc, jest,
+       vitest) and its priority regions computed on every call; a stream
+       that fits its allocation passes through whole regardless. A stream
+       that does not is re-normalised with the duplicate test widened to
+       lines differing only in digits / hex / timestamps, then shaped:
+       priority regions first (each announced by ``[La-b: why]`` when not
+       contiguous), head/tail with the rest, one omission note naming the
+       output id. Unrecognised output uses generic error anchors, capped at
+       60% of the allocation so head and tail always keep something.
+    3. For a recognised runner with more than SUMMARY_MIN_LINES lines a
+       ``--- summary ---`` section (totals + one line per failing test,
+       cap 20) is appended and counted inside the budget.
+
+    The legacy ``>30 newlines → handle_filter`` path is gone from this
+    function (``c3_filter`` the tool is untouched). Whenever anything was
+    dropped — collapsed, clipped or windowed — ``stats["needs_spill"]``
+    tells handle_shell to keep the raw streams.
 
     ``stats`` is what telemetry records about the call (see
     SessionManager.record_tool_tokens ``detail``): stdout_bytes and
-    stderr_bytes are measured BEFORE filtering; longest_line is the tell for
-    the single-line monsters (minified bundles, JSONL) that a newline-count
-    trigger never sees; filtered/spilled/output_id describe what this
-    renderer did.
+    stderr_bytes are measured on the RAW streams; longest_line is the tell
+    for the single-line monsters (minified bundles, JSONL) that a
+    newline-count trigger never sees; filtered (a lossy collapse happened),
+    spilled, output_id, runner, ansi_stripped, cr_collapsed, dup_collapsed
+    and priority_lines (lines the parsers marked, both streams) describe
+    what this renderer did.
     """
     out = _stream_facts(result, "stdout")
     err = _stream_facts(result, "stderr")
@@ -524,6 +592,11 @@ def render_shell_response(cmd: str, result: dict, svc, *,
         "output_id": None,
         "cmd_class": _cmd_class(cmd),
         "needs_spill": False,
+        "runner": None,
+        "ansi_stripped": 0,
+        "cr_collapsed": 0,
+        "dup_collapsed": 0,
+        "priority_lines": 0,
     }
 
     config_default = None
@@ -532,45 +605,56 @@ def render_shell_response(cmd: str, result: dict, svc, *,
     except Exception:
         config_default = None
     budget = effective_budget(max_bytes, config_default=config_default)
-    out_alloc, err_alloc = allocate(budget, out["bytes"], err["bytes"])
     stats["budget_bytes"] = budget
     output_id = getattr(capture, "output_id", None) if capture is not None else None
     focus = grep_pattern(cmd)
+    collapse = bool(filter_output)
 
-    # Legacy auto-filter: only on stdout, only when the whole text is at hand
-    # (a stream over TEXT_MAX_BYTES has previews only and goes straight to
-    # deterministic shaping), more than _FILTER_THRESHOLD_LINES newlines,
-    # never a git diagnostic — exactly the trigger 2.111.0 had, so the token
-    # profile of a filtered test or build run does not move in S1; what
-    # moves is that the dropped text is now recoverable. S2 replaces this.
-    stdout_text = out["text"]
-    filtered_note = ""
-    if (filter_output and stdout_text is not None
-            and stdout_text.count("\n") > _FILTER_THRESHOLD_LINES
-            and not _GIT_DIAGNOSTIC.search(cmd)):
-        try:
-            stdout_text = handle_filter(
-                "", stdout_text, "", 50, "smart", True,
-                svc, lambda *a, **kw: a[2],
-            )
-            filtered_note = " [stdout filtered]"
-            stats["filtered"] = True
-        except Exception:
-            stdout_text = out["text"]
+    # 1. Normalise. A stream with previews only (over TEXT_MAX_BYTES) is over
+    #    budget by definition, so it gets the widened duplicate test at once.
+    norm_out = _normalised(out, collapse=collapse, fuzzy=out["text"] is None)
+    norm_err = _normalised(err, collapse=collapse, fuzzy=err["text"] is None)
+
+    # 2. Runner, summary, allocation. The summary is measured first so the
+    #    streams are allocated what is left of the budget.
+    runner = detect_runner(cmd, norm_out["text"] or norm_out["head"] + norm_out["tail"],
+                           norm_err["text"] or norm_err["head"] + norm_err["tail"])
+    stats["runner"] = runner
+    summary = ""
+    if runner and (out["lines"] + err["lines"]) > SUMMARY_MIN_LINES:
+        summary = structured_tail(runner, norm_out["lines"] + norm_err["lines"], result.get("exit_code"))
+    summary_bytes = len(summary.encode("utf-8", errors="replace"))
+    out_alloc, err_alloc = allocate(budget - summary_bytes, norm_out["bytes"], norm_err["bytes"])
+
+    # 3. A stream that does not fit is re-normalised with fuzzy duplicates,
+    #    then shaped around its priority regions.
+    if collapse and norm_out["text"] is not None and norm_out["bytes"] > out_alloc:
+        norm_out = _normalised(out, collapse=True, fuzzy=True)
+    if collapse and norm_err["text"] is not None and norm_err["bytes"] > err_alloc:
+        norm_err = _normalised(err, collapse=True, fuzzy=True)
+    for key in ("ansi_stripped", "cr_collapsed", "dup_collapsed"):
+        stats[key] = norm_out["info"][key] + norm_err["info"][key]
+    stats["filtered"] = bool(stats["cr_collapsed"] or stats["dup_collapsed"])
+
+    prio_out = priority_regions(runner, norm_out["lines"]) if norm_out["lines"] else []
+    prio_err = priority_regions(runner, norm_err["lines"]) if norm_err["lines"] else []
+    stats["priority_lines"] = _region_line_count(prio_out) + _region_line_count(prio_err)
+    share = 1.0 if runner else 0.6
 
     shaped_out, info_out = shape_stream(
-        full_text=stdout_text, head=out["head"], tail=out["tail"],
-        total_bytes=out["bytes"], total_lines=out["lines"], alloc=out_alloc,
-        output_id=output_id, focus=focus,
-        number_lines=not stats["filtered"])  # filtered text no longer maps to raw line numbers
+        full_text=norm_out["text"], head=norm_out["head"], tail=norm_out["tail"],
+        total_bytes=norm_out["bytes"], total_lines=norm_out["total_lines"], alloc=out_alloc,
+        output_id=output_id, focus=focus, priority=prio_out, priority_share=share,
+        line_numbers=norm_out["numbers"], tail_line_numbers=norm_out["tail_numbers"])
     if err["bytes"] > 0 or (err["text"] or "").strip():
         shaped_err, info_err = shape_stream(
-            full_text=err["text"], head=err["head"], tail=err["tail"],
-            total_bytes=err["bytes"], total_lines=err["lines"], alloc=err_alloc,
-            output_id=output_id, focus=focus)
+            full_text=norm_err["text"], head=norm_err["head"], tail=norm_err["tail"],
+            total_bytes=norm_err["bytes"], total_lines=norm_err["total_lines"], alloc=err_alloc,
+            output_id=output_id, focus=focus, priority=prio_err, priority_share=share,
+            line_numbers=norm_err["numbers"], tail_line_numbers=norm_err["tail_numbers"])
     else:
         shaped_err, info_err = "", {"cut": False, "omitted_lines": 0, "omitted_bytes": 0,
-                                    "clipped_lines": 0, "rendered_bytes": 0}
+                                    "clipped_lines": 0, "rendered_bytes": 0, "priority_kept": 0}
 
     cut = bool(info_out["cut"] or info_err["cut"])
     stats["needs_spill"] = bool(stats["filtered"] or cut)
@@ -586,6 +670,14 @@ def render_shell_response(cmd: str, result: dict, svc, *,
     else:
         status = f"FAIL({result.get('exit_code')})"
 
+    collapsed_note = ""
+    if stats["filtered"]:
+        parts = []
+        if stats["cr_collapsed"]:
+            parts.append(f"{stats['cr_collapsed']} cr rewrites")
+        if stats["dup_collapsed"]:
+            parts.append(f"{stats['dup_collapsed']} dup lines")
+        collapsed_note = f" [collapsed {', '.join(parts)}]"
     size_note = ""
     if cut or stats["spilled"]:
         size_note = (f" (stdout {human_bytes(out['bytes'])}/{out['lines']} lines,"
@@ -594,12 +686,14 @@ def render_shell_response(cmd: str, result: dict, svc, *,
 
     body = (
         f"{warn}{capped_note}"
-        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{filtered_note}{size_note}\n"
+        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{collapsed_note}{size_note}\n"
         f"$ {cmd_display(cmd)}\n"
         f"--- stdout ---\n{shaped_out.rstrip()}\n"
     )
     if shaped_err.strip():
         body += f"--- stderr ---\n{shaped_err.rstrip()}\n"
+    if summary:
+        body += summary
     dependency_hint = _dependency_hint(cmd, result)
     if dependency_hint:
         body += f"--- hint ---\n{dependency_hint}\n"

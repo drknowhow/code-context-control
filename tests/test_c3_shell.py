@@ -4,7 +4,8 @@ Covers:
 - exit_code propagation (success + non-zero)
 - empty / blocked / soft-warn input classification
 - timeout triggers hard kill path (platform-aware)
-- filter engages past threshold
+- output shaping: a long under-budget stdout passes through whole (S2 removed
+  the >30-line auto-filter from the render path), a short one is untouched
 - activity_log receives shell_exec record
 - git mutating command triggers ledger refresh probe
 """
@@ -247,25 +248,36 @@ class TestShellExecution(unittest.TestCase):
 
 
 class TestShellFilter(unittest.TestCase):
-    def test_filter_engages_past_threshold(self):
+    """Until 2.112.0 these two tests patched ``handle_filter`` and asserted
+    the ``[stdout filtered]`` note past 30 lines. S2 (2.113.0) removed that
+    call from the render path — the legacy filter was lossy in ways the
+    fixture suite measured (a jest failure block, the middle of 120 plain
+    lines) — so ``cli.tools.shell`` no longer imports it and the note is
+    gone. What replaced it: an under-budget stream passes through whole,
+    and only the S2 normalisation (ANSI / CR / duplicate runs) may touch
+    it. The tests now pin that contract instead; ``c3_filter`` the tool is
+    untouched and covered elsewhere."""
+
+    def test_long_under_budget_output_passes_through_whole(self):
         svc, _, _ = _fake_svc(Path.cwd())
         long_stdout = "\n".join(f"line {i}" for i in range(100)) + "\n"
         fake = {"exit_code": 0, "stdout": long_stdout, "stderr": "", "duration_ms": 1, "timed_out": False}
-        with patch.object(shell_mod, "_run_sync", return_value=fake), \
-             patch.object(shell_mod, "handle_filter", return_value="[filtered]") as filt:
+        self.assertFalse(hasattr(shell_mod, "handle_filter"), "the legacy filter is back in the render path")
+        with patch.object(shell_mod, "_run_sync", return_value=fake):
             out = _run(shell_mod.handle_shell("yes | head -100", "", 10, True, False, svc, _finalize_passthrough))
-            filt.assert_called_once()
-        self.assertIn("[stdout filtered]", out)
-        self.assertIn("[filtered]", out)
+        self.assertNotIn("[stdout filtered]", out)
+        self.assertNotIn("omitted", out)
+        for i in (0, 50, 99):
+            self.assertIn(f"line {i}\n", out)
 
-    def test_filter_skipped_when_short(self):
+    def test_short_output_is_untouched(self):
         svc, _, _ = _fake_svc(Path.cwd())
         fake = {"exit_code": 0, "stdout": "short\n", "stderr": "", "duration_ms": 1, "timed_out": False}
-        with patch.object(shell_mod, "_run_sync", return_value=fake), \
-             patch.object(shell_mod, "handle_filter") as filt:
+        with patch.object(shell_mod, "_run_sync", return_value=fake):
             out = _run(shell_mod.handle_shell("echo short", "", 10, True, False, svc, _finalize_passthrough))
-            filt.assert_not_called()
         self.assertNotIn("[stdout filtered]", out)
+        self.assertNotIn("[collapsed", out)
+        self.assertIn("--- stdout ---\nshort\n", out)
 
 
 class TestShellLogging(unittest.TestCase):
