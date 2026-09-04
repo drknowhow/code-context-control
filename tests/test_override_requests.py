@@ -306,6 +306,95 @@ class TestDecide(RequestBase):
         self.assertIn(og.EV_APPROVED, events)
 
 
+# ── §4.1 the rule-scoped decision ──────────────────────────────────────────
+#
+# decide() is where a tap becomes a capability, so the gates that stand
+# between "approve" and "a standing exception" are asserted here rather than
+# only in the grant store. Both gates are independent on purpose: the switch
+# is the user's standing policy, the challenge is their answer right now, and
+# neither alone is enough.
+
+class TestRuleMode(RequestBase):
+    def test_refused_when_the_switch_is_off(self):
+        row = self.request()
+        with self.assertRaises(orq.OverrideError):
+            orq.decide(row["id"], "approve", mode=orq.MODE_RULE,
+                       confirm="secrets/**")
+
+    def test_allowed_when_the_switch_is_on(self):
+        self.write_config(extra={"allow_rule_grants": True})
+        row = self.request()
+        decided = orq.decide(row["id"], "approve", mode=orq.MODE_RULE,
+                             confirm="secrets/**")
+        self.assertEqual(decided["grant_mode"], orq.MODE_RULE)
+        self.assertEqual(decided["grant_scope"], og.SCOPE_RULE)
+        grant = og.active(str(self.proj))[0]
+        self.assertEqual(grant["scope"], og.SCOPE_RULE)
+        self.assertIsNone(grant["uses_remaining"])
+
+    def test_the_challenge_is_the_glob_not_the_word_session(self):
+        self.write_config(extra={"allow_rule_grants": True})
+        row = self.request()
+        with self.assertRaises(orq.OverrideError):
+            orq.decide(row["id"], "approve", mode=orq.MODE_RULE,
+                       confirm=orq.CONFIRM_SESSION)
+
+    def test_one_tap_layers_still_need_the_glob_for_a_rule_grant(self):
+        """access_confirm is deliberately one-tap for `once` (§5). It is
+        deliberately NOT one-tap for `rule`: the thing being accepted is a
+        standing capability, and the keystrokes should say so."""
+        self.write_config(extra={"allow_rule_grants": True})
+        (self.proj / "infra").mkdir()
+        target = self.proj / "infra" / "main.tf"
+        target.write_text("x", encoding="utf-8")
+        (self.proj / ".c3" / "config.json").write_text(json.dumps({
+            "access": {"confirm": ["infra/**"]},
+            "override": {"enabled": True, "layers": dict(ALL_LAYERS_ON),
+                         "allow_rule_grants": True}}), encoding="utf-8")
+        row = self.request(
+            path=str(target), tool="Edit", op="write",
+            denial=ag.check(str(target), "write", str(self.proj)))
+        self.assertEqual(row["rule_class"], opol.LAYER_ACCESS_CONFIRM)
+        orq.decide(row["id"], "approve")  # `once` stays one-tap
+        row2 = self.request(
+            path=str(target), tool="Edit", op="write",
+            denial=ag.check(str(target), "write", str(self.proj)))
+        with self.assertRaises(orq.OverrideError):
+            orq.decide(row2["id"], "approve", mode=orq.MODE_RULE)
+
+    def test_a_synthetic_rule_cannot_become_a_rule_grant(self):
+        """The discipline and shell layers file under a rule TOKEN, not a
+        glob. There is no path set to widen along, so `rule` mode must refuse
+        rather than mint a grant that matches nothing (or, if the token were
+        ever compiled as a glob, everything)."""
+        self.write_config(extra={"allow_rule_grants": True})
+        row = self.request()
+        rows = orq.load()
+        rows[0]["rule"] = opol.RULE_DISCIPLINE
+        orq._save(rows)
+        with self.assertRaises(orq.OverrideError):
+            orq.decide(row["id"], "approve", mode=orq.MODE_RULE,
+                       confirm=opol.RULE_DISCIPLINE)
+
+    def test_unknown_mode_is_refused(self):
+        row = self.request()
+        with self.assertRaises(orq.OverrideError):
+            orq.decide(row["id"], "approve", mode="forever",
+                       confirm="secrets/**")
+
+    def test_the_grant_covers_a_sibling_the_request_never_named(self):
+        self.write_config(extra={"allow_rule_grants": True})
+        sibling = self.proj / "secrets" / "other.txt"
+        sibling.write_text("o", encoding="utf-8")
+        row = self.request()
+        orq.decide(row["id"], "approve", mode=orq.MODE_RULE,
+                   confirm="secrets/**")
+        out = hag.run({"tool_name": "Read",
+                       "tool_input": {"file_path": str(sibling)},
+                       "session_id": SESSION}, project_path=self.proj)
+        self.assertIn(opol.TAG_GRANTED, out.get("additionalContext", ""))
+
+
 # ── §6 the refusal contract ────────────────────────────────────────────────
 
 class TestOfferLine(RequestBase):

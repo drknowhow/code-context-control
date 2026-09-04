@@ -4,6 +4,191 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.118.0] - 2026-09-04
+
+### Added — one approval can cover a whole rule for the session, not one file
+
+A confirm hold asked again for every file. Approving a `.mcp.json` write did
+nothing for `CLAUDE.md` next to it, and the `session` mode that already
+existed lifted the use count without touching the path binding — so a
+decision the user made once cost one tap per file. No surface even sent
+`mode`: the hub hardcoded "Approve once" and `c3 override approve` had no
+flag for it.
+
+- **Grant scope** (`docs/override-requests.md` §4.1, new). Every grant now
+  carries `scope`; the historical shape is `call` and stays the default (a
+  missing field reads as `call`, so nothing already minted changes meaning).
+  `scope="rule"` relaxes exactly two of §4's nine conditions: **tool**, from
+  the exact name to a declared op-class (`override_policy.TOOL_CLASSES`;
+  an unclassed tool is never widened, and `c3_artifacts`/`c3_project` are
+  deliberately unclassed), and **path**, from the exact canon key to the path
+  set the rule glob describes — evaluated by the same compiler, against the
+  same `(canon, rel)` pair, that produced the denial. A rule grant therefore
+  covers exactly the files that rule would have blocked.
+- Replacing what it drops: unlimited uses, its **own** TTL ceiling
+  (`rule_grant_ttl_s`, default 4 h, hard ceiling 8 h — a `call` grant keeps
+  its 15 minutes), and an **idle window** (`rule_grant_idle_s`, default
+  30 min). The idle window is the load-bearing part: there is no session-END
+  signal to hang a long grant on — the MCP surface's `host_session_id` is
+  snapshotted at boot and goes stale across `/clear` — so a rule grant dies
+  on its own once the conversation stops using it.
+- **What it still cannot reach.** `find`/`consume` refuse
+  `forbidden_target()` on every call, not just at mint, so a rule grant over
+  `**/.c3/**` covers `.c3/notes.txt` and never `override_grants.json`,
+  `overrides.jsonl`, `config.json`, `secrets.enc` or `cred_state.json`.
+  Tier-0 never reaches the store. Minting also requires
+  `override.allow_rule_grants` (default off, AND-merged, counted as a
+  widening policy edit), a globbable rule — the synthetic discipline/shell
+  tokens are refused — a rule that actually covers the refusal, and the rule
+  glob **retyped by hand on every layer**, including `access_confirm`, which
+  stays one-tap for `once`.
+- **Visible and killable**, because a standing capability that only shows up
+  in the agent's own transcript is policed from the wrong place:
+  `GET /api/hub/grants` + `DELETE /api/hub/grants/<id>`, an **Active grants**
+  strip in the hub Access tab, `c3 override list` printing a rule grant's
+  reach instead of the path it was minted from, and a `granted_context()`
+  line that says "covers every path &lt;rule&gt; matches, this session"
+  rather than a use count.
+- Surfaces: `Approve for this rule…` in `cli/hub_ui/components/hub_access.js`
+  (with a dialog that names what it reaches *before* the glob is retyped),
+  `--mode {once,session,rule}` on `c3 override approve`, `--mute` on
+  `c3 override deny` (both existed in the service layer and in the HTTP
+  routes, and neither had a CLI flag), and the rule branch in the mobile
+  decide route.
+
+### Added — a project can define and adjust its own approved paths
+
+Builtin guards (`**/.env*`, `**/.c3/**`, the agent-config confirm tier) were
+adjustable at global scope only: a project-scope `builtin_mode` or
+`disable_builtin` was a loud corrupt-scope error. The stated reason was that
+a project scope may only ever tighten, because a cloned repo could otherwise
+ship a config that loosens the guard. But that threat is answered by the
+**second** key, not by the scope — the config half has never been able to
+change a builtin on its own. So one repo needing `.env` readable meant
+turning it off for every project on the machine, which is strictly worse.
+
+- **Both keys are now realm-bound.** The keyring account for a project mode
+  is `builtin_mode|proj|<normcased path>|<glob>` (global keeps its existing
+  spelling, so nothing already attested changes). Realm-atomic, the same
+  construction as `credential_store`: a global attestation never satisfies a
+  project entry and a project's never leaks to a sibling. A clone of a repo
+  carries `access.builtin_mode` and changes nothing, because the
+  attestation lives in this machine's keyring, not in the checkout.
+- A project mode **replaces** the global one for that glob, loosening
+  included — that is the feature. `effective_builtin_modes(project_path)`
+  resolves global then project, and `list_rules()` now reports
+  `mode_realms` so no surface can present a project-set opt-out as if it
+  were machine-wide. `c3 access list` prints `[project]` / `[global]` beside
+  each; the Access tab shows a badge and a scope picker.
+- **Rule scopes still only tighten** — that sentence in
+  docs/access-guard.md §1 is about `deny`/`read_only`/`confirm`/`mask` and
+  is unchanged. It is the separate builtin-MODE dimension that became
+  project-settable.
+- Unchanged at every scope: Tier-0 vault globs take no mode
+  (`set_builtin_mode` raises), and `override_policy.FORBIDDEN_TARGET_NAMES`
+  keeps `config.json`, `secrets.enc`, `cred_state.json`,
+  `override_grants.json` and `overrides.jsonl` unreachable even under
+  `builtin_mode: {"**/.c3/**": "allow"}` — so this can never become
+  self-granting.
+- Surfaces: `--project` on `c3 access builtin {disable,enable,mode}` (the
+  typed-glob confirmation now names *which* projects it affects), a `scope`
+  field on `POST /api/access/builtin_mode`, and a scope picker in the
+  project Access tab.
+- Loosening the `.env` guard now prints one advisory line pointing at the
+  vault: `c3_credentials import_env` reads the file server-side, so the
+  agent gets names, lengths and fingerprints and never a value. Advisory
+  only — never a refusal.
+- Hot path unaffected: the keyring is consulted only for globs a config
+  actually lists, which is normally none. Pinned by a test that asserts zero
+  keyring reads when no mode is set.
+
+**Compatibility:** a pre-2.118.0 C3 reading a project config that carries
+`builtin_mode` or `disable_builtin` treats that scope as corrupt ⇒ deny-all.
+Fail-closed, and the loud direction.
+
+### Added — `login` credentials for servers, databases and other non-web targets
+
+The vault could hold a website login and nothing else. `canonical_origin` was
+hard-refused for any scheme but `https`, so an SSH host, a database or an RDP
+box had no home — despite being exactly the kind of credential a project
+needs beside its `.env`.
+
+- `login`'s required fields are now `site_id`, `canonical_target`,
+  `username`. `canonical_target` is `scheme://host[:port]` from an
+  allowlist — https, ssh, sftp, ftps, rdp, smb, vnc, winrm, ldaps, imaps,
+  smtps, amqps, postgres, postgresql, mysql, mariadb, mssql, mongodb, redis.
+  Cleartext schemes (`http`, `ftp`, `telnet`, `smtp`, `imap`, `ldap`, …) are
+  refused **by name** and told which TLS variant to use, for the same reason
+  `http://` always was. Every other rule the origin parser had is unchanged:
+  no path, query, fragment or userinfo, host lowercased, port range-checked.
+  Ambiguity in that comparison is the whole attack, and `ssh://` earns no
+  exemption from it.
+- `password` moved to optional and `private_key` / `passphrase` were added,
+  with a cross-field rule: **one of password/private_key is required**, since
+  a login with neither is not a credential. A private key is checked for a
+  PEM/OpenSSH header (a pasted *public* key would otherwise fail much later,
+  in a runner, as an authentication error nobody traces back here) and gets
+  its own 8192-char allowance rather than raising the cap on every field.
+  Oversize payloads take the Fernet sidecar path that already existed.
+- **The origin-pinning property is preserved, not weakened.**
+  `canonical_origin` remains a known field, is accepted on input as an alias,
+  and still reads back — but **only when the target is https**. A browser
+  broker that pins a credential by asking for it gets `None` for an `ssh://`
+  entry and fails closed, instead of a string it cannot compare to a
+  top-level frame. Entries stored before this release need no migration: the
+  old spelling resolves on read in both directions.
+- Display projection is now `{site_id, scheme, target, has_totp, has_key}` —
+  username still deliberately withheld, secrets still booleans.
+- Everything inject-only is untouched and inherited for free: reveal stays
+  permanently refused, structured entries never auto-inject, the
+  plain↔structured boundary stays immutable, and no HTTP route returns a
+  field value.
+
+### Fixed — the session benchmark measured symbol narrowing against a file with no symbols
+
+`_select_sample` orders candidates by SIZE alone, so the largest file in a
+repo can be a changelog or a bundled HTML page. `bug_investigation` took
+`sample[0]` regardless, and its third step — "narrow to the relevant symbol",
+the whole point of the scenario — degenerated into a full-file read while
+still paying for the map, reporting *negative* savings that were a correct
+measurement of a workload nobody runs. It fired here the moment this
+release's own changelog entries made `CHANGELOG.md` the biggest file in the
+repo. The scenario now picks the first sampled file that actually exposes
+symbols (and reports an error rather than a number if none does):
+this repo went from -15.2% to +77.9%, with the symbol read dropping from
+29,438 tokens to 34.
+
+### Fixed — the request store could lose a row
+
+`~/.c3/oracle/override_requests.json` is one file for every project and
+session on the box, and every mutator did an unsynchronised
+load→mutate→save; two concurrent decisions, or a decide racing an auto-file,
+could each write back a list missing the other's row. The tmp file was a
+fixed `.tmp` name besides, so two writers collided on that too. Mutators now
+commit a single row under the same cross-process lock the grants store uses,
+and the tmp name is per-process. Rule grants raise the write rate, which is
+what made this worth fixing rather than noting.
+
+### Fixed — a rule-scoped grant would have matched nothing for project globs
+
+Caught by its own test before shipping: `rule_covers` was evaluating only the
+canonical path, so a project-relative rule like `secrets/**` — which the
+evaluator matches against the project-relative form — never matched. Both
+forms are now threaded from `path_key_pair` into matching, which is also the
+only way a grant and the rule that filed it can agree about the same file.
+
+### Fixed — `c3 creds set --type login` echoed the password to the terminal
+
+`_CREDS_HIDDEN_FIELDS` listed `number`, `cvc` and `ssn` but not `password`
+or `totp_secret`, so the CLI prompted for a login password with plain
+`input()` from v2.90.0. Both browser UIs masked it correctly and nothing
+asserted the CLI — the third UI had no parity test. Fixed, extended to
+`private_key` and `passphrase`, and `test_credential_ui_parity` now derives
+the must-mask set from `_SCHEMAS` instead of hardcoding it, so a future kind
+cannot reopen the hole. `private_key` is also read until a blank line rather
+than through single-line `getpass`, which would have stored the first line of
+a PEM.
+
 ## [2.115.0] - 2026-09-04
 
 ### Added — an advisory hint when the shell is used as a reader or a searcher (shell remediation S4)

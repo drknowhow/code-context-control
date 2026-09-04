@@ -21,6 +21,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from services import override_policy as op_policy
@@ -40,6 +41,17 @@ EV_CONSUMED = "consumed"
 EV_REVOKED = "revoked"
 EV_NEAR_MISS = "near_miss"
 EV_CONSUMED_AFTER_EXPIRY = "consumed_after_expiry_attempt"
+
+#: Grant scope — how far one approval reaches (spec §4.1).
+#: ``call``: the historical shape, and still the default. One exact
+#:   (session, layer, rule, tool, op, path) tuple.
+#: ``rule``: same session/layer/rule/op, ANY path the rule glob covers and
+#:   any tool in the same op class. Unlimited uses, bounded by a wall-clock
+#:   backstop AND an idle window. Never mintable for a synthetic rule (see
+#:   ``rule_is_globbable``) because those have no glob to widen along.
+SCOPE_CALL = "call"
+SCOPE_RULE = "rule"
+SCOPES = (SCOPE_CALL, SCOPE_RULE)
 
 #: How long a stale lock is honoured before it is broken. Long enough that a
 #: real read-modify-write (two small JSON files) always finishes first; short
@@ -71,10 +83,55 @@ def parse_ts(value) -> datetime | None:
 
 
 def _expired(grant: dict, at: datetime | None = None) -> bool:
+    """Wall-clock expiry, plus the idle window a rule grant also carries."""
+    at = at or now()
     exp = parse_ts(grant.get("expires_at"))
     if exp is None:
         return True  # unreadable expiry ⇒ treat as expired, never as eternal
-    return (at or now()) >= exp
+    if at >= exp:
+        return True
+    return _idle_expired(grant, at)
+
+
+def _idle_expired(grant: dict, at: datetime) -> bool:
+    """True when a rule grant has sat unused past its idle window.
+
+    This is what makes "until the session ends" safe: there is no session-END
+    signal to hang a long grant on (the MCP surface's host session id is
+    snapshotted at boot and goes stale across ``/clear``), so a grant the
+    conversation stops exercising must die on its own. Only rule grants carry
+    an idle window; a ``call`` grant is already capped at 15 minutes.
+    An unreadable idle window is treated as expired, never as eternal.
+    """
+    idle = grant.get("idle_s")
+    if idle is None:
+        return False
+    try:
+        idle = int(idle)
+    except (TypeError, ValueError):
+        return True
+    if idle < 1:
+        return True
+    since = parse_ts(grant.get("last_used_at")) or parse_ts(grant.get("granted_at"))
+    if since is None:
+        return True
+    return at >= since + timedelta(seconds=idle)
+
+
+def _uses_left(grant: dict) -> int | None:
+    """Remaining uses, or ``None`` for a rule grant's unlimited budget."""
+    raw = grant.get("uses_remaining")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _has_uses(grant: dict) -> bool:
+    left = _uses_left(grant)
+    return left is None or left > 0
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -94,18 +151,83 @@ def path_key(path, project_path=".") -> str:
     ``.env`` are the same grant and neither is a new one. Returns '' when the
     path is not representable (UNC, ADS, 8.3 alias); '' never matches a grant.
     """
+    return path_key_pair(path, project_path)[0]
+
+
+def path_key_pair(path, project_path=".") -> tuple:
+    """``(canon, rel)`` — the two forms a rule glob is evaluated against.
+
+    ``canon`` alone is the grant identity, but it is NOT enough to decide
+    whether a rule COVERS a path: a project-scoped glob like ``secrets/**`` is
+    written relative to the project root and only ever matches the ``rel``
+    form. Rule-scoped grants need both, and they must be the same two strings
+    ``access_guard.verdict`` used to produce the denial — anything else would
+    let a grant and the rule that filed it disagree about the same file.
+    """
     try:
         from services import access_guard as ag  # noqa: PLC0415 — lazy
-        canon, _rel, denial = ag.canonicalize(path, project_path)
-        return "" if denial else canon
+        canon, rel, denial = ag.canonicalize(path, project_path)
+        return ("", "") if denial else (canon, rel)
     except Exception:
-        return ""
+        return "", ""
+
+
+def rule_is_globbable(rule: str) -> bool:
+    """False for the synthetic rule tokens that have no glob to widen along.
+
+    ``<discipline:native-write-block>`` and ``<shell:soft-warn>`` name a
+    behaviour, not a path set (``override_policy.RULE_DISCIPLINE`` /
+    ``RULE_SHELL_WARN``), so a rule-scoped grant over one would either match
+    nothing or — if the token were ever treated as a glob — everything.
+    Refused at mint rather than left to fail confusingly at match time.
+    """
+    text = str(rule or "").strip()
+    return bool(text) and not text.startswith("<")
+
+
+@lru_cache(maxsize=256)
+def _compiled_rule(glob: str):
+    """The access-guard matcher for one rule glob. ``None`` when it will not
+    compile — an uncompilable rule matches nothing, which is fail-closed."""
+    try:
+        from services import access_guard as ag  # noqa: PLC0415 — lazy
+        return ag._compile(glob, "deny", "grant")
+    except Exception:
+        return None
+
+
+def rule_covers(rule: str, key: str, rel: str = "") -> bool:
+    """True when a path is inside the set the rule glob describes — §4
+    condition 7 under ``scope="rule"``.
+
+    *key* and *rel* are the canon/project-relative pair from
+    :func:`path_key_pair`. Both are needed and both are passed to the SAME
+    matcher the evaluator uses, so a rule grant covers exactly the files that
+    rule would have blocked — never one more, never one fewer. Passing only
+    the canon silently drops every project-scoped glob, which is a grant that
+    matches nothing rather than a grant that matches too much, but is still
+    wrong.
+    """
+    if not key or not rule_is_globbable(rule):
+        return False
+    compiled = _compiled_rule(str(rule))
+    if compiled is None:
+        return False
+    leaf = key.rsplit("/", 1)[-1]
+    return compiled.matches(key, rel or key, leaf)
 
 
 # ── Store ──────────────────────────────────────────────────────────────────
 
 class _Lock:
-    """Cross-process advisory lock for the grants read-modify-write.
+    """Cross-process advisory lock for a store's read-modify-write.
+
+    Also used by ``override_requests`` for the machine-global request store
+    (pass ``lock_file``), which had no lock at all — every mutator there does
+    an unsynchronised load→mutate→save over one file shared by every project
+    and session on the box, so two concurrent decisions could lose a row.
+    Rule-scoped grants raise the write rate, which is what made it worth
+    fixing rather than noting.
 
     ``_atomic_write_json`` guarantees a reader never sees a torn file; it does
     NOT make read-modify-write atomic, and two PreToolUse hook subprocesses
@@ -116,8 +238,8 @@ class _Lock:
     re-reads under the lock and decrements what it actually found.
     """
 
-    def __init__(self, project_path):
-        self.path = Path(project_path) / _LOCK_FILE
+    def __init__(self, project_path, lock_file: str = _LOCK_FILE):
+        self.path = Path(project_path) / lock_file
         self.held = False
 
     def __enter__(self):
@@ -197,7 +319,7 @@ def active(project_path=".", session_id: str = "") -> list:
         return []
     at = now()
     live = [g for g in grants
-            if not _expired(g, at) and int(g.get("uses_remaining") or 0) > 0
+            if not _expired(g, at) and _has_uses(g)
             and (not session_id or g.get("session_id") == session_id)]
     return sorted(live, key=lambda g: str(g.get("granted_at") or ""), reverse=True)
 
@@ -253,7 +375,8 @@ def new_id(prefix: str = "grt") -> str:
 def mint(project_path=".", *, session_id: str, layer: str, rule: str,
          tool: str, op: str, path, ttl_s: int | None = None,
          uses: int | None = None, granted_by: str = "cli",
-         request_id: str = "", policy=None, layers_key: str = "") -> dict:
+         request_id: str = "", policy=None, layers_key: str = "",
+         scope: str = SCOPE_CALL) -> dict:
     """Create one grant. **Human surfaces only** — callers must be authorised.
 
     Raises ``ValueError`` when policy forbids it. The refusal is the point:
@@ -266,6 +389,12 @@ def mint(project_path=".", *, session_id: str, layer: str, rule: str,
     one layer that does not require ``override.enabled`` (the confirm rule the
     human wrote is the opt-in). When empty (direct CLI mints), the legacy
     ``enabled`` check applies unchanged.
+
+    ``scope``: ``call`` (default, the historical shape) or ``rule`` — see
+    :data:`SCOPES`. A rule grant needs ``override.allow_rule_grants``, a
+    globbable rule, and gets its own TTL ceiling plus an idle window; the
+    ``path`` it is minted from is still recorded, so the audit line and the
+    UI can say which refusal produced it.
     """
     policy = policy or op_policy.resolve(project_path)
     if layers_key:
@@ -283,25 +412,49 @@ def mint(project_path=".", *, session_id: str, layer: str, rule: str,
         # standing capability for every future session on this project.
         raise ValueError("a grant must name the session it belongs to "
                          "(--session); grants never cross sessions")
-    key = path_key(path, project_path)
+    if scope not in SCOPES:
+        raise ValueError(f"unknown grant scope '{scope}' — expected one of: "
+                         + ", ".join(SCOPES))
+    key, rel = path_key_pair(path, project_path)
     if not key:
         raise ValueError("target path is not representable (UNC / ADS / 8.3 "
                          "alias) — it can never match a grant")
     if op_policy.forbidden_target(key):
         raise ValueError(f"{op_policy.TAG_NOT_ESCALATABLE} {Path(key).name} is "
                          "a vault or policy file — no grant may ever cover it")
-    ttl = policy.clamp_ttl(ttl_s)
+    if scope == SCOPE_RULE:
+        if not policy.allow_rule_grants:
+            raise ValueError(
+                "rule-scoped grants are disabled for this project "
+                "(`override.allow_rule_grants` is false)")
+        if not rule_is_globbable(rule):
+            raise ValueError(
+                f"'{rule}' names a behaviour, not a path set — it cannot be "
+                "widened to a rule-scoped grant; approve this call instead")
+        if not rule_covers(rule, key, rel):
+            # Belt and braces: if the glob the user is approving does not even
+            # cover the path they were looking at, the grant would silently
+            # authorise a DIFFERENT set of files than the one on screen.
+            raise ValueError(
+                f"rule '{rule}' does not cover {Path(key).name} — refusing to "
+                "mint a rule grant whose reach does not match the refusal")
+    ttl = (policy.clamp_rule_ttl(ttl_s) if scope == SCOPE_RULE
+           else policy.clamp_ttl(ttl_s))
     grant = {
         "id": new_id(),
         "request_id": request_id or "",
         "session_id": str(session_id or ""),
+        "scope": scope,
         "layer": layer,
         "rule": str(rule),
         "tool": str(tool),
         "op": str(op),
         "path_key": key,
         "expires_at": iso(now() + timedelta(seconds=ttl)),
-        "uses_remaining": policy.clamp_uses(uses),
+        # None = unlimited within the TTL + idle window. Only a rule grant
+        # gets it; every other shape keeps a countable budget.
+        "uses_remaining": None if scope == SCOPE_RULE else policy.clamp_uses(uses),
+        "idle_s": policy.rule_idle_s() if scope == SCOPE_RULE else None,
         "granted_at": iso(now()),
         "granted_by": str(granted_by or "cli"),
     }
@@ -318,6 +471,7 @@ def mint(project_path=".", *, session_id: str, layer: str, rule: str,
         "session_id": grant["session_id"], "layer": layer, "rule": grant["rule"],
         "tool": grant["tool"], "op": grant["op"], "path": key,
         "ttl_s": ttl, "uses": grant["uses_remaining"],
+        "scope": scope, "idle_s": grant["idle_s"],
         "granted_by": grant["granted_by"],
     })
     return grant
@@ -355,7 +509,7 @@ def sweep_expired(project_path=".") -> int:
             return 0
         keep = []
         for g in grants:
-            if _expired(g) or int(g.get("uses_remaining") or 0) <= 0:
+            if _expired(g) or not _has_uses(g):
                 dropped.append(g)
             else:
                 keep.append(g)
@@ -373,25 +527,44 @@ def sweep_expired(project_path=".") -> int:
 # ── Matching + consumption (§4) ────────────────────────────────────────────
 
 def _matches(grant: dict, *, session_id: str, layer: str, rule: str,
-             tool: str, op: str, key: str, at: datetime) -> bool:
-    """All nine conditions of §4. Any mismatch ⇒ ordinary denial."""
-    return (
-        str(grant.get("session_id") or "") == str(session_id or "")   # 2
-        and grant.get("layer") == layer                               # 3
-        and grant.get("rule") == rule                                 # 4
-        and grant.get("tool") == tool                                 # 5
-        and grant.get("op") == op                                     # 6
-        and grant.get("path_key") == key                              # 7
-        and not _expired(grant, at)                                   # 8
-        and int(grant.get("uses_remaining") or 0) > 0                 # 9
-    )
+             tool: str, op: str, key: str, at: datetime,
+             rel: str = "") -> bool:
+    """All nine conditions of §4. Any mismatch ⇒ ordinary denial.
+
+    Conditions 2, 3, 4, 6, 8 and 9 are identical for every scope. A
+    ``scope="rule"`` grant relaxes exactly two of them, and only in the
+    directions §4.1 spells out:
+
+    * **5 (tool)** — from the exact tool to a declared op-class
+      (``override_policy.same_tool_class``). An unclassed tool is never
+      widened.
+    * **7 (path)** — from the exact canon key to "inside the path set the
+      rule glob describes", matched by the SAME compiler that produced the
+      denial, so a grant can never reach a file the rule would not have
+      blocked.
+
+    Everything else — the vault, the policy files, Tier-0 — is unreachable
+    before this function runs: ``find``/``consume`` refuse a
+    ``forbidden_target`` key on every call, not just at mint.
+    """
+    if (str(grant.get("session_id") or "") != str(session_id or "")   # 2
+            or grant.get("layer") != layer                            # 3
+            or grant.get("rule") != rule                              # 4
+            or grant.get("op") != op                                  # 6
+            or _expired(grant, at)                                    # 8
+            or not _has_uses(grant)):                                 # 9
+        return False
+    if grant.get("scope") == SCOPE_RULE:
+        return (op_policy.same_tool_class(grant.get("tool") or "", tool)  # 5
+                and rule_covers(rule, key, rel))                         # 7
+    return grant.get("tool") == tool and grant.get("path_key") == key  # 5, 7
     # Condition 1 (project_path) is structural: the store is project-local.
 
 
 def find(project_path=".", *, session_id: str, layer: str, rule: str,
          tool: str, op: str, path) -> dict | None:
     """The grant that WOULD authorise this call — no consumption, no audit."""
-    key = path_key(path, project_path)
+    key, rel = path_key_pair(path, project_path)
     if not key or op_policy.forbidden_target(key):
         return None
     grants, corrupt = load(project_path)
@@ -400,7 +573,7 @@ def find(project_path=".", *, session_id: str, layer: str, rule: str,
     at = now()
     for g in grants:
         if _matches(g, session_id=session_id, layer=layer, rule=rule,
-                    tool=tool, op=op, key=key, at=at):
+                    tool=tool, op=op, key=key, at=at, rel=rel):
             return g
     return None
 
@@ -411,13 +584,17 @@ def _near_miss(project_path, grants: list, *, session_id: str, layer: str,
     for g in grants:
         if g.get("session_id") != session_id or g.get("layer") != layer:
             continue
-        if _expired(g) or int(g.get("uses_remaining") or 0) <= 0:
+        if _expired(g) or not _has_uses(g):
             continue
+        wide = g.get("scope") == SCOPE_RULE
         differs = [f for f, want, got in (
             ("rule", g.get("rule"), rule),
-            ("tool", g.get("tool"), tool),
+            # A rule grant is SUPPOSED to span tools and paths, so reporting
+            # those as near-misses would bury the signal ('you approved X,
+            # the agent tried Y') under noise the user deliberately allowed.
+            ("tool", g.get("tool"), tool if not wide else g.get("tool")),
             ("op", g.get("op"), op),
-            ("path", g.get("path_key"), key),
+            ("path", g.get("path_key"), key if not wide else g.get("path_key")),
         ) if want != got]
         if differs:
             audit(project_path, EV_NEAR_MISS, {
@@ -440,7 +617,7 @@ def consume(project_path=".", *, session_id: str, layer: str, rule: str,
     cheap, and that is strictly safer than consuming in PostToolUse where a
     crash would leave a live grant behind (§4).
     """
-    key = path_key(path, project_path)
+    key, rel = path_key_pair(path, project_path)
     if not key or op_policy.forbidden_target(key):
         return None
     with _Lock(project_path):
@@ -451,14 +628,19 @@ def consume(project_path=".", *, session_id: str, layer: str, rule: str,
         hit = None
         for g in grants:
             if _matches(g, session_id=session_id, layer=layer, rule=rule,
-                        tool=tool, op=op, key=key, at=at):
+                        tool=tool, op=op, key=key, at=at, rel=rel):
                 hit = g
                 break
         if hit is None:
             _near_miss(project_path, grants, session_id=session_id, layer=layer,
                        rule=rule, tool=tool, op=op, key=key)
             return None
-        hit["uses_remaining"] = int(hit.get("uses_remaining") or 0) - 1
+        left = _uses_left(hit)
+        if left is not None:
+            hit["uses_remaining"] = left - 1
+        # last_used_at is not bookkeeping for a rule grant — it is what the
+        # idle window is measured from, so it must be written even when
+        # there is no counter to decrement.
         hit["last_used_at"] = iso(at)
         _save(project_path, grants)
         used = dict(hit)
@@ -474,10 +656,17 @@ def granted_context(grant: dict, rule: str) -> str:
     """The additionalContext line an allowed-by-grant call emits (§5)."""
     when = parse_ts(grant.get("granted_at"))
     stamp = when.strftime("%H:%MZ") if when else "?"
+    left = _uses_left(grant)
+    if left is None:
+        # A rule grant is the one shape with no countdown, so the line has to
+        # say what it actually covers — otherwise a standing capability reads
+        # in the transcript exactly like a single approval.
+        budget = f"covers every path {rule} matches, this session"
+    else:
+        budget = f"{left} uses left"
     return (
         f"{op_policy.TAG_GRANTED} Allowed by override {grant.get('id', '?')} "
-        f"(approved on {grant.get('granted_by', '?')} {stamp}, "
-        f"{int(grant.get('uses_remaining') or 0)} uses left). "
+        f"(approved on {grant.get('granted_by', '?')} {stamp}, {budget}). "
         f"The rule {rule} is still in force."
     )
 

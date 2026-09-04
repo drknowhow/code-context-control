@@ -70,7 +70,13 @@ _RESOLVE_BAN = {
                                  "load_all", "load_rules", "check",
                                  # config-store plumbing (scope dirs), not
                                  # user-path evaluation:
-                                 "_scope_config_path"},
+                                 "_scope_config_path",
+                                 # the one resolver for scope BASES (realms,
+                                 # per-scope mode lookups). Everything that
+                                 # needs a project's identity goes through
+                                 # it, so two spellings cannot become two
+                                 # keyring realms:
+                                 "_scope_base"},
 }
 
 

@@ -344,6 +344,26 @@ class SessionBenchmark:
                 ))
         return results
 
+    def _first_symbol_file(self):
+        """First sampled file with extractable symbols → (path, content, record, symbols).
+
+        (None, None, None, []) when nothing in the sample has any, which is a
+        real result for a docs-only project and is reported as such rather
+        than silently benchmarked as a full-file read.
+        """
+        for path, content, _tokens in self.sample:
+            rel = self._rel(path)
+            record = self.file_memory.get(rel)
+            if not record or self.file_memory.needs_update(rel):
+                record = self.file_memory.update(rel)
+            if not record or not record.get("sections"):
+                continue
+            symbols = [s["name"] for s in record["sections"]
+                       if s.get("type") in ("class", "function", "method")][:3]
+            if symbols:
+                return path, content, record, symbols
+        return None, None, None, []
+
     def _scenario_bug_investigation(self) -> ScenarioResult:
         """Simulate: search for error → read suspicious files → narrow to symbol → validate."""
         result = ScenarioResult(
@@ -353,15 +373,18 @@ class SessionBenchmark:
         if len(self.sample) < 2:
             return result
 
-        # Pick a target file and a "bug query"
-        target_path, target_content, _ = self.sample[0]
+        # Pick a target file and a "bug query". The target must be a file the
+        # indexer can extract symbols from — "narrow to the relevant symbol"
+        # is this scenario's whole third step, and a file with no symbols
+        # turns it into a full-file read while still paying for the map.
+        # `_select_sample` orders by SIZE alone, so the largest file in a repo
+        # can easily be a changelog or a bundled HTML page; measuring a
+        # symbol-narrowing workflow against one measures nothing.
+        target_path, target_content, record, symbols = self._first_symbol_file()
+        if target_path is None:
+            result.description = "Error: no sampled file exposes symbols"
+            return result
         target_rel = self._rel(target_path)
-        record = self.file_memory.get(target_rel)
-        if not record or self.file_memory.needs_update(target_rel):
-            record = self.file_memory.update(target_rel)
-        symbols = []
-        if record and record.get("sections"):
-            symbols = [s["name"] for s in record["sections"] if s.get("type") in ("class", "function", "method")][:3]
         # Use a query that's realistic but likely to hit — reference the filename and a symbol if available
         if symbols:
             query = f"{symbols[0]} bug in {target_path.stem}"

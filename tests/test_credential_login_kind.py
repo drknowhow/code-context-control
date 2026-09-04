@@ -46,18 +46,20 @@ class TestLoginKind(TestCredentialStore):
         self.assertIn("login", cs.VALID_TYPES)
         self.assertIn("login", cs.STRUCTURED_TYPES)
 
-    def test_create_projects_site_and_origin_but_never_username(self):
+    def test_create_projects_site_and_target_but_never_username(self):
         entry = cs.set_credential("GH", _login(site_id="github",
                                                canonical_origin="https://github.com"),
                                   scope="project", project_path=self.project,
                                   ctype="login")
         self.assertEqual(entry["type"], "login")
         self.assertEqual(entry["display"], {"site_id": "github",
-                                            "origin": "https://github.com",
-                                            "has_totp": False})
+                                            "scheme": "https",
+                                            "target": "https://github.com",
+                                            "has_totp": False,
+                                            "has_key": False})
         self.assertNotIn("username", json.dumps(entry["display"]))
         self.assertEqual(entry["fields"],
-                         ["canonical_origin", "password", "site_id", "username"])
+                         ["canonical_target", "password", "site_id", "username"])
 
     def test_has_totp_flag_never_carries_the_seed(self):
         entry = cs.set_credential("T", _login(totp_secret="JBSWY3DPEHPK3PXP"),
@@ -106,17 +108,17 @@ class TestLoginKind(TestCredentialStore):
 
     def test_origin_rejections(self):
         cases = [
-            ("http://example.com", "https"),
+            ("http://example.com", "cleartext"),
             ("https://example.com/login", "no path"),
             ("https://example.com?next=1", "no path"),
             ("https://user@example.com", "userinfo"),
-            ("example.com", "full origin"),
+            ("example.com", "full target"),
             ("https://example.com:99999", "port"),
             ("https://:8443", "host"),
             ("https://exa mple.com", "host"),
             # trailing-slash stripping must not turn a bare scheme into a
-            # silently-accepted origin
-            ("https://", "full origin"),
+            # silently-accepted target
+            ("https://", "full target"),
         ]
         for raw, needle in cases:
             with self.assertRaises(cs.CredentialError) as ctx:
@@ -185,6 +187,178 @@ class TestLoginKind(TestCredentialStore):
             cs.set_credential("P", _login(), scope="project",
                               project_path=self.project, ctype="login")
         self.assertIn("delete the entry", str(ctx.exception))
+
+
+# ── v2.118.0: logins for servers, databases and other non-web targets ──────
+
+_PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        + "b3BlbnNzaC1rZXktdjEAAAAA\n" * 40
+        + "-----END OPENSSH PRIVATE KEY-----")
+
+
+def _server_login(**over) -> str:
+    base = {
+        "site_id": "build01",
+        "canonical_target": "ssh://build01.lan:22",
+        "username": "deploy",
+        "private_key": _PEM,
+    }
+    base.update(over)
+    return json.dumps({k: v for k, v in base.items() if v is not None})
+
+
+class TestNonWebLogins(TestCredentialStore):
+    def set_login(self, name, payload):
+        return cs.set_credential(name, payload, scope="project",
+                                 project_path=self.project, ctype="login")
+
+    def test_every_allowed_scheme_normalizes(self):
+        for i, scheme in enumerate(cs.TARGET_SCHEMES):
+            with self.subTest(scheme=scheme):
+                entry = self.set_login(f"S{i}", _server_login(
+                    canonical_target=f"{scheme}://Host.Example.COM:0443"))
+                self.assertEqual(entry["display"]["target"],
+                                 f"{scheme}://host.example.com:443")
+                self.assertEqual(entry["display"]["scheme"], scheme)
+
+    def test_cleartext_schemes_name_their_replacement(self):
+        for bad, good in (("http", "https"), ("ftp", "ftps"),
+                          ("telnet", "ssh"), ("imap", "imaps"),
+                          ("ldap", "ldaps"), ("smtp", "smtps")):
+            with self.subTest(scheme=bad):
+                with self.assertRaises(cs.CredentialError) as ctx:
+                    self.set_login("C", _server_login(
+                        canonical_target=f"{bad}://host.example.com"))
+                self.assertIn("cleartext", str(ctx.exception))
+                self.assertIn(good, str(ctx.exception))
+
+    def test_unknown_scheme_is_refused_not_guessed(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("U", _server_login(
+                canonical_target="gopher://host.example.com"))
+        self.assertIn("unsupported scheme", str(ctx.exception))
+
+    def test_a_server_target_keeps_every_bare_target_rule(self):
+        for raw, needle in (("ssh://h.example.com/path", "no path"),
+                            ("ssh://user@h.example.com", "userinfo"),
+                            ("ssh://h.example.com:99999", "port"),
+                            ("ssh://", "full target")):
+            with self.subTest(raw=raw):
+                with self.assertRaises(cs.CredentialError) as ctx:
+                    self.set_login("B", _server_login(canonical_target=raw))
+                self.assertIn(needle, str(ctx.exception))
+
+    # ── the origin-pinning property, which must NOT be weakened ──
+    def test_canonical_origin_resolves_only_for_https(self):
+        """The load-bearing test. A browser broker pins a credential by
+        asking for `canonical_origin`; handing it an `ssh://` string would
+        give it something it cannot compare to a top-level frame."""
+        self.set_login("WEB", _login(canonical_origin="https://bank.example.com"))
+        self.set_login("SSH", _server_login())
+        self.assertEqual(
+            cs.get_value("WEB", project_path=self.project,
+                         field="canonical_origin"),
+            "https://bank.example.com")
+        self.assertIsNone(
+            cs.get_value("SSH", project_path=self.project,
+                         field="canonical_origin"))
+
+    def test_canonical_target_resolves_for_both(self):
+        self.set_login("WEB", _login(canonical_origin="https://bank.example.com"))
+        self.set_login("SSH", _server_login())
+        self.assertEqual(
+            cs.get_value("WEB", project_path=self.project,
+                         field="canonical_target"),
+            "https://bank.example.com")
+        self.assertEqual(
+            cs.get_value("SSH", project_path=self.project,
+                         field="canonical_target"),
+            "ssh://build01.lan:22")
+
+    def test_a_pre_2118_record_still_reads_back(self):
+        """Stored blobs carry `canonical_origin` literally. No migration
+        runs, so both spellings must resolve off the old field."""
+        self.set_login("OLD", _login())
+        raw = json.loads(cs._get_raw("OLD", project_path=self.project))
+        raw["canonical_origin"] = raw.pop("canonical_target")
+        cs._store_value("OLD", json.dumps(raw), scope="project",
+                        project_path=self.project,
+                        realm_s=cs.realm("project", self.project))
+        self.assertEqual(
+            cs.get_value("OLD", project_path=self.project,
+                         field="canonical_target"),
+            "https://login.example.com")
+        self.assertEqual(
+            cs.get_value("OLD", project_path=self.project,
+                         field="canonical_origin"),
+            "https://login.example.com")
+
+    def test_the_legacy_spelling_is_accepted_on_input(self):
+        entry = self.set_login("A", _login())
+        self.assertEqual(entry["fields"],
+                         ["canonical_target", "password", "site_id",
+                          "username"])
+
+    def test_two_disagreeing_targets_are_refused(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("X", json.dumps({
+                "site_id": "x", "username": "u", "password": "p",
+                "canonical_target": "https://a.example.com",
+                "canonical_origin": "https://b.example.com"}))
+        self.assertIn("disagree", str(ctx.exception))
+
+    # ── password-or-key ──
+    def test_a_key_only_login_is_valid(self):
+        entry = self.set_login("K", _server_login())
+        self.assertTrue(entry["display"]["has_key"])
+        self.assertNotIn("private_key", json.dumps(entry["display"]))
+
+    def test_a_login_with_neither_secret_is_refused(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("N", _server_login(private_key=None))
+        self.assertIn("needs a secret", str(ctx.exception))
+
+    def test_a_non_pem_private_key_is_refused(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("P", _server_login(
+                private_key="ssh-ed25519 AAAAC3Nz... deploy@build01"))
+        self.assertIn("PRIVATE KEY", str(ctx.exception))
+
+    def test_a_passphrase_without_a_key_is_refused(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("Q", _login(passphrase="hunter2"))
+        self.assertIn("no 'private_key'", str(ctx.exception))
+
+    def test_an_oversize_key_is_accepted_and_goes_to_the_sidecar(self):
+        entry = self.set_login("K", _server_login())
+        self.assertGreater(len(_PEM), cs.FILE_STORAGE_THRESHOLD)
+        self.assertEqual(entry["storage"], "file")
+        self.assertEqual(
+            cs.get_value("K", project_path=self.project, field="private_key"),
+            _PEM)
+
+    def test_a_key_beyond_its_own_cap_is_refused(self):
+        cap = cs._field_max("private_key")
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("H", _server_login(
+                private_key="-----BEGIN PRIVATE KEY-----\n" + "x" * (cap + 1)))
+        self.assertIn("private_key", str(ctx.exception))
+
+    def test_other_fields_keep_the_small_cap(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("W", _login(password="p" * 300))
+        self.assertIn("256", str(ctx.exception))
+
+    # ── inject-only survives the new shape ──
+    def test_reveal_is_still_refused_for_a_server_login(self):
+        self.set_login("K", _server_login())
+        self.assertIsNone(cs.get_value("K", project_path=self.project))
+
+    def test_errors_never_echo_the_key(self):
+        with self.assertRaises(cs.CredentialError) as ctx:
+            self.set_login("E", _server_login(
+                canonical_target="gopher://nope.example.com"))
+        self.assertNotIn(_PEM[:60], str(ctx.exception))
 
 
 if __name__ == "__main__":  # pragma: no cover

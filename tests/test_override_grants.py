@@ -295,6 +295,174 @@ class TestMatching(OverrideBase):
         self.assertIsNotNone(self.consume())  # the use was still there
 
 
+# ── §4.1 rule-scoped grants ────────────────────────────────────────────────
+#
+# The negative tests are again the load-bearing ones. A rule grant relaxes
+# exactly two of the nine conditions; every OTHER condition, and every limit
+# that replaces the ones it drops, is asserted individually here. The one
+# that matters most is `test_forbidden_target_never_rides_a_rule_grant`: the
+# widened path condition is the only route by which a grant could ever reach
+# the vault or the policy files, and it must not.
+
+class TestRuleScope(OverrideBase):
+    def setUp(self):
+        super().setUp()
+        self.write_config(
+            access={"deny": ["secrets/**"], "read_only": ["docs/**"]},
+            override={"enabled": True, "layers": dict(ALL_LAYERS_ON),
+                      "allow_rule_grants": True})
+        self.other = self.proj / "secrets" / "other.txt"
+        self.other.write_text("o", encoding="utf-8")
+
+    def rule_mint(self, **kw):
+        kw.setdefault("scope", og.SCOPE_RULE)
+        return self.mint(**kw)
+
+    def test_covers_a_different_path_under_the_same_rule(self):
+        self.rule_mint()
+        hit = self.consume(path=str(self.other))
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["scope"], og.SCOPE_RULE)
+
+    def test_uses_are_unlimited_and_never_burn_out(self):
+        self.rule_mint()
+        for _ in range(60):  # past HARD_MAX_USES, which does not apply here
+            self.assertIsNotNone(self.consume(path=str(self.other)))
+        self.assertIsNone(og._uses_left(og.active(str(self.proj))[0]))
+
+    def test_a_tool_in_the_same_class_rides_it(self):
+        self.rule_mint(tool="Read")
+        self.assertIsNotNone(self.consume(tool="Grep"))
+
+    def test_a_tool_in_another_class_does_not(self):
+        self.rule_mint(tool="Read")
+        self.assertIsNone(self.consume(tool="Edit"))
+
+    def test_an_unclassed_tool_is_never_widened(self):
+        self.rule_mint(tool="SomeFutureTool")
+        self.assertIsNone(self.consume(tool="Read"))
+        self.assertIsNotNone(self.consume(tool="SomeFutureTool"))
+
+    def test_a_path_outside_the_rule_does_not(self):
+        outside = self.proj / "docs"
+        outside.mkdir()
+        target = outside / "note.md"
+        target.write_text("n", encoding="utf-8")
+        self.rule_mint()
+        self.assertIsNone(self.consume(path=str(target)))
+
+    def test_session_layer_op_still_pin_it(self):
+        for name, override in {
+            "session": dict(session_id="other-session"),
+            "layer": dict(layer=opol.GATE_DISCIPLINE),
+            "rule": dict(rule="secrets/other/**"),
+            "op": dict(op="write"),
+        }.items():
+            with self.subTest(condition=name):
+                self.tearDown()
+                self.setUp()
+                self.rule_mint()
+                self.assertIsNone(self.consume(path=str(self.other), **override))
+
+    def test_forbidden_target_never_rides_a_rule_grant(self):
+        """The whole reason the widened path condition is safe.
+
+        A rule grant over `**/.c3/**` would otherwise cover
+        `override_grants.json` — the agent minting its own grants (spec §11
+        threat 3). find/consume refuse a forbidden target on EVERY call, not
+        just at mint, which is what makes the relaxation survivable.
+        """
+        c3_glob = "**/.c3/**"
+        self.write_config(
+            access={"deny": [c3_glob]},
+            override={"enabled": True, "layers": dict(ALL_LAYERS_ON),
+                      "allow_rule_grants": True})
+        innocent = self.proj / ".c3" / "notes.txt"
+        innocent.write_text("n", encoding="utf-8")
+        og.mint(str(self.proj), session_id=SESSION, layer=opol.GATE_ACCESS,
+                rule=c3_glob, tool="Read", op="read", path=str(innocent),
+                scope=og.SCOPE_RULE)
+        for name in ("override_grants.json", "config.json", "secrets.enc",
+                     "cred_state.json", "overrides.jsonl"):
+            with self.subTest(target=name):
+                self.assertIsNone(og.consume(
+                    str(self.proj), session_id=SESSION,
+                    layer=opol.GATE_ACCESS, rule=c3_glob, tool="Read",
+                    op="read", path=str(self.proj / ".c3" / name)))
+        # …and the innocent sibling still works, so the refusal above is the
+        # forbidden-target rule and not a broken grant.
+        self.assertIsNotNone(og.consume(
+            str(self.proj), session_id=SESSION, layer=opol.GATE_ACCESS,
+            rule=c3_glob, tool="Read", op="read", path=str(innocent)))
+
+    def test_idle_window_expires_an_unused_grant(self):
+        self.rule_mint()
+        stored = json.loads(og.grants_path(self.proj).read_text(encoding="utf-8"))
+        stored["grants"][0]["last_used_at"] = og.iso(
+            og.now() - timedelta(seconds=stored["grants"][0]["idle_s"] + 1))
+        og.grants_path(self.proj).write_text(json.dumps(stored), encoding="utf-8")
+        self.assertIsNone(self.consume(path=str(self.other)))
+        self.assertEqual(og.active(str(self.proj)), [])
+
+    def test_using_it_resets_the_idle_window(self):
+        self.rule_mint()
+        before = og.active(str(self.proj))[0].get("last_used_at")
+        self.assertIsNone(before)
+        self.consume(path=str(self.other))
+        self.assertIsNotNone(og.active(str(self.proj))[0]["last_used_at"])
+
+    def test_unreadable_idle_window_is_expired_not_eternal(self):
+        self.rule_mint()
+        stored = json.loads(og.grants_path(self.proj).read_text(encoding="utf-8"))
+        stored["grants"][0]["idle_s"] = "forever"
+        og.grants_path(self.proj).write_text(json.dumps(stored), encoding="utf-8")
+        self.assertIsNone(self.consume(path=str(self.other)))
+
+    def test_ttl_uses_the_rule_ceiling_not_the_call_one(self):
+        grant = self.rule_mint(ttl_s=opol.HARD_MAX_RULE_TTL_S * 4)
+        life = (og.parse_ts(grant["expires_at"]) - og.now()).total_seconds()
+        self.assertGreater(life, opol.HARD_MAX_TTL_S)
+        self.assertLessEqual(life, opol.HARD_MAX_RULE_TTL_S)
+
+    def test_a_call_grant_still_gets_the_15_minute_ceiling(self):
+        grant = self.mint(ttl_s=opol.HARD_MAX_RULE_TTL_S)
+        life = (og.parse_ts(grant["expires_at"]) - og.now()).total_seconds()
+        self.assertLessEqual(life, opol.HARD_MAX_TTL_S)
+
+    def test_refused_when_the_policy_switch_is_off(self):
+        self.write_config(
+            access={"deny": ["secrets/**"]},
+            override={"enabled": True, "layers": dict(ALL_LAYERS_ON),
+                      "allow_rule_grants": False})
+        with self.assertRaises(ValueError):
+            self.rule_mint()
+
+    def test_refused_for_a_synthetic_rule(self):
+        with self.assertRaises(ValueError):
+            self.rule_mint(layer=opol.GATE_DISCIPLINE,
+                           rule=opol.RULE_DISCIPLINE, tool="Write", op="write")
+
+    def test_refused_when_the_rule_does_not_cover_the_refusal(self):
+        with self.assertRaises(ValueError):
+            self.rule_mint(rule="docs/**")
+
+    def test_unknown_scope_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.mint(scope="everything")
+
+    def test_near_miss_does_not_fire_for_the_paths_it_covers(self):
+        self.rule_mint()
+        self.consume(path=str(self.other))
+        self.assertNotIn(og.EV_NEAR_MISS, self.audit_events())
+
+    def test_context_line_says_what_it_actually_covers(self):
+        self.rule_mint()
+        hit = self.consume(path=str(self.other))
+        line = og.granted_context(hit, "secrets/**")
+        self.assertIn("every path secrets/** matches", line)
+        self.assertNotIn("uses left", line)
+
+
 class TestConcurrency(OverrideBase):
     def test_one_use_survives_a_race(self):
         """Two hook subprocesses racing the last use: exactly one wins."""

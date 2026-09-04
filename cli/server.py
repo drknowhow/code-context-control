@@ -3019,25 +3019,29 @@ def api_access_remove():
 
 @app.route('/api/access/builtin_mode', methods=['POST'])
 def api_access_builtin_mode():
-    """Set a Tier-1 builtin's mode {glob, mode: deny|confirm|allow|default}.
+    """Set a Tier-1 builtin's mode {glob, mode, scope?}.
 
-    Human surface, GLOBAL scope by construction (set_builtin_mode writes
-    ~/.c3 and attests in the keyring — the two-key rule). The typed-glob
-    confirmation for widening modes lives in the UI; the irreversible parts
-    (Tier-0 refusal, attestation-first ordering) are enforced in the service
-    regardless of what the client believes.
+    mode: deny|confirm|allow|default. scope: global (default) or project
+    (v2.118.0) — a project mode is attested under that project's own keyring
+    realm, so it governs this project and nothing else, and the config half
+    alone still changes nothing. The typed-glob confirmation for widening
+    modes lives in the UI; the irreversible parts (Tier-0 refusal,
+    attestation-first ordering) are enforced in the service regardless of
+    what the client believes.
     """
     from services import access_guard
     data = request.get_json() or {}
     glob = str(data.get("glob") or "")
     mode = str(data.get("mode") or "").strip()
+    scope = str(data.get("scope") or "global").strip()
     try:
-        result = access_guard.set_builtin_mode(glob, mode)
+        result = access_guard.set_builtin_mode(glob, mode, scope,
+                                               str(PROJECT_PATH))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     if result["changed"]:
         _access_route_audit(f"builtin_mode_{result['mode']}",
-                            result["glob"], "builtin", "global")
+                            result["glob"], "builtin", result["scope"])
     return jsonify(result)
 
 

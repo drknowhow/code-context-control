@@ -1145,11 +1145,17 @@ async def c3_credentials(
     STRUCTURED kinds (address/identity/card/login) hold named fields: set takes value
     as a JSON object (card: cardholder/number/expiry[/cvc/billing_zip]; address:
     street1/city/state/zip[/recipient/street2/country/phone]; identity:
-    full_name[/dob/ssn/phone/email]; login: site_id/canonical_origin/username/password
-    [/totp_secret]). `login` is STORAGE ONLY — C3 has no browser and never types a
-    password anywhere. canonical_origin is https-only and stored normalized so an
-    external runner can bind the credential to one origin; do NOT build a browser
-    login runner in this package. Address a FIELD at the boundary —
+    full_name[/dob/ssn/phone/email]; login: site_id/canonical_target/username
+    [/password/private_key/passphrase/totp_secret], one of password/private_key
+    required). `login` covers websites AND servers, databases and other non-web
+    targets: canonical_target is scheme://host[:port] from an allowlist (https, ssh,
+    sftp, rdp, smb, winrm, ldaps, imaps, smtps, postgres, mysql, mssql, mongodb,
+    redis, …); cleartext schemes are refused by name. It is STORAGE ONLY — C3 has no
+    browser, opens no SSH session, and never types a password anywhere. The target is
+    stored normalized so an external runner can bind the credential to one
+    destination; `canonical_origin` still reads back, but ONLY when the target is
+    https, so a browser broker fails closed on a server entry. Do NOT build a login
+    runner in this package. Address a FIELD at the boundary —
     env_creds='CARD.number' (env $CARD_NUMBER) or {{cred:CARD.number}} in cmd. Reveal
     is permanently disabled for them and they never auto-inject; have the user enter
     the values via the Credentials UI or `c3 creds set` so they never enter the chat.

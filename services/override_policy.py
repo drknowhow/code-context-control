@@ -56,6 +56,53 @@ LAYER_KEYS = (
 #: Layers whose approval requires the rule glob typed by hand (spec §8/§11).
 TYPED_CONFIRM_LAYERS = frozenset({LAYER_ACCESS_DENY, LAYER_ACCESS_BUILTIN})
 
+# ── Tool op-classes (rule-scoped grants, docs/override-requests.md §4.1) ────
+#
+# A `scope="rule"` grant relaxes §4 condition 5 from "this exact tool" to
+# "a tool that does the same KIND of thing". The relaxation is a closed
+# allowlist, never "any tool": a class a tool is not listed in falls back to
+# exact-tool matching, so an unrecognised or future tool can never inherit an
+# existing grant. `c3_artifacts` (restore writes a whole prior version) and
+# `c3_project` (writes into a DIFFERENT project) are deliberately absent —
+# both are materially larger actions than the edit the user approved.
+TOOL_CLASS_WRITE = "write"
+TOOL_CLASS_READ = "read"
+TOOL_CLASS_SHELL = "shell"
+
+TOOL_CLASSES = {
+    TOOL_CLASS_WRITE: frozenset({
+        "Write", "Edit", "MultiEdit", "NotebookEdit", "c3_edit",
+    }),
+    TOOL_CLASS_READ: frozenset({
+        "Read", "Grep", "Glob", "NotebookRead",
+        "c3_read", "c3_compress", "c3_search",
+    }),
+    TOOL_CLASS_SHELL: frozenset({"Bash", "c3_shell", "c3_shell_job"}),
+}
+
+_TOOL_TO_CLASS = {t: cls for cls, tools in TOOL_CLASSES.items() for t in tools}
+
+
+def tool_class(tool: str) -> str | None:
+    """The op-class *tool* belongs to, or ``None`` when it is not classed.
+
+    ``None`` means "no relaxation": a rule-scoped grant for an unclassed tool
+    still matches that tool and nothing else.
+    """
+    return _TOOL_TO_CLASS.get(str(tool or ""))
+
+
+def same_tool_class(granted: str, attempted: str) -> bool:
+    """True iff *attempted* may ride a rule grant minted for *granted*.
+
+    Exact match always qualifies. Beyond that both tools must resolve to the
+    same declared class — an unclassed tool on either side is never widened.
+    """
+    if str(granted or "") == str(attempted or ""):
+        return True
+    left, right = tool_class(granted), tool_class(attempted)
+    return left is not None and left == right
+
 # ── Gate layers (the `layer` field on a Grant — spec §3.4) ──────────────────
 GATE_ACCESS = "access"
 GATE_DISCIPLINE = "discipline"
@@ -89,6 +136,14 @@ RULE_SHELL_WARN = "<shell:soft-warn>"
 HARD_MAX_TTL_S = 900          # 15 minutes (spec §1)
 HARD_MAX_USES = 50            # a "session grant" is still not unlimited
 HARD_MAX_REQUEST_TTL_S = 3600
+# Rule-scoped grants (spec §4.1) are the one shape allowed to outlive the
+# 15-minute ceiling, because their whole point is "stop asking me about this
+# rule for the rest of the conversation". They pay for it with an IDLE
+# window: the wall-clock TTL is only the backstop, and a grant the session
+# stops using dies long before it. There is no session-END signal to hang
+# this on (docs/override-requests.md §4.1), so idle is the proxy.
+HARD_MAX_RULE_TTL_S = 28800   # 8 hours
+HARD_MAX_RULE_IDLE_S = 3600   # 1 hour without a matching call
 
 NOTIFY_SEVERITIES = frozenset({"info", "warning", "critical"})
 CHANNELS = frozenset({"mobile", "desktop", "both"})
@@ -108,6 +163,12 @@ DEFAULTS = {
     "max_requests_per_hour": 20,
     "notify_severity": "critical",
     "allow_session_grants": False,
+    # Rule-scoped grants (spec §4.1). Strictly larger than a session grant —
+    # one approval covers every path the rule matches — so it gets its own
+    # switch, defaulting off, and its own typed challenge at decide time.
+    "allow_rule_grants": False,
+    "rule_grant_ttl_s": 14400,     # 4h wall-clock backstop
+    "rule_grant_idle_s": 1800,     # 30min since the last matching call
     # The command run when a request is DECIDED, so the asking agent hears
     # about it (services/override_wake.py). None = nobody is listening, which
     # is the pre-2.73 behaviour and the reason a grant could expire unused
@@ -116,12 +177,14 @@ DEFAULTS = {
 }
 
 _VALID_KEYS = frozenset(DEFAULTS)
-_BOOL_KEYS = ("enabled", "allow_session_grants")
+_BOOL_KEYS = ("enabled", "allow_session_grants", "allow_rule_grants")
 #: (key, hard ceiling or None) — every one is min-merged across scopes.
 _INT_KEYS = (
     ("max_ttl_s", HARD_MAX_TTL_S),
     ("default_uses", HARD_MAX_USES),
     ("request_ttl_s", HARD_MAX_REQUEST_TTL_S),
+    ("rule_grant_ttl_s", HARD_MAX_RULE_TTL_S),
+    ("rule_grant_idle_s", HARD_MAX_RULE_IDLE_S),
     ("max_pending_per_session", None),
     ("max_requests_per_hour", None),
 )
@@ -215,6 +278,9 @@ class OverridePolicy:
     max_requests_per_hour: int = 20
     notify_severity: str = "critical"
     allow_session_grants: bool = False
+    allow_rule_grants: bool = False
+    rule_grant_ttl_s: int = 14400
+    rule_grant_idle_s: int = 1800
     wake: dict | None = None
     warnings: tuple = ()
     corrupt_scopes: tuple = ()
@@ -249,6 +315,20 @@ class OverridePolicy:
         ceiling = self.default_uses if not self.allow_session_grants else HARD_MAX_USES
         return max(1, min(want, ceiling, HARD_MAX_USES))
 
+    def clamp_rule_ttl(self, requested: int | None) -> int:
+        """Wall-clock backstop for a rule-scoped grant.
+
+        Deliberately a SEPARATE ceiling from :meth:`clamp_ttl`: a rule grant
+        outliving 15 minutes is the feature, and folding the two would either
+        cripple it or silently widen every ordinary grant.
+        """
+        want = self.rule_grant_ttl_s if requested is None else int(requested)
+        return max(1, min(want, self.rule_grant_ttl_s, HARD_MAX_RULE_TTL_S))
+
+    def rule_idle_s(self) -> int:
+        """Seconds a rule grant may sit unused before it stops matching."""
+        return max(1, min(self.rule_grant_idle_s, HARD_MAX_RULE_IDLE_S))
+
     def as_dict(self) -> dict:
         return {
             "enabled": self.enabled,
@@ -261,6 +341,9 @@ class OverridePolicy:
             "max_requests_per_hour": self.max_requests_per_hour,
             "notify_severity": self.notify_severity,
             "allow_session_grants": self.allow_session_grants,
+            "allow_rule_grants": self.allow_rule_grants,
+            "rule_grant_ttl_s": self.rule_grant_ttl_s,
+            "rule_grant_idle_s": self.rule_grant_idle_s,
             # The spec itself never crosses the wire. It is an argv the box
             # will run, and it can carry a conversation id or a path that says
             # more about this machine than a policy screen needs to. A phone

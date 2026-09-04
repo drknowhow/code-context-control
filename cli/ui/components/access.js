@@ -54,6 +54,9 @@ const AccessPanel = () => {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  // Where a builtin MODE change lands: this machine, or this project only
+  // (v2.118.0). Global stays the default — the narrower scope is a choice.
+  const [builtinScope, setBuiltinScope] = useState("global");
   const [form, setForm] = useState(null);       // null = closed; {…} = add-rule form
   const [probePath, setProbePath] = useState("");
   const [probeOp, setProbeOp] = useState("read");
@@ -233,29 +236,49 @@ const AccessPanel = () => {
 
   const builtinModes = (scopes && scopes.builtin && scopes.builtin.modes) || {};
   const builtinModeFor = (glob) => builtinModes[(glob || "").toLowerCase()] || "";
+  // Which scope set the live mode. A project-set opt-out that reads as
+  // machine-wide (or the reverse) is the exact confusion the realm split
+  // exists to prevent, so the row says it.
+  const builtinRealms = (scopes && scopes.builtin && scopes.builtin.mode_realms) || {};
+  const builtinRealmFor = (glob) => builtinRealms[(glob || "").toLowerCase()] || "";
 
-  const setBuiltinMode = async (glob, mode) => {
+  const setBuiltinMode = async (glob, mode, scope) => {
+    const where = scope === "project"
+      ? "in THIS project only"
+      : "on EVERY project on this machine";
     // Widening (confirm / allow) gets the same typed-glob beat of friction
     // as the CLI; deny / default are tightening or reset and just confirm.
     if (mode === "confirm" || mode === "allow") {
       const what = mode === "allow"
         ? "STOP enforcing entirely"
         : "PAUSE and file an approval request instead of blocking";
+      const note = scope === "project"
+        ? "\n\nThis is bound to this project's keyring realm — a clone of this repo carries the config but not the attestation, so the guard stays on there."
+        : "";
       const typed = window.prompt(
-        `The builtin guard on '${glob}' will ${what}.\n\nType the glob exactly to confirm:`);
+        `The builtin guard on '${glob}' will ${what} ${where}.${note}\n\nType the glob exactly to confirm:`);
       if (typed === null) return;
       if (typed.trim() !== glob) {
         setError("Confirmation text did not match — builtin unchanged.");
         return;
       }
-    } else if (!window.confirm(`Set builtin '${glob}' to ${mode}?`)) {
+    } else if (!window.confirm(`Set builtin '${glob}' to ${mode} ${where}?`)) {
       return;
     }
     setBusy(true);
     try {
-      const resp = await api.post("/api/access/builtin_mode", { glob, mode });
+      const resp = await api.post("/api/access/builtin_mode", { glob, mode, scope });
       if (resp && resp.error) setError(resp.error);
-      else flash(`Builtin '${glob}' mode = ${mode}`);
+      else {
+        flash(`Builtin '${glob}' mode = ${mode} (${scope} scope)`);
+        // .env is the one builtin whose whole content is secrets, and C3
+        // already has somewhere better to put them. Advisory, never a block.
+        if (/\.env/.test(glob) && (mode === "allow" || mode === "confirm")) {
+          flash("Tip: .env values are better held in the vault — " +
+            "c3_credentials import_env reads the file server-side, so the " +
+            "agent gets names and fingerprints and never a value.");
+        }
+      }
       load();
     } catch (e) { setError(String(e)); }
     setBusy(false);
@@ -644,6 +667,22 @@ const AccessPanel = () => {
               <span style={{ fontSize: 11, color: T.textDim }}>
                 {ACCESS_SCOPE_NOTES[scope]}
               </span>
+              {isBuiltin && (
+                <React.Fragment>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 11, color: T.textDim }}>changes apply</span>
+                  <select value={builtinScope} disabled={busy}
+                    onChange={e => setBuiltinScope(e.target.value)}
+                    title="Where a mode change you make below takes effect"
+                    style={{
+                      background: T.surfaceAlt, color: T.text, fontSize: 11,
+                      border: `1px solid ${T.border}`, borderRadius: 5, padding: "2px 6px",
+                    }}>
+                    <option value="global">everywhere (this machine)</option>
+                    <option value="project">this project only</option>
+                  </select>
+                </React.Fragment>
+              )}
             </div>
             {rows.length === 0 ? (
               <div style={{
@@ -678,7 +717,7 @@ const AccessPanel = () => {
                       <React.Fragment>
                         <span style={{ fontSize: 11, color: T.textDim }}>built-in — mode:</span>
                         <select value={builtinModeFor(r.glob)} disabled={busy}
-                          onChange={e => setBuiltinMode(r.glob, e.target.value)}
+                          onChange={e => setBuiltinMode(r.glob, e.target.value, builtinScope)}
                           style={{
                             background: T.surfaceAlt, color: T.text, fontSize: 11,
                             border: `1px solid ${T.border}`, borderRadius: 5, padding: "2px 6px",
@@ -688,6 +727,11 @@ const AccessPanel = () => {
                           <option value="confirm">confirm — pause for your approval</option>
                           <option value="allow">allow — off</option>
                         </select>
+                        {builtinRealmFor(r.glob) && (
+                          <Badge color={builtinRealmFor(r.glob) === "project" ? T.blue : T.textDim}>
+                            set {builtinRealmFor(r.glob)}
+                          </Badge>
+                        )}
                       </React.Fragment>
                     )}
                     <div style={{ flex: 1 }} />

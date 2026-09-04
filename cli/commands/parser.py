@@ -735,10 +735,18 @@ def build_parser(version: str, parse_cli_ide_arg):
                             help="Seconds until the grant expires (clamped to override.max_ttl_s)")
     ov_approve.add_argument("--uses", type=int, default=None,
                             help="Uses allowed (default 1)")
+    ov_approve.add_argument(
+        "--mode", choices=("once", "session", "rule"), default="once",
+        help="once (default) | session: unlimited uses on THIS call until the "
+             "grant expires (needs override.allow_session_grants and "
+             "--confirm session) | rule: every path the rule matches, any "
+             "tool in the same op class (needs override.allow_rule_grants "
+             "and the rule glob in --confirm)")
     ov_approve.add_argument("--note", default="",
                             help="Note recorded with the decision")
     ov_approve.add_argument("--confirm", default=None,
-                            help="Required for deny/builtin rules: retype the rule glob by hand")
+                            help="Required for deny/builtin rules and for --mode rule: "
+                                 "retype the rule glob by hand ('session' for --mode session)")
     ov_approve.add_argument("--path", dest="project_path", default=".",
                             help="Project directory (default: current)")
 
@@ -746,6 +754,8 @@ def build_parser(version: str, parse_cli_ide_arg):
     ov_deny.add_argument("request_id", help="Request id (ovr_…)")
     ov_deny.add_argument("--note", default="",
                          help="Note the agent will see with the refusal")
+    ov_deny.add_argument("--mute", action="store_true",
+                         help="Also stop this session asking the same thing again")
     ov_deny.add_argument("--path", dest="project_path", default=".",
                          help="Project directory (default: current)")
 
@@ -830,10 +840,12 @@ def build_parser(version: str, parse_cli_ide_arg):
     # ── Builtin opt-out (two-key) ───────────────────────────────────────
     # Builtins are on by default. Switching one off needs a config entry AND
     # a keyring attestation, so an agent that writes config.json alone still
-    # cannot loosen the guard. Global scope only — project scopes may only
-    # ever tighten. The credential-vault builtins are never disableable.
+    # cannot loosen the guard. Since v2.118.0 the pair may be written at
+    # PROJECT scope too, because the attestation is realm-bound: a cloned
+    # repo carries the config half and changes nothing. The credential-vault
+    # builtins are never disableable at any scope.
     ac_builtin = access_subs.add_parser(
-        "builtin", help="Disable or re-enable a built-in guard (global, needs confirmation)")
+        "builtin", help="Disable or re-enable a built-in guard (needs confirmation)")
     builtin_subs = ac_builtin.add_subparsers(dest="builtin_cmd")
     for _name, _help in (("disable", "Stop enforcing a built-in guard"),
                          ("enable", "Re-enforce a built-in guard")):
@@ -841,6 +853,8 @@ def build_parser(version: str, parse_cli_ide_arg):
         _p.add_argument("glob", help="One of: **/.env*, **/.c3/**, **/.claude/settings*.json, **/.git/**")
         _p.add_argument("--path", dest="project_path", default=".",
                         help="Project directory used for the audit log (default: current)")
+        _p.add_argument("--project", dest="project_scope", action="store_true",
+                        help="This project only (default: every project on this machine)")
         if _name == "disable":
             _p.add_argument("--yes", action="store_true",
                             help="Skip the typed confirmation (scripts/CI)")
@@ -857,6 +871,9 @@ def build_parser(version: str, parse_cli_ide_arg):
                          "approval; allow = off (two-key); default = shipped behaviour")
     bm.add_argument("--path", dest="project_path", default=".",
                     help="Project directory used for the audit log (default: current)")
+    bm.add_argument("--project", dest="project_scope", action="store_true",
+                    help="Set the mode for THIS project only, attested under "
+                         "its own keyring realm (default: every project)")
     bm.add_argument("--yes", action="store_true",
                     help="Skip the typed confirmation (scripts/CI)")
 
