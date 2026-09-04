@@ -171,7 +171,7 @@ class TestTransportCeiling(unittest.TestCase):
         self.assertEqual(timeout, 120 - shell_mod._TRANSPORT_MARGIN_S)
         self.assertIn("[c3_shell:capped]", out)
         self.assertIn("600s was requested", out)
-        self.assertIn("run_in_background", out)   # names the escape hatch
+        self.assertIn("c3_shell_job(action='start'", out)   # names the escape hatch (2.114.0: a C3 job, not native Bash)
 
     def test_a_request_inside_the_ceiling_is_untouched_and_silent(self):
         timeout, out = self._capture_timeout(30, "120000")

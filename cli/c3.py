@@ -5639,6 +5639,7 @@ def cmd_install_mcp(args):
             "mcp__c3__c3_delegate",
             "mcp__c3__c3_session",
             "mcp__c3__c3_agent",
+            "mcp__c3__c3_shell_job",
             edit_matcher,
             write_matcher,
             *extra_edit_matchers,

@@ -1234,8 +1234,9 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         capped_note = (
             f"[c3_shell:capped] timeout={capped_from}s was requested but this "
             f"MCP client kills a tool call at {_ceiling}s; ran with {timeout}s. "
-            f"For longer work use the native Bash tool with "
-            f"run_in_background, which is not bound by this limit.\n"
+            f"For longer work use c3_shell_job(action='start', cmd=..., timeout=...), "
+            f"which runs detached (up to 6 h), keeps the ledger and telemetry, and "
+            f"pages its output back by id.\n"
         )
 
     try:
