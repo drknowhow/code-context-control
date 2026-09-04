@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-context-control"
-version = "2.108.0"
+version = "2.109.0"
 description = "Local MCP code-intelligence for AI coding tools: surgical search/read/edit, agent-config version history, path-level access + masking guards, and a multi-project hub."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -56,6 +56,10 @@ vector = [
     "scikit-learn>=1.3.0",
     "numpy>=1.24.0",
     "chromadb>=0.4.24",
+]
+# Optional cross-encoder reranker for c3_search (opt-in: search_rerank: "auto").
+rerank = [
+    "flashrank>=0.2.10",
 ]
 tui = [
     "textual>=0.50.0",

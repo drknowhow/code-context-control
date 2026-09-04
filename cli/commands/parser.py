@@ -47,6 +47,9 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_search_eval.add_argument("--semantic", choices=["off", "auto", "on"], default="auto",
                                help="off: skip semantic cases; auto: run when embeddings are ready; "
                                     "on: build embeddings first (needs Ollama)")
+    p_search_eval.add_argument("--rerank", choices=["off", "on"], default="off",
+                               help="on: attach the FlashRank reranker (needs the `rerank` extra) to measure it "
+                                    "against the same suite; off: the project's own config decides")
     p_search_eval.add_argument("--rebuild", action="store_true",
                                help="Rebuild the code index before running (real repos; fixtures always rebuild)")
     p_search_eval.add_argument("--baseline", default=None, help="Baseline JSON to compare against / write")

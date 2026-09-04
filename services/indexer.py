@@ -161,6 +161,15 @@ class CodeIndex:
             self._rrf_k = int(cfg.get("search_rrf_k") or 60)
         except (TypeError, ValueError):
             self._rrf_k = 60
+        # Optional reranker (services/reranker, plan P4): a cross-encoder over
+        # the top few candidates of a natural-language query. Off unless
+        # `search_rerank: "auto"` — it has to earn default on the suite.
+        self.reranker = None
+        self._rerank_pref = str(cfg.get("search_rerank") or "off").lower()
+        try:
+            self._rerank_top_n = max(4, int(cfg.get("search_rerank_top_n") or 16))
+        except (TypeError, ValueError):
+            self._rerank_top_n = 16
 
         # Config - shared pruned-walk skip set (services/scanner.py)
         self.skip_dirs = set(SKIP_DIRS)
@@ -204,6 +213,52 @@ class CodeIndex:
     def fusion(self) -> str:
         """``rrf`` when a ready dense backend is fused into ``code`` queries, else ``off``."""
         return "rrf" if self._dense_ready() else "off"
+
+    def _rerank_ready(self) -> bool:
+        rr = self.reranker
+        if rr is None or self._rerank_pref == "off":
+            return False
+        try:
+            return bool(getattr(rr, "ready", False))
+        except Exception:
+            return False
+
+    @property
+    def rerank(self) -> str:
+        """Reranker name when natural-language ``code`` queries are reranked, else ``off``."""
+        if not self._rerank_ready():
+            return "off"
+        return str(getattr(self.reranker, "name", None) or "on")
+
+    def _apply_rerank(self, query: str, base_tokens: list, ranked: list, exact_ids: set) -> list:
+        """Cross-encoder pass over the top ``search_rerank_top_n`` candidates.
+
+        Identifier-shaped queries are left alone (services/reranker
+        .is_natural_language). Exact-symbol matches keep their place ahead of
+        the reranked block; candidates beyond the block keep their order.
+        Any reranker failure or empty answer leaves ``ranked`` unchanged.
+        """
+        from services.reranker import is_natural_language, passage_text
+
+        if not is_natural_language(query, base_tokens):
+            return ranked
+        n = self._rerank_top_n
+        head = ranked[:n]
+        exact_head = [(cid, s) for cid, s in head if cid in exact_ids]
+        block = [(cid, s) for cid, s in head if cid not in exact_ids and cid in self.chunks]
+        if len(block) < 2:
+            return ranked
+        docs = [(cid, passage_text(self.chunks[cid])) for cid, _ in block]
+        try:
+            scored = self.reranker.rerank(query, docs)
+        except Exception as exc:
+            log.debug("rerank failed (%s); fused order kept", exc)
+            return ranked
+        if not scored:
+            return ranked
+        order = {cid: i for i, (cid, _) in enumerate(scored)}
+        block.sort(key=lambda cs: (order.get(cs[0], len(order)), -cs[1], cs[0]))
+        return exact_head + block + ranked[n:]
 
     def _fuse_dense(self, query: str, lexical_ranked: list, filters: Filters,
                     exact_ids: set, want: int) -> list:
@@ -1173,7 +1228,8 @@ class CodeIndex:
 
         filters = Filters(path=path, lang=lang, kind=kind)
         fuse = bool(fusion) and self._dense_ready()
-        cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key(), fuse)
+        rerank_now = self._rerank_ready()
+        cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key(), fuse, rerank_now)
         cached = self._search_cache.get(cache_key)
         if cached is not None:
             self._search_cache.move_to_end(cache_key)
@@ -1200,6 +1256,8 @@ class CodeIndex:
                                       exact_ids, max_mtime)
         if fuse:
             ranked = self._fuse_dense(query, ranked, filters, exact_ids, want=top_k)
+        if rerank_now:
+            ranked = self._apply_rerank(query, base_tokens, ranked, exact_ids)
 
         # Collect results up to token budget
         results = []
