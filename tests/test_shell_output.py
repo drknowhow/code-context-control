@@ -723,5 +723,103 @@ class TestUnicodePaths(_StoreCase):
         self.assertEqual(self.store.list(project_path=project, session_id=session), [])
 
 
+class TestAtomicWrite(unittest.TestCase):
+    """`_write_json_atomic` — the job store's publish step.
+
+    Both cases below fail against the pre-2.118.1 version, which used a single
+    shared `<name>.tmp` and attempted `os.replace` exactly once. That is what
+    crashed a supervisor on Windows CI with WinError 5 and reported "failed
+    before running" for a command that was fine.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "job.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_temp_name_is_per_process(self):
+        """Two writers must not collide on the temp file itself."""
+        seen = []
+        real = os.replace
+
+        def spy(src, dst):
+            seen.append(Path(src).name)
+            return real(src, dst)
+
+        with patch.object(so.os, "replace", spy):
+            so._write_json_atomic(self.path, {"a": 1})
+        self.assertEqual(len(seen), 1)
+        self.assertNotEqual(seen[0], "job.json.tmp",
+                            "shared temp name — concurrent writers will race")
+        self.assertTrue(seen[0].startswith("job.json.tmp"))
+        self.assertIn(str(os.getpid()), seen[0])
+        # …and unique per WRITE, not just per process: this store is written
+        # from a threaded server, and threads share a pid.
+        seen.clear()
+        with patch.object(so.os, "replace", spy):
+            so._write_json_atomic(self.path, {"a": 2})
+            so._write_json_atomic(self.path, {"a": 3})
+        self.assertEqual(len(set(seen)), 2, f"temp name reused: {seen}")
+
+    def test_transient_permission_error_is_retried(self):
+        calls = {"n": 0}
+        real = os.replace
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:          # two transient failures, then success
+                raise PermissionError(5, "Access is denied")
+            return real(src, dst)
+
+        with patch.object(so.os, "replace", flaky):
+            so._write_json_atomic(self.path, {"ok": True})
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")),
+                         {"ok": True})
+
+    def test_a_persistent_permission_error_still_raises(self):
+        """Retrying must not swallow a real, non-transient failure."""
+        def always(src, dst):
+            raise PermissionError(5, "Access is denied")
+
+        with patch.object(so.os, "replace", always):
+            with self.assertRaises(PermissionError):
+                so._write_json_atomic(self.path, {"a": 1})
+
+    def test_no_temp_file_is_left_behind_when_replace_fails(self):
+        def always(src, dst):
+            raise PermissionError(5, "Access is denied")
+
+        with patch.object(so.os, "replace", always):
+            with self.assertRaises(PermissionError):
+                so._write_json_atomic(self.path, {"a": 1})
+        leftovers = list(self.path.parent.glob("job.json.tmp*"))
+        self.assertEqual(leftovers, [], f"orphaned temp files: {leftovers}")
+
+    def test_concurrent_writers_all_publish_valid_json(self):
+        """The end-to-end property: N threads hammering one path never leave
+        the target truncated or half-written."""
+        import threading
+        errors = []
+
+        def writer(i):
+            try:
+                for _ in range(20):
+                    so._write_json_atomic(self.path, {"writer": i})
+            except Exception as exc:      # noqa: BLE001 — surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertIn("writer", json.loads(self.path.read_text(encoding="utf-8")))
+        self.assertEqual(list(self.path.parent.glob("job.json.tmp*")), [])
+
+
 if __name__ == "__main__":
     unittest.main()
