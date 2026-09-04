@@ -1,7 +1,7 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-04T11:29:38",
-  "c3_version": "2.113.0",
+  "generated_at": "2026-09-04T11:33:17",
+  "c3_version": "2.114.0",
   "renderer": "cli.tools.shell.render_shell_response",
   "default_max_bytes": 18432,
   "aggregates": {
@@ -17,10 +17,10 @@
     "must_keep_retention_must_pass": 1.0,
     "bytes_p50": 3127.0,
     "bytes_p95": 8308.0,
-    "tokens_p50": 1059.0,
+    "tokens_p50": 1077.5,
     "tokens_p95": 2399.5,
-    "render_ms_p50": 0.9,
-    "render_ms_p95": 269.4,
+    "render_ms_p50": 1.1,
+    "render_ms_p95": 263.2,
     "must_pass_failed": [],
     "xfail_passing": [],
     "errors": []
@@ -77,7 +77,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 3718,
+      "response_bytes": 3896,
       "retention": 1.0
     },
     "python_traceback": {
@@ -105,14 +105,14 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 3832,
+      "response_bytes": 3985,
       "retention": null
     },
     "binary_single_line": {
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 1260,
+      "response_bytes": 1417,
       "retention": null
     },
     "ansi_colored": {
@@ -154,7 +154,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 3716,
+      "response_bytes": 3846,
       "retention": 1.0
     },
     "git_status_long": {

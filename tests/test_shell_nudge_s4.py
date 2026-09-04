@@ -86,6 +86,34 @@ class TestFinds(unittest.TestCase):
         self.assertIsNotNone(hint("ls -R services"))
 
 
+class TestWiring(unittest.TestCase):
+    """render_shell_response appends the one line and telemetry records its kind."""
+
+    def _render(self, cmd):
+        from types import SimpleNamespace
+
+        from cli.tools import shell as shell_mod
+        from services.output_filter import OutputFilter
+        svc = SimpleNamespace(project_path=PROJ, activity_log=None, edit_ledger=None,
+                              output_filter=OutputFilter({"HYBRID_DISABLE_TIER1": True}),
+                              session_mgr=None, hybrid_config={})
+        result = {"exit_code": 0, "stdout": "x = 1\n", "stderr": "", "duration_ms": 3,
+                  "timed_out": False, "shell": "git-bash"}
+        return shell_mod.render_shell_response(cmd, result, svc)
+
+    def test_read_gets_one_line_and_a_telemetry_kind(self):
+        body, stats = self._render("cat cli/c3.py")
+        self.assertEqual(body.count("[c3_shell:hint]"), 1)
+        self.assertIn("c3_read(file_path='cli/c3.py')", body)
+        self.assertEqual(stats["hint"], "a read of cli/c3.py")
+        self.assertTrue(body.startswith("[c3_shell:OK] 3ms\n$ cat cli/c3.py\n--- stdout ---\nx = 1\n"))
+
+    def test_other_commands_are_untouched(self):
+        body, stats = self._render("echo hi")
+        self.assertNotIn("[c3_shell:hint]", body)
+        self.assertIsNone(stats["hint"])
+
+
 class TestNotReads(unittest.TestCase):
     def test_everything_else_is_silent(self):
         for cmd in ("git status", "python -m pytest tests -q", "npm run build", "echo hi",

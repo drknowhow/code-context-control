@@ -4,6 +4,31 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.115.0] - 2026-09-04
+
+### Added — an advisory hint when the shell is used as a reader or a searcher (shell remediation S4)
+
+48% of c3_shell commands were cat, head, tail, sed, grep, rg, find and ls
+over project files — reads and searches that the code-intelligence tools
+answer within budget, indexed, and with the index's exclusions. Cod's
+ruling: advisory only; refusing on size would push agents to the native
+shell and lose every control.
+
+- `cli/tools/shell_nudge.py`: `bypass_hint(cmd, project_path)` appends at
+  most ONE `[c3_shell:hint]` line naming the equivalent call —
+  `c3_read(file_path=…, lines=[a,b])` for cat/head/`sed -n 'a,bp'`,
+  `c3_compress(mode='map')` then `c3_read` for tail, `c3_search(action=
+  'code'|'exact', query=…, path=…, ignore_case=…)` for grep/rg (identifier
+  → code, anything else → exact), `c3_search(action='files', query=…)` for
+  `find -name` and recursive ls. Paths outside the project, `~`/`$VAR`
+  paths, `node_modules`, `dist`, `build`, `.git` and `.c3` are never hinted;
+  a plain `ls` is not a search. The command is never rewritten or refused.
+- Telemetry `detail.hint` records the hint kind (`a read of …`, `a search`,
+  `a filename search`, `a listing`) so the follow rate and the false-positive
+  rate can be measured from `.c3/tool_telemetry.jsonl` before anything is
+  promoted. This closes the five-phase shell remediation (S0 2.111.0 …
+  S4 2.115.0).
+
 ## [2.114.0] - 2026-09-04
 
 ### Added — c3_shell_job: long work runs in a detached supervisor instead of leaving C3 (shell remediation S3)
