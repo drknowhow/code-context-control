@@ -917,7 +917,10 @@ async def c3_shell(cmd: str = "", cwd: str = "", timeout: int = 60,
     $HOME/~; fork bombs; whole-drive wipes) — a guard, NOT a sandbox. Soft-warns on
     --force, --no-verify, reset --hard.
     Git Bash may not include optional tools such as jq; use `python -m json.tool`
-    for portable JSON formatting. Native Bash remains the fallback for interactive/TTY commands."""
+    for portable JSON formatting. Native Bash remains the fallback for interactive/TTY commands.
+    Work longer than this client's tool-call ceiling (full test suites, builds, device
+    commands) belongs in c3_shell_job, which runs it in a detached supervisor for up to 6 h
+    and keeps its output in the same store — a timeout here is never converted into a job."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -928,6 +931,42 @@ async def c3_shell(cmd: str = "", cwd: str = "", timeout: int = 60,
                               output_action=output_action, pattern=pattern,
                               lines=lines or None, stream=stream or "stdout",
                               max_bytes=max_bytes or None)
+
+
+@mcp.tool()
+async def c3_shell_job(action: str, cmd: str = "", cwd: str = "", timeout: int = 1800,
+                       env_creds: str = "", job_id: str = "", stream: str = "stdout",
+                       lines: str = "", max_bytes: int = 0,
+                       ctx: Context = None) -> str:
+    """BACKGROUND shell job — start | status | tail | cancel | list. For work that outlives a
+    tool call: full test suites, long builds, device/emulator commands, anything over the
+    client's ~2 min ceiling on c3_shell. Prefer c3_ci for a repository's own workflows.
+    start: cmd (+cwd, env_creds, timeout in seconds — default 1800, ceiling 21600 = 6 h)
+    runs c3_shell's full pre-flight (blocklist, access-guard cwd deny, advisory read scan,
+    write scan with confirm holds, credential expansion) and then hands the command to a
+    DETACHED supervisor process that survives this server; replies with a job_id='j-…'
+    at once. Nothing here waits on the job, and a c3_shell timeout is never turned into one.
+    status: one line — queued|running|done|failed|timeout|cancelled|lost, exit code,
+    duration, and the output_id once finished. tail: the last `lines` (default 50) of
+    stream='stdout'|'stderr' — the GROWING output while running, the kept output after —
+    under the same byte budget as c3_shell (max_bytes may only lower it). cancel: kills the
+    child process tree ONLY if the recorded pid still has the creation time recorded at
+    spawn (a reused pid is never signalled) and records 'cancelled'. list: this project +
+    session's jobs.
+    Output lands in the same spill store as c3_shell, ALWAYS kept for 3 days: page it with
+    c3_shell(output_id='o-…', output_action='read'|'search'|'tail'). Jobs and their output
+    are per project AND per session, resolved under the current access rules; another
+    project or session sees 'not found'. Credentials are redacted in the kept output and
+    never touch the command line, the environment of the supervisor, or disk."""
+    svc = _svc(ctx)
+
+    def finalize(name, args, resp, summ, **kw):
+        return _finalize_response(ctx, name, args, resp, summ, **kw)
+
+    from cli.tools.shell_job import handle_shell_job
+    return await asyncio.to_thread(handle_shell_job, action, cmd, cwd, timeout, env_creds,
+                                   job_id, stream, lines or None, max_bytes or None,
+                                   svc, finalize)
 
 
 @mcp.tool()

@@ -261,7 +261,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_bitbucket",
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
-    "mcp__c3__c3_override", "mcp__c3__c3_ci",
+    "mcp__c3__c3_override", "mcp__c3__c3_ci", "mcp__c3__c3_shell_job",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
