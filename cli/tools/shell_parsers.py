@@ -56,6 +56,8 @@ __all__ = [
 ]
 
 RUNNERS = ("pytest", "unittest", "cargo", "tsc", "jest", "vitest")
+TSC_ERRORS_HEAD = 20    # priority error lines kept from the front of a tsc wall
+TSC_ERRORS_TAIL = 5     # and from the back; the totals line is always kept
 DUP_MIN_RUN = 3               # never collapse fewer than three consecutive duplicates
 SUMMARY_MIN_LINES = 30        # a structured tail is added past this many lines
 SUMMARY_FAIL_CAP = 20         # failing tests / errors listed in the summary
@@ -427,7 +429,13 @@ def _tsc_regions(lines: list[str]) -> list[Region]:
     for i, line in enumerate(lines):
         if _TS_FOUND.match(line):
             regions.append((i, i, "tsc totals"))
-    regions.extend((i, i, "tsc error") for i in errs[1:-1])
+    # A wall of 300 errors is one problem repeated, not 300 problems: keep the
+    # first TSC_ERRORS_HEAD and the last TSC_ERRORS_TAIL as priority (14 KB of
+    # error lines measured otherwise); the rest pages back by id.
+    middle = errs[1:-1]
+    if len(middle) > TSC_ERRORS_HEAD + TSC_ERRORS_TAIL:
+        middle = middle[:TSC_ERRORS_HEAD] + middle[-TSC_ERRORS_TAIL:]
+    regions.extend((i, i, "tsc error") for i in middle)
     return regions
 
 

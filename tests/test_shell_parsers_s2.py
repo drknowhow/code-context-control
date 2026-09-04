@@ -263,7 +263,12 @@ class TestPriorityRegions(unittest.TestCase):
         self.assertEqual(regions[0][:2], (0, 0))
         self.assertEqual(regions[1][:2], (49, 49))
         self.assertEqual(regions[2], (50, 50, "tsc totals"))
-        self.assertEqual(len(regions), 51)
+        # first, last, totals, then the wall capped to TSC_ERRORS_HEAD + TSC_ERRORS_TAIL
+        self.assertEqual(len(regions), 3 + sp.TSC_ERRORS_HEAD + sp.TSC_ERRORS_TAIL)
+        kept = {r[0] for r in regions}
+        self.assertTrue({1, 2, 20}.issubset(kept))
+        self.assertTrue({44, 48}.issubset(kept))
+        self.assertNotIn(30, kept)
         # the pretty (multi-line) tsc format is an error line too
         pretty = ["src/a.ts:3:5 - error TS2322: Type 'x'.", "", "3 const n: number = 'x';", "", "Found 1 error."]
         regions = sp.priority_regions("tsc", pretty)

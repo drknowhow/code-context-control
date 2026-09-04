@@ -231,7 +231,9 @@ class TestRendererBudget(unittest.TestCase):
             "make", _result(stdout=out, stderr=err, exit_code=2), _svc("."), filter_output=False)
         self.assertLessEqual(_nbytes(body), sr.BUDGET_DEFAULT)
         err_part = body.split("--- stderr ---", 1)[1]
-        self.assertGreaterEqual(_nbytes(err_part), int((sr.BUDGET_DEFAULT - sr.META_RESERVE) * 0.35))
+        # S2 bounds the filler on an over-budget stream (FILL_BYTES_OVER_BUDGET):
+        # stderr still gets its own head and tail, not a share of noise.
+        self.assertGreaterEqual(_nbytes(err_part), 2048)
         self.assertIn("err 0 ", body)
         self.assertIn("err 2999", body)
 

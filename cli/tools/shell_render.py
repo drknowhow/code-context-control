@@ -50,6 +50,7 @@ BUDGET_FLOOR = 2 * 1024            # below this a response cannot carry its own 
 META_RESERVE = 2 * 1024
 STDERR_SHARE = 0.40
 HEAD_SHARE = 0.35
+FILL_BYTES_OVER_BUDGET = 4 * 1024   # head/tail filler cap once a stream is over its allocation
 LINE_CLIP = 512
 CLIP_PREFIX = 384
 CLIP_SUFFIX = 128
@@ -394,8 +395,13 @@ def shape_stream(*, full_text: str | None = None, head: str = "", tail: str = ""
         region_at[a] = (entries[a][0], entries[b][0], why)
     info["priority_kept"] = len(kept)
 
-    # 2. Head / tail on what is left.
-    remaining = max(0, usable - used)
+    # 2. Head / tail on what is left — BOUNDED. An over-budget stream is one
+    #    the agent will page by id anyway; what it needs inline is the
+    #    priority regions, the summary and enough head/tail to orient. Filling
+    #    the whole allocation with PASSED lines and progress noise measured
+    #    808 B -> 16,253 B on a pytest run (2026-09-04), a 20x token cost for
+    #    nothing the agent reads. FILL_BYTES_OVER_BUDGET caps the filler.
+    remaining = min(max(0, usable - used), FILL_BYTES_OVER_BUDGET)
     head_budget = int(remaining * HEAD_SHARE)
     tail_budget = remaining - head_budget
     _fill(entries, range(n), head_budget, kept, focus=focus, output_id=output_id,

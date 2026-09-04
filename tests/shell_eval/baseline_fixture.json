@@ -1,7 +1,7 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-04T11:12:05",
-  "c3_version": "2.112.0",
+  "generated_at": "2026-09-04T11:29:38",
+  "c3_version": "2.113.0",
   "renderer": "cli.tools.shell.render_shell_response",
   "default_max_bytes": 18432,
   "aggregates": {
@@ -16,11 +16,11 @@
     "must_keep_retention": 1.0,
     "must_keep_retention_must_pass": 1.0,
     "bytes_p50": 3127.0,
-    "bytes_p95": 16273.2,
-    "tokens_p50": 1077.5,
-    "tokens_p95": 5656.5,
+    "bytes_p95": 8308.0,
+    "tokens_p50": 1059.0,
+    "tokens_p95": 2399.5,
     "render_ms_p50": 0.9,
-    "render_ms_p95": 272.3,
+    "render_ms_p95": 269.4,
     "must_pass_failed": [],
     "xfail_passing": [],
     "errors": []
@@ -34,8 +34,8 @@
   },
   "ceilings": {
     "bytes_p50": 4096,
-    "bytes_p95": 22528,
-    "tokens_p95": 8000
+    "bytes_p95": 12288,
+    "tokens_p95": 4000
   },
   "per_case": {
     "minified_grep_hit": {
@@ -49,21 +49,21 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16253,
+      "response_bytes": 5538,
       "retention": 1.0
     },
     "tsc_errors": {
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 14267,
+      "response_bytes": 8799,
       "retention": 1.0
     },
     "npm_build_noise": {
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16325,
+      "response_bytes": 4219,
       "retention": 1.0
     },
     "cr_progress_bar": {
@@ -77,7 +77,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 15391,
+      "response_bytes": 3718,
       "retention": 1.0
     },
     "python_traceback": {
@@ -105,7 +105,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16280,
+      "response_bytes": 3832,
       "retention": null
     },
     "binary_single_line": {
@@ -126,7 +126,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16160,
+      "response_bytes": 4448,
       "retention": 1.0
     },
     "mixed_streams_small": {
@@ -154,7 +154,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 15401,
+      "response_bytes": 3716,
       "retention": 1.0
     },
     "git_status_long": {
@@ -168,7 +168,7 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16242,
+      "response_bytes": 6841,
       "retention": 1.0
     },
     "cargo_two_errors": {
@@ -196,14 +196,14 @@
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 14255,
+      "response_bytes": 8797,
       "retention": 1.0
     },
     "unittest_failures": {
       "status": "pass",
       "gate": "must_pass",
       "phase": null,
-      "response_bytes": 16204,
+      "response_bytes": 5448,
       "retention": 1.0
     },
     "empty_output": {
