@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.114.0] - 2026-09-04
+
+### Added — c3_shell_job: long work runs in a detached supervisor instead of leaving C3 (shell remediation S3)
+
+44% of c3_shell wall time was in calls over 60 s, and the client kills any
+MCP tool call at 120 s, so every long test suite and build went to the
+native shell — losing the ledger, the telemetry and the spill store for
+exactly the jobs that matter most.
+
+- `c3_shell_job(action='start', cmd=..., timeout=<=21600)` runs the same
+  pre-flight as `c3_shell` (blocklist, Access Guard cwd and path scans,
+  write-class holds, credential expansion) and hands the command to a
+  DETACHED supervisor (`python -m services.shell_jobs --supervise <id>`;
+  new process group, survives the MCP server). Decoded credentials reach
+  the supervisor on its stdin pipe only — never argv, never the
+  environment, never a file. The supervisor streams through the S1 capture
+  with in-stream redaction, enforces the job's own timeout, promotes the
+  output to the spill store at the end (a job's output is the deliverable),
+  and writes a `shell_exec` activity record plus a telemetry record
+  (`cmd_class 'job'`).
+- `action='status'|'tail'|'cancel'|'list'`: state is persisted as
+  `~/.c3/shell_out/<project>/<session>/jobs/<j-id>.json` with the child pid
+  AND its process creation time; `cancel` kills the tree only when the live
+  creation time still matches (a reused pid is never signalled), and a job
+  whose supervisor died is marked `lost` after its spool is promoted. Jobs
+  resolve under the same rules as spilled output: same project, same host
+  session, current Access Guard rules.
+- The `[c3_shell:capped]` note names `c3_shell_job` as the escape hatch
+  instead of the native shell; a `c3_shell_job` call counts as C3 usage for
+  the PostToolUse hooks. Cross-project `c3_project(action='shell_job')` is
+  refused. `docs/shell-jobs.md` carries the contract and the state machine.
+
 ## [2.113.0] - 2026-09-04
 
 ### Changed — c3_shell keeps what matters and drops the lossy filter (shell remediation S2)
