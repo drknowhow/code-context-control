@@ -467,6 +467,17 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
                             from_project=str(getattr(svc, "project_path", ""))),
             action)
 
+    if action in ("shell_job", "job", "jobs"):
+        # S3: a background job is bound to the project AND session that
+        # started it (services/shell_jobs.py); proxying one would either run
+        # it under the caller's identity or hand another project's session a
+        # handle it must not have. Not offered cross-project.
+        return done(
+            "[c3_project:error] c3_shell_job is not proxied across projects — "
+            "start, poll and cancel background jobs from the target project's "
+            "own session.",
+            "error")
+
     if action not in _READ_OPS and action not in _WRITE_OPS:
         return done(
             f"[c3_project:error] Unknown action '{action}'. "

@@ -242,13 +242,15 @@ class CaptureStats:
 class _Pump:
     """One reader thread: pipe → redact → spool file + hash + head/tail + counts."""
 
-    def __init__(self, name: str, pipe, path: Path, redact, head_bytes: int, tail_bytes: int):
+    def __init__(self, name: str, pipe, path: Path, redact, head_bytes: int, tail_bytes: int,
+                 live: bool = False):
         self.name = name
         self.pipe = pipe
         self.path = path
         self._redact = redact
         self.head_bytes = head_bytes
         self.tail_bytes = tail_bytes
+        self.live = live               # flush after every piece so a reader sees the file grow
         self.stats = StreamStats()
         self.error = ""
         self._fh = None
@@ -309,6 +311,8 @@ class _Pump:
         if self._fh is not None:
             try:
                 self._fh.write(data)
+                if self.live:
+                    self._fh.flush()
             except OSError as exc:                    # keep draining so the child never blocks
                 self.error = f"{type(exc).__name__}: {exc}"
                 try:
@@ -371,11 +375,14 @@ class ShellCapture:
     flight; a 3 MB single line never lives in RAM whole.
 
     ``redact(piece) -> piece`` runs before any byte hits disk; ``kill_tree(proc)``
-    is invoked on timeout (defaults to ``proc.kill()``).
+    is invoked on timeout (defaults to ``proc.kill()``). ``live=True`` flushes the
+    spool after every piece so another process can tail it while the command
+    runs (background jobs, services/shell_jobs.py); the synchronous path keeps
+    the default buffering.
     """
 
     def __init__(self, proc, spool_dir, *, redact=None, kill_tree=None,
-                 head_bytes: int = HEAD_BYTES, tail_bytes: int = TAIL_BYTES):
+                 head_bytes: int = HEAD_BYTES, tail_bytes: int = TAIL_BYTES, live: bool = False):
         self.proc = proc
         self.output_id = new_output_id()
         self.spool_dir = Path(spool_dir)
@@ -398,7 +405,7 @@ class ShellCapture:
                 continue
             if isinstance(pipe, io.TextIOBase):
                 raise TypeError("ShellCapture needs binary pipes: Popen without text=True/encoding")
-            pump = _Pump(name, pipe, path, self._redact, head_bytes, tail_bytes)
+            pump = _Pump(name, pipe, path, self._redact, head_bytes, tail_bytes, live=live)
             self._pumps[name] = pump
             setattr(self.stats, name, pump.stats)
         for pump in self._pumps.values():

@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.113.0"
+__version__ = "2.114.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -261,7 +261,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_bitbucket",
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
-    "mcp__c3__c3_override", "mcp__c3__c3_ci",
+    "mcp__c3__c3_override", "mcp__c3__c3_ci", "mcp__c3__c3_shell_job",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -5639,6 +5639,7 @@ def cmd_install_mcp(args):
             "mcp__c3__c3_delegate",
             "mcp__c3__c3_session",
             "mcp__c3__c3_agent",
+            "mcp__c3__c3_shell_job",
             edit_matcher,
             write_matcher,
             *extra_edit_matchers,

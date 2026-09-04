@@ -97,7 +97,7 @@ _SIGNAL_TOOLS = {
     "mcp__c3__c3_compress", "mcp__c3__c3_filter", "mcp__c3__c3_memory",
     "mcp__c3__c3_validate", "mcp__c3__c3_edit", "mcp__c3__c3_edits",
     "mcp__c3__c3_impact", "mcp__c3__c3_status", "mcp__c3__c3_delegate",
-    "mcp__c3__c3_session", "mcp__c3__c3_agent",
+    "mcp__c3__c3_session", "mcp__c3__c3_agent", "mcp__c3__c3_shell_job",
 }
 
 # hook_edit_unlock was registered only for c3_compress and c3_agent
