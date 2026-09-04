@@ -489,13 +489,16 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
     action: 'code' (default: BM25 over identifiers and their parts, digits kept, fused with the embedding
     index by reciprocal rank when one is ready; a query that IS a symbol name puts its definition first;
     an oversized chunk comes back as a window), 'lexical' (the BM25 ranking alone), 'exact' (regex over
-    every indexed file; ignore_case=True for case-insensitive), 'files' (by filename: exact name, glob
-    like 'configs/*.yml', or substring), 'semantic' (embeddings alone; falls back to code search when
-    empty), 'transcript'.
+    every indexed file, definitions printed first; ignore_case=True for case-insensitive), 'files' (by
+    filename: exact name, glob like 'configs/*.yml', or substring), 'semantic' (embeddings alone; falls
+    back to code search when empty), 'transcript'.
     Filters (all actions but transcript, comma-separated): path='src/**,*.go' (globs or substrings),
     lang='python,go' (names or extensions), kind='test,doc,config,source' and/or chunk types
     'function,class,method,heading'. A query that names tests or asks a how-to question already
     leans that way; filters make it exact.
+    top_k: up to 50 for 'files' and 'exact', 10 otherwise. Each hit header ends in the backend that
+    produced it ([lexical], [dense], [lexical+dense], symbol+, reranked); a zero result says which
+    action to try next.
     scope: '' current project | 'all' also searches linked sub-projects | '<name>' one sub-project.
     prefetch: auto-compress top results. Next step: c3_compress/c3_read on hits."""
     svc = _svc(ctx)
