@@ -899,8 +899,16 @@ async def c3_shell(cmd: str = "", cwd: str = "", timeout: int = 60,
     (pattern=regex), 'tail' (lines='80') or 'delete', stream='stdout'|'stderr'; an id
     resolves only for this project and this session under the current access rules.
     The echoed command is its first line; a multi-line command shows (N lines, M chars,
-    sha256). Auto-filters stdout >30 lines when it fits; auto-logs git mutations to
-    the edit ledger.
+    sha256). Under budget the output is complete: ANSI/control sequences stripped, each
+    line's \\r progress rewrites reduced to their final state, runs of 3+ identical
+    consecutive lines folded to one plus ` [x N]` (the header says `[collapsed …]` and the
+    raw streams are kept by id). Over budget, pytest/unittest/cargo/tsc/jest/vitest
+    failure blocks, error lines and totals are kept first (each announced by `[La-b: why]`),
+    then a bounded head/tail; a recognised runner past 30 lines gets a `--- summary ---`
+    (totals + one line per failing test). filter_output=False skips the two collapses so
+    every line comes through as written — escapes are still stripped, summaries and
+    priority regions still apply, and the cap is never lifted. Auto-logs git mutations
+    to the edit ledger.
     Credentials: env_creds='NAME1,NAME2' injects vault entries as env vars, and
     {{cred:NAME}} inside cmd expands server-side — decoded values never enter
     model context (see c3_credentials; echoed values are auto-redacted, in the

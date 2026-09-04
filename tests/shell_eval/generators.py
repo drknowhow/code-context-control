@@ -249,8 +249,10 @@ def cargo_errors(params: dict, rng: random.Random) -> Streams:
                   ""]
     final = f"error: could not compile `ledgerlite` (lib) due to {errors} previous errors"
     lines += ["For more information about this error, try `rustc --explain E0308`.", final]
+    locations = [ln.strip() for ln in lines if ln.lstrip().startswith("-->")]
     return Streams(stdout="", stderr=nl.join(lines) + nl, exit_code=101,
-                   keep={"e0308": "error[E0308]: mismatched types", "final": final})
+                   keep={"e0308": "error[E0308]: mismatched types", "final": final,
+                         "loc_first": locations[0], "loc_last": locations[-1]})
 
 
 def jest_failure(params: dict, rng: random.Random) -> Streams:
@@ -272,6 +274,107 @@ def jest_failure(params: dict, rng: random.Random) -> Streams:
               "Snapshots:   0 total", "Time:        14.2 s"]
     return Streams(stdout=nl.join(lines) + nl, exit_code=1,
                    keep={"test_name": name, "totals": "Tests:       1 failed, 211 passed, 212 total"})
+
+
+def pytest_three_failures(params: dict, rng: random.Random) -> Streams:
+    """Verbose pytest run with THREE failures spread through the run and a
+    wall of warning lines after the summary. Every failing id, its assertion
+    and the summary line must survive; the run is far over budget."""
+    nl = _nl(params)
+    passed = int(params.get("passed", 2400))
+    warn_lines = int(params.get("warning_lines", 400))
+    failing = ["tests/test_billing.py::test_invoice_rounding",
+               "tests/test_router.py::test_route_precedence",
+               "tests/test_cache.py::test_ttl_expiry"]
+    fail_at = {passed // 5: 0, passed // 2: 1, (passed * 4) // 5: 2}
+    lines = ["============================= test session starts =============================",
+             "platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0",
+             f"collected {passed + 3} items", ""]
+    for i in range(passed + 3):
+        if i in fail_at:
+            lines.append(f"{failing[fail_at[i]]} FAILED [ {int(100 * i / (passed + 3)):2d}%]")
+            continue
+        mod = f"tests/test_{_WORDS[(i // 40) % len(_WORDS)]}_{i // 40}.py"
+        lines.append(f"{mod}::test_{_WORDS[i % len(_WORDS)]}_{i} PASSED [ {int(100 * i / (passed + 3)):2d}%]")
+    lines += ["", "=================================== FAILURES ==================================="]
+    asserts = ["E   AssertionError: assert 1234.57 == 1234.56",
+               "E   AssertionError: assert '/api/v2' == '/api/v1'",
+               "E   AssertionError: assert None is not None"]
+    for k, fid in enumerate(failing):
+        path, name = fid.split("::")
+        lines += [f"_______________________ {name} _______________________", ""]
+        for depth in range(4):
+            lines.append(f"{path}:{30 + depth * 9}: in {name if depth == 0 else 'helper_' + str(depth)}")
+            lines.append(f"    value = compute_{_WORDS[(k * 7 + depth) % len(_WORDS)]}(payload)")
+        lines += [asserts[k], "", f"{path}:{70 + k}: AssertionError", ""]
+    lines.append("=========================== short test summary info ============================")
+    for k, fid in enumerate(failing):
+        lines.append(f"FAILED {fid} - {asserts[k][4:].strip()}")
+    summary = f"3 failed, {passed} passed, 7 warnings in 188.40s"
+    lines.append(f"======== {summary} ========")
+    for w in range(warn_lines):
+        lines.append(f"  {_ident(rng, 6)}.py:{rng.randint(1, 400)}: DeprecationWarning: "
+                     f"{_words(rng, 5)} is deprecated (warning {w + 1}/{warn_lines})")
+    keep = {"summary": summary, "assert_1": asserts[0], "assert_2": asserts[1], "assert_3": asserts[2]}
+    keep.update({f"fail_{k + 1}": fid for k, fid in enumerate(failing)})
+    return Streams(stdout=nl.join(lines) + nl, exit_code=1, keep=keep)
+
+
+def unittest_failures(params: dict, rng: random.Random) -> Streams:
+    """``python -m unittest -v``: a long verbose run on stderr with one FAIL
+    and one ERROR, then the ``Ran N tests`` / ``FAILED (...)`` totals."""
+    nl = _nl(params)
+    n = int(params.get("tests", 1500))
+    lines = []
+    for i in range(n):
+        cls = f"tests.test_{_WORDS[(i // 25) % len(_WORDS)]}.{_WORDS[(i // 25) % len(_WORDS)].title()}Tests"
+        name = f"test_{_WORDS[i % len(_WORDS)]}_{i}"
+        verdict = "ok"
+        if i == n // 3:
+            name, verdict = "test_rounding", "FAIL"
+        elif i == (2 * n) // 3:
+            name, verdict = "test_lookup", "ERROR"
+        lines.append(f"{name} ({cls}.{name}) ... {verdict}")
+    fail_header = "FAIL: test_rounding (tests.test_billing.BillingTests.test_rounding)"
+    error_header = "ERROR: test_lookup (tests.test_cache.CacheTests.test_lookup)"
+    assertion = "AssertionError: 1234.57 != 1234.56"
+    exception = "KeyError: 'invoice_total'"
+    lines += ["", "=" * 70, error_header, "-" * 70, "Traceback (most recent call last):",
+              '  File "tests/test_cache.py", line 44, in test_lookup',
+              "    self.assertEqual(cache['invoice_total'], 1)", exception, "",
+              "=" * 70, fail_header, "-" * 70, "Traceback (most recent call last):",
+              '  File "tests/test_billing.py", line 87, in test_rounding',
+              "    self.assertEqual(round_cents(1234.565), 1234.56)", assertion, "",
+              "-" * 70, f"Ran {n} tests in 12.345s", "", "FAILED (failures=1, errors=1)"]
+    return Streams(stdout="", stderr=nl.join(lines) + nl, exit_code=1,
+                   keep={"fail_header": fail_header, "error_header": error_header,
+                         "assertion": assertion, "exception": exception,
+                         "ran": f"Ran {n} tests in 12.345s", "verdict": "FAILED (failures=1, errors=1)"})
+
+
+def ansi_cr_progress(params: dict, rng: random.Random) -> Streams:
+    """A coloured progress bar rewritten with ``\\r`` (pip / npm style): ANSI
+    escapes AND carriage returns on the same line, then a plain last line."""
+    steps = int(params.get("steps", 500))
+    parts = []
+    for i in range(1, steps + 1):
+        filled = int(30 * i / steps)
+        parts.append(f"\r\x1b[2K\x1b[32m{'━' * filled}\x1b[90m{'━' * (30 - filled)}\x1b[0m "
+                     f"\x1b[1m{i}/{steps}\x1b[22m {int(100 * i / steps):3d}%")
+    done = str(params.get("done", "Successfully installed ledgerlite-0.4.2"))
+    stdout = "".join(parts) + "\n" + f"\x1b[32m{done}\x1b[0m\n"
+    return Streams(stdout=stdout, exit_code=0,
+                   keep={"final": f"{steps}/{steps}", "mid": f"{steps // 2}/{steps}", "done": done})
+
+
+def identical_flood(params: dict, rng: random.Random) -> Streams:
+    """The same line N times (a retry loop, a heartbeat); only the line and
+    its count carry information."""
+    nl = _nl(params)
+    n = int(params.get("lines", 200))
+    line = str(params.get("line", "WARNING: retrying connection to broker (timeout)"))
+    return Streams(stdout=nl.join([line] * n) + nl, exit_code=0,
+                   keep={"line": line, "count": f"[x {n}]"})
 
 
 def binary_garbage(params: dict, rng: random.Random) -> Streams:
@@ -403,6 +506,10 @@ GENERATORS = {
     "python_traceback": python_traceback,
     "cargo_errors": cargo_errors,
     "jest_failure": jest_failure,
+    "pytest_three_failures": pytest_three_failures,
+    "unittest_failures": unittest_failures,
+    "ansi_cr_progress": ansi_cr_progress,
+    "identical_flood": identical_flood,
     "binary_garbage": binary_garbage,
     "ansi_colored": ansi_colored,
     "huge_stderr_empty_stdout": huge_stderr_empty_stdout,

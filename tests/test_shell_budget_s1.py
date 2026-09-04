@@ -13,8 +13,9 @@ as an error and was re-run. These tests pin:
 - the live path: a 3 MB single-line output comes back under 22 KiB with an
   output id, the raw bytes page back by id, and the same id is refused from
   another project, another session, or under a rule that now denies it;
-- ``filter_output=False`` never lifts the cap; a filtered small output is
-  spilled too, because the filter is lossy.
+- ``filter_output=False`` never lifts the cap; a lossy collapse of a small
+  output (S2 replaced the legacy filter: a 200-line identical flood folds
+  to `` [x 200]``) is spilled too.
 """
 from __future__ import annotations
 
@@ -203,11 +204,25 @@ class TestRendererBudget(unittest.TestCase):
         self.assertLessEqual(_nbytes(body), 3000)
         self.assertEqual(stats["budget_bytes"], 3000)
 
-    def test_filtered_small_output_needs_a_spill_because_the_filter_is_lossy(self):
-        text = "\n".join("line %d" % i for i in range(200)) + "\n"
-        body, stats = shell_mod.render_shell_response("ls -R", _result(stdout=text), _svc("."))
+    def test_lossy_collapse_of_small_output_needs_a_spill(self):
+        """S1 pinned this as 'a filtered small output is spilled because the
+        filter is lossy'. S2 (2.113.0) removed the >30-line filter from the
+        render path — 200 distinct lines are under budget and pass through
+        whole, nothing to spill — so the lossy step this now pins is the
+        duplicate collapse, which is the only thing that still drops text
+        from an under-budget stream."""
+        distinct = "\n".join("line %d" % i for i in range(200)) + "\n"
+        body, stats = shell_mod.render_shell_response("ls -R", _result(stdout=distinct), _svc("."))
+        self.assertFalse(stats["filtered"])
+        self.assertFalse(stats["needs_spill"])
+        self.assertIn("line 199", body)
+        flood = "same line\n" * 200
+        body, stats = shell_mod.render_shell_response("ls -R", _result(stdout=flood), _svc("."))
         self.assertTrue(stats["filtered"])
         self.assertTrue(stats["needs_spill"])
+        self.assertEqual(stats["dup_collapsed"], 199)
+        self.assertIn("same line [x 200]", body)
+        self.assertIn("[collapsed 199 dup lines]", body)
 
     def test_stderr_gets_its_share(self):
         out = "\n".join("out %d %s" % (i, "o" * 100) for i in range(3000)) + "\n"
@@ -216,7 +231,9 @@ class TestRendererBudget(unittest.TestCase):
             "make", _result(stdout=out, stderr=err, exit_code=2), _svc("."), filter_output=False)
         self.assertLessEqual(_nbytes(body), sr.BUDGET_DEFAULT)
         err_part = body.split("--- stderr ---", 1)[1]
-        self.assertGreaterEqual(_nbytes(err_part), int((sr.BUDGET_DEFAULT - sr.META_RESERVE) * 0.35))
+        # S2 bounds the filler on an over-budget stream (FILL_BYTES_OVER_BUDGET):
+        # stderr still gets its own head and tail, not a share of noise.
+        self.assertGreaterEqual(_nbytes(err_part), 2048)
         self.assertIn("err 0 ", body)
         self.assertIn("err 2999", body)
 

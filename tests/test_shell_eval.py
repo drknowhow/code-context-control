@@ -65,9 +65,12 @@ class TestSuiteShape:
         bad = [c.id for c in cases if c.gate == "xfail" and c.phase not in she.PHASES]
         assert not bad, f"xfail cases must name S1 or S2: {bad}"
         assert any(c.gate == "must_pass" for c in cases)
-        # S1 (2.112.0) promoted every S1 xfail to must_pass; S2's are still open.
-        assert any(c.gate == "xfail" and c.phase == "S2" for c in cases)
-        assert any(c.gate == "xfail" and c.phase == "S2" for c in cases)
+        # S1 (2.112.0) promoted every S1 xfail to must_pass; S2 (2.113.0)
+        # promoted its four. The suite carries no open xfail today — a new
+        # one must name the phase that will close it.
+        assert not [c.id for c in cases if c.gate == "xfail"]
+        promoted = {"cr_progress_bar", "jest_failure", "ansi_colored", "under_budget_120_lines"}
+        assert all(c.gate == "must_pass" for c in cases if c.id in promoted)
 
     def test_checks_use_known_vocabulary_and_budget_ceiling(self):
         _, raw = _raw_cases()
@@ -215,18 +218,23 @@ class TestRenderer:
                                  "timed_out": False, "shell": "sh"}, svc)
         assert body.startswith("[c3_shell:FAIL(3)] 5ms\n")
 
-    def test_filter_fires_past_threshold_but_not_for_git_diagnostics(self, tmp_path):
+    def test_under_budget_output_is_whole_whatever_the_command(self, tmp_path):
+        """Until 2.112.0 this pinned the >30-line auto-filter and its git
+        exemption. S2 (2.113.0) removed the filter from the render path:
+        40 distinct lines are under budget and come through whole for
+        ``ls``, ``git status`` and ``filter_output=False`` alike."""
         svc = she.build_eval_svc(tmp_path)
         renderer, _ = she.resolve_renderer()
         stdout = "\n".join(f"line {i} distinct words here" for i in range(40)) + "\n"
         result = {"exit_code": 0, "stdout": stdout, "stderr": "", "duration_ms": 1,
                   "timed_out": False, "shell": "sh"}
-        body, stats = renderer("ls", result, svc, filter_output=True)
-        assert stats["filtered"] is True and "[stdout filtered]" in body
-        body, stats = renderer("git status", result, svc, filter_output=True)
-        assert stats["filtered"] is False and "[stdout filtered]" not in body
-        body, stats = renderer("ls", result, svc, filter_output=False)
-        assert stats["filtered"] is False
+        bodies = []
+        for cmd, flag in (("ls", True), ("git status", True), ("ls", False)):
+            body, stats = renderer(cmd, result, svc, filter_output=flag)
+            assert stats["filtered"] is False and "[stdout filtered]" not in body
+            assert "omitted" not in body
+            bodies.append(body.split("--- stdout ---\n", 1)[1])
+        assert bodies[0] == bodies[1] == bodies[2] == stdout
 
 
 class TestFixtureGate:

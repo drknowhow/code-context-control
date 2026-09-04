@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.113.0] - 2026-09-04
+
+### Changed — c3_shell keeps what matters and drops the lossy filter (shell remediation S2)
+
+The auto-filter that collapsed any stdout over 30 lines into "first error
+region plus the last 20 lines" dropped a pytest summary line that sat under
+40 warning lines and a jest failure header, and what it dropped was gone
+for good. It is replaced by deterministic normalisation, runner-aware
+priority regions and a bounded window (`cli/tools/shell_parsers.py`).
+
+- **Always**: ANSI/control sequences are stripped; a line's `\r` progress
+  rewrites reduce to their final state; runs of 3 or more identical
+  consecutive lines fold to one plus ` [x N]` (exact under budget, digit and
+  timestamp blind once over). The header says `[collapsed …]` and the raw
+  streams are kept by id, so nothing is lost. `filter_output=False` skips
+  the two collapses; escapes are still stripped.
+- **Under budget the output is complete.** Nothing is omitted from a
+  stream that fits its allocation.
+- **Over budget**, the parser's priority regions are kept first, each
+  announced by `[La-b: why]`: pytest/unittest failure headers, the assertion
+  line and the last frame, the totals line; cargo/rustc error blocks and
+  the `could not compile` tail; tsc error lines (first 20 and last 5 of a
+  wall, plus `Found N errors`); jest/vitest failure headers and totals;
+  generic error anchors with context for everything else. Then a bounded
+  head/tail (`FILL_BYTES_OVER_BUDGET`, 4 KiB) orients the reader; the rest
+  pages back by id. Filling the whole allocation with PASSED lines measured
+  808 B → 16,253 B on a pytest run and was not what the agent reads.
+- A recognised runner past 30 lines gets a `--- summary ---`: totals plus
+  one line per failing test, inside the budget.
+- shell-eval: the four S2 cases are `must_pass` and six new cases cover
+  three pytest failures under warnings, two cargo errors, ANSI plus `\r`
+  progress, a 200-line identical flood, a 900-error tsc wall and unittest
+  failures: 26/26, bytes p50 3,127 / p95 8,308, render ms p95 695 → 257.
+  The previously filtered cases now cost pytest 808 → 5,538 B, tsc
+  856 → 8,799 B, npm 303 → 4,219 B — complete failure blocks and totals
+  instead of a heuristic excerpt. `shell_by_class.filtered` now counts
+  lossy collapses.
+
 ## [2.112.0] - 2026-09-04
 
 ### Changed — a c3_shell response has a byte budget, and what it drops is recoverable (shell remediation S1)

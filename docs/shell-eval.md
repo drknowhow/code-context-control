@@ -54,9 +54,76 @@ orders of magnitude: a 900 KB grep over minified lines, 2 MB of JSONL hits,
 1 MB of stderr, a 3.8 MB no-newline blob, a 160 KB progress bar. Since
 2.112.0 (S1: byte budget + spill, `cli/tools/shell_render.py`,
 `services/shell_output.py`) none does: the five S1 cases are `must_pass`
-and bytes p95 went from 1,186,398 to 4,750. The remaining `xfail` cases are
+and bytes p95 went from 1,186,398 to 4,750. The remaining `xfail` cases were
 S2's (content-aware keep: CR progress bars, ANSI, a buried jest failure, a
-middle line the legacy filter drops).
+middle line the legacy filter drops); 2.113.0 closed them.
+
+## S2 — content-aware keep (2.113.0)
+
+The rule, from the Cod review of 2026-09-04: *always strip ANSI/control
+sequences and collapse carriage-return progress updates; otherwise preserve
+complete under-budget output; run deterministic parsers always to identify
+priority regions, but only omit content when over budget; pytest/unittest,
+cargo/rustc, tsc and Jest/Vitest first, everything else generic error
+anchors plus head/tail; collapse only consecutive normalised duplicates.*
+`cli/tools/shell_parsers.py` implements it; `shape_stream` in
+`cli/tools/shell_render.py` consumes it; the legacy `>30 newlines →
+handle_filter` call is gone from `render_shell_response` (the `c3_filter`
+tool is untouched).
+
+**Always normalised** (both streams, full text or the head/tail previews of
+a stream too large to hold): `\r\n` becomes `\n` first, so a Windows line
+ending is never mistaken for a rewrite; ANSI escape and control sequences
+(CSI, OSC, single-character escapes, C0 controls other than tab and
+newline) are stripped — not a loss, nothing the agent reads is gone, so no
+note and no spill; each logical line keeps only the final state of its `\r`
+rewrites; runs of three or more identical consecutive lines fold to the
+first plus ` [x N]`. The last two ARE losses: the header carries
+`[collapsed 1999 cr rewrites, 199 dup lines]`, `stats.filtered` is set and
+the raw streams are spilled. Under budget the duplicate test is exact; once
+a stream is over its allocation it is widened to lines that differ only in
+digits, hex runs or timestamps (`fuzzy_dups`), because omission is happening
+anyway. `filter_output=False` skips both collapses (ANSI is still stripped)
+and, as in S1, never lifts the byte cap.
+
+**A priority region** is a 0-based inclusive line range with a reason —
+`(start, end, why)` — that must survive shaping, listed most important
+first. `priority_regions(runner, lines)` runs on every call; when the
+stream fits its allocation the regions change nothing. Over budget,
+`shape_stream` keeps regions first (a region that does not fit whole is
+skipped so a smaller one still can), announces each one that is not
+contiguous with what was already kept by a one-line `[L2410-2422: pytest
+failure test_x]` note, spends what is left on head and tail as before, and
+writes one omission note with the missing line and byte counts and the
+output id. Line numbers in notes are RAW numbers (the fold keeps a map), so
+`output_action='read', lines='2410-2422'` pages the right window.
+
+**Runners** (`detect_runner`: the output's own signature wins, the command
+head decides when the output says nothing):
+
+| runner | priority regions | summary head |
+|---|---|---|
+| pytest | `= N failed … in Xs =` line; `short test summary info` + its FAILED/ERROR lines; each `___ test ___` block through its assertion and location line (long blocks: header + last 15); verbose `FAILED` progress lines | `pytest: 1 failed, 3366 passed … in 240.12s` + `failed: id — reason` |
+| unittest | `Ran N tests` + verdict; each `FAIL:`/`ERROR:` block through the exception line; `… FAIL` progress lines | `unittest: Ran N tests in Xs; FAILED (failures=1)` + one line per header |
+| cargo / rustc | verdict lines (`could not compile`, `generated N warnings`, `test result:`); each `error[E…]` block with its `-->`; `test x ... FAILED` and panic blocks; up to five warnings | `cargo: <verdict>` + `error[E0308]: … — file:line:col` |
+| tsc | every `file(l,c): error TSnnnn:` line, first and last before the rest; `Found N errors` | `tsc: Found N errors` + first twenty |
+| jest / vitest | totals block; each `●` block through Expected/Received and the `>` code frame (vitest: `FAIL file > name` through the `❯` frame); `FAIL suite` lines | `jest: Test Suites: …; Tests: …` + `failed: name — Expected / Received` |
+| (none) | lines matching Traceback / ERROR / `ERR!` / Error / error / FAIL / panic / exception / fatal, two lines of context, last and first anchors first, capped at 40, at most 60% of the allocation | no summary |
+
+The `--- summary ---` section is appended whenever a runner is recognised
+and the output has more than 30 lines, and is counted inside the budget
+(streams are allocated what is left after it). Caps: 20 failure blocks per
+runner, 20 lines in the summary list (then `… and N more`).
+
+**The +10% band.** Three `must_pass` cases were shaped by the legacy filter
+at 2.112.0 and are shaped by the budget now; Cod's rule preserves complete
+output under budget and fills the budget above it, so they grew:
+`pytest_buried_failure` 808 → 16,253 B, `tsc_errors` 856 → 14,267 B,
+`npm_build_noise` 303 → 16,325 B. The suite's `bytes_p50` ceiling was raised
+to 4,096 with the S2 baseline. Whether the live token profile of the
+30-line-to-18-KiB band moves by more than +10% is a telemetry question
+(`shell_by_class` in `.c3/tool_telemetry.jsonl`, S0), decided after the
+overlay — not something the harness can settle.
 
 ## Gates and phases
 
@@ -84,7 +151,9 @@ Each case declares one of:
   failing test's name in a jest report, the middle of 120 plain lines that
   fit the budget with room to spare, ANSI escapes stripped from short
   colored output. Cases: `cr_progress_bar`, `jest_failure`,
-  `under_budget_120_lines`, `ansi_colored`.
+  `under_budget_120_lines`, `ansi_colored` — all `must_pass` since 2.113.0,
+  joined by `pytest_three_failures`, `cargo_two_errors`, `ansi_cr_progress`,
+  `identical_flood`, `tsc_wall_900`, `unittest_failures` (see § S2).
 
 When a phase lands: run `c3 shell-eval`, confirm its cases read `XFAIL
 PASSING`, flip them to `must_pass` (drop `phase`), then
@@ -133,12 +202,15 @@ ceiling — deliberate, reviewed edits, not something a run does on its own.
  "tags": ["long-line", "jsonl"], "why": "..."}
 ```
 
-- `cmd` is what the renderer sees: it decides the git-diagnostic exemption
-  and the header echo, nothing else.
+- `cmd` is what the renderer sees: it decides the runner hint (when the
+  output carries no signature), the grep focus for clipping and the header
+  echo, nothing else.
 - `generator` names a function in `tests/shell_eval/generators.py`;
   `params` are its knobs (sizes, counts, `crlf: true` for Windows line
   endings, `seed` to pin the RNG instead of the CRC32 of the id).
-- `filter_output` is passed straight to the renderer.
+- `filter_output` is passed straight to the renderer (since 2.113.0:
+  `false` skips the CR and duplicate collapses; ANSI is always stripped and
+  the byte cap always holds).
 - `phase` is `S1`, `S2`, or `null`; required when `gate` is `xfail`.
 
 ## Adding a case
@@ -194,6 +266,8 @@ project path so a spill never lands in a real `.c3`, and the real
 in the first line of the table (`renderer=`).
 
 The renderer is `cli.tools.shell.render_shell_response` — the function
-`handle_shell` itself calls after the subprocess finishes (same filter
-trigger: stdout with more than 30 newlines, never a git diagnostic; same
-sections in the same order). There is no second implementation to drift.
+`handle_shell` itself calls after the subprocess finishes (same
+normalisation, same parsers, same budget, same sections in the same order).
+Since 2.113.0 `stats` also carries `runner`, `ansi_stripped`,
+`cr_collapsed`, `dup_collapsed` and `priority_lines`. There is no second
+implementation to drift.
