@@ -7,7 +7,7 @@ Covers:
 - redact runs before bytes hit disk, including a secret straddling a read piece
 - timeout path calls kill_tree
 - promote writes the triplet + meta, discard removes the spool
-- open(): same wording for unknown / other project / other session ids, guard
+- resolve(): same wording for unknown / other project / other session ids, guard
   re-check denial, expired, swept; the happy path
 - read window + 512-char clip, search with context, tail, delete, list
 - sweep: expired first, oldest-first to the byte cap, foreign files untouched,
@@ -352,8 +352,8 @@ class _StoreCase(unittest.TestCase):
             exit_code=cap.exit_code, timed_out=timed_out, duration_ms=cap.duration_ms,
         )
 
-    def open(self, oid, *, project=None, session="default", guard_check=_ALLOW) -> so.OutputMeta:
-        return self.store.open(oid, project_path=project or self.project,
+    def resolve(self, oid, *, project=None, session="default", guard_check=_ALLOW) -> so.OutputMeta:
+        return self.store.resolve(oid, project_path=project or self.project,
                                session_id=self.session if session == "default" else session,
                                guard_check=guard_check)
 
@@ -415,8 +415,8 @@ class TestPromote(_StoreCase):
         meta = self.spill(session=None)
         self.assertEqual(Path(meta.dir).name, so.NO_SESSION)
         self.assertEqual(meta.session_id, "")
-        self.assertEqual(self.open(meta.id, session="").id, meta.id)
-        self.assertEqual(self.open(meta.id, session=None).id, meta.id)
+        self.assertEqual(self.resolve(meta.id, session="").id, meta.id)
+        self.assertEqual(self.resolve(meta.id, session=None).id, meta.id)
 
     def test_permissions_are_user_only_when_acl_enabled(self):
         store = so.ShellOutputStore(self.root / "acl", apply_acl=True)
@@ -455,7 +455,7 @@ class TestOpenGate(_StoreCase):
             seen.append(str(path))
             return None
 
-        got = self.open(meta.id, guard_check=guard_check)
+        got = self.resolve(meta.id, guard_check=guard_check)
         self.assertEqual(got.id, meta.id)
         self.assertEqual(got.to_dict(), meta.to_dict())
         self.assertEqual(seen, [self.cwd, self.cwd, str(Path(self.project) / "src")])
@@ -469,13 +469,13 @@ class TestOpenGate(_StoreCase):
             "other_session": dict(oid=meta.id, session="another-session"),
         }.items():
             with self.assertRaises(so.OutputAccessError) as ctx:
-                self.open(kwargs["oid"], project=kwargs.get("project"), session=kwargs.get("session", "default"))
+                self.resolve(kwargs["oid"], project=kwargs.get("project"), session=kwargs.get("session", "default"))
             messages[label] = str(ctx.exception).replace(kwargs["oid"], "<id>")
         self.assertEqual(len(set(messages.values())), 1, messages)
         self.assertIn("not found for this project and session", messages["unknown"])
         for bad in ("", None, "o-xyz", "../../etc/passwd", "o-0123456789ab/../x", 42):
             with self.assertRaises(so.OutputAccessError) as ctx:
-                self.open(bad)
+                self.resolve(bad)
             self.assertIn("not found for this project and session", str(ctx.exception))
 
     def test_moved_file_from_another_project_still_refused(self):
@@ -486,7 +486,7 @@ class TestOpenGate(_StoreCase):
         for suffix in ("stdout", "stderr", "meta.json"):
             (mine / f"{meta.id}.{suffix}").write_bytes((Path(meta.dir) / f"{meta.id}.{suffix}").read_bytes())
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta.id)
+            self.resolve(meta.id)
         self.assertIn("not found", str(ctx.exception))
 
     def test_guard_denial_refuses_with_path(self):
@@ -499,7 +499,7 @@ class TestOpenGate(_StoreCase):
             return None
 
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta.id, guard_check=guard_check)
+            self.resolve(meta.id, guard_check=guard_check)
         msg = str(ctx.exception)
         self.assertIn(meta.id, msg)
         self.assertIn(denied, msg)
@@ -507,29 +507,29 @@ class TestOpenGate(_StoreCase):
         self.assertIn("no longer readable", msg)
         # cwd is checked too
         with self.assertRaises(so.OutputAccessError):
-            self.open(meta.id, guard_check=lambda p: SimpleNamespace(rule="x", kind="read_only", scope="project",
+            self.resolve(meta.id, guard_check=lambda p: SimpleNamespace(rule="x", kind="read_only", scope="project",
                                                                      reason="r") if str(p) == self.cwd else None)
         # no guard at all: fail closed
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta.id, guard_check=None)
+            self.resolve(meta.id, guard_check=None)
         self.assertIn("no access-guard check", str(ctx.exception))
 
     def test_expired_and_swept(self):
         meta = self.spill()
         _rewrite_meta(meta, expires_at=_iso(datetime.now(timezone.utc) - timedelta(minutes=1)))
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta.id)
+            self.resolve(meta.id)
         self.assertIn("expired", str(ctx.exception))
         meta2 = self.spill()
         meta2.stream_path("stdout").unlink()
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta2.id)
+            self.resolve(meta2.id)
         self.assertIn("swept or deleted", str(ctx.exception))
         # a corrupt meta reads as not found, not as a crash
         meta3 = self.spill()
         meta3.meta_path.write_text("{not json", encoding="utf-8")
         with self.assertRaises(so.OutputAccessError) as ctx:
-            self.open(meta3.id)
+            self.resolve(meta3.id)
         self.assertIn("not found", str(ctx.exception))
 
 
@@ -619,7 +619,7 @@ class TestReadSearchTail(_StoreCase):
         self.assertTrue(Path(b.dir).exists())
         self.store.delete(a)                             # idempotent
         with self.assertRaises(so.OutputAccessError):
-            self.open(a.id)
+            self.resolve(a.id)
 
 
 class TestSweep(_StoreCase):
@@ -708,7 +708,7 @@ class TestUnicodePaths(_StoreCase):
                                   cwd=project + "/тест dir", guard_paths=[project + "/тест dir"],
                                   exit_code=1, timed_out=False, duration_ms=7)
         self.assertRegex(Path(meta.dir).name, r"^s-[0-9a-f]{12}$")
-        got = self.store.open(meta.id, project_path=project, session_id=session, guard_check=_ALLOW)
+        got = self.store.resolve(meta.id, project_path=project, session_id=session, guard_check=_ALLOW)
         self.assertEqual(got.cmd_display, "echo ✓")
         self.assertEqual(got.stdout["lines"], 3)
         self.assertEqual(got.stdout["longest_line"], len("second line with needle 🧵"))
@@ -718,7 +718,7 @@ class TestUnicodePaths(_StoreCase):
         self.assertEqual(self.store.tail(got, "stderr", lines=1), "[stderr L1-1 of 1]\nошибка")
         self.assertEqual([m.id for m in self.store.list(project_path=project, session_id=session)], [meta.id])
         with self.assertRaises(so.OutputAccessError):
-            self.store.open(meta.id, project_path=project, session_id="sess ión/β 2", guard_check=_ALLOW)
+            self.store.resolve(meta.id, project_path=project, session_id="sess ión/β 2", guard_check=_ALLOW)
         self.store.delete(got)
         self.assertEqual(self.store.list(project_path=project, session_id=session), [])
 

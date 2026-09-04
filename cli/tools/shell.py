@@ -862,7 +862,7 @@ def _handle_output(output_id: str, action: str, pattern: str, lines, stream: str
 
     store = ShellOutputStore()
     try:
-        meta = store.open(output_id, project_path=project_path,
+        meta = store.resolve(output_id, project_path=project_path,
                           session_id=_grants.session_id(svc), guard_check=guard_check)
     except OutputAccessError as exc:
         return f"[c3_shell:error] {exc}"

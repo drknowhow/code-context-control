@@ -50,7 +50,7 @@ promotion; `meta.acl_applied` records whether it took.
 A spill is the raw bytes a command produced under the Access Guard rules in
 force *at that moment*. If a later, less-privileged reader could fetch it,
 spilling would be less safe than truncation — the store would be a durable
-exfiltration channel around the guard. `ShellOutputStore.open()` is the only
+exfiltration channel around the guard. `ShellOutputStore.resolve()` is the only
 way to a meta, and it refuses unless all of these hold:
 
 | check | refusal wording |

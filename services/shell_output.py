@@ -15,13 +15,13 @@ where ``<root>`` is ``~/.c3/shell_out`` (override: env ``C3_SHELL_OUT_DIR``),
 i.e. OUTSIDE every project, so a spill can never be committed, indexed,
 masked, or read back through a project-relative path.
 
-Authorization model (read this before changing ``ShellOutputStore.open``)
+Authorization model (read this before changing ``ShellOutputStore.resolve``)
 --------------------------------------------------------------------------
 A spill is the raw bytes a command produced under the Access Guard rules that
 were in force *at that moment*. If a later, less-privileged reader could fetch
 it, spilling would be less safe than truncation: the store would become a
 durable exfiltration channel around the guard. So every retrieval goes through
-``open()``, which refuses unless ALL of these hold:
+``resolve()``, which refuses unless ALL of these hold:
 
 1. **Same project.** ``project_id(caller's project) == meta.project_id``. Ids
    are looked up under the caller's own ``<project_id>/<session>`` directory,
@@ -487,7 +487,7 @@ class ShellCapture:
 # ── Store ───────────────────────────────────────────────────────────────────
 
 class OutputAccessError(Exception):
-    """Refusal from ``ShellOutputStore.open`` — ``str(exc)`` is the one-line reason."""
+    """Refusal from ``ShellOutputStore.resolve`` — ``str(exc)`` is the one-line reason."""
 
 
 _META_KEYS = ("id", "project_id", "project_path", "session_id", "created_at", "expires_at",
@@ -605,7 +605,7 @@ class ShellOutputStore:
         return meta
 
     # -- the authorization gate --
-    def open(self, output_id, *, project_path, session_id, guard_check) -> OutputMeta:
+    def resolve(self, output_id, *, project_path, session_id, guard_check) -> OutputMeta:
         """Resolve an id for THIS project + session under the CURRENT guard rules.
 
         See the module docstring for the model. Raises ``OutputAccessError``.
