@@ -42,6 +42,7 @@ class _FakeKeyring:
     def __init__(self, working=True):
         self.store = {}
         self.working = working
+        self.gets = 0  # hot-path budget: see test_no_keyring_read_when_…
 
     def set_password(self, service, account, value):
         if not self.working:
@@ -51,6 +52,7 @@ class _FakeKeyring:
     def get_password(self, service, account):
         if not self.working:
             raise RuntimeError("no keyring backend")
+        self.gets += 1
         return self.store.get((service, account))
 
 
@@ -99,6 +101,10 @@ class _Base(unittest.TestCase):
 
     def write_global(self, section):
         cfg = self.home / ".c3" / "config.json"
+        cfg.write_text(json.dumps({"access": section}), encoding="utf-8")
+
+    def write_project(self, section, base=None):
+        cfg = (base or self.project) / ".c3" / "config.json"
         cfg.write_text(json.dumps({"access": section}), encoding="utf-8")
 
     def check(self, path, op):
@@ -239,12 +245,92 @@ class TestValidation(_Base):
         # Corrupt scope ⇒ deny-all, the loud direction.
         self.assertIsNotNone(self.check(self.project / "anything.txt", "read"))
 
-    def test_project_scope_builtin_mode_is_corrupt(self):
-        (self.project / ".c3" / "config.json").write_text(
-            json.dumps({"access": {"builtin_mode": {"**/.git/**": "allow"}}}),
-            encoding="utf-8")
+    def test_project_scope_builtin_mode_needs_a_project_attestation(self):
+        """v2.118.0 amendment. This used to be a corrupt scope, on the
+        reasoning that a project may only tighten. What that rule actually
+        protects against is a CLONED REPO's config — and config alone has
+        never been able to change a builtin. So the scope is legal now, and
+        the config half on its own still changes nothing."""
+        self.write_project({"builtin_mode": {"**/.git/**": "allow"}})
         _rules, corrupt = access_guard.load_rules(str(self.project))
-        self.assertIn("project", corrupt)
+        self.assertEqual(corrupt, [])                      # no longer corrupt
+        self.assertEqual(access_guard.effective_builtin_modes(
+            str(self.project)), {})                        # …and still inert
+        self.assertIsNotNone(self.check(self.project / ".git" / "config",
+                                        "write"))
+
+    def test_a_global_attestation_does_not_satisfy_a_project_entry(self):
+        """Realm-atomic, exactly like the credential vault. Otherwise one
+        machine-wide opt-out would silently license every project's config."""
+        access_guard.set_builtin_mode("**/.git/**", "allow")   # global, real
+        self.write_project({"builtin_mode": {"**/.env*": "allow"}})
+        modes = access_guard.effective_builtin_modes(str(self.project))
+        self.assertEqual(modes.get("**/.git/**"), "allow")
+        self.assertNotIn("**/.env*", modes)
+        self.assertIsNotNone(self.check(self.project / ".env", "read"))
+
+    def test_a_project_attestation_does_not_leak_to_another_project(self):
+        other = self.project.parent / "other"
+        (other / ".c3").mkdir(parents=True)
+        access_guard.set_builtin_mode("**/.env*", "allow", scope="project",
+                                      project_path=str(self.project))
+        (other / ".c3" / "config.json").write_text(
+            json.dumps({"access": {"builtin_mode": {"**/.env*": "allow"}}}),
+            encoding="utf-8")
+        self.assertIn("**/.env*",
+                      access_guard.effective_builtin_modes(str(self.project)))
+        self.assertNotIn("**/.env*",
+                         access_guard.effective_builtin_modes(str(other)))
+        self.assertIsNone(access_guard.check(
+            str(self.project / ".env"), "read", str(self.project)))
+        self.assertIsNotNone(access_guard.check(
+            str(other / ".env"), "read", str(other)))
+
+    def test_a_project_mode_replaces_the_global_one(self):
+        access_guard.set_builtin_mode("**/.env*", "allow")   # global: off
+        access_guard.set_builtin_mode("**/.env*", "deny", scope="project",
+                                      project_path=str(self.project))
+        self.assertEqual(access_guard.effective_builtin_modes(
+            str(self.project))["**/.env*"], "deny")
+        self.assertIsNotNone(self.check(self.project / ".env", "read"))
+
+    def test_list_rules_says_which_scope_set_the_mode(self):
+        access_guard.set_builtin_mode("**/.git/**", "confirm")
+        access_guard.set_builtin_mode("**/.env*", "allow", scope="project",
+                                      project_path=str(self.project))
+        realms = access_guard.list_rules(str(self.project))["builtin"]["mode_realms"]
+        self.assertEqual(realms["**/.git/**"], "global")
+        self.assertEqual(realms["**/.env*"], "project")
+
+    def test_tier0_stays_denied_under_any_project_mode(self):
+        for glob in access_guard.BUILTIN_ABSOLUTE_DENY:
+            with self.assertRaises(ValueError):
+                access_guard.set_builtin_mode(glob, "allow", scope="project",
+                                              project_path=str(self.project))
+
+    def test_a_project_allow_on_c3_never_reaches_the_policy_files(self):
+        """`builtin_mode: {'**/.c3/**': 'allow'}` un-blocks the directory, and
+        the vault + override policy files inside it stay unreachable — they
+        are Tier-0 or `forbidden_target`, neither of which a mode touches."""
+        access_guard.set_builtin_mode("**/.c3/**", "allow", scope="project",
+                                      project_path=str(self.project))
+        self.assertIsNone(self.check(self.project / ".c3" / "notes.txt",
+                                     "write"))
+        for name in ("secrets.enc", "cred_state.json"):
+            self.assertIsNotNone(
+                self.check(self.project / ".c3" / name, "write"))
+
+    def test_unknown_scope_is_rejected(self):
+        with self.assertRaises(ValueError):
+            access_guard.set_builtin_mode("**/.git/**", "allow",
+                                          scope="everywhere")
+
+    def test_no_keyring_read_when_no_mode_is_configured(self):
+        """The hot path: hooks import this module on every native tool call.
+        Per-project modes must cost nothing when nobody has set one."""
+        self.keyring.gets = 0
+        access_guard.effective_builtin_modes(str(self.project))
+        self.assertEqual(self.keyring.gets, 0)
 
 
 class TestLegacyAndMigration(_Base):

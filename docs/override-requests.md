@@ -170,10 +170,20 @@ credential vault.
     "max_requests_per_hour": 20,
     "notify_severity": "critical",
     "allow_session_grants": false,
+    "allow_rule_grants": false,
+    "rule_grant_ttl_s": 14400,
+    "rule_grant_idle_s": 1800,
     "wake": null
   }
 }
 ```
+
+`allow_rule_grants`, `rule_grant_ttl_s` and `rule_grant_idle_s` are §4.1.
+All three are widenings: the boolean AND-merges like `allow_session_grants`,
+and both integers min-merge and clamp to `HARD_MAX_RULE_TTL_S` /
+`HARD_MAX_RULE_IDLE_S`. A longer TTL or a longer idle window means a rule
+grant outlives more of the conversation, so the mobile policy route counts
+either as a loosening and demands the same challenge.
 
 `wake` is §7.1. `null` (the default) means nobody is told when a request is
 decided — see there for why that was the bug and not the design.
@@ -309,6 +319,86 @@ show *"the agent retried with a different path than you approved."*
 for an unrelated reason the use is burned; re-requesting is cheap and this is
 strictly safer than consuming in PostToolUse, where a crash would leave a live
 grant behind.
+
+---
+
+## 4.1 Grant scope — `call` and `rule` (v2.118.0)
+
+§4 above describes a `scope="call"` grant, which is still the default and
+still what every grant minted before v2.118.0 is read as (a missing `scope`
+field means `call`).
+
+The problem it left: an approval covers **one file**. A confirm rule over
+`**/.mcp.json`-class paths, or a `deny` over a whole directory, produces one
+card per file, and a user working through five of them taps five times for a
+decision they made once. The `session` *mode* did not solve this — it lifts
+the use count, not the path binding.
+
+`scope="rule"` is the shape that does. It relaxes **exactly two** of the nine
+conditions:
+
+- **5 (tool)** — from the exact tool to a declared **op-class**
+  (`override_policy.TOOL_CLASSES` / `same_tool_class`). Exact match always
+  qualifies; beyond that both tools must resolve to the same declared class.
+  A tool in no class is never widened, so an unrecognised or future tool
+  cannot inherit an existing grant. `c3_artifacts` (restore writes a whole
+  prior version) and `c3_project` (writes into a *different* project) are
+  deliberately unclassed.
+- **7 (path)** — from the exact canon key to *"inside the path set the rule
+  glob describes"*, evaluated by `override_grants.rule_covers` against the
+  **same** `(canon, rel)` pair and the **same** compiler
+  (`access_guard._compile`) that produced the denial. A rule grant therefore
+  covers exactly the files that rule would have blocked — never one more.
+
+Everything else is unchanged, and three things replace what it drops:
+
+- **`uses_remaining` is `None`** (unlimited). `HARD_MAX_USES` does not apply.
+- **Its own TTL ceiling.** `rule_grant_ttl_s` (default 4 h, hard ceiling
+  `HARD_MAX_RULE_TTL_S` = 8 h) instead of `max_ttl_s` / `HARD_MAX_TTL_S`. A
+  `call` grant keeps its 15-minute ceiling untouched.
+- **An idle window.** `idle_s` (default 30 min, ceiling
+  `HARD_MAX_RULE_IDLE_S` = 1 h) measured from `last_used_at`, else
+  `granted_at`. An unreadable or absent-but-required window reads as expired,
+  never as eternal.
+
+The idle window exists because **there is no session-END signal to hang a
+long grant on.** The MCP surface's `host_session_id` is snapshotted once at
+`start_session()` and goes stale across `/clear`, while the hook surface
+reads the live payload field — so after `/clear` a long grant would keep
+matching MCP-surface calls in what is, to the user, a new conversation. A
+15-minute grant made that harmless; a 4-hour one would not. Rather than
+rewrite session identity (a shared `.c3/session.host` file is
+last-writer-wins across two windows in the same project — worse than the
+problem), a rule grant dies on its own the moment the conversation stops
+exercising it.
+
+**What still cannot be reached.** The widened path condition is the only
+route by which a grant could grow toward the vault or the policy files, and
+it does not: `find()` and `consume()` refuse `override_policy.forbidden_target()`
+on **every call**, not only at mint. So a rule grant over `**/.c3/**` covers
+`.c3/notes.txt` and never `override_grants.json`, `overrides.jsonl`,
+`config.json`, `secrets.enc` or `cred_state.json` (§11 threat 3). Tier-0
+absolute denies never reach the store at all.
+
+**Minting one requires all of:** `override.allow_rule_grants` (default
+`false`, AND-merged across scopes and counted as a *widening* policy edit),
+a **globbable** rule — the synthetic `<discipline:native-write-block>` and
+`<shell:soft-warn>` tokens are refused, they name a behaviour and have no
+path set — a rule that actually covers the refusal being approved, and the
+**rule glob retyped by hand** on *every* layer, including `access_confirm`,
+which stays one-tap for `once`.
+
+**It must be visible and killable.** `GET /api/hub/grants` and the Access
+tab's *Active grants* strip list live grants with their real reach;
+`DELETE /api/hub/grants/<id>` and `c3 override revoke <id>` end one
+immediately. `granted_context()` says *"covers every path &lt;rule&gt; matches,
+this session"* rather than a use count, so a standing capability never reads
+in the transcript like a single approval.
+
+**Near-misses are scoped too:** a rule grant is *supposed* to span tools and
+paths, so those differences are not reported for it — only a rule or op
+mismatch is, which keeps the "you approved X, the agent tried Y" signal out
+of the noise the user deliberately allowed.
 
 ---
 

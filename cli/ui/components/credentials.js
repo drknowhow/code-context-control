@@ -23,18 +23,26 @@ const CREDS_STRUCTURED = {
               optional: ["recipient", "street2", "country", "phone"], hidden: [] },
   identity: { required: ["full_name"],
               optional: ["dob", "ssn", "phone", "email"], hidden: ["ssn", "dob"] },
-  login:    { required: ["site_id", "canonical_origin", "username", "password"],
-              optional: ["totp_secret"], hidden: ["password", "totp_secret"] },
+  // canonical_origin stays a known OPTIONAL field: it is the pre-2.118.0
+  // spelling, accepted on input as an alias for canonical_target. Password is
+  // optional too — a key-based server login has none — but the store still
+  // requires one of password/private_key.
+  login:    { required: ["site_id", "canonical_target", "username"],
+              optional: ["password", "private_key", "passphrase", "totp_secret",
+                         "canonical_origin"],
+              hidden: ["password", "private_key", "passphrase", "totp_secret"] },
 };
 
 const credsDisplayText = (entry) => {
   const d = entry.display || {};
   if (entry.type === "card") return `${d.brand || "card"} ••••${d.last4 || "????"}`;
-  // login's projection carries has_totp as a BOOLEAN — the generic join below
-  // would render it as the word "true". Username is absent by design.
+  // login's projection carries has_totp / has_key as BOOLEANS — the generic
+  // join below would render them as the word "true". Username is absent by
+  // design.
   if (entry.type === "login") {
-    const bits = [d.site_id, d.origin].filter(Boolean);
+    const bits = [d.site_id, d.target || d.origin].filter(Boolean);
     if (d.has_totp) bits.push("2FA");
+    if (d.has_key) bits.push("key");
     return bits.join(" · ");
   }
   const vals = Object.values(d).filter(Boolean);

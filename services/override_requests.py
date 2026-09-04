@@ -22,6 +22,7 @@ in the house style of ``oracle/services/memory_writer.py``.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 from datetime import timedelta
 from pathlib import Path
@@ -54,9 +55,15 @@ DECISION_DENY = "deny"
 #: needs no extra switch; ``session`` is an unlimited-uses grant for the rest
 #: of the request TTL window and is gated on ``allow_session_grants`` plus a
 #: typed confirmation, because it is the closest thing here to a policy change.
+#: ``rule`` (§4.1) is the largest shape: one approval covers every path the
+#: rule glob matches, for any tool in the same op class, until its TTL or its
+#: idle window runs out. It is gated on ``allow_rule_grants`` AND the rule
+#: glob retyped by hand — a strictly harder challenge than ``session``,
+#: because the thing being accepted is a standing capability, not a repeat.
 MODE_ONCE = "once"
 MODE_SESSION = "session"
-MODES = (MODE_ONCE, MODE_SESSION)
+MODE_RULE = "rule"
+MODES = (MODE_ONCE, MODE_SESSION, MODE_RULE)
 
 #: What the client must retype to get a session grant. Not the rule glob —
 #: that challenge already means "I accept this access layer"; this one is a
@@ -97,13 +104,58 @@ def load() -> list:
     return [r for r in data if isinstance(r, dict)]
 
 
+#: Lock file for the request store's read-modify-write. The store is ONE file
+#: for every project and session on the box (`STORE_REL` under ``~``), so two
+#: concurrent decides — or a decide racing an auto-file — used to be able to
+#: lose a row outright. `_store_lock()` closes that window; the tmp name is
+#: per-process besides, because a fixed `.tmp` is itself a collision.
+_LOCK_REL = ".c3/oracle/override_requests.lock"
+
+
+def _store_lock():
+    """Cross-process advisory lock around a load→mutate→_save sequence.
+
+    Reuses ``override_grants._Lock`` rather than growing a second
+    implementation: same O_EXCL primitive, same stale-break, same
+    non-fatal-on-failure contract (worst case is the pre-lock behaviour).
+    """
+    return og._Lock(Path.home(), _LOCK_REL)
+
+
 def _save(rows: list) -> None:
     path = store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(rows, indent=2, ensure_ascii=False),
-                   encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(rows, indent=2, ensure_ascii=False),
+                       encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _save_row(row: dict) -> None:
+    """Persist ONE mutated row without clobbering rows written meanwhile.
+
+    Every mutator here (create, withdraw, decide) touches exactly one row, but
+    used to write back the whole snapshot it had loaded — so a decide and a
+    concurrent auto-file, over a store shared by every project on the box,
+    could each save a list that was missing the other's row. Re-reading under
+    the lock and replacing only this row is the smallest fix that is actually
+    correct; the caller's other in-memory rows are deliberately discarded.
+    """
+    with _store_lock():
+        rows = load()
+        for i, existing in enumerate(rows):
+            if existing.get("id") == row.get("id"):
+                rows[i] = row
+                break
+        else:
+            rows.append(row)
+        _save(rows)
 
 
 def _expired(row: dict, at=None) -> bool:
@@ -129,19 +181,33 @@ def _refresh(rows: list) -> bool:
     return changed
 
 
+def _refresh_writeback() -> list:
+    """Load, lazily expire lapsed pendings, persist if anything moved.
+
+    The writeback is the only reason a read path touches the file at all, so
+    it takes the lock; a lost expiry flip is harmless on its own but would
+    drop whatever else was being written at the same moment.
+    """
+    rows = load()
+    if not _refresh(rows):
+        return rows
+    with _store_lock():
+        fresh = load()
+        if _refresh(fresh):
+            _save(fresh)
+        return fresh
+
+
 def sweep_expired() -> int:
     rows = load()
     before = sum(1 for r in rows if r.get("status") == STATUS_PENDING)
-    if _refresh(rows):
-        _save(rows)
+    rows = _refresh_writeback()
     after = sum(1 for r in rows if r.get("status") == STATUS_PENDING)
     return before - after
 
 
 def get(request_id: str) -> dict | None:
-    rows = load()
-    if _refresh(rows):
-        _save(rows)
+    rows = _refresh_writeback()
     for row in rows:
         if row.get("id") == request_id:
             return row
@@ -151,9 +217,7 @@ def get(request_id: str) -> dict | None:
 def list_requests(*, project_path: str = "", session_id: str = "",
                   status: str = "", limit: int = 50) -> list:
     """Newest first. Empty filters mean 'all'."""
-    rows = load()
-    if _refresh(rows):
-        _save(rows)
+    rows = _refresh_writeback()
     key = og.path_key(project_path) if project_path else ""
     out = []
     for row in rows:
@@ -401,8 +465,7 @@ def create(project_path: str, *, session_id: str, tool: str, op: str, path,
         "decided_by": None,
         "decision_note": None,
     }
-    rows.append(row)
-    _save(rows)
+    _save_row(row)
 
     og.audit(project_path, og.EV_REQUESTED, {
         "request_id": row["id"], "session_id": row["session_id"],
@@ -478,8 +541,11 @@ def _notify_decision(project_path: str, row: dict, grant=None) -> None:
         status = row.get("status", "")
         name = Path(str(row.get("path", ""))).name
         if status == STATUS_APPROVED:
-            detail = "once" if row.get("grant_mode") != MODE_SESSION \
-                else "for this session"
+            detail = {
+                MODE_SESSION: "for this session",
+                MODE_RULE: f"for every path {row.get('rule')} matches, "
+                           "this session",
+            }.get(str(row.get("grant_mode") or ""), "once")
             message = (f"Granted {row.get('tool')} {row.get('op')} on {name} "
                        f"{detail} (rule {row.get('rule')}). "
                        f"Grant {(grant or {}).get('id', '')} expires "
@@ -527,7 +593,7 @@ def withdraw(request_id: str, session_id: str) -> dict:
             raise OverrideError(f"request is already {row.get('status')}.")
         row["status"] = STATUS_WITHDRAWN
         row["resolved_at"] = og.iso(og.now())
-        _save(rows)
+        _save_row(row)
         return row
     raise OverrideError(f"no request with id '{request_id}'.")
 
@@ -569,7 +635,7 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
         row["decided_by"] = decided_by
         row["decision_note"] = str(note or "")[:JUSTIFICATION_CAP] or None
         row["muted"] = bool(mute)
-        _save(rows)
+        _save_row(row)
         # Mute AFTER the row is persisted: a mute whose request never landed
         # as denied would suppress a question the user never actually answered.
         if mute:
@@ -597,6 +663,7 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
             f"approving an {layers_key} request needs the rule retyped: "
             f"confirm='{row.get('rule')}'")
 
+    scope = og.SCOPE_CALL
     if mode == MODE_SESSION:
         # Two independent gates, both required. The switch is the user's
         # standing policy; the challenge is their answer right now.
@@ -611,13 +678,37 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
                 f"confirm='{CONFIRM_SESSION}'")
         # Unlimited uses within the (already clamped) TTL window.
         uses = op_policy.HARD_MAX_USES
+    elif mode == MODE_RULE:
+        # Same two-gate construction, one notch harder on both. The switch is
+        # its own (`allow_rule_grants`, not the session one), and the
+        # challenge is the RULE GLOB — for every layer, including the ones
+        # that are one-tap for `once`. What is being accepted here is not
+        # "ask me less about this file", it is "stop asking me about this
+        # rule", and the keystrokes should say so.
+        if not policy.allow_rule_grants:
+            raise OverrideError(
+                "rule-scoped grants are disabled for this project "
+                "(`override.allow_rule_grants` is false). Approve once or "
+                "for this session instead, or change the policy on the "
+                "desktop.")
+        if not og.rule_is_globbable(row.get("rule", "")):
+            raise OverrideError(
+                f"'{row.get('rule')}' names a behaviour, not a path set — "
+                "there is nothing to widen along. Approve this call instead.")
+        if confirm != row.get("rule"):
+            raise OverrideError(
+                "a rule grant covers every path the rule matches, for any "
+                "tool in the same op class, until it expires: "
+                f"confirm='{row.get('rule')}'")
+        scope = og.SCOPE_RULE
+        uses = None  # unlimited; mint() owns the TTL + idle window
 
     grant = og.mint(project_path, session_id=row.get("session_id", ""),
                     layer=row.get("layer", ""), rule=row.get("rule", ""),
                     tool=row.get("tool", ""), op=row.get("op", ""),
                     path=row.get("path", ""), ttl_s=ttl_s, uses=uses,
                     granted_by=decided_by, request_id=request_id,
-                    policy=policy, layers_key=layers_key)
+                    policy=policy, layers_key=layers_key, scope=scope)
 
     row["status"] = STATUS_APPROVED
     row["resolved_at"] = og.iso(now)
@@ -625,7 +716,8 @@ def decide(request_id: str, decision: str, *, uses: int | None = None,
     row["decision_note"] = str(note or "")[:JUSTIFICATION_CAP] or None
     row["grant_id"] = grant["id"]
     row["grant_mode"] = mode
-    _save(rows)
+    row["grant_scope"] = scope
+    _save_row(row)
     _notify_decision(project_path, row, grant=grant)
     # AFTER _save: the woken agent's very first move is to retry the blocked
     # call, which reads this store. Waking before persisting would race the

@@ -1828,7 +1828,7 @@ def _override_row(row: dict) -> dict:
     out = {k: row.get(k) for k in _OVERRIDE_FIELDS}
     # Decision extras — present only once decided, so a pending card is exactly
     # the §3.3 shape and nothing more.
-    for extra in ("grant_id", "grant_mode", "muted"):
+    for extra in ("grant_id", "grant_mode", "grant_scope", "muted"):
         if row.get(extra) is not None:
             out[extra] = row.get(extra)
     return out
@@ -2046,7 +2046,11 @@ def _override_widenings(current, section: dict) -> list:
         if want and not current.layers.get(key, False):
             out.append(f"layers.{key}")
     for key in ("max_ttl_s", "default_uses", "request_ttl_s",
-                "max_pending_per_session", "max_requests_per_hour"):
+                "max_pending_per_session", "max_requests_per_hour",
+                # A longer TTL or a longer idle window both mean a rule grant
+                # outlives more of the conversation, which is a loosening even
+                # though nothing about it looks like a permission.
+                "rule_grant_ttl_s", "rule_grant_idle_s"):
         if key in section:
             try:
                 if int(section[key]) > int(getattr(current, key)):
@@ -2055,6 +2059,8 @@ def _override_widenings(current, section: dict) -> list:
                 pass
     if section.get("allow_session_grants") and not current.allow_session_grants:
         out.append("allow_session_grants")
+    if section.get("allow_rule_grants") and not current.allow_rule_grants:
+        out.append("allow_rule_grants")
     return out
 
 
@@ -2105,6 +2111,7 @@ def mobile_override_get(request_id):
         # Same refusal as an unknown id: whether a request exists for a project
         # this gateway does not serve is not this token's business.
         return jsonify({"error": "unknown request"}), 404
+    from services import override_grants as og
     from services import override_policy as opol
     policy = opol.resolve(str(row.get("project_path") or "."))
     return jsonify({
@@ -2115,6 +2122,14 @@ def mobile_override_get(request_id):
             "max_ttl_s": policy.max_ttl_s,
             "default_uses": policy.default_uses,
             "allow_session_grants": policy.allow_session_grants,
+            # Offerable only when policy allows it AND the rule is a real
+            # glob — a synthetic rule has no path set to widen along, and a
+            # button that always 400s is worse than no button.
+            "allow_rule_grants": bool(
+                policy.allow_rule_grants
+                and og.rule_is_globbable(row.get("rule", ""))),
+            "rule_grant_ttl_s": policy.rule_grant_ttl_s,
+            "rule_grant_idle_s": policy.rule_grant_idle_s,
             "escalatable": policy.escalatable(str(row.get("rule_class") or "")),
         },
         "needs_typed_confirm": (
@@ -2137,6 +2152,7 @@ def mobile_override_decide(request_id):
     gate = _override_write_gate()
     if gate:
         return gate
+    from services import override_grants as og
     from services import override_policy as opol
     from services import override_requests as orq
     data = request.get_json(silent=True) or {}
@@ -2187,6 +2203,28 @@ def mobile_override_decide(request_id):
                     "needs_confirmation": True,
                     "confirm_with": orq.CONFIRM_SESSION,
                 }), 400
+        # (c) a rule grant — the largest shape, and the only one that reaches
+        # files the approver is not looking at. Its challenge is the rule
+        # glob on EVERY layer, including the ones that are one-tap for once.
+        if mode == orq.MODE_RULE:
+            if not policy.allow_rule_grants:
+                return jsonify({
+                    "error": "rule-scoped grants are disabled for this project",
+                    "detail": "`override.allow_rule_grants` is false — "
+                              "approve once or for this session instead.",
+                }), 403
+            if not og.rule_is_globbable(row.get("rule", "")):
+                return jsonify({
+                    "error": f"'{row.get('rule')}' names a behaviour, not a "
+                             "path set — there is nothing to widen along",
+                }), 400
+            if confirm != row.get("rule"):
+                return jsonify({
+                    "error": "a rule grant covers every path the rule "
+                             "matches, for any tool in the same op class",
+                    "needs_confirmation": True,
+                    "confirm_with": row.get("rule"),
+                }), 400
 
     requested_ttl = data.get("ttl_s")
     try:
@@ -2212,7 +2250,8 @@ def mobile_override_decide(request_id):
         return _svc_error(exc)
 
     _override_audit(decision, result,
-                    confirmed=rule_class in opol.TYPED_CONFIRM_LAYERS,
+                    confirmed=(rule_class in opol.TYPED_CONFIRM_LAYERS
+                               or mode == orq.MODE_RULE),
                     detail_extra={"mode": mode,
                                   "grant_id": result.get("grant_id", "")})
     _gw_audit(f"mobile.override.{decision}",
@@ -2221,22 +2260,33 @@ def mobile_override_decide(request_id):
 
     payload = {"request": _override_row(result), "decision": decision}
     if decision == orq.DECISION_APPROVE:
-        granted_ttl = policy.clamp_ttl(requested_ttl)
+        wide = mode == orq.MODE_RULE
+        # A rule grant has its OWN ceiling; reporting max_ttl_s here would
+        # tell the phone 15 minutes for a grant that actually lives hours.
+        granted_ttl = (policy.clamp_rule_ttl(requested_ttl) if wide
+                       else policy.clamp_ttl(requested_ttl))
         payload["grant"] = {
             "id": result.get("grant_id", ""),
             "mode": result.get("grant_mode", mode),
+            "scope": result.get("grant_scope", "call"),
             "ttl_s": granted_ttl,
-            "uses": policy.clamp_uses(
+            "uses": None if wide else policy.clamp_uses(
                 opol.HARD_MAX_USES if mode == orq.MODE_SESSION
                 else requested_uses),
         }
+        if wide:
+            payload["grant"]["idle_s"] = policy.rule_idle_s()
+            payload["grant"]["covers"] = row.get("rule", "")
         # §8: a client asking for a week gets 15 minutes and is TOLD so.
         if requested_ttl is not None and granted_ttl < requested_ttl:
+            ceiling_key = "override.rule_grant_ttl_s" if wide \
+                else "override.max_ttl_s"
+            ceiling = policy.rule_grant_ttl_s if wide else policy.max_ttl_s
             payload["clamped"] = True
             payload["clamped_note"] = (
                 f"requested ttl_s={requested_ttl} was clamped to "
-                f"{granted_ttl}s by this project's override.max_ttl_s "
-                f"({policy.max_ttl_s}s).")
+                f"{granted_ttl}s by this project's {ceiling_key} "
+                f"({ceiling}s).")
     return jsonify(payload)
 
 

@@ -171,6 +171,14 @@ override-requests §3.1 property 1 ("default off, everywhere"):
   typed-glob challenge stays where it was, on `access_deny` and
   `access_builtin`. Rate limits, request TTL, grant TTL/use ceilings, mutes,
   and the nine-condition grant matcher apply to confirm identically.
+- **Amended v2.118.0:** one-tap covers `mode=once` only. A **rule-scoped**
+  approval (override-requests §4.1) demands the rule glob retyped on every
+  layer, `access_confirm` included, because what it accepts is not "ask me
+  less about this file" but "stop asking me about this rule" — a standing
+  capability over paths the approver is not looking at. This is the layer
+  that benefits most from rule grants (the agent-config tier in §7 is
+  confirm-by-default and spans many files), which is exactly why its
+  challenge does not stay cheap when the reach grows.
 
 ## 6. Coverage
 
@@ -224,12 +232,11 @@ the Hub (§7.1). Residual risks are access-guard §6's, unchanged.
    the mobile route: identifiers only, never the justification.
 
 2. **`builtin_mode`** — SHIPPED v2.99.0. Per-builtin mode
-   `deny | confirm | allow` (plus `default`, the reset verb), GLOBAL scope
-   only, in `access.builtin_mode: {glob: mode}`. Two-key attested exactly
-   like the opt-out it generalises: keyring account `builtin_mode|<glob>`
-   must hold the SAME mode string, written attestation-first; every failure
-   path enforces the shipped default. A mode never widens the op class the
-   builtin governs:
+   `deny | confirm | allow` (plus `default`, the reset verb), in
+   `access.builtin_mode: {glob: mode}`. Two-key attested exactly like the
+   opt-out it generalises: the keyring account must hold the SAME mode
+   string, written attestation-first; every failure path enforces the
+   shipped default. A mode never widens the op class the builtin governs:
 
    | Tier | default | deny | confirm | allow |
    |---|---|---|---|---|
@@ -240,14 +247,27 @@ the Hub (§7.1). Residual risks are access-guard §6's, unchanged.
    raises), and even under a confirm-mode `.c3/**` the `forbidden_target()`
    files can never become a request. `disable_builtin` survives as the
    legacy spelling of `allow` (`set_builtin_disabled` is a shim); a glob
-   named in BOTH spellings makes the global scope corrupt (deny-all), and
+   named in BOTH spellings makes that scope corrupt (deny-all), and
    `set_builtin_mode` lazily retires the legacy entry so the state cannot
-   arise through the API. Project-scope `builtin_mode` ⇒ corrupt. Reads on
-   a confirm-held builtin file a request from the hook and `c3_read`;
-   enumeration surfaces exclude and never auto-file (no existence leak).
-   Surfaces: `c3 access builtin mode <glob> <mode>` (typed-glob confirm for
-   the widening modes), `POST /api/access/builtin_mode` + a mode selector in
-   the Access tab, `list_rules()["builtin"]["modes"]`.
+   arise through the API. Reads on a confirm-held builtin file a request
+   from the hook and `c3_read`; enumeration surfaces exclude and never
+   auto-file (no existence leak).
+   Surfaces: `c3 access builtin mode <glob> <mode> [--project]` (typed-glob
+   confirm for the widening modes), `POST /api/access/builtin_mode` (with a
+   `scope`) + a mode selector and scope picker in the Access tab,
+   `list_rules()["builtin"]["modes"]` and `["mode_realms"]`.
+
+   **Scope, amended v2.118.0.** Modes were global-only; they are now
+   settable at `project` scope too, and a project mode REPLACES the global
+   one for that glob — loosening included. The keyring account is therefore
+   realm-bound: `builtin_mode|<glob>` for global (spelling unchanged),
+   `builtin_mode|proj|<normcased path>|<glob>` for a project. Realm-atomic
+   like `credential_store`: a global attestation never satisfies a project
+   entry and vice versa. What makes this safe is the property the two-key
+   design always had — **config alone changes nothing** — so a cloned repo
+   ships the config half and the builtin stays enforced. See
+   docs/access-guard.md §1 for the full amendment; Tier-0 and
+   `forbidden_target()` are unchanged at every scope.
 
 3. **Agent-config confirm tier** — SHIPPED v2.100.0, completed v2.102.0.
    `BUILTIN_CONFIRM_WRITE` is the previously UNGUARDED agent-config surface

@@ -197,6 +197,122 @@ class TestAudit(HubOverrideBase):
         self.assertNotIn(CANARY, text)
 
 
+# ── §4.1 session and rule modes over the desktop route ─────────────────────
+#
+# The hub was the untested half: the route has accepted `mode` since it was
+# written, but nothing asserted the gates, so a UI change could have started
+# minting session grants in a project whose policy forbids them.
+
+class TestGrantModes(HubOverrideBase):
+    def _confirm_with_policy(self, **extra):
+        override = {"enabled": True,
+                    "layers": {k: True for k in opol.LAYER_KEYS}}
+        override.update(extra)
+        self.write_config(override=override)
+        return self.confirm_request()
+
+    def test_unknown_mode_is_400(self):
+        row = self.confirm_request()
+        self.assertEqual(
+            self.decide(row["id"], {"decision": "approve",
+                                    "mode": "forever"}).status_code, 400)
+
+    def test_session_mode_refused_when_the_switch_is_off(self):
+        row = self._confirm_with_policy(allow_session_grants=False)
+        resp = self.decide(row["id"], {"decision": "approve",
+                                       "mode": "session",
+                                       "confirm": "session"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(og.active(str(self.proj)), [])
+
+    def test_session_mode_mints_when_the_switch_is_on(self):
+        row = self._confirm_with_policy(allow_session_grants=True)
+        resp = self.decide(row["id"], {"decision": "approve",
+                                       "mode": "session",
+                                       "confirm": "session"})
+        self.assertEqual(resp.status_code, 200)
+        grant = og.active(str(self.proj))[0]
+        self.assertEqual(grant["scope"], og.SCOPE_CALL)
+        self.assertGreater(grant["uses_remaining"], 1)
+
+    def test_rule_mode_is_only_offered_when_policy_allows_it(self):
+        self.confirm_request()
+        entry = self.client.get(
+            "/api/hub/overrides?status=pending").get_json()["requests"][0]
+        self.assertFalse(entry["allow_rule_grants"])
+
+    def test_rule_mode_refused_when_the_switch_is_off(self):
+        row = self._confirm_with_policy(allow_rule_grants=False)
+        resp = self.decide(row["id"], {"decision": "approve", "mode": "rule",
+                                       "confirm": "infra/**"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(og.active(str(self.proj)), [])
+
+    def test_rule_mode_demands_the_glob_even_on_a_one_tap_layer(self):
+        row = self._confirm_with_policy(allow_rule_grants=True)
+        resp = self.decide(row["id"], {"decision": "approve", "mode": "rule"})
+        self.assertEqual(resp.status_code, 400)
+        body = resp.get_json()
+        self.assertTrue(body["needs_confirmation"])
+        self.assertEqual(body["confirm_with"], "infra/**")
+        self.assertEqual(og.active(str(self.proj)), [])
+
+    def test_rule_mode_mints_a_grant_that_spans_the_rule(self):
+        row = self._confirm_with_policy(allow_rule_grants=True)
+        entry = self.client.get(
+            "/api/hub/overrides?status=pending").get_json()["requests"][0]
+        self.assertTrue(entry["allow_rule_grants"])
+        resp = self.decide(row["id"], {"decision": "approve", "mode": "rule",
+                                       "confirm": "infra/**"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["request"]["grant_scope"],
+                         og.SCOPE_RULE)
+        sibling = self.proj / "infra" / "other.tf"
+        sibling.write_text("x", encoding="utf-8")
+        self.assertIsNotNone(og.consume(
+            str(self.proj), session_id=SESSION, layer=opol.GATE_ACCESS,
+            rule="infra/**", tool="c3_edit", op="write", path=str(sibling)))
+
+
+class TestGrantsRoutes(HubOverrideBase):
+    def _mint_rule_grant(self):
+        self.write_config(override={
+            "enabled": True, "layers": {k: True for k in opol.LAYER_KEYS},
+            "allow_rule_grants": True})
+        row = self.confirm_request()
+        self.decide(row["id"], {"decision": "approve", "mode": "rule",
+                                "confirm": "infra/**"})
+        return og.active(str(self.proj))[0]
+
+    def test_lists_live_grants_with_their_reach(self):
+        grant = self._mint_rule_grant()
+        resp = self.client.get(f"/api/hub/grants?path={self.proj}")
+        self.assertEqual(resp.status_code, 200)
+        row = resp.get_json()["grants"][0]
+        self.assertEqual(row["id"], grant["id"])
+        self.assertEqual(row["scope"], og.SCOPE_RULE)
+        self.assertEqual(row["rule"], "infra/**")
+        self.assertIsNone(row["uses_remaining"])
+        self.assertTrue(row["idle_s"])
+
+    def test_revoking_ends_it_immediately(self):
+        grant = self._mint_rule_grant()
+        resp = self.client.delete(
+            f"/api/hub/grants/{grant['id']}?path={self.proj}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(og.active(str(self.proj)), [])
+        self.assertIsNone(og.consume(
+            str(self.proj), session_id=SESSION, layer=opol.GATE_ACCESS,
+            rule="infra/**", tool="c3_edit", op="write", path=str(self.held)))
+
+    def test_revoking_an_unknown_grant_is_404(self):
+        self.assertEqual(self.client.delete(
+            f"/api/hub/grants/grt_nope?path={self.proj}").status_code, 404)
+
+    def test_path_is_required(self):
+        self.assertEqual(self.client.get("/api/hub/grants").status_code, 400)
+
+
 class TestAccessView(HubOverrideBase):
     def test_rules_and_policy_for_one_project(self):
         resp = self.client.get(

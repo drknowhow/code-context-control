@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.115.0"
+__version__ = "2.118.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6338,7 +6338,16 @@ def _creds_entry_line(name: str, entry: dict) -> str:
     return "  ".join(parts)
 
 
-_CREDS_HIDDEN_FIELDS = {"number", "cvc", "ssn"}  # prompted via getpass
+#: Fields prompted with getpass instead of input(). This list was missing
+#: `password` and `totp_secret` from v2.90.0 to v2.118.0, so
+#: `c3 creds set X --type login` echoed the password to the terminal — both
+#: JS UIs masked it and nothing asserted the CLI. tests/test_creds_cli.py now
+#: derives the expected set from _SCHEMAS, so a future kind cannot reopen it.
+_CREDS_HIDDEN_FIELDS = {"number", "cvc", "ssn", "password", "private_key",
+                        "passphrase", "totp_secret"}
+#: A private key is pasted as many lines; getpass reads one. Read these until
+#: a blank line instead of silently storing the first line of a PEM.
+_CREDS_MULTILINE_FIELDS = {"private_key"}
 
 
 def _creds_prompt_structured(name: str, ctype: str) -> str:
@@ -6355,7 +6364,16 @@ def _creds_prompt_structured(name: str, ctype: str) -> str:
     fields: dict = {}
     for fname in list(required) + list(optional):
         tag = "" if fname in required else " (optional)"
-        if fname in _CREDS_HIDDEN_FIELDS:
+        if fname in _CREDS_MULTILINE_FIELDS:
+            print(f"  {fname}{tag} — paste it, then a blank line:")
+            lines = []
+            while True:
+                line = input()
+                if not line.strip():
+                    break
+                lines.append(line)
+            raw = "\n".join(lines)
+        elif fname in _CREDS_HIDDEN_FIELDS:
             raw = getpass.getpass(f"  {fname}{tag}: ")
         else:
             raw = input(f"  {fname}{tag}: ")
@@ -7031,12 +7049,14 @@ def _override_requests(args, project_path: str) -> None:
 def _override_decide(args, decision: str, project_path: str) -> None:
     from services import override_requests as orq
 
+    mode = getattr(args, "mode", None) or orq.MODE_ONCE
     try:
         row = orq.decide(getattr(args, "request_id", ""), decision,
                          uses=getattr(args, "uses", None),
                          ttl_s=getattr(args, "ttl_s", None),
                          note=getattr(args, "note", "") or "",
-                         decided_by="cli",
+                         decided_by="cli", mode=mode,
+                         mute=bool(getattr(args, "mute", False)),
                          confirm=getattr(args, "confirm", None))
     except orq.OverrideError as exc:
         print(f"  {exc}")
@@ -7046,15 +7066,29 @@ def _override_decide(args, decision: str, project_path: str) -> None:
         return
 
     if decision == "deny":
-        print(f"  Denied {row['id']}. The block stands.")
+        muted = " This session will not be asked again." \
+            if row.get("muted") else ""
+        print(f"  Denied {row['id']}. The block stands.{muted}")
         return
     print_header("Override approved")
     print(f"  Request : {row['id']}   Grant: {row.get('grant_id', '?')}")
     print(f"  Allows  : {row['tool']} {row['op']} on {row['path']}")
     print(f"  Session : {row['session_id']}")
-    print(f"\n  The rule {row['rule']} is still in force. One retry of this "
-          "exact call, in")
-    print("  that session, on that exact path — nothing else.")
+    # The reach line is the whole point of printing anything here: a session
+    # or rule grant is a standing capability, and saying "one retry" for one
+    # would be a lie the user acts on.
+    print(f"\n  The rule {row['rule']} is still in force.")
+    if mode == orq.MODE_RULE:
+        print("  This grant covers EVERY path that rule matches, for any tool")
+        print("  in the same op class, in that session — until it expires or")
+        print("  the session stops using it. `c3 override list` shows it;")
+        print("  `c3 override revoke <grant_id>` ends it.")
+    elif mode == orq.MODE_SESSION:
+        print("  Unlimited retries of this exact call, in that session, on")
+        print("  that exact path, until the grant expires.")
+    else:
+        print("  One retry of this exact call, in that session, on that exact")
+        print("  path — nothing else.")
 
 
 def _override_show(policy, project_path: str, opol) -> None:
@@ -7074,6 +7108,14 @@ def _override_show(policy, project_path: str, opol) -> None:
           f"{opol.HARD_MAX_TTL_S}s)")
     print(f"    uses        : {policy.default_uses} "
           f"(session grants: {'allowed' if policy.allow_session_grants else 'off'})")
+    if policy.allow_rule_grants:
+        print(f"    rule grants : allowed — <= {policy.rule_grant_ttl_s}s "
+              f"(hard ceiling {opol.HARD_MAX_RULE_TTL_S}s), idle cap "
+              f"{policy.rule_grant_idle_s}s")
+        print("                  one approval covers every path the rule "
+              "matches")
+    else:
+        print("    rule grants : off")
     print(f"    request TTL : {policy.request_ttl_s}s")
     print(f"    rate        : {policy.max_pending_per_session} pending/session, "
           f"{policy.max_requests_per_hour}/hour")
@@ -7185,11 +7227,22 @@ def _override_list(args, project_path: str, og) -> None:
     if not grants:
         print("  (none)")
     for g in grants:
-        print(f"  {g.get('id', '?'):18s} {g.get('tool', '?')} "
-              f"{g.get('op', '?')} {g.get('path_key', '?')}")
+        wide = g.get("scope") == og.SCOPE_RULE
+        left = ("unlimited use" if g.get("uses_remaining") is None
+                else f"{g.get('uses_remaining', 0)} use(s) left")
+        # A rule grant's path_key is where it was MINTED, not what it covers.
+        # Printing it in the same column as a call grant's target would read
+        # as a much smaller capability than it is.
+        reach = (f"any path matching {g.get('rule', '?')}" if wide
+                 else g.get("path_key", "?"))
+        print(f"  {g.get('id', '?'):18s} [{'rule' if wide else 'call'}] "
+              f"{g.get('tool', '?')} {g.get('op', '?')} {reach}")
         print(f"  {'':18s} rule {g.get('rule', '?')} · session "
               f"{g.get('session_id', '?')} · expires {g.get('expires_at', '?')}"
-              f" · {g.get('uses_remaining', 0)} use(s) left")
+              f" · {left}"
+              + (f" · idle cap {g.get('idle_s')}s" if g.get("idle_s") else ""))
+        if wide:
+            print(f"  {'':18s} minted from {g.get('path_key', '?')}")
     tail = int(getattr(args, "audit", 0) or 0)
     if tail:
         print("\n  Audit (.c3/overrides.jsonl):")
@@ -7212,8 +7265,10 @@ def _override_check(args, policy, project_path: str, og, opol) -> None:
                   layer=gate, rule=rule, tool=tool, op=op,
                   path=getattr(args, "target", ""))
     if hit:
-        print(f"  Allowed by {hit['id']} — {hit['uses_remaining']} use(s) "
-              f"left, expires {hit['expires_at']}.")
+        left = ("unlimited use" if hit.get("uses_remaining") is None
+                else f"{hit['uses_remaining']} use(s) left")
+        print(f"  Allowed by {hit['id']} ({hit.get('scope', 'call')} scope) "
+              f"— {left}, expires {hit['expires_at']}.")
         print("  (`check` never consumes a use.)")
     else:
         print("  Denied — no live grant matches this exact "
@@ -7392,19 +7447,30 @@ def _access_cmd_list(args, project_path: str) -> None:
             print("  [warn] access section invalid — scope fails closed "
                   "(deny-all); fix config.json 'access' by hand")
         if scope == "builtin":
+            # Which SCOPE set each live mode. Printing a project-set opt-out
+            # as if it were machine-wide (or the reverse) is the exact
+            # confusion the realm split exists to prevent.
+            realms = sec.get("mode_realms") or {}
+
+            def _where(glob):
+                r = realms.get(access_guard._norm_builtin(glob), "")
+                return f"  [{r}]" if r else ""
+
             off = sec.get("disabled") or []
             if off:
                 print("  DISABLED by you (not enforced):")
                 for glob in off:
-                    print(f"    {'off':<10} {glob}")
-                print("    re-enable: c3 access builtin enable <glob>")
+                    print(f"    {'off':<10} {glob}{_where(glob)}")
+                print("    re-enable: c3 access builtin enable <glob> "
+                      "[--project]")
             moded = {g: m for g, m in (sec.get("modes") or {}).items()
                      if m not in ("default", "allow")}
             if moded:
                 print("  MODE set by you (departs from the shipped default):")
                 for glob, m in sorted(moded.items()):
-                    print(f"    {m:<10} {glob}")
-                print("    reset: c3 access builtin mode <glob> default")
+                    print(f"    {m:<10} {glob}{_where(glob)}")
+                print("    reset: c3 access builtin mode <glob> default "
+                      "[--project]")
             can = [g for g in (sec.get("disableable") or [])
                    if access_guard._norm_builtin(g) not in set(off)
                    and access_guard._norm_builtin(g) not in moded]
@@ -7414,6 +7480,8 @@ def _access_cmd_list(args, project_path: str) -> None:
                 print("    disable: c3 access builtin disable <glob>  ·  "
                       "granular: c3 access builtin mode <glob> "
                       "{deny,confirm,allow}")
+                print("    add --project to scope it to this project only "
+                      "(attested under its own keyring realm)")
             if sec.get("absolute"):
                 print("  absolute (credential vault, cannot be disabled): "
                       + ", ".join(sec["absolute"]))
@@ -7430,7 +7498,8 @@ def _access_cmd_list(args, project_path: str) -> None:
 
 
 def _access_cmd_builtin(args, project_path: str) -> None:
-    """Switch a Tier-1 builtin off or back on. Human-only; always global scope.
+    """Switch a Tier-1 builtin off or back on. Human-only; global scope by
+    default, this project only with --project (v2.118.0).
 
     Disabling asks for typed confirmation unless --yes: these guards are what
     stop an agent rewriting its own hooks, settings or git history, and the
@@ -7452,8 +7521,11 @@ def _access_cmd_builtin(args, project_path: str) -> None:
         return
 
     disabling = action == "disable"
+    scope = "project" if getattr(args, "project_scope", False) else "global"
     if disabling and not getattr(args, "yes", False):
-        print(f"About to STOP enforcing the builtin guard on: {glob}")
+        where = (f"in THIS project only ({project_path})" if scope == "project"
+                 else "on EVERY project on this machine")
+        print(f"About to STOP enforcing the builtin guard on: {glob} {where}")
         print("  While off, any agent with C3 tools can write those paths.")
         if glob.endswith("settings*.json") or ".claude" in glob:
             print("  This is the file that configures the agent itself — hooks,")
@@ -7464,23 +7536,29 @@ def _access_cmd_builtin(args, project_path: str) -> None:
             return
 
     try:
-        result = access_guard.set_builtin_disabled(glob, disabling)
+        result = access_guard.set_builtin_disabled(glob, disabling, scope,
+                                                   project_path)
     except ValueError as exc:
         print(f"[error] {exc}")
         return
 
-    _access_audit(f"builtin_{action}", result["glob"], "builtin", "global",
-                  project_path)
+    _access_audit(f"builtin_{action}", result["glob"], "builtin",
+                  result["scope"], project_path)
     if not result["changed"]:
         state = "already disabled" if disabling else "already enforced"
-        print(f"[=] {result['glob']} — {state}")
+        print(f"[=] {result['glob']} — {state} ({result['scope']} scope)")
         return
+    flag = " --project" if result["scope"] == "project" else ""
     if disabling:
-        print(f"[OK] Builtin '{result['glob']}' DISABLED (global scope).")
+        print(f"[OK] Builtin '{result['glob']}' DISABLED "
+              f"({result['scope']} scope).")
         print("     Re-enable with: c3 access builtin enable "
-              f"{result['glob']}")
+              f"{result['glob']}{flag}")
+        if result["glob"].endswith(".env*"):
+            print(_ENV_VAULT_HINT)
     else:
-        print(f"[OK] Builtin '{result['glob']}' re-enforced.")
+        print(f"[OK] Builtin '{result['glob']}' re-enforced "
+              f"({result['scope']} scope).")
         if not result["attested"]:
             print("     [warn] keyring attestation could not be cleared; the "
                   "builtin is enforced anyway (config entry removed).")
@@ -7496,8 +7574,18 @@ _BUILTIN_MODE_HELP = {
 }
 
 
+#: Shown whenever someone loosens the `.env` guard. `.env` is the one Tier-1
+#: builtin whose whole content is secrets, and C3 already has a place to put
+#: them that the agent cannot read. Advisory — never a refusal.
+_ENV_VAULT_HINT = (
+    "     [note] .env values are better held in the vault: "
+    "`c3_credentials import_env` reads the file server-side, so the agent\n"
+    "            gets names, lengths and fingerprints and never a value."
+)
+
+
 def _access_cmd_builtin_mode(args, glob: str, project_path: str) -> None:
-    """`c3 access builtin mode <glob> <mode>` — granular builtin control.
+    """`c3 access builtin mode <glob> <mode> [--project]` — granular control.
 
     `deny` and `default` never prompt (tightening / reset). `confirm` and
     `allow` weaken the guard, so they get the same typed-glob beat of
@@ -7506,10 +7594,13 @@ def _access_cmd_builtin_mode(args, glob: str, project_path: str) -> None:
     from services import access_guard
 
     mode = getattr(args, "mode", None)
+    scope = "project" if getattr(args, "project_scope", False) else "global"
+    where = (f"in THIS project only ({project_path})" if scope == "project"
+             else "on EVERY project on this machine")
     if mode in ("confirm", "allow") and not getattr(args, "yes", False):
         widening = ("STOP enforcing" if mode == "allow"
                     else "PAUSE (not block) and ask you to approve")
-        print(f"About to make the builtin guard on {glob} {widening}.")
+        print(f"About to make the builtin guard on {glob} {widening} {where}.")
         if mode == "allow":
             print("  While off, any agent with C3 tools can touch those paths.")
         else:
@@ -7524,20 +7615,30 @@ def _access_cmd_builtin_mode(args, glob: str, project_path: str) -> None:
             return
 
     try:
-        result = access_guard.set_builtin_mode(glob, mode)
+        result = access_guard.set_builtin_mode(glob, mode, scope, project_path)
     except ValueError as exc:
         print(f"[error] {exc}")
         return
 
     _access_audit(f"builtin_mode_{result['mode']}", result["glob"],
-                  "builtin", "global", project_path)
+                  "builtin", result["scope"], project_path)
     if not result["changed"]:
-        print(f"[=] {result['glob']} — already {result['mode']}")
+        print(f"[=] {result['glob']} — already {result['mode']} "
+              f"({result['scope']} scope)")
         return
     print(f"[OK] Builtin '{result['glob']}' mode = {result['mode']} "
-          f"(global scope): {_BUILTIN_MODE_HELP[result['mode']]}.")
+          f"({result['scope']} scope): {_BUILTIN_MODE_HELP[result['mode']]}.")
+    if result["scope"] == "project":
+        print("     Bound to this project's keyring realm — a clone of this "
+              "repo carries the config\n     but not the attestation, so the "
+              "builtin stays enforced there.")
     if result["mode"] != "default":
-        print(f"     Reset with: c3 access builtin mode {result['glob']} default")
+        flag = " --project" if result["scope"] == "project" else ""
+        print(f"     Reset with: c3 access builtin mode {result['glob']} "
+              f"default{flag}")
+    if result["glob"].endswith(".env*") and result["mode"] in ("allow",
+                                                              "confirm"):
+        print(_ENV_VAULT_HINT)
     if not result["attested"]:
         print("     [warn] keyring attestation could not be cleared; the "
               "default is enforced anyway (config entry removed).")

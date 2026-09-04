@@ -434,19 +434,41 @@ _SCHEMAS: dict = {
         "required": ("full_name",),
         "optional": ("dob", "ssn", "phone", "email"),
     },
-    # A website login. STORAGE ONLY — C3 never drives a browser and never
-    # types these anywhere. `canonical_origin` is the binding that a external
-    # runner (BrowControl's out-of-process auth broker) is required to check
-    # against the live top-level frame BEFORE typing, which is why it lives in
-    # the record rather than being passed in by the caller: an agent that can
-    # choose the destination can exfiltrate the password to it.
+    # A login — a website, a server, a database, anything with one
+    # unambiguous target. STORAGE ONLY: C3 never drives a browser, opens an
+    # SSH session, or types these anywhere.
+    #
+    # `canonical_target` is the binding an external, out-of-process runner is
+    # required to check against where it is ACTUALLY about to authenticate,
+    # BEFORE typing. It lives in the record rather than being passed in by
+    # the caller for one reason: an agent that can choose the destination can
+    # exfiltrate the password to it.
+    #
+    # `canonical_origin` (v2.58.0-v2.118.0) stays a KNOWN field so stored
+    # entries and partial updates keep validating; on input it is an alias
+    # that normalizes into `canonical_target`, and on read it resolves ONLY
+    # for an https target (see get_value). A browser broker asking for it on
+    # an `ssh://` entry gets nothing, which is the fail-closed direction.
+    #
+    # `password` is optional because a key-based server login has none — but
+    # one of password/private_key is required, checked in _validate_structured.
     "login": {
-        "required": ("site_id", "canonical_origin", "username", "password"),
-        "optional": ("totp_secret",),
+        "required": ("site_id", "canonical_target", "username"),
+        "optional": ("password", "private_key", "passphrase", "totp_secret",
+                     "canonical_origin"),
     },
 }
 
 _STRUCT_FIELD_MAX = 256  # chars per field value
+#: Per-field overrides. A PEM/OpenSSH private key is thousands of characters,
+#: and raising the global cap to fit it would loosen every other field. The
+#: oversize path already exists: a structured blob over FILE_STORAGE_THRESHOLD
+#: goes to the Fernet sidecar rather than the keyring.
+_STRUCT_FIELD_MAX_BY_FIELD = {"private_key": 8192}
+
+
+def _field_max(field: str) -> int:
+    return _STRUCT_FIELD_MAX_BY_FIELD.get(field, _STRUCT_FIELD_MAX)
 
 
 def schema_fields(ctype: str) -> tuple:
@@ -502,40 +524,76 @@ def _normalize_expiry(raw: str) -> str:
 _SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
-def _normalize_origin(raw: str) -> str:
-    """Accept an https origin; return scheme://host[:port] lowercased.
+#: Schemes a login target may name. An allowlist, not a denylist: validation
+#: has to be deterministic, and the UI renders a picker from it. Every member
+#: either encrypts by definition or negotiates TLS in normal use.
+TARGET_SCHEMES = (
+    "https",                                   # web
+    "ssh", "sftp", "ftps", "rdp", "smb", "vnc", "winrm",   # hosts
+    "ldaps", "imaps", "smtps", "amqps",                    # services
+    "postgres", "postgresql", "mysql", "mariadb", "mssql",  # databases
+    "mongodb", "redis",
+)
+#: Refused by name rather than by omission, so the error can say why.
+_CLEARTEXT_SCHEMES = {
+    "http": "https", "ftp": "ftps", "telnet": "ssh", "rsh": "ssh",
+    "smtp": "smtps", "imap": "imaps", "ldap": "ldaps", "amqp": "amqps",
+}
+#: The one scheme whose target is also a web ORIGIN, and therefore the only
+#: one `canonical_origin` may ever resolve for.
+_ORIGIN_SCHEME = "https"
 
-    Rejects anything that is not a bare origin. A path, query or fragment in
-    a stored origin would make prefix-style comparison in a downstream runner
-    ambiguous, and ambiguity in an origin check is the whole attack. http:// is
-    refused outright — typing a password over cleartext is never correct, and
-    an attacker who can force a downgrade should not also inherit a match.
+
+def _normalize_target(raw: str, field: str = "canonical_target") -> str:
+    """Accept one authenticable target; return scheme://host[:port] lowercased.
+
+    Rejects anything that is not a bare target. A path, query, fragment or
+    userinfo would make prefix-style comparison in a downstream runner
+    ambiguous, and ambiguity in that check is the whole attack — so the rule
+    is the same for `ssh://` as it always was for `https://`.
+
+    Cleartext schemes are refused by name. Typing a password over cleartext
+    is never correct, and an attacker who can force a downgrade should not
+    also inherit a match.
     """
     s = (raw or "").strip().rstrip("/")
     if "://" not in s:
         raise CredentialError(
-            "field 'canonical_origin' must be a full origin, e.g. "
-            "https://example.com")
+            f"field '{field}' must be a full target, e.g. "
+            "https://example.com or ssh://build01.lan:22")
     scheme, _, rest = s.partition("://")
     scheme = scheme.lower()
-    if scheme != "https":
-        raise CredentialError("field 'canonical_origin' must use https")
+    if scheme in _CLEARTEXT_SCHEMES:
+        raise CredentialError(
+            f"field '{field}' must not use cleartext '{scheme}' — "
+            f"use '{_CLEARTEXT_SCHEMES[scheme]}'")
+    if scheme not in TARGET_SCHEMES:
+        raise CredentialError(
+            f"field '{field}' has an unsupported scheme '{scheme}' — "
+            f"expected one of: {', '.join(TARGET_SCHEMES)}")
     if any(ch in rest for ch in "/?#"):
         raise CredentialError(
-            "field 'canonical_origin' must be scheme://host[:port] only — "
+            f"field '{field}' must be scheme://host[:port] only — "
             "no path, query or fragment")
     if "@" in rest:
-        raise CredentialError(
-            "field 'canonical_origin' must not contain userinfo")
+        raise CredentialError(f"field '{field}' must not contain userinfo")
     host, _, port = rest.partition(":")
     host = host.lower()
     if not host or not re.match(r"^[a-z0-9.-]+$", host) or ".." in host:
-        raise CredentialError("field 'canonical_origin' has an invalid host")
+        raise CredentialError(f"field '{field}' has an invalid host")
     if port:
         if not port.isdigit() or not 1 <= int(port) <= 65535:
-            raise CredentialError("field 'canonical_origin' has an invalid port")
-        return f"https://{host}:{int(port)}"
-    return f"https://{host}"
+            raise CredentialError(f"field '{field}' has an invalid port")
+        return f"{scheme}://{host}:{int(port)}"
+    return f"{scheme}://{host}"
+
+
+def target_scheme(target: str) -> str:
+    """The scheme of a stored target, or '' — never raises."""
+    return str(target or "").partition("://")[0].lower()
+
+
+_PEM_RE = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 
 
 def parse_structured_value(value) -> dict:
@@ -576,10 +634,25 @@ def _validate_structured(ctype: str, fields: dict) -> dict:
     for key, val in fields.items():
         if not val:
             continue  # empty/None optional fields are simply absent
-        if len(val) > _STRUCT_FIELD_MAX:
+        cap = _field_max(key)
+        if len(val) > cap:
             raise CredentialError(
-                f"field {key!r} exceeds {_STRUCT_FIELD_MAX} characters")
+                f"field {key!r} exceeds {cap} characters")
         out[key] = val
+    if ctype == "login":
+        # Accept the pre-2.118.0 spelling on input and fold it in, so stored
+        # entries and partial updates keep working without a migration.
+        # Never both: two different targets on one record is ambiguous, and
+        # ambiguity is what the field exists to remove.
+        legacy = out.pop("canonical_origin", "")
+        if legacy and out.get("canonical_target") \
+                and _normalize_target(legacy) != _normalize_target(
+                    out["canonical_target"]):
+            raise CredentialError(
+                "fields 'canonical_target' and 'canonical_origin' disagree — "
+                "set only 'canonical_target'")
+        if legacy and not out.get("canonical_target"):
+            out["canonical_target"] = legacy
     missing = [f for f in required if not out.get(f)]
     if missing:
         raise CredentialError(
@@ -600,7 +673,25 @@ def _validate_structured(ctype: str, fields: dict) -> dict:
             raise CredentialError(
                 "field 'site_id' must be lowercase alphanumeric with "
                 "'.', '_' or '-' (max 64 chars)")
-        out["canonical_origin"] = _normalize_origin(out["canonical_origin"])
+        out["canonical_target"] = _normalize_target(out["canonical_target"])
+        # A login with neither is not a credential. `password` stopped being
+        # a required FIELD when key-based server logins arrived, but the
+        # record must still carry a secret.
+        if not out.get("password") and not out.get("private_key"):
+            raise CredentialError(
+                "a login needs a secret: set 'password', 'private_key', or "
+                "both")
+        key_blob = out.get("private_key", "")
+        if key_blob and not _PEM_RE.match(key_blob.strip()):
+            # A pasted public key or a passphrase in the wrong box would
+            # otherwise be stored as a private key and fail much later, in a
+            # runner, as an authentication error nobody traces back here.
+            raise CredentialError(
+                "field 'private_key' must be a PEM/OpenSSH private key "
+                "(begins '-----BEGIN … PRIVATE KEY-----')")
+        if out.get("passphrase") and not key_blob:
+            raise CredentialError(
+                "field 'passphrase' has no 'private_key' to unlock")
         # `[\s\-]`, NOT `[ -]`: the latter is a character RANGE from space
         # (0x20) to hyphen (0x2D) and therefore swallows the digits 2-7 that
         # base32 is built from. A seed pasted in the usual spaced form would
@@ -635,14 +726,17 @@ def _display_projection(ctype: str, fields: dict) -> dict:
     if ctype == "identity":
         return {"label": fields.get("full_name", "")}
     if ctype == "login":
-        # site_id and origin only. The username is deliberately withheld:
-        # username + origin is half the credential, and the registry is the
+        # site_id and target only. The username is deliberately withheld:
+        # username + target is half the credential, and the registry is the
         # one part of this record that non-secret surfaces are allowed to
-        # render. `has_totp` is a boolean so the UI can show a 2FA badge
-        # without the seed going anywhere near a projection.
+        # render. `has_totp` / `has_key` are booleans so the UI can show a
+        # 2FA or key badge without the secret going near a projection.
+        target = fields.get("canonical_target", "")
         return {"site_id": fields.get("site_id", ""),
-                "origin": fields.get("canonical_origin", ""),
-                "has_totp": bool(fields.get("totp_secret"))}
+                "scheme": target_scheme(target),
+                "target": target,
+                "has_totp": bool(fields.get("totp_secret")),
+                "has_key": bool(fields.get("private_key"))}
     return {}
 
 
@@ -1032,11 +1126,36 @@ def get_value(name: str, *, project_path: str = ".", scope: str = "",
             data = json.loads(raw)
         except Exception:
             return None
-        val = data.get(field) if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        val = _resolve_field(stype, data, field)
         return val if isinstance(val, str) and val else None
     if field:
         return None
     return _get_raw(name, project_path=project_path, scope=scope)
+
+
+def _resolve_field(ctype: str, data: dict, field: str):
+    """One field out of a decoded structured payload, aliases applied.
+
+    The only alias is `login.canonical_origin`, and it is deliberately
+    ASYMMETRIC: it resolves to the target ONLY when that target is an https
+    origin. A browser broker that pins a credential by asking for
+    `canonical_origin` therefore gets nothing for an `ssh://` or
+    `postgres://` entry and fails closed, instead of being handed a string
+    that is not a web origin and cannot be compared to a top-level frame.
+    Old records that still store the field literally read back unchanged.
+    """
+    if field in data:
+        return data.get(field)
+    if ctype == "login" and field == "canonical_origin":
+        target = data.get("canonical_target", "")
+        if target_scheme(target) == _ORIGIN_SCHEME:
+            return target
+        return None
+    if ctype == "login" and field == "canonical_target":
+        return data.get("canonical_origin")  # pre-2.118.0 records
+    return None
 
 
 def get_structured_fields(name: str, *, project_path: str = ".",

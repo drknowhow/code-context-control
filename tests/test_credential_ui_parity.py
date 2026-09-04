@@ -97,16 +97,52 @@ class TestCredentialUiParity(unittest.TestCase):
                     self.assertTrue(set(spec["hidden"]) <= known,
                                     f"{spec['hidden']} not all in {sorted(known)}")
 
+    #: Field names that must never be echoed, in any UI or on the terminal.
+    #: Substring-matched against the schema so a NEW secret-bearing field on
+    #: a future kind is covered without anyone remembering to add it here.
+    SECRET_FIELD_MARKERS = ("password", "secret", "private_key", "passphrase",
+                            "number", "cvc", "ssn")
+
+    @classmethod
+    def _secret_fields(cls):
+        """{ctype: {field, …}} — every secret-bearing field in _SCHEMAS."""
+        out = {}
+        for ctype in sorted(cs.STRUCTURED_TYPES):
+            required, optional = cs.schema_fields(ctype)
+            hit = {f for f in tuple(required) + tuple(optional)
+                   if any(m in f for m in cls.SECRET_FIELD_MARKERS)}
+            if hit:
+                out[ctype] = hit
+        return out
+
     def test_secret_bearing_fields_render_masked(self):
         """The fields whose whole point is secrecy must be password inputs."""
-        must_hide = {"card": {"number", "cvc"},
-                     "identity": {"ssn"},
-                     "login": {"password", "totp_secret"}}
+        must_hide = self._secret_fields()
+        self.assertIn("login", must_hide)  # the derivation actually found some
         for name, src in self.sources.items():
             table = _structured_table(src)
             for ctype, fields in must_hide.items():
                 with self.subTest(ui=name, ctype=ctype):
-                    self.assertTrue(fields <= set(table[ctype]["hidden"]))
+                    self.assertTrue(fields <= set(table[ctype]["hidden"]),
+                                    f"unmasked in the {name} UI: "
+                                    f"{sorted(fields - set(table[ctype]['hidden']))}")
+
+    def test_the_cli_prompts_for_secret_fields_without_echo(self):
+        """The third UI, and the one nothing asserted until v2.118.0.
+
+        `c3 creds set X --type login` prompted for the password with plain
+        `input()` from v2.90.0 to v2.117.0 and echoed it to the terminal
+        (fixed in v2.118.0),
+        while both browser UIs masked it correctly. Derived from _SCHEMAS
+        rather than hardcoded, so a future kind cannot reopen the hole.
+        """
+        from cli.c3 import _CREDS_HIDDEN_FIELDS, _CREDS_MULTILINE_FIELDS
+        covered = set(_CREDS_HIDDEN_FIELDS) | set(_CREDS_MULTILINE_FIELDS)
+        missing = {f for fields in self._secret_fields().values()
+                   for f in fields} - covered
+        self.assertEqual(
+            missing, set(),
+            f"c3 creds would echo these to the terminal: {sorted(missing)}")
 
     def test_every_valid_type_is_selectable_in_both_uis(self):
         for name, src in self.sources.items():

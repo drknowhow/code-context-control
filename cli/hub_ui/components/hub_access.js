@@ -60,6 +60,31 @@ function accApproveConfirm(row, onConfirm) {
   };
 }
 
+// The rule-scoped challenge. Deliberately harsher copy than the one above:
+// this is the only approval in the product that authorises files the user is
+// not looking at, so the dialog has to say which files those are BEFORE the
+// glob is retyped. requireText is always the rule — on every layer, not just
+// the two that already demand it — and decide() re-checks it server-side.
+function accRuleGrantConfirm(row, onConfirm) {
+  return {
+    title: 'Stop asking about this rule, this session?', tone: 'error',
+    confirmLabel: 'Approve for this rule', requireText: row.rule,
+    intro: <span>This is bigger than the file on screen. Approving lets{' '}
+      <b>this session</b> do <span className="mono">{row.op}</span> on{' '}
+      <b>every path</b> that <span className="mono">{row.rule}</span> matches
+      — not just <span className="mono">{row.path}</span> — without asking
+      again.</span>,
+    bullets: [
+      `The rule ${row.rule} stays in force for everything else; this grant is a standing exception inside it.`,
+      'Any tool in the same op class can use it — an Edit approval also covers Write.',
+      'It expires on its own, and sooner if the session stops using it. Revoke it any time under Active grants.',
+      'The vault, .c3 policy files and Tier-0 denies stay unreachable — no grant can cover them.',
+      `Project: ${row.project_path}`,
+    ],
+    onConfirm,
+  };
+}
+
 function AccJustification({ text }) {
   if (!text) return null;
   return (
@@ -75,7 +100,7 @@ function AccJustification({ text }) {
   );
 }
 
-function AccRequestCard({ row, busy, onDecide, onTypedApprove }) {
+function AccRequestCard({ row, busy, onDecide, onTypedApprove, onRuleApprove }) {
   const pending = row.status === 'pending';
   const leaf = String(row.path || '').split(/[\\/]/).filter(Boolean).pop() || row.path;
   const expires = pending ? accExpiresIn(row.expires_at) : '';
@@ -130,6 +155,13 @@ function AccRequestCard({ row, busy, onDecide, onTypedApprove }) {
               ? onTypedApprove(row) : onDecide(row, 'approve', {}))}>
             {row.needs_typed_confirm ? 'Approve…' : 'Approve once'}
           </Btn>
+          {row.allow_rule_grants && row.escalatable && (
+            <Btn variant="ghost" disabled={busy}
+              onClick={() => onRuleApprove(row)}
+              title={`Stop asking about ${row.rule} for the rest of this session`}>
+              Approve for this rule…
+            </Btn>
+          )}
           <Btn variant="ghost" disabled={busy}
             onClick={() => onDecide(row, 'deny', {})}>Deny</Btn>
           <Btn variant="ghost" disabled={busy}
@@ -262,6 +294,100 @@ function AccRulesPanel({ projects }) {
   );
 }
 
+// ── Active grants ──────────────────────────────────────────────────────────
+// A rule grant can authorise many calls over hours. The only other place it
+// shows up is a line in the agent's own transcript, which is the wrong place
+// to police it from — so the screen that mints one also lists and kills it.
+function AccGrantsPanel({ projects }) {
+  const [path, setPath] = useState('');
+  const [grants, setGrants] = useState([]);
+  const [busyId, setBusyId] = useState('');
+  const known = projects || [];
+
+  useEffect(() => {
+    if (!path && known.length) setPath(known[0].path);
+  }, [known, path]);
+
+  const load = useCallback(async () => {
+    if (!path) { setGrants([]); return; }
+    try {
+      const data = await api.get(`/api/hub/grants?path=${encodeURIComponent(path)}`);
+      setGrants(data.grants || []);
+    } catch { /* keep last good list */ }
+  }, [path]);
+
+  useEffect(() => { load(); }, [load]);
+  usePoll(load, 5000);
+
+  const revoke = async (g) => {
+    setBusyId(g.id);
+    try {
+      await api.del(`/api/hub/grants/${g.id}?path=${encodeURIComponent(path)}`);
+      notify(`Revoked ${g.id} — the rule ${g.rule} blocks again`, 'ok');
+    } catch (e) { notify(apiErr(e), 'err'); }
+    setBusyId('');
+    load();
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Active grants</span>
+        <span style={{ fontSize: 11.5, color: T.textMuted }}>
+          live exceptions the agent can still use — revoking one takes effect
+          on its next call
+        </span>
+        <div style={{ flex: 1 }} />
+        <select value={path} onChange={e => setPath(e.target.value)} style={{
+          height: 26, borderRadius: 6, fontSize: 11.5, padding: '0 8px',
+          background: T.surfaceAlt, color: T.text, border: `1px solid ${T.border}`,
+        }}>
+          {known.map(p => <option key={p.path} value={p.path}>{p.name || p.path}</option>)}
+        </select>
+      </div>
+      {grants.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: T.textDim }}>
+          No live grants in this project.
+        </div>
+      ) : grants.map(g => {
+        const wide = g.scope === 'rule';
+        const left = g.uses_remaining === null || g.uses_remaining === undefined
+          ? 'unlimited' : `${g.uses_remaining} left`;
+        return (
+          <div key={g.id} style={{
+            background: T.surface, border: `1px solid ${wide ? T.warn : T.border}`,
+            borderRadius: 10, padding: '10px 14px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span className="mono" style={{
+                fontSize: 10.5, padding: '2px 7px', borderRadius: 4,
+                color: wide ? T.warn : T.textMuted,
+                background: wide ? `${T.warn}22` : T.surfaceAlt,
+              }}>{wide ? 'RULE' : 'ONE CALL'}</span>
+              <span className="mono" style={{ fontSize: 12, color: T.text }}>{g.rule}</span>
+              <span style={{ fontSize: 11.5, color: T.textMuted }}>
+                {g.op}{wide ? ' · any path this rule matches' : ` · ${g.tool}`}
+              </span>
+              <div style={{ flex: 1 }} />
+              <span className="mono" style={{ fontSize: 10.5, color: T.textDim }}>
+                {left} · expires in {accExpiresIn(g.expires_at) || '—'}
+                {g.idle_s ? ` · idle cap ${Math.round(g.idle_s / 60)}m` : ''}
+              </span>
+              <Btn variant="ghost" disabled={busyId === g.id}
+                onClick={() => revoke(g)}>Revoke</Btn>
+            </div>
+            <div style={{ marginTop: 5, fontSize: 10.5, color: T.textDim }}>
+              <span className="mono">{g.id}</span> · session{' '}
+              <span className="mono">{g.session_id}</span>
+              {wide && <> · minted from <span className="mono">{g.path_key}</span></>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── The tab ────────────────────────────────────────────────────────────────
 function HubAccess({ projects }) {
   const [rows, setRows] = useState([]);
@@ -286,9 +412,11 @@ function HubAccess({ projects }) {
     setBusyId(row.id);
     try {
       await api.post(`/api/hub/overrides/${row.id}`, { decision, ...opts });
-      notify(decision === 'approve'
-        ? `Approved ${row.tool} ${row.op} once — the rule stays in force`
-        : `Denied${opts.mute ? ' and muted' : ''}`,
+      notify(decision !== 'approve'
+        ? `Denied${opts.mute ? ' and muted' : ''}`
+        : opts.mode === 'rule'
+          ? `Approved every path ${row.rule} matches, this session — revoke it under Active grants`
+          : `Approved ${row.tool} ${row.op} once — the rule stays in force`,
         decision === 'approve' ? 'ok' : 'warn');
     } catch (e) {
       notify(apiErr(e), 'err');
@@ -302,6 +430,11 @@ function HubAccess({ projects }) {
     // it server-side — two places compute, one enforces.
     setConfirmSpec(accApproveConfirm(row,
       () => decide(row, 'approve', { confirm: row.confirm_with })));
+  };
+
+  const ruleApprove = (row) => {
+    setConfirmSpec(accRuleGrantConfirm(row,
+      () => decide(row, 'approve', { mode: 'rule', confirm: row.rule })));
   };
 
   const pending = rows.filter(r => r.status === 'pending').length;
@@ -340,10 +473,12 @@ function HubAccess({ projects }) {
       ) : (
         rows.map(row => (
           <AccRequestCard key={row.id} row={row} busy={busyId === row.id}
-            onDecide={decide} onTypedApprove={typedApprove} />
+            onDecide={decide} onTypedApprove={typedApprove}
+            onRuleApprove={ruleApprove} />
         ))
       )}
 
+      <AccGrantsPanel projects={projects} />
       <AccRulesPanel projects={projects} />
       {confirmSpec && (
         <CredConfirm spec={confirmSpec} onClose={() => setConfirmSpec(null)} />

@@ -27,9 +27,16 @@ section `access`:
 - Exactly two keys. **Any unrecognized key — especially `allow` — is a hard
   config error** (guarantees a future grant schema can never be silently
   no-op'd by an old C3). No `mode` field: the guard always enforces.
+  (Since v2.97.0/v2.99.0 the recognized set is `deny`, `read_only`,
+  `confirm`, `mask`, `disable_builtin`, `builtin_mode` — the unknown-key
+  rule itself is unchanged.)
 - Globs are stored POSIX forward-slash canonical; backslashes normalized on
   input. Case-insensitive matching.
 - Scopes UNION; merging only ever tightens. `deny` beats `read_only`.
+  **This is a statement about RULES, and it still holds without exception.**
+  Since v2.118.0 the separate `builtin_mode` dimension is settable at
+  project scope and a project mode may loosen — see the builtin note below
+  for why that is not a hole in this sentence.
 - v1 rules are LOCAL-ONLY: `.c3/` is gitignored, committed rules cannot
   arrive via clone. (Shareable rules are v2 and require the
   audit-until-human-ack model.)
@@ -74,9 +81,34 @@ section `access`:
 - Corrupt/unparseable access section ⇒ that scope evaluates deny-all with a
   loud warning. Builtins apply even with no config at all.
 - > Implementation note (v2.99.0): Tier-1 builtins gained granular modes —
-  > `access.builtin_mode: {glob: deny|confirm|allow}`, global-only, two-key
-  > attested, Tier-0 excluded; `disable_builtin` survives as the legacy
-  > spelling of `allow`. Spec: docs/confirm-guard.md §7.
+  > `access.builtin_mode: {glob: deny|confirm|allow}`, two-key attested,
+  > Tier-0 excluded; `disable_builtin` survives as the legacy spelling of
+  > `allow`. Spec: docs/confirm-guard.md §7.
+- > **Amended v2.118.0 — builtin modes are settable per project.**
+  > `builtin_mode` and `disable_builtin` were global-only, on the reasoning
+  > that a project scope may only ever tighten, because a cloned repo could
+  > otherwise ship a config that loosens the guard. That threat is answered
+  > by the *second* key, not by the scope: **the config half has never been
+  > able to change a builtin.** The attestation is now realm-bound —
+  > `builtin_mode|proj|<normcased path>|<glob>` in the `c3-access` keyring
+  > service, the same realm-atomic construction as `credential_store` — so a
+  > project's claim is inert unless a human wrote the attestation for *that
+  > project* on *this* machine. A clone carries config and nothing else.
+  >
+  > A project mode REPLACES the global one for that glob, loosening
+  > included; that is the point. `effective_builtin_modes(project_path)`
+  > resolves global then project, and `list_rules()` reports
+  > `mode_realms` so no surface can show a project-set opt-out as if it were
+  > machine-wide. Unchanged: Tier-0 takes no mode at any scope, and
+  > `override_policy.FORBIDDEN_TARGET_NAMES` keeps `config.json`,
+  > `secrets.enc`, `cred_state.json`, `override_grants.json` and
+  > `overrides.jsonl` unreachable even under
+  > `builtin_mode: {"**/.c3/**": "allow"}`, so this can never become
+  > self-granting.
+  >
+  > Compatibility: a pre-2.118.0 C3 reading a project config that carries
+  > either key treats that scope as corrupt ⇒ deny-all. Fail-closed, and the
+  > loud direction.
 - Internal service writes (credential_store, the guard's own state, ledger,
   activity log) use privileged paths that bypass tool-layer checks — the
   audit writer never consults the evaluator.

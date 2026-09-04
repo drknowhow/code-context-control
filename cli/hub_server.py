@@ -3111,7 +3111,7 @@ def _hub_override_row(row: dict) -> dict:
     quoted under the untrusted-input label, never as markup.
     """
     out = {k: row.get(k) for k in _OVERRIDE_ROW_FIELDS}
-    for extra in ("grant_id", "grant_mode", "muted"):
+    for extra in ("grant_id", "grant_mode", "grant_scope", "muted"):
         if row.get(extra) is not None:
             out[extra] = row.get(extra)
     return out
@@ -3160,6 +3160,7 @@ def api_hub_overrides():
     whether the layer is still escalatable and which typed challenge (if any)
     an approval demands.
     """
+    from services import override_grants as orq_grants
     from services import override_policy as opol
     from services import override_requests as orq
     project_path = ""
@@ -3199,6 +3200,12 @@ def api_hub_overrides():
             if policy is not None else False
         entry["allow_session_grants"] = bool(policy.allow_session_grants) \
             if policy is not None else False
+        # A rule grant is only offerable when policy allows it AND the rule is
+        # a real glob — the synthetic discipline/shell tokens have no path set
+        # to widen along, so the card must not show a button that would 400.
+        entry["allow_rule_grants"] = bool(
+            policy is not None and policy.allow_rule_grants
+            and orq_grants.rule_is_globbable(row.get("rule", "")))
         entry["project_name"] = Path(proj).name
         out.append(entry)
     return jsonify({"requests": out, "count": len(out),
@@ -3234,12 +3241,18 @@ def api_hub_override_decide(request_id):
 
     rule_class = str(row.get("rule_class") or "")
     confirm = data.get("confirm")
-    if (decision == orq.DECISION_APPROVE
-            and rule_class in opol.TYPED_CONFIRM_LAYERS
+    # A rule-scoped approval demands the glob retyped on EVERY layer, not just
+    # the two that already do — it is a standing capability, so the layers
+    # that are one-tap for `once` are deliberately not one-tap for `rule`.
+    needs_glob = (rule_class in opol.TYPED_CONFIRM_LAYERS
+                  or mode == orq.MODE_RULE)
+    if (decision == orq.DECISION_APPROVE and needs_glob
             and confirm != row.get("rule")):
         return jsonify({
-            "error": f"approving an {rule_class} request needs the rule "
-                     "glob retyped by hand",
+            "error": ("a rule-scoped approval needs the rule glob retyped by "
+                      "hand" if mode == orq.MODE_RULE else
+                      f"approving an {rule_class} request needs the rule "
+                      "glob retyped by hand"),
             "needs_confirmation": True,
             "confirm_with": row.get("rule"),
         }), 400
@@ -3261,12 +3274,71 @@ def api_hub_override_decide(request_id):
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
-    _hub_override_audit(decision, result,
-                        confirmed=rule_class in opol.TYPED_CONFIRM_LAYERS,
+    _hub_override_audit(decision, result, confirmed=needs_glob,
                         detail_extra={"mode": mode,
                                       "grant_id": result.get("grant_id", "")})
     return jsonify({"request": _hub_override_row(result),
                     "decision": decision})
+
+
+#: Grant fields the hub may render. `path_key` is a canon identity, not a
+#: display string, but a rule grant's whole point is that it is NOT bound to
+#: that one path — so the card leads with the rule and shows the path only as
+#: "minted from", which is what the user was looking at when they approved.
+_GRANT_ROW_FIELDS = (
+    "id", "request_id", "session_id", "scope", "layer", "rule", "tool", "op",
+    "path_key", "expires_at", "uses_remaining", "idle_s", "granted_at",
+    "granted_by", "last_used_at",
+)
+
+
+@app.route("/api/hub/grants", methods=["GET"])
+def api_hub_grants():
+    """Live grants for one project — the standing capabilities, visible.
+
+    A rule-scoped grant can authorise many calls over hours, so it must be
+    inspectable and killable from the same screen that minted it. Without
+    this the only evidence a grant exists is a line in the agent's own
+    transcript, which is the wrong place to police it from.
+    """
+    from services import override_grants as og
+    raw = (request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(raw)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    session_id = (request.args.get("session") or "").strip()
+    try:
+        grants = og.active(str(resolved), session_id=session_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    out = [{k: g.get(k) for k in _GRANT_ROW_FIELDS} for g in grants]
+    return jsonify({"path": str(resolved), "grants": out, "count": len(out)})
+
+
+@app.route("/api/hub/grants/<grant_id>", methods=["DELETE"])
+def api_hub_grant_revoke(grant_id):
+    """Revoke one live grant. Human surface; ledger-logged like a decision."""
+    from services import override_grants as og
+    raw = (request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_project_path(raw)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        gone = og.revoke(str(resolved), grant_id=str(grant_id))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not gone:
+        return jsonify({"error": "unknown or already-expired grant"}), 404
+    _hub_override_audit("grant_revoke",
+                        {"id": "", "project_path": str(resolved), "rule": ""},
+                        detail_extra={"grant_id": str(grant_id)})
+    return jsonify({"revoked": str(grant_id)})
 
 
 @app.route("/api/hub/access", methods=["GET"])

@@ -171,12 +171,25 @@ class TestTierZero(_Base):
 
 
 class TestScopeRules(_Base):
-    def test_project_scope_disable_is_corrupt_not_silent(self):
-        """A project scope may only tighten. Loosening there is a loud error --
-        silently ignoring it would let the UI claim a builtin is off."""
+    def test_project_scope_disable_needs_a_project_attestation(self):
+        """v2.118.0: a project scope may now carry the legacy opt-out too, and
+        it is still inert on its own. The config half never moved a builtin;
+        the keyring half does, and it is realm-bound to this project."""
         self.write_project({"disable_builtin": ["**/.git/**"]})
         _rules, corrupt = access_guard.load_rules(str(self.project))
-        self.assertIn("project", corrupt)
+        self.assertEqual(corrupt, [])
+        self.assertEqual(access_guard.disabled_builtins(str(self.project)),
+                         frozenset())
+        self.assertIsNotNone(access_guard.check(
+            str(self.project / ".git" / "config"), "write", str(self.project)))
+
+    def test_project_scope_disable_with_its_attestation_takes_effect(self):
+        access_guard.set_builtin_disabled("**/.git/**", True, scope="project",
+                                          project_path=str(self.project))
+        self.assertIn("**/.git/**",
+                      access_guard.disabled_builtins(str(self.project)))
+        self.assertIsNone(access_guard.check(
+            str(self.project / ".git" / "config"), "write", str(self.project)))
 
     def test_global_disable_is_not_corrupt(self):
         self.write_global({"disable_builtin": ["**/.git/**"]})

@@ -327,10 +327,11 @@ for _g in BUILTIN_CONFIRM_WRITE:
 del _g
 
 
-def _builtin_rules_effective(modes: dict | None = None) -> list:
+def _builtin_rules_effective(modes: dict | None = None,
+                            project_path: str = ".") -> list:
     """The Tier-1 rules as currently moded: default/deny/confirm variants,
     'allow' omitted. Declaration order preserved."""
-    modes = effective_builtin_modes() if modes is None else modes
+    modes = effective_builtin_modes(project_path) if modes is None else modes
     out = []
     for glob in DISABLEABLE_BUILTINS:
         canon = _norm_builtin(glob)
@@ -362,39 +363,87 @@ def _builtin_rules_effective(modes: dict | None = None) -> list:
 # Every failure path here leaves the builtin ENFORCED.
 
 
-def _builtin_attest_account(glob: str) -> str:
-    return f"builtin_disabled|{_norm_builtin(glob)}"
+def _scope_base(scope: str, project_path: str = "."):
+    """The directory that owns *scope*'s `.c3` — the ONE resolver for scope
+    bases in this module (tests/test_access_guard_meta.py pins that).
+
+    Scope-dir plumbing, not user-path evaluation: a config location, never a
+    target being judged. Everything that needs a project's identity for a
+    realm, a mode lookup or a comparison goes through here, so two spellings
+    of the same project can never produce two realms.
+    """
+    if scope == "global":
+        return _global_base()
+    try:
+        return Path(project_path).resolve()
+    except Exception:
+        return None
 
 
-def _attest_builtin_disabled(glob: str, disabled: bool) -> bool:
+def realm(scope: str, project_path: str = ".") -> str:
+    """Keyring realm for a builtin attestation: ``global`` or ``proj|<path>``.
+
+    Same construction as ``credential_store.realm()`` — deliberately, because
+    it buys the same property: an attestation is bound to ONE realm and never
+    falls through to another. A project's config claiming a mode is inert
+    unless the attestation for *that project's* realm exists on *this*
+    machine, so a cloned repo can ship whatever `access` section it likes and
+    the builtin stays enforced.
+    """
+    if scope == "global":
+        return "global"
+    base = _scope_base("project", project_path)
+    if base is None:
+        return ""
+    return "proj|" + os.path.normcase(str(base))
+
+
+def _builtin_attest_account(glob: str, scope: str = "global",
+                            project_path: str = ".") -> str:
+    who = realm(scope, project_path)
+    if not who:
+        return ""
+    if scope == "global":
+        return f"builtin_disabled|{_norm_builtin(glob)}"  # unchanged spelling
+    return f"builtin_disabled|{who}|{_norm_builtin(glob)}"
+
+
+def _attest_builtin_disabled(glob: str, disabled: bool, scope: str = "global",
+                            project_path: str = ".") -> bool:
     """Write the keyring half of the opt-out. False when it did not stick.
 
     A caller that ignores False would leave the config saying "disabled" while
     evaluation keeps enforcing — so set_builtin_disabled() surfaces it.
     """
+    account = _builtin_attest_account(glob, scope, project_path)
+    if not account:
+        return False
     try:
         import keyring  # noqa: PLC0415 — lazy: access_guard is stdlib-only on
         keyring.set_password(  # the hot path (hooks import it per tool call)
-            _ACCESS_KEYRING_SERVICE, _builtin_attest_account(glob),
-            "1" if disabled else "0")
+            _ACCESS_KEYRING_SERVICE, account, "1" if disabled else "0")
         return True
     except Exception:
         return False
 
 
-def _verify_builtin_disabled(glob: str) -> bool:
+def _verify_builtin_disabled(glob: str, scope: str = "global",
+                            project_path: str = ".") -> bool:
     """True only when the keyring agrees. Fails closed on any error."""
+    account = _builtin_attest_account(glob, scope, project_path)
+    if not account:
+        return False
     try:
         import keyring  # noqa: PLC0415 — see above
         return keyring.get_password(
-            _ACCESS_KEYRING_SERVICE, _builtin_attest_account(glob)) == "1"
+            _ACCESS_KEYRING_SERVICE, account) == "1"
     except Exception:
         return False
 
 
-def _configured_disable_list() -> list:
-    """Raw `access.disable_builtin` from the global config. [] on any problem."""
-    base = _global_base()
+def _configured_disable_list(base=None) -> list:
+    """Raw `access.disable_builtin` from one scope's config. [] on a problem."""
+    base = _global_base() if base is None else base
     if base is None:
         return []
     cfg = base / ".c3" / "config.json"
@@ -410,18 +459,19 @@ def _configured_disable_list() -> list:
     return [g for g in raw if isinstance(g, str)] if isinstance(raw, list) else []
 
 
-def _legacy_disabled() -> frozenset:
+def _legacy_disabled(scope: str = "global", project_path: str = ".",
+                     base=None) -> frozenset:
     """The original two-key opt-out read: `disable_builtin` config entries
     that carry a matching keyring attestation. Kept as the legacy spelling of
     mode="allow" — existing installs keep working without migration.
     """
-    listed = _configured_disable_list()
+    listed = _configured_disable_list(base)
     if not listed:
         return frozenset()
     allowed = {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}
     return frozenset(
         c for c in (_norm_builtin(g) for g in listed)
-        if c in allowed and _verify_builtin_disabled(c)
+        if c in allowed and _verify_builtin_disabled(c, scope, project_path)
     )
 
 
@@ -432,34 +482,47 @@ def _legacy_disabled() -> frozenset:
 # builtin at its shipped default. Every failure path here ENFORCES.
 
 
-def _mode_attest_account(glob: str) -> str:
-    return f"builtin_mode|{_norm_builtin(glob)}"
+def _mode_attest_account(glob: str, scope: str = "global",
+                        project_path: str = ".") -> str:
+    who = realm(scope, project_path)
+    if not who:
+        return ""
+    if scope == "global":
+        return f"builtin_mode|{_norm_builtin(glob)}"  # unchanged spelling
+    return f"builtin_mode|{who}|{_norm_builtin(glob)}"
 
 
-def _attest_builtin_mode(glob: str, mode: str) -> bool:
+def _attest_builtin_mode(glob: str, mode: str, scope: str = "global",
+                         project_path: str = ".") -> bool:
     """Write (mode) or clear ('') the keyring half. False when it won't stick."""
+    account = _mode_attest_account(glob, scope, project_path)
+    if not account:
+        return False
     try:
         import keyring  # noqa: PLC0415 — lazy, see _attest_builtin_disabled
-        keyring.set_password(
-            _ACCESS_KEYRING_SERVICE, _mode_attest_account(glob), mode or "")
+        keyring.set_password(_ACCESS_KEYRING_SERVICE, account, mode or "")
         return True
     except Exception:
         return False
 
 
-def _verify_builtin_mode(glob: str) -> str:
+def _verify_builtin_mode(glob: str, scope: str = "global",
+                         project_path: str = ".") -> str:
     """The attested mode string, or ''. Fails closed on any error."""
+    account = _mode_attest_account(glob, scope, project_path)
+    if not account:
+        return ""
     try:
         import keyring  # noqa: PLC0415 — see above
         return str(keyring.get_password(
-            _ACCESS_KEYRING_SERVICE, _mode_attest_account(glob)) or "")
+            _ACCESS_KEYRING_SERVICE, account) or "")
     except Exception:
         return ""
 
 
-def _configured_modes() -> dict:
-    """Raw `access.builtin_mode` from the global config. {} on any problem."""
-    base = _global_base()
+def _configured_modes(base=None) -> dict:
+    """Raw `access.builtin_mode` from one scope's config. {} on any problem."""
+    base = _global_base() if base is None else base
     if base is None:
         return {}
     cfg = base / ".c3" / "config.json"
@@ -478,12 +541,15 @@ def _configured_modes() -> dict:
             if isinstance(g, str) and isinstance(m, str)}
 
 
-def builtin_modes() -> dict:
-    """{canonical_glob: mode} for genuinely-set modes (config AND attestation
-    agree on the same string; Tier-1 globs and known modes only). Anything
-    else keeps the shipped default — the safe direction.
+def builtin_modes(scope: str = "global", project_path: str = ".") -> dict:
+    """{canonical_glob: mode} for genuinely-set modes in ONE scope (config AND
+    that scope's attestation agree on the same string; Tier-1 globs and known
+    modes only). Anything else keeps the shipped default — the safe direction.
     """
-    configured = _configured_modes()
+    base = _scope_base(scope, project_path)
+    if base is None:
+        return {}
+    configured = _configured_modes(base)
     if not configured:
         return {}
     allowed = {_norm_builtin(g) for g in DISABLEABLE_BUILTINS}
@@ -491,27 +557,64 @@ def builtin_modes() -> dict:
     for glob, mode in configured.items():
         canon = _norm_builtin(glob)
         if canon in allowed and mode in BUILTIN_MODES \
-                and _verify_builtin_mode(canon) == mode:
+                and _verify_builtin_mode(canon, scope, project_path) == mode:
             out[canon] = mode
     return out
 
 
-def effective_builtin_modes() -> dict:
-    """{canonical_glob: mode} with the legacy opt-out folded in as 'allow'.
-
-    `builtin_mode` wins when both spellings name a glob — but that state is
-    also flagged corrupt at scope level, so it only matters transiently.
-    """
-    out = {g: "allow" for g in _legacy_disabled()}
-    out.update(builtin_modes())
+def _scope_modes(scope: str, project_path: str = ".") -> dict:
+    """One scope's effective modes, legacy opt-out folded in as 'allow'."""
+    base = _scope_base(scope, project_path)
+    if base is None:
+        return {}
+    out = {g: "allow"
+           for g in _legacy_disabled(scope, project_path, base)}
+    out.update(builtin_modes(scope, project_path))
     return out
 
 
-def disabled_builtins() -> frozenset:
+def effective_builtin_modes(project_path: str = ".") -> dict:
+    """{canonical_glob: mode}, global first and then the project's own.
+
+    **A project mode REPLACES the global one for that glob, loosening
+    included** — that is the point (v2.118.0). It is safe for exactly one
+    reason: the config half alone has never been able to change anything.
+    Both halves are realm-bound, so a project's `access.builtin_mode` is
+    inert unless a human wrote the attestation for *that project's realm* on
+    *this* machine. A cloned repo ships config, not keyring entries.
+
+    ``project_path`` defaults to the CWD so every legacy caller keeps
+    working; the hot path pays nothing extra, because the keyring is only
+    consulted for globs a config actually lists, and normally none do.
+    """
+    out = _scope_modes("global")
+    proj_base = _scope_base("project", project_path)
+    if proj_base is None or proj_base == _global_base():
+        return out  # the home directory IS the project; one scope, not two
+    out.update(_scope_modes("project", project_path))
+    return out
+
+
+def builtin_mode_realms(project_path: str = ".") -> dict:
+    """{canonical_glob: 'global'|'project'} — which scope set the live mode.
+
+    `c3 access list` and the Access tab MUST be able to say this: a mode that
+    looks global but was actually set per-project (or vice versa) is exactly
+    the confusion the two-key design exists to prevent.
+    """
+    out = {g: "global" for g in _scope_modes("global")}
+    proj_base = _scope_base("project", project_path)
+    if proj_base is None or proj_base == _global_base():
+        return out
+    out.update({g: "project" for g in _scope_modes("project", project_path)})
+    return out
+
+
+def disabled_builtins(project_path: str = ".") -> frozenset:
     """Canonical globs of builtins that are genuinely OFF right now — the
     legacy two-key opt-out plus mode="allow" entries. Callers that only ask
     "is it enforced?" keep working unchanged across both spellings."""
-    return frozenset(g for g, m in effective_builtin_modes().items()
+    return frozenset(g for g, m in effective_builtin_modes(project_path).items()
                      if m == "allow")
 
 
@@ -650,23 +753,25 @@ def _read_scope_rules(base: Path, scope: str):
     unknown = set(section) - _VALID_SECTION_KEYS
     if unknown:
         return _CORRUPT  # hard error — 'allow' must never silently no-op
-    # Builtin opt-out/modes are global-only, because a project scope may only
-    # ever TIGHTEN. A project-scope entry is a loud error, not a silent no-op:
-    # the UI must never claim a builtin is off while evaluation enforces it.
-    if scope == "project" and (section.get(_KEY_DISABLE_BUILTIN)
-                               or section.get(_KEY_BUILTIN_MODE)):
+    # Builtin opt-out/modes are legal in BOTH scopes since v2.118.0. They were
+    # global-only because "a project scope may only ever tighten" — but that
+    # rule protects against a CLONED REPO's config, and config alone has never
+    # been able to change a builtin. The second key does, and it is now
+    # realm-bound (see `realm()`), so a project's claim is inert without an
+    # attestation a human wrote on this machine for this project. Rules
+    # (deny/read_only/confirm/mask) still only ever tighten across scopes;
+    # it is the builtin MODE dimension that became project-settable.
+    #
+    # A glob spelled in BOTH disable_builtin and builtin_mode is ambiguous in
+    # either scope. Ambiguity is a hard error, never a precedence puzzle.
+    legacy = {_norm_builtin(g)
+              for g in section.get(_KEY_DISABLE_BUILTIN, [])
+              if isinstance(g, str)}
+    modes = section.get(_KEY_BUILTIN_MODE, {})
+    moded = {_norm_builtin(g) for g in modes} \
+        if isinstance(modes, dict) else set()
+    if legacy & moded:
         return _CORRUPT
-    if scope == "global":
-        # A glob spelled in BOTH disable_builtin and builtin_mode is
-        # ambiguous. Ambiguity is a hard error, never a precedence puzzle.
-        legacy = {_norm_builtin(g)
-                  for g in section.get(_KEY_DISABLE_BUILTIN, [])
-                  if isinstance(g, str)}
-        modes = section.get(_KEY_BUILTIN_MODE, {})
-        moded = {_norm_builtin(g) for g in modes} \
-            if isinstance(modes, dict) else set()
-        if legacy & moded:
-            return _CORRUPT
     rules = []
     for kind in _LIST_KINDS:
         globs = section.get(kind, [])
@@ -695,7 +800,7 @@ def _global_base() -> Path | None:
 def load_all(project_path: str = ".") -> tuple:
     """(rules, mask_rules, corrupt_scopes) — one read per scope."""
     rules = list(_ABSOLUTE_RULES)
-    rules.extend(_builtin_rules_effective())
+    rules.extend(_builtin_rules_effective(project_path=project_path))
     inst = _install_dir_rule()
     if inst:
         rules.append(inst)
@@ -1276,7 +1381,8 @@ def list_rules(project_path: str = ".") -> dict:
     string globs are recoverable, flagged ``corrupt`` — that scope evaluates
     deny-all until the human repairs config.json by hand.
     """
-    modes = effective_builtin_modes()
+    modes = effective_builtin_modes(project_path)
+    realms = builtin_mode_realms(project_path)
     builtin_deny = list(BUILTIN_ABSOLUTE_DENY)
     builtin_ro, builtin_confirm = [], []
     for rule in _builtin_rules_effective(modes):
@@ -1299,6 +1405,11 @@ def list_rules(project_path: str = ".") -> dict:
         "disabled": sorted(g for g, m in modes.items() if m == "allow"),
         "modes": {_norm_builtin(g): modes.get(_norm_builtin(g), "default")
                   for g in DISABLEABLE_BUILTINS},
+        # Which scope set each live mode. Without this a project-set `allow`
+        # is indistinguishable from a machine-wide one on screen, and the
+        # whole point of the realm split is that those are different claims.
+        "mode_realms": {_norm_builtin(g): realms.get(_norm_builtin(g), "")
+                        for g in DISABLEABLE_BUILTINS},
     }}
     for scope in _VALID_SCOPES:
         try:
@@ -1423,10 +1534,11 @@ def set_rule(glob, kind: str, scope: str, project_path: str = ".") -> dict:
     return {"glob": canon, "kind": kind, "scope": scope, "added": True}
 
 
-def set_builtin_mode(glob, mode: str) -> dict:
+def set_builtin_mode(glob, mode: str, scope: str = "global",
+                     project_path: str = ".") -> dict:
     """Set a Tier-1 builtin's mode: deny | confirm | allow | default.
-    GLOBAL scope, human surfaces only (`c3 access builtin mode` / Access
-    tab); callers log to the ledger.
+    ``global`` or ``project`` scope (v2.118.0), human surfaces only
+    (`c3 access builtin mode` / Access tab); callers log to the ledger.
 
     Two-key like the opt-out it generalises: the config names the mode and
     the keyring attests the SAME string, written attestation-first so a
@@ -1437,13 +1549,23 @@ def set_builtin_mode(glob, mode: str) -> dict:
     the legacy ``disable_builtin`` spelling for that glob (lazy migration),
     so the two keys can never disagree about one glob.
 
-    Returns {"glob", "mode", "changed", "attested"}. Raises ValueError for a
-    Tier-0 vault glob, an unrecognized glob or mode, an unavailable global
-    scope, a malformed section, or a keyring that will not attest.
+    The attestation is REALM-BOUND: a project mode is attested under that
+    project's realm and satisfies nothing else, and a global attestation
+    never stands in for a project one. That is what makes a project scope
+    safe to loosen from — a cloned repo can carry the config half and change
+    nothing.
+
+    Returns {"glob", "mode", "scope", "changed", "attested"}. Raises
+    ValueError for a Tier-0 vault glob, an unrecognized glob, mode or scope,
+    an unavailable scope, a malformed section, or a keyring that will not
+    attest.
     """
     if mode not in BUILTIN_MODES + ("default",):
         raise ValueError(f"unknown mode '{mode}' — expected one of: "
                          f"{', '.join(BUILTIN_MODES + ('default',))}")
+    if scope not in _VALID_SCOPES:
+        raise ValueError(f"unknown scope '{scope}' — expected one of: "
+                         f"{', '.join(_VALID_SCOPES)}")
     canon = _norm_builtin(glob)
     if canon in {_norm_builtin(g) for g in BUILTIN_ABSOLUTE_DENY}:
         raise ValueError(
@@ -1456,7 +1578,7 @@ def set_builtin_mode(glob, mode: str) -> dict:
             f"'{_norm_glob(glob)}' is not a disableable builtin — expected one "
             f"of: {', '.join(DISABLEABLE_BUILTINS)}")
 
-    cfg = _scope_config_path("global")  # raises when there is no home
+    cfg = _scope_config_path(scope, project_path)  # raises with no home
     data, section = _load_config_for_write(cfg)
     modes = section.get(_KEY_BUILTIN_MODE, {})
     if not isinstance(modes, dict) or not all(
@@ -1487,13 +1609,13 @@ def set_builtin_mode(glob, mode: str) -> dict:
             if not section[_KEY_DISABLE_BUILTIN]:
                 section.pop(_KEY_DISABLE_BUILTIN, None)
             _write_scope_config(cfg, data)
-        attested = _attest_builtin_mode(canon, "")
-        _attest_builtin_disabled(canon, False)
-        return {"glob": canon, "mode": "default",
+        attested = _attest_builtin_mode(canon, "", scope, project_path)
+        _attest_builtin_disabled(canon, False, scope, project_path)
+        return {"glob": canon, "mode": "default", "scope": scope,
                 "changed": changed, "attested": attested}
 
     # Attestation FIRST — see docstring.
-    if not _attest_builtin_mode(canon, mode):
+    if not _attest_builtin_mode(canon, mode, scope, project_path):
         raise ValueError(
             "keyring unavailable, so the mode cannot be attested and would "
             "not take effect. The builtin keeps its current behaviour.")
@@ -1510,17 +1632,20 @@ def set_builtin_mode(glob, mode: str) -> dict:
                 section.pop(_KEY_DISABLE_BUILTIN, None)
         _write_scope_config(cfg, data)
     if legacy_present:
-        _attest_builtin_disabled(canon, False)
-    return {"glob": canon, "mode": mode, "changed": changed, "attested": True}
+        _attest_builtin_disabled(canon, False, scope, project_path)
+    return {"glob": canon, "mode": mode, "scope": scope,
+            "changed": changed, "attested": True}
 
 
-def set_builtin_disabled(glob, disabled: bool) -> dict:
+def set_builtin_disabled(glob, disabled: bool, scope: str = "global",
+                        project_path: str = ".") -> dict:
     """Legacy verb, now a shim over :func:`set_builtin_mode` — disable is
     mode="allow", re-enable is mode="default". Return shape preserved for the
     CLI, mobile route, and existing tests.
     """
-    out = set_builtin_mode(glob, "allow" if disabled else "default")
-    return {"glob": out["glob"], "disabled": disabled,
+    out = set_builtin_mode(glob, "allow" if disabled else "default",
+                           scope, project_path)
+    return {"glob": out["glob"], "disabled": disabled, "scope": out["scope"],
             "changed": out["changed"], "attested": out["attested"]}
 
 
