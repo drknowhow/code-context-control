@@ -4,6 +4,39 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.110.1] - 2026-09-04
+
+### Fixed — the CLAUDE.md updater agent rewrote a managed doc on every session start
+
+Observed on this repository: `c3_artifacts history CLAUDE.md` alternated
+`install_mcp` / `scan` every few minutes and the committed file was dirty
+after every session start. Two defects composed:
+
+- `ClaudeMdManager.check_staleness` diffed the project tree and the tech
+  stack against the doc. With the live repo map (default since 2.60.0) the
+  doc carries neither — the map does — so every detected technology came
+  back as "not listed in CLAUDE.md Tech Stack" and the doc was stale on
+  every check. Those two diffs now run only in legacy embedded-tree mode
+  (`map.enabled: false`); the size and session checks are unchanged. The
+  `ClaudeMdDrift` notification stops nagging for the same reason.
+- `ClaudeMdUpdaterAgent` wrote the regenerated block body with a raw
+  `write_text`, stripping the `C3:BEGIN`/`C3:END` markers and anything the
+  user kept outside them; the next `c3 install-mcp` saw a marker-less
+  legacy doc and re-wrapped its template. Regeneration now goes through
+  `write_c3_instruction_doc`, the same merge the installer uses, so it
+  lands inside the block and user notes survive. Whole-file writes
+  (compaction, promotions) refuse to proceed when the file on disk carries
+  markers and the new content does not.
+
+Agent writes are attributed: `write_c3_instruction_doc` takes a `source`
+(`install_mcp` by default, `claude_md_updater` from the agent), and the
+artifact history names the agent instead of `scan`. `tests/
+test_claude_md_updater.py` pins no-staleness in map mode, drift detection
+in legacy mode, regeneration inside the block with user notes intact, a
+byte-identical doc after an agent cycle, the marker guard, and the
+attribution. Verified on this repository: staleness `ok`, an auto-apply
+cycle leaves CLAUDE.md identical to HEAD.
+
 ## [2.110.0] - 2026-09-04
 
 Phase P5 of the search plan, the last one: what the agent sees around a
