@@ -4,6 +4,57 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.112.0] - 2026-09-04
+
+### Changed — a c3_shell response has a byte budget, and what it drops is recoverable (shell remediation S1)
+
+The 21 calls a month that came back over the client's 25k-token limit —
+and therefore came back as errors — were grep, sed and find over minified
+bundles and JSONL logs: two or three lines of several hundred KB. The
+response now never exceeds a budget, and the raw bytes are kept where the
+agent can page through them.
+
+- **Streaming capture** (`services/shell_output.py`): the child's stdout
+  and stderr are pumped to spool files with bounded head/tail previews
+  instead of being buffered whole by `communicate()`; a 3 MB single line
+  never lives in memory. Credential redaction runs on each piece BEFORE it
+  is written, with a hold-back so a value straddling two pieces is still
+  scrubbed whole.
+- **Budget** (`cli/tools/shell_render.py`): one combined byte budget on
+  the rendered response, 18 KiB by default, 22 KiB ceiling. A per-call
+  `max_bytes` and `hybrid.shell_budget_bytes` in `.c3/config.json` may only
+  lower it; `MAX_MCP_OUTPUT_TOKENS` bounds it; `filter_output=False` never
+  lifts it. 2 KiB is reserved for the envelope; stderr is guaranteed 40%
+  of the rest when present, unused space is redistributed; within a stream
+  35% head / 65% tail survive. A line over 512 chars renders as a note on
+  its own line followed by a 384+128 fragment — centred on the match when
+  the command is a grep — so a note never lands inside a JSON line. A
+  stream that fits passes through untouched. The legacy >30-line filter
+  keeps its trigger, so a filtered test or build run costs what it did.
+- **Spill store**: whenever anything was dropped — clipped, windowed or
+  filtered — the raw streams are promoted to
+  `~/.c3/shell_out/<project-id>/<session-id>/<id>.{stdout,stderr,meta.json}`
+  (override `C3_SHELL_OUT_DIR`), user-only permissions, 3 days and 250 MB
+  global retention, oldest first. The response header names the opaque
+  `output_id`; every omission note repeats it.
+- **Retrieval** rides on `c3_shell`: `output_id='o-…'` with
+  `output_action='read'` (`lines='120-180'`), `'search'` (`pattern=`),
+  `'tail'` (`lines='80'`) or `'delete'`, `stream='stdout'|'stderr'`, each
+  reply re-budgeted. An id resolves only for the same project and the same
+  host session, and only after the originating call's cwd and scanned
+  paths pass the CURRENT Access Guard rules — a spill made by a more
+  privileged call cannot become a channel for a later, less privileged
+  reader. Unknown, foreign-project and foreign-session ids all get the same
+  wording so a probe learns nothing (`docs/shell-output.md`).
+- **Envelope**: the echoed command is its first line; a multi-line or
+  over-long command shows `(N lines, M chars, sha256:…)` instead of its
+  body. The header carries stream sizes and the output id when anything
+  was dropped.
+- shell-eval: the five S1 cases are `must_pass`, 0 of 20 cases over budget
+  (was 6), bytes p95 1,186,398 → 4,750, render ms p95 718 → 37 on the
+  cases the filter no longer touches. Telemetry `detail` gains
+  `budget_bytes`, `omitted_lines`, `clipped_lines`.
+
 ## [2.111.0] - 2026-09-04
 
 ### Added — c3_shell is measured before it is changed (shell remediation S0)
