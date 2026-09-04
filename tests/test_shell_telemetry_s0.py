@@ -30,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from cli.tools import shell as shell_mod  # noqa: E402
 from services.output_filter import OutputFilter  # noqa: E402
 from services.session_manager import SessionManager  # noqa: E402
+from services.telemetry import (  # noqa: E402
+    SHELL_BUDGET_BYTES,
+    aggregate_tool_telemetry,
+    append_telemetry_record,
+)
 
 
 def _result(stdout="", stderr="", exit_code=0, timed_out=False, duration_ms=7):
@@ -185,6 +190,50 @@ class TestTelemetry(unittest.TestCase):
             self.assertEqual(row["tool"], "c3_read")
             self.assertNotIn("detail", row)
             self.assertIsNone(row["duration_ms"])
+
+
+class TestShellAggregate(unittest.TestCase):
+    def _rec(self, **detail):
+        base = {"exit_code": 0, "timed_out": False, "stdout_bytes": 10, "stderr_bytes": 0,
+                "longest_line": 5, "filtered": False, "spilled": False, "output_id": None,
+                "cmd_class": "file-read", "response_bytes": 100, "response_tokens": 25}
+        base.update(detail)
+        return {"tool": "c3_shell", "response_tokens": base["response_tokens"],
+                "duration_ms": detail.get("duration_ms", 50), "detail": base}
+
+    def test_shell_by_class_is_the_before_after_instrument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for rec in (
+                self._rec(),
+                self._rec(response_bytes=SHELL_BUDGET_BYTES + 1, longest_line=400_000,
+                          stdout_bytes=1_400_000, duration_ms=900),
+                self._rec(cmd_class="tests", exit_code=1, filtered=True, duration_ms=66_000),
+                self._rec(cmd_class="ops", exit_code=-1, timed_out=True),
+            ):
+                append_telemetry_record(tmp, rec)
+            # A pre-2.111.0 record without detail must not break or count.
+            append_telemetry_record(tmp, {"tool": "c3_shell", "response_tokens": 5})
+            append_telemetry_record(tmp, {"tool": "c3_read", "response_tokens": 5,
+                                          "detail": {"cmd_class": "file-read"}})
+            agg = aggregate_tool_telemetry(tmp, days=0)
+            classes = agg["shell_by_class"]
+            self.assertEqual(sorted(classes), ["file-read", "ops", "tests"])
+            fr = classes["file-read"]
+            self.assertEqual(fr["calls"], 2)
+            self.assertEqual(fr["over_budget"], 1)
+            self.assertEqual(fr["longest_line_max"], 400_000)
+            self.assertEqual(fr["stdout_bytes"], 1_400_010)
+            self.assertEqual(fr["p50_duration_ms"], 900.0)
+            self.assertEqual(classes["tests"]["failures"], 1)
+            self.assertEqual(classes["tests"]["filtered"], 1)
+            self.assertEqual(classes["ops"]["timeouts"], 1)
+            self.assertEqual(classes["ops"]["failures"], 1)
+            self.assertEqual(agg["shell_budget_bytes"], SHELL_BUDGET_BYTES)
+            self.assertEqual(agg["by_tool"]["c3_shell"]["calls"], 5)
+
+    def test_no_shell_records_means_an_empty_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(aggregate_tool_telemetry(tmp, days=0)["shell_by_class"], {})
 
 
 if __name__ == "__main__":
