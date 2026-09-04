@@ -650,11 +650,12 @@ class ClaudeMdUpdaterAgent(BackgroundAgent):
 
         for action_type, data in actions:
             if action_type == "staleness":
-                # Regenerate the auto-generated sections
+                # Regenerate the auto-generated sections — inside the managed
+                # block, so user content around it survives.
                 try:
                     result = self.claude_md.generate(include_sessions=True)
                     if result.get("content") and self.auto_apply:
-                        self._write_claude_md(result["content"])
+                        self._write_managed_body(result["content"])
                         applied.append("Regenerated CLAUDE.md (stale)")
                     elif result.get("content"):
                         applied.append(f"CLAUDE.md is stale ({len(data.get('issues', []))} issues) — regeneration available")
@@ -810,16 +811,59 @@ class ClaudeMdUpdaterAgent(BackgroundAgent):
             self._write_claude_md("\n".join(lines))
         return additions
 
-    def _write_claude_md(self, content: str):
-        """Write content to the instructions file and update hash."""
+    def _md_path(self):
+        return self.claude_md.project_path / self.claude_md.instructions_file
+
+    def _write_managed_body(self, body: str) -> bool:
+        """Write regenerated C3 content INTO the managed block.
+
+        ``generate()`` returns the block body, not a whole file. Writing it
+        raw (2.110.0 and earlier) dropped the ``C3:BEGIN``/``C3:END`` markers
+        and everything the user kept outside them; the next ``c3 install-mcp``
+        then re-wrapped the template as a legacy doc, so a committed
+        CLAUDE.md went dirty on every session start. The merge in
+        ``write_c3_instruction_doc`` is the same one the installer uses.
+        """
+        from services.claude_md import write_c3_instruction_doc
+
         try:
-            md_path = self.claude_md.project_path / self.claude_md.instructions_file
+            final = write_c3_instruction_doc(self._md_path(), body,
+                                             project_path=self.claude_md.project_path,
+                                             source="claude_md_updater")
+            self._last_content_hash = hashlib.md5(final.encode()).hexdigest()
+            self._last_update_time = time.time()
+            return True
+        except Exception:
+            return False
+
+    def _write_claude_md(self, content: str) -> bool:
+        """Write a WHOLE instructions file (compaction, promotions) and update hash.
+
+        Refuses when the file on disk carries the managed-block markers and
+        ``content`` does not: that is a block body, and writing it here would
+        strip the markers — route it through ``_write_managed_body``.
+        """
+        from services.claude_md import C3_BLOCK_BEGIN
+
+        try:
+            md_path = self._md_path()
             md_path.parent.mkdir(parents=True, exist_ok=True)
+            if md_path.exists() and C3_BLOCK_BEGIN not in content:
+                existing = md_path.read_text(encoding="utf-8", errors="replace")
+                if C3_BLOCK_BEGIN in existing:
+                    return False
             md_path.write_text(content, encoding="utf-8")
             self._last_content_hash = hashlib.md5(content.encode()).hexdigest()
             self._last_update_time = time.time()
         except Exception:
+            return False
+        try:
+            from services.artifact_defs import note_pending_write
+            note_pending_write(self.claude_md.project_path, self.claude_md.instructions_file,
+                               "claude_md_updater")
+        except Exception:
             pass
+        return True
 
     def get_status(self) -> dict:
         """Extended status including updater-specific metrics."""

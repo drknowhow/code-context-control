@@ -300,17 +300,19 @@ def strip_c3_block(existing: str) -> Optional[str]:
     return None
 
 
-def write_c3_instruction_doc(path, content: str, project_path=None) -> str:
+def write_c3_instruction_doc(path, content: str, project_path=None,
+                             source: str = "install_mcp") -> str:
     """Write a C3-generated instruction doc without clobbering user content.
 
     Wraps ``content`` in the C3 managed block and merges it into any existing
     file via :func:`merge_c3_block`. Returns the exact text written to disk.
 
-    Self-reports the write to the agent-artifact tracker (source=install_mcp)
-    so regeneration is attributed to C3 instead of surfacing as anonymous
-    out-of-band drift. ``project_path`` pins the project root; when omitted
-    it is inferred from the doc's location (root or one level down, e.g.
-    .github/copilot-instructions.md).
+    Self-reports the write to the agent-artifact tracker under ``source``
+    (``install_mcp`` for the installer and CLI, ``claude_md_updater`` for the
+    background agent) so regeneration is attributed to C3 instead of
+    surfacing as anonymous out-of-band drift. ``project_path`` pins the
+    project root; when omitted it is inferred from the doc's location (root
+    or one level down, e.g. .github/copilot-instructions.md).
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -329,7 +331,7 @@ def write_c3_instruction_doc(path, content: str, project_path=None) -> str:
                          if (c / ".c3").is_dir()), None)
         if root is not None and (root / ".c3").is_dir():
             note_pending_write(root, str(p.resolve().relative_to(root.resolve())),
-                               "install_mcp")
+                               source or "install_mcp")
     except Exception:
         pass
     return final
@@ -533,13 +535,15 @@ class ClaudeMdManager:
                 ),
             })
 
-        # Structure drift
-        structure_issues = self._diff_structure(current)
-        issues.extend(structure_issues)
-
-        # Tech stack drift
-        tech_issues = self._diff_tech_stack(current)
-        issues.extend(tech_issues)
+        # Structure and tech-stack drift apply only to the legacy embedded
+        # tree. With the live repo map (default since 2.60.0) the doc carries
+        # neither — the map does — so there is nothing embedded to drift.
+        # Diffing anyway reported every detected technology as "not listed"
+        # on every check, and an auto-applying updater rewrote the file each
+        # time (2.110.1).
+        if not self._repo_map_enabled():
+            issues.extend(self._diff_structure(current))
+            issues.extend(self._diff_tech_stack(current))
 
         # Session staleness
         session_files = sorted(
