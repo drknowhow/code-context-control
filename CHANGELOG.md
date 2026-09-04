@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.118.1] - 2026-09-04
+
+### Fixed — the job store could crash a supervisor on Windows with WinError 5
+
+`services/shell_output._write_json_atomic` is the publish step for every
+`c3_shell_job` status update. It used a single shared temp name and attempted
+`os.replace` exactly once, so a supervisor could die before running anything —
+reporting `failed before running` for a command that was fine. It surfaced as
+an intermittent CI failure on windows-latest (`test_shell_jobs_s3.py`,
+`PermissionError: [WinError 5] Access is denied`), which is the visible half;
+the invisible half is that the same race can lose a job on a real Windows box.
+
+Three defects, all now covered by tests that fail against the old code:
+
+- **A shared temp name.** `<name>.tmp` is identical for every writer, so the
+  parent creating the job record and the supervisor immediately saving status
+  raced on the temp itself — one mid-write while the other tried to publish
+  it. The suffix is now a pid **and** a random token: a pid alone is not
+  enough, because this store is written from a threaded server and threads
+  share a pid. (The concurrency test caught that second-order case.)
+- **No retry.** Another process holding a read handle on the target — AV
+  scanner, Search indexer, a concurrent reader — makes `os.replace` raise
+  transiently. One attempt turned that into a lost write. Now four attempts
+  with exponential backoff, and a genuinely persistent error still raises
+  rather than being swallowed.
+- **Orphaned temp files.** A failed replace abandoned its temp in the store
+  forever. Cleaned up on every failure path.
+
+Same construction as `cli/_hook_utils._atomic_write_json`, which already had
+it. The duplication is deliberate — a PreToolUse hook subprocess imports
+nothing from `services` — and is now noted in both.
+
 ## [2.118.0] - 2026-09-04
 
 ### Added — one approval can cover a whole rule for the session, not one file
