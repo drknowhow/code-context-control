@@ -1,0 +1,198 @@
+{
+  "suite": "fixture",
+  "generated_at": "2026-09-04T09:14:31",
+  "c3_version": "2.110.1",
+  "renderer": "shim",
+  "default_max_bytes": 18432,
+  "aggregates": {
+    "n_cases": 20,
+    "n_executed": 20,
+    "n_errors": 0,
+    "pass_rate_must_pass": 1.0,
+    "pass_rate_xfail": 0.0,
+    "pass_rate_info": 1.0,
+    "under_budget_rate": 0.7,
+    "budget_violations": [
+      "binary_single_line",
+      "cr_progress_bar",
+      "huge_stderr_empty_stdout",
+      "jsonl_grep",
+      "minified_grep_hit",
+      "sed_long_sql_lines"
+    ],
+    "must_keep_retention": 0.9537,
+    "must_keep_retention_must_pass": 1.0,
+    "bytes_p50": 1178.5,
+    "bytes_p95": 1186398.0,
+    "tokens_p50": 490.0,
+    "tokens_p95": 462874.5,
+    "render_ms_p50": 2.8,
+    "render_ms_p95": 702.5,
+    "must_pass_failed": [],
+    "xfail_passing": [],
+    "errors": []
+  },
+  "by_phase": {
+    "S1": {
+      "n": 5,
+      "passing": 0
+    },
+    "S2": {
+      "n": 4,
+      "passing": 0
+    }
+  },
+  "floors": {
+    "pass_rate_must_pass": 1.0,
+    "under_budget_rate": 0.67,
+    "must_keep_retention": 0.92,
+    "must_keep_retention_must_pass": 0.97
+  },
+  "ceilings": {
+    "bytes_p50": 2048,
+    "bytes_p95": 1200000,
+    "tokens_p95": 480000
+  },
+  "per_case": {
+    "minified_grep_hit": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S1",
+      "response_bytes": 900135,
+      "retention": 1.0
+    },
+    "pytest_buried_failure": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 808,
+      "retention": 1.0
+    },
+    "tsc_errors": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 856,
+      "retention": 1.0
+    },
+    "npm_build_noise": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 303,
+      "retention": 1.0
+    },
+    "cr_progress_bar": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S2",
+      "response_bytes": 160969,
+      "retention": 1.0
+    },
+    "jsonl_grep": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S1",
+      "response_bytes": 202496,
+      "retention": 1.0
+    },
+    "python_traceback": {
+      "status": "pass",
+      "gate": "info",
+      "phase": null,
+      "response_bytes": 2895,
+      "retention": 1.0
+    },
+    "cargo_errors": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 4144,
+      "retention": 1.0
+    },
+    "jest_failure": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S2",
+      "response_bytes": 259,
+      "retention": 0.5
+    },
+    "binary_garbage": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 882,
+      "retention": null
+    },
+    "binary_single_line": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S1",
+      "response_bytes": 3801311,
+      "retention": null
+    },
+    "ansi_colored": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S2",
+      "response_bytes": 1475,
+      "retention": 1.0
+    },
+    "huge_stderr_empty_stdout": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S1",
+      "response_bytes": 1048771,
+      "retention": 1.0
+    },
+    "mixed_streams_small": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 339,
+      "retention": 1.0
+    },
+    "under_budget_120_lines": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S2",
+      "response_bytes": 318,
+      "retention": 0.6667
+    },
+    "timeout_partial": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 573,
+      "retention": 1.0
+    },
+    "sed_long_sql_lines": {
+      "status": "fail",
+      "gate": "xfail",
+      "phase": "S1",
+      "response_bytes": 32896,
+      "retention": 1.0
+    },
+    "git_status_long": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 2168,
+      "retention": 1.0
+    },
+    "empty_output": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 44,
+      "retention": 1.0
+    },
+    "fail_exit_code": {
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
+      "response_bytes": 124,
+      "retention": 1.0
+    }
+  }
+}
