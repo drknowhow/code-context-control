@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.111.0] - 2026-09-04
+
+### Added — c3_shell is measured before it is changed (shell remediation S0)
+
+Measured over every registered project's `.c3/tool_telemetry.jsonl` since
+2026-08-01: c3_shell is half of all C3 calls and 75% of the tokens C3
+returns; 21 calls (0.2%) over 25k tokens carried 55% of that volume and
+were discarded by the client's `MAX_MCP_OUTPUT_TOKENS` limit; every one
+was a grep or sed over a minified bundle or a JSONL log — few lines, huge
+lines, invisible to a filter that triggers on newline count. And
+`duration_ms` was null on 100% of records although every call measured
+it. This release instruments the tool; nothing the agent sees changes.
+
+- `render_shell_response(cmd, result, svc, ...)` in `cli/tools/shell.py`
+  builds the response from the subprocess result alone — same filter
+  trigger, same sections, same order — and returns the stats of the call
+  next to the body. The shell-eval harness pushes captured streams through
+  exactly the path a live call uses.
+- Telemetry records for c3_shell carry `duration_ms` and a `detail` dict:
+  `exit_code`, `timed_out`, `stdout_bytes` and `stderr_bytes` measured
+  BEFORE filtering, `longest_line`, `filtered`, `spilled`, `output_id`,
+  `cmd_class` (file-read, tests, git, python, build, ops, echo, gh, c3,
+  other) and the rendered `response_bytes`/`response_tokens`.
+  `finalize_with_tokens` and `SessionManager.record_tool_tokens` accept
+  `detail` for any tool; the shared record schema is unchanged.
+- `aggregate_tool_telemetry` gains `shell_by_class`: calls, tokens, bytes,
+  calls over the 18 KiB budget the S1 phase will enforce, filtered,
+  spilled, timeouts, failures, longest line, p50/p95 duration — the
+  before/after instrument for the remaining phases.
+- `c3 shell-eval --suite fixture [--update-baseline] [--json]`: a fixture
+  suite of synthetic captured outputs (minified-line grep hit, a pytest run
+  with one failure buried under warnings, tsc and npm noise, carriage-return
+  progress bars, JSONL grep, tracebacks, cargo and jest failures, binary
+  garbage, ANSI colour, a huge stderr) with per-case `must_pass` / `xfail`
+  (tagged S1 or S2) / `info` gates on rendered bytes, must-keep lines and
+  marker placement; `tests/test_shell_eval.py` is the CI gate;
+  `docs/shell-eval.md` explains the vocabulary.
+
 ## [2.110.1] - 2026-09-04
 
 ### Fixed — the CLAUDE.md updater agent rewrote a managed doc on every session start
