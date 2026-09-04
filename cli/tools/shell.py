@@ -29,8 +29,22 @@ from cli._shell_writes import shell_write_targets
 from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens
 from cli.tools.filter import handle_filter
+from cli.tools.shell_render import (
+    allocate,
+    cmd_display,
+    effective_budget,
+    grep_pattern,
+    human_bytes,
+    shape_stream,
+)
 from core import count_tokens
 from services import access_guard
+from services.shell_output import (
+    TEXT_MAX_BYTES,
+    OutputAccessError,
+    ShellCapture,
+    ShellOutputStore,
+)
 
 # Commands that mutate repo state — trigger edit-ledger refresh after success.
 _GIT_MUTATING = re.compile(
@@ -211,9 +225,28 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 pass
 
 
+def _default_redact(text: str) -> str:
+    """Scrub vault values from a piece of output; never raises."""
+    try:
+        from services import credential_store as _creds
+        return _creds.redact_text(text)
+    except Exception:
+        return text
+
+
 def _run_sync(cmd: str, cwd: str, timeout: int,
-              extra_env: dict | None = None) -> dict:
-    """Blocking subprocess run with hard kill on timeout. Returns structured dict."""
+              extra_env: dict | None = None, *, redact=_default_redact,
+              spool_dir=None) -> dict:
+    """Blocking subprocess run with hard kill on timeout. Returns structured dict.
+
+    Since 2.112.0 the child's streams are not buffered in memory: a
+    ShellCapture pumps them to spool files with bounded head/tail previews
+    (services/shell_output.py). ``stdout``/``stderr`` in the result carry the
+    whole text when the stream is at most TEXT_MAX_BYTES and None otherwise;
+    ``capture`` carries the stats and previews either way. Callers that
+    patch this function with a plain dict (tests) still work: no ``capture``
+    means "small output, text present".
+    """
     start = time.time()
     bash = _select_bash()
     if bash:
@@ -229,7 +262,6 @@ def _run_sync(cmd: str, cwd: str, timeout: int,
         proc = subprocess.Popen(
             popen_target, shell=use_shell, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
             **_popen_kwargs(extra_env),
         )
     except (OSError, ValueError) as exc:
@@ -241,24 +273,27 @@ def _run_sync(cmd: str, cwd: str, timeout: int,
             "timed_out": False,
             "shell": shell_name,
         }
-    timed_out = False
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+    if spool_dir is None:
+        spool_dir = ShellOutputStore().spool_dir()
+    capture = ShellCapture(proc, spool_dir, redact=redact, kill_tree=_kill_tree)
+    timed_out = capture.wait(timeout)
+
+    def _text(stream: str):
+        if getattr(capture.stats, stream).bytes > TEXT_MAX_BYTES:
+            return None
         try:
-            stdout, stderr = proc.communicate(timeout=2)
+            return capture.text(stream)
         except Exception:
-            stdout, stderr = "", ""
-        timed_out = True
+            return None
 
     return {
         "exit_code": -1 if timed_out else (proc.returncode or 0),
-        "stdout": stdout or "",
-        "stderr": stderr or "",
-        "duration_ms": round((time.time() - start) * 1000),
+        "stdout": _text("stdout"),
+        "stderr": _text("stderr"),
+        "duration_ms": capture.duration_ms or round((time.time() - start) * 1000),
         "timed_out": timed_out,
         "shell": shell_name,
+        "capture": capture,
     }
 
 
@@ -428,54 +463,121 @@ def _longest_line(*texts: str) -> int:
     return longest
 
 
+def _stream_facts(result: dict, stream: str) -> dict:
+    """Size, line count, longest line and available text/previews of one stream."""
+    text = result.get(stream)
+    capture = result.get("capture")
+    if capture is not None:
+        st = getattr(capture.stats, stream)
+        return {"text": text, "head": st.head, "tail": st.tail, "bytes": st.bytes,
+                "lines": st.lines, "longest": st.longest_line}
+    text = text or ""
+    return {"text": text, "head": "", "tail": "", "bytes": len(text.encode("utf-8", errors="replace")),
+            "lines": text.count("\n") + (1 if text and not text.endswith("\n") else 0),
+            "longest": _longest_line(text)}
+
+
 def render_shell_response(cmd: str, result: dict, svc, *,
                           filter_output: bool = True, warn: str = "",
                           capped_note: str = "", touched_files=(),
-                          cred_names=(), swept_ghosts=()) -> tuple[str, dict]:
+                          cred_names=(), swept_ghosts=(),
+                          max_bytes: int | None = None) -> tuple[str, dict]:
     """Turn a finished command into the body the agent reads, plus its stats.
 
     Pure with respect to the subprocess: ``result`` is the dict _run_sync
-    returns (exit_code, stdout, stderr, duration_ms, timed_out, shell), so
-    the shell-eval harness (services/bench/shell_eval.py) can feed captured
-    or synthetic streams through exactly the code path a live call uses.
-    Runs the same auto-filter handle_shell always ran — only stdout, only when
-    it has more than _FILTER_THRESHOLD_LINES newlines, never for a git
-    diagnostic — and assembles the same sections in the same order.
+    returns (exit_code, stdout, stderr, duration_ms, timed_out, shell, and
+    since 2.112.0 an optional ``capture`` with stats and head/tail previews
+    for a stream too large to hold), so the shell-eval harness
+    (services/bench/shell_eval.py) can feed captured or synthetic streams
+    through exactly the code path a live call uses.
+
+    Budget (2.112.0, cli/tools/shell_render.py): the rendered body never
+    exceeds ``effective_budget()`` bytes — 18 KiB by default, 22 KiB ceiling,
+    ``max_bytes`` and ``hybrid.shell_budget_bytes`` may only lower it,
+    ``filter_output=False`` never lifts it. A stream that fits its share
+    passes through untouched (and, when it has more than
+    _FILTER_THRESHOLD_LINES newlines and is not a git diagnostic, through the
+    same auto-filter as before); a stream that does not is clipped line by
+    line and windowed head/tail with an omission note naming the output id.
+    Whenever anything was dropped — clipped, windowed or filtered — the raw
+    streams are kept in the spill store and ``stats["needs_spill"]`` tells
+    handle_shell to promote them.
 
     ``stats`` is what telemetry records about the call (see
     SessionManager.record_tool_tokens ``detail``): stdout_bytes and
-    stderr_bytes are measured BEFORE filtering so a later budget phase can
-    size the band it changes; longest_line is the tell for the single-line
-    monsters (minified bundles, JSONL) that a newline-count trigger never
-    sees; filtered/spilled/output_id describe what this renderer did.
+    stderr_bytes are measured BEFORE filtering; longest_line is the tell for
+    the single-line monsters (minified bundles, JSONL) that a newline-count
+    trigger never sees; filtered/spilled/output_id describe what this
+    renderer did.
     """
-    raw_stdout = result.get("stdout") or ""
-    raw_stderr = result.get("stderr") or ""
+    out = _stream_facts(result, "stdout")
+    err = _stream_facts(result, "stderr")
+    capture = result.get("capture")
     stats: dict = {
         "exit_code": result.get("exit_code"),
         "timed_out": bool(result.get("timed_out")),
-        "stdout_bytes": len(raw_stdout.encode("utf-8", errors="replace")),
-        "stderr_bytes": len(raw_stderr.encode("utf-8", errors="replace")),
-        "longest_line": _longest_line(raw_stdout, raw_stderr),
+        "stdout_bytes": out["bytes"],
+        "stderr_bytes": err["bytes"],
+        "longest_line": max(out["longest"], err["longest"]),
         "filtered": False,
         "spilled": False,
         "output_id": None,
         "cmd_class": _cmd_class(cmd),
+        "needs_spill": False,
     }
 
-    stdout = raw_stdout
+    config_default = None
+    try:
+        config_default = (getattr(svc, "hybrid_config", None) or {}).get("shell_budget_bytes")
+    except Exception:
+        config_default = None
+    budget = effective_budget(max_bytes, config_default=config_default)
+    out_alloc, err_alloc = allocate(budget, out["bytes"], err["bytes"])
+    stats["budget_bytes"] = budget
+    output_id = getattr(capture, "output_id", None) if capture is not None else None
+    focus = grep_pattern(cmd)
+
+    # Legacy auto-filter: only on stdout, only when the whole text is at hand
+    # (a stream over TEXT_MAX_BYTES has previews only and goes straight to
+    # deterministic shaping), more than _FILTER_THRESHOLD_LINES newlines,
+    # never a git diagnostic — exactly the trigger 2.111.0 had, so the token
+    # profile of a filtered test or build run does not move in S1; what
+    # moves is that the dropped text is now recoverable. S2 replaces this.
+    stdout_text = out["text"]
     filtered_note = ""
-    if (filter_output and raw_stdout.count("\n") > _FILTER_THRESHOLD_LINES
+    if (filter_output and stdout_text is not None
+            and stdout_text.count("\n") > _FILTER_THRESHOLD_LINES
             and not _GIT_DIAGNOSTIC.search(cmd)):
         try:
-            stdout = handle_filter(
-                "", raw_stdout, "", 50, "smart", True,
+            stdout_text = handle_filter(
+                "", stdout_text, "", 50, "smart", True,
                 svc, lambda *a, **kw: a[2],
             )
             filtered_note = " [stdout filtered]"
             stats["filtered"] = True
         except Exception:
-            stdout = raw_stdout
+            stdout_text = out["text"]
+
+    shaped_out, info_out = shape_stream(
+        full_text=stdout_text, head=out["head"], tail=out["tail"],
+        total_bytes=out["bytes"], total_lines=out["lines"], alloc=out_alloc,
+        output_id=output_id, focus=focus,
+        number_lines=not stats["filtered"])  # filtered text no longer maps to raw line numbers
+    if err["bytes"] > 0 or (err["text"] or "").strip():
+        shaped_err, info_err = shape_stream(
+            full_text=err["text"], head=err["head"], tail=err["tail"],
+            total_bytes=err["bytes"], total_lines=err["lines"], alloc=err_alloc,
+            output_id=output_id, focus=focus)
+    else:
+        shaped_err, info_err = "", {"cut": False, "omitted_lines": 0, "omitted_bytes": 0,
+                                    "clipped_lines": 0, "rendered_bytes": 0}
+
+    cut = bool(info_out["cut"] or info_err["cut"])
+    stats["needs_spill"] = bool(stats["filtered"] or cut)
+    stats["spilled"] = bool(stats["needs_spill"] and output_id)
+    stats["output_id"] = output_id if stats["spilled"] else None
+    stats["omitted_lines"] = info_out["omitted_lines"] + info_err["omitted_lines"]
+    stats["clipped_lines"] = info_out["clipped_lines"] + info_err["clipped_lines"]
 
     if result.get("timed_out"):
         status = "TIMEOUT"
@@ -484,14 +586,20 @@ def render_shell_response(cmd: str, result: dict, svc, *,
     else:
         status = f"FAIL({result.get('exit_code')})"
 
+    size_note = ""
+    if cut or stats["spilled"]:
+        size_note = (f" (stdout {human_bytes(out['bytes'])}/{out['lines']} lines,"
+                     f" stderr {human_bytes(err['bytes'])}/{err['lines']} lines,")
+        size_note += f" output_id={output_id})" if stats["spilled"] else " not spilled)"
+
     body = (
         f"{warn}{capped_note}"
-        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{filtered_note}\n"
-        f"$ {cmd}\n"
-        f"--- stdout ---\n{stdout.rstrip()}\n"
+        f"[c3_shell:{status}] {result.get('duration_ms', 0)}ms{filtered_note}{size_note}\n"
+        f"$ {cmd_display(cmd)}\n"
+        f"--- stdout ---\n{shaped_out.rstrip()}\n"
     )
-    if raw_stderr.strip():
-        body += f"--- stderr ---\n{raw_stderr.rstrip()}\n"
+    if shaped_err.strip():
+        body += f"--- stderr ---\n{shaped_err.rstrip()}\n"
     dependency_hint = _dependency_hint(cmd, result)
     if dependency_hint:
         body += f"--- hint ---\n{dependency_hint}\n"
@@ -724,9 +832,102 @@ def _shell_warn_grant(svc, work_cwd: str) -> str | None:
         return None
 
 
+_OUTPUT_ACTIONS = ("read", "search", "tail", "delete")
+
+
+def _handle_output(output_id: str, action: str, pattern: str, lines, stream: str,
+                   max_bytes, svc, finalize) -> str:
+    """Page a spilled output back by id (2.112.0).
+
+    The id is resolved for THIS project and THIS host session under the
+    CURRENT Access Guard rules — services/shell_output.py documents why a
+    spill from a more privileged call must not be readable by a later, less
+    privileged one. Every read is re-budgeted like a live response.
+    """
+    action = (action or "read").strip().lower()
+    if action not in _OUTPUT_ACTIONS:
+        return (f"[c3_shell:error] output_action must be one of {', '.join(_OUTPUT_ACTIONS)}; "
+                f"got {action!r}")
+    stream = (stream or "stdout").strip().lower()
+    if stream not in ("stdout", "stderr"):
+        return "[c3_shell:error] stream must be 'stdout' or 'stderr'"
+    project_path = str(svc.project_path)
+
+    def guard_check(path: str):
+        try:
+            return access_guard.check(path, "read", project_path)
+        except Exception as exc:  # evaluator error fails closed
+            return access_guard.Denial("<evaluator-error>", "deny", "builtin",
+                                       f"evaluator error: {type(exc).__name__}")
+
+    store = ShellOutputStore()
+    try:
+        meta = store.resolve(output_id, project_path=project_path,
+                          session_id=_grants.session_id(svc), guard_check=guard_check)
+    except OutputAccessError as exc:
+        return f"[c3_shell:error] {exc}"
+    config_default = None
+    try:
+        config_default = (getattr(svc, "hybrid_config", None) or {}).get("shell_budget_bytes")
+    except Exception:
+        pass
+    budget = effective_budget(max_bytes, config_default=config_default) - 512
+    facts = getattr(meta, stream) or {}
+    header = (f"[c3_shell:output] {meta.id} {action} {stream} · $ {meta.cmd_display} · "
+              f"exit {meta.exit_code}{' (timed out)' if meta.timed_out else ''} · "
+              f"{human_bytes(facts.get('bytes', 0))}/{facts.get('lines', 0)} lines · "
+              f"captured {meta.created_at[:19]}\n")
+    try:
+        if action == "delete":
+            store.delete(meta)
+            body = header + "deleted\n"
+        elif action == "search":
+            if not pattern:
+                return "[c3_shell:error] output_action='search' needs a pattern"
+            body = header + store.search(meta, pattern, stream, max_bytes=budget)
+        elif action == "tail":
+            n = 50
+            if isinstance(lines, int) and lines > 0:
+                n = lines
+            body = header + store.tail(meta, stream, lines=n, max_bytes=budget)
+        else:
+            window = None
+            if isinstance(lines, (list, tuple)) and len(lines) == 2:
+                window = (int(lines[0]), int(lines[1]))
+            elif isinstance(lines, int) and lines > 0:
+                window = (lines, lines)
+            elif isinstance(lines, str) and lines.strip():
+                parts = [p for p in re.split(r"[,\-:\s]+", lines.strip()) if p]
+                if len(parts) == 1:
+                    window = (int(parts[0]), int(parts[0]))
+                elif len(parts) >= 2:
+                    window = (int(parts[0]), int(parts[1]))
+            body = header + store.read(meta, stream, lines=window, max_bytes=budget)
+    except (ValueError, re.error) as exc:
+        return f"[c3_shell:error] {exc}"
+    if not body.endswith("\n"):
+        body += "\n"
+    return finalize_with_tokens(
+        finalize, svc, "c3_shell",
+        {"output_id": output_id, "output_action": action},
+        body, f"shell output {action} {output_id}",
+        detail={"cmd_class": "output", "output_id": output_id, "output_action": action,
+                "response_bytes": len(body.encode("utf-8", errors="replace")),
+                "response_tokens": count_tokens(body)},
+        response_tokens=count_tokens(body),
+    )
+
+
 async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
                        log: bool, svc, finalize, env_creds: str = "",
-                       enable_creds: bool = True) -> str:
+                       enable_creds: bool = True, *, output_id: str = "",
+                       output_action: str = "", pattern: str = "",
+                       lines=None, stream: str = "stdout",
+                       max_bytes: int | None = None) -> str:
+    if output_id:
+        return await asyncio.to_thread(
+            _handle_output, output_id, output_action, pattern, lines, stream,
+            max_bytes, svc, finalize)
     if not cmd or not cmd.strip():
         return "[c3_shell:error] empty command"
     # _BLOCKED never consults grants — no approval flow reaches the
@@ -860,16 +1061,23 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
         else None
     )
 
+    # Decoded values a child process may echo (env dumps, set, crash output)
+    # are scrubbed IN THE STREAM by _run_sync's redactor, before a byte
+    # reaches the spool or any preview, so neither the response nor a spill
+    # ever holds one.
     result = await asyncio.to_thread(
         _run_sync, exec_cmd, work_cwd, timeout, extra_env or None)
+    capture = result.get("capture")
 
     swept_ghosts = _sweep_new_ghost_files(ghost_root, _ghosts_before)
 
-    # Scrub decoded values a child process may have echoed (env dumps, set,
-    # crash output) BEFORE filtering/ledger/logging see the text.
+    # Belt over the in-stream scrub for the small-output text (and for a
+    # result a test handed in without a capture).
     if enable_creds:
-        result["stdout"] = _creds.redact_text(result["stdout"])
-        result["stderr"] = _creds.redact_text(result["stderr"])
+        if result.get("stdout") is not None:
+            result["stdout"] = _creds.redact_text(result["stdout"])
+        if result.get("stderr") is not None:
+            result["stderr"] = _creds.redact_text(result["stderr"])
         if cred_names:
             # Usage state is keyed by entry NAME; collapse dotted field refs.
             _creds.touch_last_used(
@@ -936,12 +1144,45 @@ async def handle_shell(cmd: str, cwd: str, timeout: int, filter_output: bool,
             f"run_in_background, which is not bound by this limit.\n"
         )
 
-    body, stats = await asyncio.to_thread(
-        render_shell_response, cmd, result, svc,
-        filter_output=filter_output, warn=warn, capped_note=capped_note,
-        touched_files=touched_files, cred_names=cred_names,
-        swept_ghosts=swept_ghosts,
-    )
+    try:
+        body, stats = await asyncio.to_thread(
+            render_shell_response, cmd, result, svc,
+            filter_output=filter_output, warn=warn, capped_note=capped_note,
+            touched_files=touched_files, cred_names=cred_names,
+            swept_ghosts=swept_ghosts, max_bytes=max_bytes,
+        )
+        # Keep the raw streams only when the body dropped something: the
+        # spill is what makes a clipped or filtered response recoverable
+        # without re-running the command (docs/shell-output.md).
+        if capture is not None:
+            if stats.get("needs_spill"):
+                try:
+                    ShellOutputStore().promote(
+                        capture, project_path=str(svc.project_path),
+                        session_id=_grants.session_id(svc), cmd=cmd, cwd=work_cwd,
+                        guard_paths=_scan_candidates(cmd, work_cwd),
+                        exit_code=result.get("exit_code", -1),
+                        timed_out=bool(result.get("timed_out")),
+                        duration_ms=result.get("duration_ms", 0))
+                except Exception as exc:
+                    stats["spilled"] = False
+                    stats["output_id"] = None
+                    body += (f"[c3_shell:note] the raw output could not be kept "
+                             f"({type(exc).__name__}: {exc}); the output id above is not retrievable\n")
+                    try:
+                        capture.discard()
+                    except Exception:
+                        pass
+            else:
+                capture.discard()
+    except Exception:
+        if capture is not None:
+            try:
+                capture.discard()
+            except Exception:
+                pass
+        raise
+    stats.pop("needs_spill", None)
 
     if result["timed_out"]:
         status = "TIMEOUT"

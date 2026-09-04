@@ -65,7 +65,8 @@ class TestSuiteShape:
         bad = [c.id for c in cases if c.gate == "xfail" and c.phase not in she.PHASES]
         assert not bad, f"xfail cases must name S1 or S2: {bad}"
         assert any(c.gate == "must_pass" for c in cases)
-        assert any(c.gate == "xfail" and c.phase == "S1" for c in cases)
+        # S1 (2.112.0) promoted every S1 xfail to must_pass; S2's are still open.
+        assert any(c.gate == "xfail" and c.phase == "S2" for c in cases)
         assert any(c.gate == "xfail" and c.phase == "S2" for c in cases)
 
     def test_checks_use_known_vocabulary_and_budget_ceiling(self):

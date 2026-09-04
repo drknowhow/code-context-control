@@ -389,18 +389,31 @@ class TestShellRealSubprocess(unittest.TestCase):
 
 
 class _FakePopen:
-    """Captures Popen construction args; emulates a clean exit."""
+    """Captures Popen construction args; emulates a clean exit with binary pipes
+    (since 2.112.0 _run_sync streams them through ShellCapture)."""
 
     last_args: tuple = ()
     last_kwargs: dict = {}
 
     def __init__(self, *args, **kwargs):
+        import io
         _FakePopen.last_args = args
         _FakePopen.last_kwargs = kwargs
         self.returncode = 0
+        self.stdout = io.BytesIO(b"out\n")
+        self.stderr = io.BytesIO(b"")
 
     def communicate(self, timeout=None):
         return ("out\n", "")
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
 
 
 class TestShellSelection(unittest.TestCase):

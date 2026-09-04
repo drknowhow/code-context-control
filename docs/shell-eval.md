@@ -49,10 +49,14 @@ the **22 KiB ceiling** (`CEILING_MAX_BYTES = 22528`); the loader refuses a
 case that tries. The suite header records the default so a reader of the
 JSONL sees the number without opening the module.
 
-Today (2.111.0, 2026-09-04) six of twenty cases exceed the budget,
-five of them by two orders of magnitude: a 900 KB grep over minified lines,
-2 MB of JSONL hits, 1 MB of stderr, a 3.8 MB no-newline blob, a 160 KB
-progress bar. Those are the S1 cases.
+At 2.111.0 six of twenty cases exceeded the budget, five of them by two
+orders of magnitude: a 900 KB grep over minified lines, 2 MB of JSONL hits,
+1 MB of stderr, a 3.8 MB no-newline blob, a 160 KB progress bar. Since
+2.112.0 (S1: byte budget + spill, `cli/tools/shell_render.py`,
+`services/shell_output.py`) none does: the five S1 cases are `must_pass`
+and bytes p95 went from 1,186,398 to 4,750. The remaining `xfail` cases are
+S2's (content-aware keep: CR progress bars, ANSI, a buried jest failure, a
+middle line the legacy filter drops).
 
 ## Gates and phases
 
