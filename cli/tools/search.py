@@ -14,7 +14,7 @@ from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
 from services import access_guard
 from services.indexer import DEFAULT_CODE_EXTS
-from services.lexical_index import Filters
+from services.lexical_index import Filters, doc_kind
 from services.scanner import SKIP_DIRS, iter_files
 
 # Hard cap: responses above this are truncated to avoid filling context.
@@ -24,6 +24,32 @@ _RESPONSE_TOKEN_CAP = 2400
 # token budget and hide every other file.
 _EXACT_MAX_MATCHES_PER_FILE = 20
 _RG_TIMEOUT_SECONDS = 60
+# top_k caps per action (2.110.0). A code hit spends a chunk of the token
+# budget; a files row or an exact per-file block spends a line or two, so
+# those actions may list many more before the response cap bites.
+_TOP_K_CAP_DEFAULT = 10
+_TOP_K_CAPS = {"files": 50, "exact": 50}
+
+# `exact` orders files definitions-first (2.110.0): a hit on a line that
+# declares something outranks a hit that merely mentions it, then source
+# before config, docs and tests, then path order. The index's symbol table
+# is consulted first when the query names one identifier; this regex is the
+# language-agnostic fallback for keyword-declared definitions (def/class/
+# fn/func/type/const/...) and top-level assignments. C-family functions
+# without a keyword rely on the symbol table.
+_DEF_LINE_RE = re.compile(
+    r"^\s*(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|static|"
+    r"abstract|final|async|unsafe|extern|declare|override|virtual|inline|constexpr)\s+)*"
+    r"(?:def|class|function|fn|func|type|struct|interface|enum|trait|impl|module|record|"
+    r"protocol|extension|object|namespace|const|let|var|val|#define)"
+    r"(?=\s+[A-Za-z_(*&\[]|\s*[<(])"
+    r"|^[A-Za-z_][\w.]*\s*(?::[^=]*)?=(?!=)")
+_KIND_RANK = {"source": 0, "config": 1, "doc": 2, "test": 3}
+# A forward slash or a dotted filename reads as a path; a backslash does not,
+# because `\d` / `\s` in a regex are far more common in queries than Windows
+# separators.
+_PATHLIKE_RE = re.compile(r"/|^[\w.\-]+\.[A-Za-z0-9]{1,6}$")
+_REGEX_META = set("\\^$.|?*+()[]{}")
 
 
 def _read_denied(path, svc) -> bool:
@@ -77,11 +103,66 @@ def _cap_response(resp: str) -> str:
     return "\n".join(lines[:20]) + "\n[truncated]"
 
 
+def _via_tag(r: dict) -> str:
+    """`` [lexical+dense, reranked]`` — which backend(s) produced the hit."""
+    via = r.get("via")
+    if not via:
+        return ""
+    return f" [{via}, reranked]" if r.get("reranked") else f" [{via}]"
+
+
+def _zero_hint(action: str, query: str, *, filters: Filters | None = None,
+               ignore_case: bool = False) -> str:
+    """One clause naming what to try next when an action finds nothing.
+
+    Never echoes the query: the eval harness strips it before checking for
+    forbidden text, and a masked canary must not be printed twice.
+    """
+    tips = []
+    if action == "exact":
+        if not ignore_case and re.search(r"[A-Za-z]", query):
+            tips.append("ignore_case=True")
+        tips.append("action='code', which matches identifiers by their parts")
+    elif action == "files":
+        if not any(ch in query for ch in "*?["):
+            tips.append("a glob like '**/*.yml'")
+        tips.append("action='exact' to search file contents")
+    else:
+        if _PATHLIKE_RE.search(query):
+            tips.append("action='files', which matches filenames")
+        elif any(ch in query for ch in _REGEX_META):
+            tips.append("action='exact', which takes a regex")
+        else:
+            tips.append("action='exact' for a literal or regex")
+            tips.append("action='files' for a filename")
+    if filters:
+        tips.append("dropping the path/lang/kind filter")
+    if not tips:
+        return ""
+    if len(tips) == 1:
+        return f"; try {tips[0]}"
+    return "; try " + ", ".join(tips[:-1]) + f", or {tips[-1]}"
+
+
+def _symbol_definition_files(query: str, svc) -> set:
+    """Files whose indexed symbol table defines the identifier ``query`` names."""
+    idx = getattr(svc, "indexer", None)
+    fn = getattr(idx, "_exact_symbol_ids", None)
+    if not callable(fn):
+        return set()
+    try:
+        chunks = getattr(idx, "chunks", None) or {}
+        # doc ids carry the OS separator; the manifest is POSIX.
+        return {chunks[cid]["doc_id"].replace("\\", "/") for cid in fn(query) if cid in chunks}
+    except Exception:
+        return set()
+
+
 def handle_search(query: str, action: str, top_k: int, max_tokens: int,
                   svc, finalize, maybe_facts, prefetch: bool = False,
                   scope: str = "", ignore_case: bool = False,
                   path: str = "", lang: str = "", kind: str = "") -> str:
-    top_k = max(1, min(int(top_k), 10))
+    top_k = max(1, min(int(top_k), _TOP_K_CAPS.get(action, _TOP_K_CAP_DEFAULT)))
     max_tokens = min(max(200, int(max_tokens)), _RESPONSE_TOKEN_CAP)
     filters = Filters(path=path, lang=lang, kind=kind)
 
@@ -262,10 +343,13 @@ def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = F
             return None
         file_matches = []
         n_matches = 0
+        def_line = False
         for i, line in enumerate(lines):
             if not pat.search(line):
                 continue
             n_matches += 1
+            if not def_line and _DEF_LINE_RE.match(line):
+                def_line = True
             if n_matches > _EXACT_MAX_MATCHES_PER_FILE:
                 continue  # keep counting, stop printing
             start = max(0, i - 1)
@@ -281,32 +365,45 @@ def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = F
             file_matches.append(
                 f"[+{n_matches - _EXACT_MAX_MATCHES_PER_FILE} more matching lines in this file; "
                 "narrow the pattern]")
-        return (rel, file_matches) if file_matches else None
+        return (rel, file_matches, def_line) if file_matches else None
 
-    matched_parts = []
-    file_count = 0
-    total_tokens = 0
+    # Every matching file is collected, then ordered definitions-first: the
+    # manifest walk used to decide the order, so the definition of a symbol
+    # could print behind a test and a doc that merely mention it.
+    symbol_files = _symbol_definition_files(query, svc)
+    hits = []
     if targets:
         with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as pool:
             for result in pool.map(_scan_file, targets):
                 if result is None:
                     continue
-                rel, file_matches = result
+                rel, file_matches, def_line = result
                 if _read_denied(rel, svc):
                     continue  # R2: denied paths never appear in results
-                chunk = f"--- {rel} ---\n" + "\n".join(file_matches)
-                chunk_tokens = count_tokens(chunk)
-                if total_tokens + chunk_tokens > max_tokens and matched_parts:
-                    break
-                file_count += 1
-                total_tokens += chunk_tokens
-                matched_parts.append(chunk)
-                if file_count >= top_k:
-                    break
+                def_rank = 0 if rel in symbol_files else (1 if def_line else 2)
+                hits.append(((def_rank, _KIND_RANK.get(doc_kind(rel), 9), rel),
+                             rel, file_matches, def_rank < 2))
+    hits.sort(key=lambda h: h[0])
+
+    matched_parts = []
+    file_count = 0
+    total_tokens = 0
+    for _key, rel, file_matches, is_def in hits:
+        header = f"--- {rel} ---" + (" [definition]" if is_def else "")
+        chunk = header + "\n" + "\n".join(file_matches)
+        chunk_tokens = count_tokens(chunk)
+        if total_tokens + chunk_tokens > max_tokens and matched_parts:
+            break
+        file_count += 1
+        total_tokens += chunk_tokens
+        matched_parts.append(chunk)
+        if file_count >= top_k:
+            break
 
     if not matched_parts:
+        hint = _zero_hint("exact", query, filters=filters, ignore_case=ignore_case)
         return finalize("c3_search", {"action": "exact"},
-                        f"[search:exact:{query}] 0 results in {len(manifest)} files", "0")
+                        f"[search:exact:{query}] 0 results in {len(manifest)} files{hint}", "0")
 
     resp = "\n".join(matched_parts)
     return finalize("c3_search", {"action": "exact"}, resp, f"{file_count}f",
@@ -418,8 +515,9 @@ def _files_search(query, top_k, svc, finalize, filters: Filters | None = None):
                              **_filter_kwargs(filters))
     res = [r for r in res if not _read_denied(r.get("file", ""), svc)]
     if not res:
+        hint = _zero_hint("files", query, filters=filters)
         return finalize("c3_search", {"action": "files"},
-                        f"[search:files:{query}] 0 results", "0")
+                        f"[search:files:{query}] 0 results{hint}", "0")
     parts = []
     for r in res:
         meta = f"- {r['file']} (L{r['lines']})"
@@ -519,7 +617,7 @@ def _semantic_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
     total_tokens = 0
     for r in results:
         name = f" {r['name']}" if r.get('name') else ""
-        ref = f"--- {r['file']}:L{r['lines']}{name} ({r['type']})"
+        ref = f"--- {r['file']}:L{r['lines']}{name} ({r['type']}) [dense]"
         lines.extend([ref, r['content']] if r.get('content') else [ref])
         total_tokens += r['tokens']
 
@@ -539,7 +637,8 @@ def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
     # Access Guard pre-filter BEFORE dedup/top_k (R2 deny-ENUMERATE).
     results = [r for r in results if not _read_denied(r.get("file", ""), svc)]
     if not results:
-        return finalize("c3_search", {"query": query}, f"[search:{query}] 0 results", "0")
+        hint = _zero_hint("code", query, filters=filters)
+        return finalize("c3_search", {"query": query}, f"[search:{query}] 0 results{hint}", "0")
 
     best_score = max((r.get("score", 0.0) for r in results), default=0.0)
     if best_score > 0:
@@ -564,7 +663,7 @@ def _code_search(query, top_k, max_tokens, svc, finalize, maybe_facts,
     total_tokens = 0
     for r in deduped:
         name = f" {r['name']}" if r['name'] else ""
-        ref = f"--- {r['file']}:L{r['lines']}{name} ({r['type']})"
+        ref = f"--- {r['file']}:L{r['lines']}{name} ({r['type']}){_via_tag(r)}"
         lines.extend([ref, r['content']] if r.get('content') else [ref])
         total_tokens += r['tokens']
 

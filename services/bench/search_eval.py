@@ -330,11 +330,15 @@ def _embedding_index(project: str, indexer, *, build: bool):
 
 # ── Response parsing ────────────────────────────────────────────────────────
 
+# Headers may carry a trailing ``[tag]`` (2.110.0): ``[lexical+dense]`` /
+# ``[dense]`` / ``[symbol+lexical, reranked]`` on chunk hits, ``[definition]``
+# on exact hits. The tag is provenance, not identity, so it is optional here.
 _RE_CHUNK = re.compile(
-    r"^--- (?P<file>.+?):L(?P<lines>[^ ]+)(?: (?P<name>.+?))? \((?P<type>[^()]+)\)\s*$")
+    r"^--- (?P<file>.+?):L(?P<lines>[^ ]+)(?: (?P<name>.+?))? \((?P<type>[^()]+)\)"
+    r"(?: \[(?P<via>[^\]]*)\])?\s*$")
 _RE_FILE_ROW = re.compile(
     r"^- (?P<file>.+?) \(L(?P<lines>[^)]+)\)(?:.*?contains (?P<type>\S+) '(?P<name>[^']*)')?")
-_RE_EXACT = re.compile(r"^--- (?P<file>.+?) ---\s*$")
+_RE_EXACT = re.compile(r"^--- (?P<file>.+?) ---(?: \[(?P<via>[^\]]*)\])?\s*$")
 
 
 def parse_hits(action: str, response: str) -> list[Hit]:

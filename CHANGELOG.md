@@ -4,6 +4,56 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.110.0] - 2026-09-04
+
+Phase P5 of the search plan, the last one: what the agent sees around a
+hit. Nothing here changes how `code` ranks; it changes what a zero result
+says, what order `exact` prints in, how many files `files` and `exact` may
+list, and whether a hit tells you which backend produced it.
+
+### Changed — `c3_search` UX (P5)
+
+- **Zero results now name the next move.** `code` says `try action='exact'
+  for a literal or regex, or action='files' for a filename` — or just
+  `action='files'` when the query looks like a path, `action='exact'` when
+  it looks like a regex; `exact` suggests `ignore_case=True` (when it was
+  off) and `action='code', which matches identifiers by their parts`;
+  `files` suggests a glob and `action='exact' to search file contents`. An
+  active `path` / `lang` / `kind` filter is named too. The hint never
+  repeats the query, so a masked canary is not echoed twice and the eval
+  harness's forbidden-text check is unaffected.
+- **`exact` prints definitions first.** Every matching file is collected,
+  then ordered: files whose indexed symbol table defines the identifier the
+  query names, then files where a matching line declares something
+  (`def` / `class` / `fn` / `func` / `type` / `const` / a top-level
+  assignment, and the `export` / `pub` / `static` prefixes), then the rest;
+  within a group source before config, docs and tests, then path order. The
+  header carries ` [definition]` on the first two groups. Observed in
+  2.108.0: the manifest walk decided the order, so `OAuth2Client` printed a
+  test and a doc before the class. The fixture gate `exact_definition_first`
+  (`must_pass`) and the golden case `exact_definition_first_code_index`
+  (`CodeIndex` in a tree where dozens of tests and docs mention it) pin it.
+- **Larger caps for `files` and `exact`.** `top_k` is honoured up to 50 for
+  those actions (a row or a per-file block costs a line or two); `code`,
+  `lexical` and `semantic` keep the cap of 10 because each hit spends a
+  chunk of the token budget. The 2400-token response cap still applies.
+- **Headers say which backend produced the hit.** `code` hits end in
+  `[lexical]`, `[dense]`, `[lexical+dense]`, with a `symbol+` prefix for an
+  exact-symbol match and `, reranked` when the reranker reordered the
+  block; `semantic` hits end in `[dense]`. `CodeIndex.search` results carry
+  the same as `via` (and `reranked: True`). `services/bench/search_eval.py`
+  parses the tags; `_append_prefetch` and the federated merge never keyed
+  on the line end.
+
+Fixture suite: recall@1 0.946 → 0.965, MRR 0.970 → 0.980 (66 cases, 57
+scored, the new gate at rank 1); baseline updated, floors kept. Golden on
+this tree with fusion on: recall@1 0.774 / recall@3 0.935 / MRR 0.858 over
+31 scored cases, the new exact case at rank 1 — not comparable to the
+2.109.0 table (26 cases). `tests/test_search_p5.py` (21 tests) pins the
+caps, every hint shape, the ordering (symbol table, declaring line, kind
+order, survival of the `top_k` cut, the declaration regex), every tag
+shape, and the harness parser.
+
 ## [2.109.0] - 2026-09-03
 
 Phase P4 of the search plan: the optional reranker, measured and left off.

@@ -230,13 +230,16 @@ class CodeIndex:
             return "off"
         return str(getattr(self.reranker, "name", None) or "on")
 
-    def _apply_rerank(self, query: str, base_tokens: list, ranked: list, exact_ids: set) -> list:
+    def _apply_rerank(self, query: str, base_tokens: list, ranked: list, exact_ids: set,
+                      reranked: set | None = None) -> list:
         """Cross-encoder pass over the top ``search_rerank_top_n`` candidates.
 
         Identifier-shaped queries are left alone (services/reranker
         .is_natural_language). Exact-symbol matches keep their place ahead of
         the reranked block; candidates beyond the block keep their order.
         Any reranker failure or empty answer leaves ``ranked`` unchanged.
+        ``reranked``, when given, receives the ids the model actually
+        reordered so the caller can label them.
         """
         from services.reranker import is_natural_language, passage_text
 
@@ -258,10 +261,12 @@ class CodeIndex:
             return ranked
         order = {cid: i for i, (cid, _) in enumerate(scored)}
         block.sort(key=lambda cs: (order.get(cs[0], len(order)), -cs[1], cs[0]))
+        if reranked is not None:
+            reranked.update(cid for cid, _ in block)
         return exact_head + block + ranked[n:]
 
     def _fuse_dense(self, query: str, lexical_ranked: list, filters: Filters,
-                    exact_ids: set, want: int) -> list:
+                    exact_ids: set, want: int, provenance: dict | None = None) -> list:
         """RRF of the lexical ranking with the dense backend's candidates.
 
         Each list contributes its top ``n`` (20..50, from ``want``); dense ids
@@ -270,6 +275,9 @@ class CodeIndex:
         their override through the rank key. Lexical candidates beyond ``n``
         trail the fused block so budget filling can continue past it. Any
         backend failure returns the lexical ranking unchanged.
+        ``provenance``, when given, is filled with ``chunk_id -> {"lexical",
+        "dense"}`` naming the list(s) each fused id came from; it stays empty
+        when fusion did not happen, which the caller reads as lexical-only.
         """
         from services.retrieval import rrf
 
@@ -297,6 +305,15 @@ class CodeIndex:
             fused.setdefault(cid, 0.0)
         ranked = sorted(fused.items(), key=self._rank_key(exact_ids), reverse=True)
         tail = [(cid, score) for cid, score in lexical_ranked[n:] if cid not in fused]
+        if provenance is not None:
+            for cid in fused:
+                provenance[cid] = set()
+            for cid in lexical:
+                provenance[cid].add("lexical")
+            for cid in dense:
+                provenance[cid].add("dense")
+            for cid, _ in tail:
+                provenance[cid] = {"lexical"}
         return ranked + tail
 
     def _lexical_wanted(self) -> bool:
@@ -1254,10 +1271,17 @@ class CodeIndex:
         if ranked is None:
             ranked = self._rank_tfidf(query, query_tokens, query_bigrams, filters,
                                       exact_ids, max_mtime)
+        # Provenance (2.110.0): which list(s) produced each id, so the tool
+        # can label a hit ``[lexical+dense]`` instead of leaving the agent to
+        # guess why an unrelated-looking chunk ranked. Empty = lexical only.
+        provenance: dict = {}
+        reranked_ids: set = set()
         if fuse:
-            ranked = self._fuse_dense(query, ranked, filters, exact_ids, want=top_k)
+            ranked = self._fuse_dense(query, ranked, filters, exact_ids, want=top_k,
+                                      provenance=provenance)
         if rerank_now:
-            ranked = self._apply_rerank(query, base_tokens, ranked, exact_ids)
+            ranked = self._apply_rerank(query, base_tokens, ranked, exact_ids,
+                                        reranked=reranked_ids)
 
         # Collect results up to token budget
         results = []
@@ -1298,6 +1322,12 @@ class CodeIndex:
                 # a windowed class scores low on TF-IDF and is still the
                 # definition the query named.
                 result["exact_symbol"] = True
+            sources = ["symbol"] if chunk_id in exact_ids else []
+            lists = provenance[chunk_id] if chunk_id in provenance else {"lexical"}
+            sources.extend(s for s in ("lexical", "dense") if s in lists)
+            result["via"] = "+".join(sources)
+            if chunk_id in reranked_ids:
+                result["reranked"] = True
             if include_content:
                 result["content"] = window["content"] if window else chunk["content"]
 

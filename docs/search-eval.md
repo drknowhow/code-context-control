@@ -182,6 +182,37 @@ question about expiring sessions is the shape of the errors. The reranker
 therefore stays off; the contract and the flag exist so a code-trained
 cross-encoder, or an LLM judge, can be measured the same way later.
 
+### What the agent sees (2.110.0, P5)
+
+The last phase changed the response, not the ranking:
+
+- A zero result names the next move and never repeats the query: `code`
+  points at `exact` (a literal or regex) and `files` (a filename), or at
+  just one of them when the query looks like a path or a regex; `exact`
+  points at `ignore_case=True` and `code`; `files` at a glob and `exact`.
+  An active filter is named so it can be dropped.
+- `exact` collects every matching file and prints definitions first: files
+  whose symbol table defines the identifier, then files with a declaring
+  line (`def` / `class` / `fn` / `func` / `type` / `const` / a top-level
+  assignment, with `export` / `pub` / `static` prefixes), then the rest;
+  within a group source, config, docs, tests, then path order. The header
+  reads `--- path --- [definition]` on the first two groups. C-family
+  functions without a keyword rely on the symbol table. The fixture gate
+  `exact_definition_first` and the golden case
+  `exact_definition_first_code_index` pin it.
+- `files` and `exact` honour `top_k` up to 50; `code`, `lexical` and
+  `semantic` keep 10. The 2400-token response cap is unchanged.
+- Chunk headers end in a provenance tag: `[lexical]`, `[dense]`,
+  `[lexical+dense]`, `symbol+` for an exact-symbol match, `, reranked` when
+  the reranker reordered the block; `semantic` hits end in `[dense]`.
+  `CodeIndex.search` exposes the same as `via` / `reranked`. `parse_hits`
+  accepts the tag on chunk and exact headers, so a case file needs no
+  change.
+
+Fixture after P5: recall@1 0.965, recall@3 1.0, MRR 0.980 (57 scored). The
+golden aggregates moved with the corpus and the new case, not with the
+ranking (no ranking code changed in P5).
+
 ## Known gaps this suite documents (2.106.0)
 
 - Semantic cases run only where Ollama and chromadb are present.

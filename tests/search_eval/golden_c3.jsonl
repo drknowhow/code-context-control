@@ -30,3 +30,4 @@
 {"id": "sem_access_guard_filter", "action": "semantic", "query": "access guard denied path filter", "expect": {"files": ["cli/tools/search.py", "services/access_guard.py"]}, "gate": "info", "tags": ["semantic"]}
 {"id": "sem_chromadb_hang", "action": "semantic", "query": "where do we stop a chromadb delete from hanging", "expect": {"files": ["services/embedding_index.py"], "symbols": ["_remove_file_chunks"]}, "gate": "info", "tags": ["semantic", "nl"]}
 {"id": "sem_watcher_full_rebuild", "action": "semantic", "query": "the file watcher triggers a full index rebuild after enough changes", "expect": {"files": ["services/watcher.py"]}, "gate": "info", "tags": ["semantic", "nl"]}
+{"id": "exact_definition_first_code_index", "action": "exact", "query": "CodeIndex", "expect": {"files": ["services/indexer.py"]}, "k": 1, "gate": "info", "tags": ["regex", "ordering"], "why": "a symbol mentioned in dozens of tests and docs: the definition prints first (2.110.0)"}
