@@ -387,8 +387,10 @@ def test_windows_hook_command_preserves_paths_stdin_and_exit(tmp_path):
     script.write_text("import json, sys\nprint(json.dumps({'args': sys.argv[1:], 'input': sys.stdin.read()}))\nsys.exit(2)\n")
     install_hooks(project, sys.executable, script)
     handler = json.loads((project / ".codex/hooks.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]
+    # cmd.exe -> powershell.exe -> python: a cold PowerShell start on a busy
+    # CI runner alone can pass 10 s, so the bound covers the runner, not the hook.
     result = subprocess.run('cmd.exe /d /s /c "' + handler["commandWindows"] + '"',
-        input='{"session_id":"synthetic"}', capture_output=True, text=True, timeout=10)
+        input='{"session_id":"synthetic"}', capture_output=True, text=True, timeout=120)
     assert result.returncode == 2, result.stderr
     data = json.loads(result.stdout)
     assert data["args"] == ["pretool", "--host", "codex", "--project", str(project)]
