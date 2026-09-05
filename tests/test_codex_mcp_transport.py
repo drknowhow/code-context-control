@@ -19,6 +19,14 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _field(obj, *names):
+    """mcp 1.x exposes camelCase result fields, mcp 2.x snake_case."""
+    for name in names:
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    raise AttributeError(f"{type(obj).__name__} has none of {names}")
+
+
 def _exercise(host: str, tmp_path: Path) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -57,11 +65,11 @@ def _exercise(host: str, tmp_path: Path) -> None:
                 async with ClientSession(read, write, read_timeout_seconds=read_timeout,
                                          client_info=Implementation(name=host, version="test")) as client:
                     initialized = await client.initialize()
-                    assert "C3" in initialized.serverInfo.name
+                    assert "C3" in _field(initialized, "serverInfo", "server_info").name
                     tools = await client.list_tools()
                     assert "c3_read" in {t.name for t in tools.tools}
                     response = await client.call_tool("c3_read", {"file_path": "example.py", "lines": [1, 2]})
-                    assert not response.isError
+                    assert not _field(response, "isError", "is_error")
                     assert "42" in "\n".join(getattr(c, "text", "") for c in response.content)
                     await client.call_tool("c3_session", {"action": "save", "summary": "Transport smoke test"})
         sessions = [json.loads(p.read_text(encoding="utf-8")) for p in (c3 / "sessions").glob("session_*.json")]
