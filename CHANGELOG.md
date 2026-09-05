@@ -4,6 +4,47 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.118.2] - 2026-09-05
+
+### Fixed — the WinError 5 race had four more copies, including the lock store
+
+2.118.1 fixed the publish step in the shell job store: a shared `<name>.tmp`
+plus a single `os.replace`, which on Windows can publish a half-written file
+or raise `PermissionError: [WinError 5] Access is denied`. That shape had been
+copied into four other small JSON stores, and fixing one copy of a bug is not
+fixing the bug. All five now go through one helper, `services/atomic_json.py`:
+
+- `services/agent_locks.py` — the lock store, and the most exposed of the
+  four: it is written from a threaded server, `locks.json.tmp` is a name every
+  writer on the box picks, and a lost write drops live leases. That is exactly
+  what its loader refuses to do when it quarantines a corrupt file rather than
+  resetting it to empty.
+- `services/access_guard._write_scope_config` — the CLI's `config.json` writer.
+- `cli/hub_server.py` — the hub's config route, writing the same file.
+- `oracle/services/mobile_api.py` — the mobile override-config writer, ditto.
+  The last three write one file from three processes, one of them threaded.
+
+None had a reported failure. That is a statement about how often they are
+written, not about whether the race is real — the job store's version was
+also unreported until it started failing CI.
+
+### Changed — durable config is now flushed before it is published
+
+`write_json_atomic` fsyncs the temp before the replace, so a crash between the
+two cannot leave a zero-length `config.json`. The Access Guard reads a
+truncated config as `<corrupt-config>` and fails **every** path closed, which
+wedges the session that would otherwise fix it — worth a flush that these
+files take a few times a session. The shell job store opts out (`fsync=False`):
+its records are ephemeral spill state that a crash invalidates anyway.
+
+Serialisation is unchanged at all five sites — indent, `ensure_ascii` and the
+trailing newline are per-caller arguments, so no file on disk reformats.
+
+`cli/_hook_utils._atomic_write_json` still keeps its own copy: a PreToolUse
+hook is a separate short-lived single-threaded process that imports nothing
+from `services`, so pid-only is genuinely enough there. That one is deliberate
+and is the only one left.
+
 ## [2.118.1] - 2026-09-04
 
 ### Fixed — the job store could crash a supervisor on Windows with WinError 5

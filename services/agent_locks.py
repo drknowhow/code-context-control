@@ -41,6 +41,7 @@ import time
 import uuid
 from pathlib import Path
 
+from services.atomic_json import write_json_atomic
 from services.task_store import _FileLock
 
 SCHEMA_VERSION = 1
@@ -219,10 +220,15 @@ class LockStore:
         return doc
 
     def _save(self, doc: dict) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_file.with_name(self.state_file.name + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, self.state_file)
+        # The `_FileLock` guard serialises the read-modify-write, but only
+        # among callers that take it — and it is advisory, held per process.
+        # The publish itself has to be safe on its own: a shared
+        # `locks.json.tmp` is one name every writer on the box picks, and two
+        # of them landing together either publishes a half-written lease file
+        # or raises WinError 5 (see services.atomic_json). Losing this write
+        # means losing live leases, which is exactly what `_load` refuses to
+        # do when it quarantines a corrupt file instead of resetting it.
+        write_json_atomic(self.state_file, doc)
 
     def _guard(self):
         return _FileLock(self.lock_file)

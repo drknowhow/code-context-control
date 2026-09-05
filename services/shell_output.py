@@ -75,6 +75,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from services.atomic_json import write_json_atomic
+
 __all__ = [
     "STORE_ROOT", "RETENTION_DAYS", "RETENTION_BYTES", "HEAD_BYTES", "TAIL_BYTES",
     "TEXT_MAX_BYTES", "DEFAULT_READ_BYTES", "LINE_CLIP_CHARS",
@@ -960,64 +962,22 @@ def _load_meta(path: Path) -> OutputMeta | None:
         return None
 
 
-#: os.replace retries for when Windows briefly holds a handle on the target.
-#: Same construction as ``cli/_hook_utils._atomic_write_json``; the hook layer
-#: keeps its own copy on purpose (a PreToolUse subprocess imports nothing from
-#: services), so the two are duplicated deliberately rather than by accident.
-_REPLACE_ATTEMPTS = 4
-_REPLACE_BACKOFF_S = 0.02
-
-
 def _write_json_atomic(path: Path, data: dict) -> None:
-    """Write JSON durably: unique temp file in the same directory + os.replace.
+    """Publish a job record durably — see ``services.atomic_json``.
 
-    Two bugs this fixes, both observed on Windows CI (2026-09-04, job store):
+    This was the first copy of the unique-temp + retried-``os.replace`` shape
+    (2.118.1, PR #157, after a shared ``<name>.tmp`` crashed supervisors on
+    Windows CI with WinError 5 and reported "failed before running" for
+    commands that were fine). The implementation now lives in one place so the
+    lock store and the three ``config.json`` writers share it instead of
+    carrying four more copies of a bug.
 
-    1. **A shared temp name.** ``<name>.tmp`` is the same string for every
-       writer, so two processes writing the SAME job file — the parent that
-       creates the record and the supervisor that immediately saves status —
-       raced on the temp itself. One would be mid-write while the other tried
-       to publish it, and ``os.replace`` raised
-       ``PermissionError: [WinError 5] Access is denied``. The suffix is a pid
-       AND a random token, not a pid alone: this store is written from a
-       threaded server, and threads share a pid, so ``.tmp<pid>`` collides
-       exactly as the shared name did. With a per-WRITE temp the race is only
-       on the target, where ``os.replace`` is genuinely atomic.
-    2. **No retry.** Even with unique temps, another process holding a read
-       handle on the target (an AV scanner, the Search indexer, a concurrent
-       reader) makes ``os.replace`` raise transiently. A single attempt turned
-       that into a crashed supervisor — the job never ran, and the caller got
-       "failed before running" for a command that was fine.
-
-    A partial write can still be published without fsync, but this store is
-    ephemeral spill state rather than durable config, so the cost of an fsync
-    per status update is not worth paying here.
+    ``fsync=False`` is the one thing kept local: a job record is ephemeral
+    spill state that a crash invalidates anyway, so a disk flush per status
+    update buys nothing. The durable stores take the default.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(
-        f"{path.name}.tmp{os.getpid()}-{secrets.token_hex(4)}")
-    try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
-        last_exc: OSError | None = None
-        for attempt in range(_REPLACE_ATTEMPTS):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError as exc:
-                last_exc = exc
-                if attempt < _REPLACE_ATTEMPTS - 1:
-                    time.sleep(_REPLACE_BACKOFF_S * (2 ** attempt))
-        if last_exc is not None:
-            raise last_exc
-    finally:
-        # A successful replace already consumed tmp, so this only fires on the
-        # failure paths — otherwise abandoned temps accumulate in the store.
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+    write_json_atomic(path, data, indent=1, ensure_ascii=False,
+                      trailing_newline=False, fsync=False)
 
 
 def _move(src: Path, dst: Path) -> None:
