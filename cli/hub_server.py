@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services import access_guard
 from services.activity_log import ActivityLog
+from services.atomic_json import write_json_atomic
 from services.project_manager import ProjectManager
 from services.tool_classifier import CATEGORIES
 
@@ -3078,9 +3079,10 @@ def api_projects_config_put():
         else:
             merged[key] = val
     cfg[section] = merged
-    tmp = cfg_file.with_name("config.json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    os.replace(tmp, cfg_file)
+    # Not `config.json.tmp`: the CLI (services.access_guard) and the mobile
+    # API write this same file, and the hub itself is threaded — one shared
+    # temp name is a name they all pick at once. See services.atomic_json.
+    write_json_atomic(cfg_file, cfg, trailing_newline=False)
     try:
         ActivityLog(str(resolved)).log("hub_config_write", {
             "section": section, "keys": sorted(values.keys()), "source": "hub"})

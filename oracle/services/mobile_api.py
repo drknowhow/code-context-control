@@ -56,6 +56,7 @@ from oracle.config import ORACLE_DIR, load_config
 from oracle.services import api_auth, discovery_audit
 from oracle.services.api_auth import extract_bearer
 from oracle.services.tool_registry import _c3_version
+from services.atomic_json import write_json_atomic
 
 # 2: /info reports EFFECTIVE capabilities (filtered by the config switches)
 # rather than a static list, so a client can gate its UI instead of probing.
@@ -2090,10 +2091,11 @@ def _write_override_section(project: Path, section: dict) -> dict:
         else:
             block[key] = value
     cfg["override"] = block
-    tmp = cfg_file.with_name(f"{cfg_file.name}.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
-                   encoding="utf-8")
-    tmp.replace(cfg_file)
+    # Shared with the CLI and the hub, and served from a threaded API, so the
+    # publish goes through the one race-safe writer rather than a temp name
+    # every writer of this file would pick. See services.atomic_json.
+    write_json_atomic(cfg_file, cfg, ensure_ascii=False,
+                      trailing_newline=False)
     return block
 
 

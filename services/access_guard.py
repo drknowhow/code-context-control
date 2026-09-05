@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from services.atomic_json import write_json_atomic
+
 # ── Rule model ──────────────────────────────────────────────────────────────
 
 _KIND_DENY = "deny"
@@ -1473,11 +1475,17 @@ def _load_config_for_write(cfg: Path) -> tuple:
 
 
 def _write_scope_config(cfg: Path, data: dict) -> None:
-    """Atomic same-directory replace; privileged internal write."""
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cfg.with_name(cfg.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, cfg)
+    """Atomic same-directory replace; privileged internal write.
+
+    The CLI, the hub and the mobile API all reach this for the same scope
+    file, so the publish is via ``services.atomic_json`` — a shared
+    ``config.json.tmp`` is a name they would collide on. The fsync matters
+    more here than anywhere else in the codebase: a truncated ``config.json``
+    comes back from ``load_all`` in its ``corrupt`` list, every path then
+    fails closed with ``<corrupt-config>``, and the session can no longer run
+    the command that would fix it.
+    """
+    write_json_atomic(cfg, data)
 
 
 def seed_default_global_rules() -> dict:
