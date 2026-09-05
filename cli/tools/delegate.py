@@ -6,6 +6,7 @@ Supports backend='codex' for OpenAI Codex CLI delegation.
 """
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -53,7 +54,7 @@ def _kill_proc_tree(proc):
         pass
 
 
-def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15):
+def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15, stdin_text=None):
     """communicate() replacement with idle-activity watchdog.
 
     Monitors both stdout and stderr for activity. If neither stream produces
@@ -82,6 +83,14 @@ def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15):
     t_err = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_parts, True), daemon=True)
     t_out.start()
     t_err.start()
+    if stdin_text is not None:
+        def _feed():
+            try:
+                proc.stdin.write(stdin_text)
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=_feed, daemon=True).start()
 
     deadline = time.time() + timeout
     status = "ok"
@@ -112,7 +121,7 @@ def _popen_kwargs():
     return kwargs
 
 
-def _probe_cli_version(exe: str, timeout: int = 10):
+def _probe_cli_version(exe: str, timeout: int = 10, args: list[str] | None = None):
     """Run ``<exe> --version`` without subprocess.run's timeout footgun.
 
     ``subprocess.run(cmd, capture_output=True, timeout=N)`` reads as safe and
@@ -135,7 +144,7 @@ def _probe_cli_version(exe: str, timeout: int = 10):
     """
     timed_out = False
     proc = subprocess.Popen(
-        harden_win_argv([exe, "--version"]),
+        harden_win_argv([exe, *(args if args is not None else ["--version"])]),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
         text=True, encoding="utf-8", errors="replace",
@@ -281,6 +290,7 @@ def _run_claude(task: str, context: str, cwd: str | None = None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", cwd=cwd,
+            env=_child_host_env("claude-code"),
             **_popen_kwargs(),
         )
         output, err, status = _communicate_with_heartbeat(
@@ -621,79 +631,106 @@ def _codex_cmd(prompt: str, model: str, sandbox: str, reasoning: str) -> list:
     cmd += [
         "--config", f"model_reasoning_effort={reasoning}",
         "--sandbox", sandbox,
-        "--full-auto",
+        "--config", 'approval_policy="never"',
+        "--json",
         "--skip-git-repo-check",
         prompt,
     ]
     return cmd
 
 
+def _child_host_env(provider: str) -> dict:
+    env = os.environ.copy()
+    for name in ("CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "CLAUDE_CODE_SESSION_ID"):
+        env.pop(name, None)
+    env["C3_HOST"] = provider
+    return env
+
+
+def _delegate_binding(cwd, origin_id=""):
+    from core.host import resolve_host
+    host = resolve_host(str(cwd or Path.cwd()))
+    project = str(Path(cwd or Path.cwd()).resolve())
+    origin = origin_id or host.host_session_id or f"pid-{os.getpid()}"
+    key = hashlib.sha256((project + "\0" + origin).encode()).hexdigest()
+    return Path.home() / ".c3" / "delegate_sessions" / (key + ".json"), project, origin
+
+
+def _codex_result(stdout: str) -> tuple[str, str, bool]:
+    thread_id, messages, completed, error = "", [], False, ""
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "thread.started":
+            import uuid
+            try:
+                thread_id = str(uuid.UUID(event.get("thread_id", "")))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        elif kind == "item.completed":
+            item = event.get("item") or {}
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                messages.append(str(item.get("text") or ""))
+        elif kind == "turn.completed":
+            completed = True
+        elif kind in ("turn.failed", "error"):
+            error = str(event.get("error") or event.get("message") or "Codex turn failed")
+    if error or not completed:
+        return "[codex:error] " + (error or "No completed turn in Codex event stream"), thread_id, False
+    return "\n\n".join(messages).strip(), thread_id, True
+
+
+def _execute_codex(cmd, prompt, timeout, idle_timeout, cwd, origin_id="", resume_id=""):
+    try:
+        proc = subprocess.Popen(harden_win_argv(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                cwd=cwd, env=_child_host_env("codex"), **_popen_kwargs())
+        stdout, stderr, status = _communicate_with_heartbeat(
+            proc, timeout=timeout, idle_timeout=idle_timeout, stdin_text=prompt)
+        if status != "ok":
+            return f"[codex:{status}] Delegation exceeded its execution budget", False
+        if proc.returncode != 0:
+            return "[codex:error] " + (stderr.strip()[-4000:] or f"exit code {proc.returncode}"), False
+        answer, thread_id, ok = _codex_result(stdout)
+        if resume_id and thread_id and resume_id != thread_id:
+            return "[codex:error] Resumed thread identity did not match", False
+        if ok and (thread_id or resume_id):
+            path, project, origin = _delegate_binding(cwd, origin_id)
+            from cli._hook_utils import _atomic_write_json
+            _atomic_write_json(path, {"project": project, "origin": origin, "thread_id": thread_id or resume_id})
+        return answer, ok
+    except Exception as exc:
+        return f"[codex:error] {exc}", False
+
+
 def _run_codex(task: str, context: str, model: str, sandbox: str,
                reasoning: str = "high", timeout: int = 120,
-               idle_timeout: int = 20,
-               cwd: str | None = None) -> tuple[str, bool]:
-    """Run codex exec as a subprocess. Returns (output, success).
-
-    Uses heartbeat monitor: kills process if no stderr activity for idle_timeout
-    seconds (catches MCP startup hangs). Also enforces total timeout.
-    """
+               idle_timeout: int = 0, cwd: str | None = None,
+               origin_id: str = "") -> tuple[str, bool]:
     prompt = f"{task}\n\nContext:\n{context}" if context else task
-    cmd = _codex_cmd(prompt, model, sandbox, reasoning)
-    try:
-        proc = subprocess.Popen(
-            harden_win_argv(cmd),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors="replace",
-            cwd=cwd,
-            **_popen_kwargs(),
-        )
-        stdout, stderr, status = _communicate_with_heartbeat(
-            proc, timeout=timeout, idle_timeout=idle_timeout,
-        )
-        if status == "idle_timeout":
-            return (f"[codex:idle_timeout] No stderr activity for {idle_timeout}s "
-                    f"(likely MCP startup hang)"), False
-        if status == "timeout":
-            return f"[codex:timeout] No response after {timeout}s", False
-
-        if proc.returncode != 0:
-            err = stderr.strip() if stderr else f"exit code {proc.returncode}"
-            return f"[codex:error] {err}", False
-
-        return stdout.strip(), True
-    except FileNotFoundError:
-        return "[codex:error] codex CLI not found on PATH", False
-    except Exception as e:
-        return f"[codex:error] {e}", False
+    return _execute_codex(_codex_cmd("-", model, sandbox, reasoning), prompt,
+                          timeout, idle_timeout, cwd, origin_id)
 
 
 def _run_codex_resume(follow_up: str, timeout: int = 120,
-                      cwd: str | None = None) -> tuple[str, bool]:
-    """Resume last Codex session with a follow-up prompt."""
-    cmd = ["codex", "exec", "--skip-git-repo-check", "resume", "--last"]
+                      cwd: str | None = None, origin_id: str = "") -> tuple[str, bool]:
+    path, project, origin = _delegate_binding(cwd, origin_id)
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            cwd=cwd,
-            **_popen_kwargs(),
-        )
-        try:
-            stdout, stderr = proc.communicate(input=follow_up, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_proc_tree(proc)
-            return f"[codex:timeout] Resume timed out after {timeout}s", False
-
-        if proc.returncode != 0:
-            err = stderr.strip() if stderr else f"exit code {proc.returncode}"
-            return f"[codex:error] {err}", False
-
-        return stdout.strip(), True
-    except Exception as e:
-        return f"[codex:error] {e}", False
+        import uuid
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("project") != project or saved.get("origin") != origin:
+            raise ValueError("delegate binding mismatch")
+        thread_id = str(uuid.UUID(saved["thread_id"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return "[codex:error] No Codex delegate thread bound to this project and caller; start a delegation first", False
+    cmd = [_which("codex") or "codex", "exec", "resume", "--skip-git-repo-check",
+           "--config", 'approval_policy="never"', "--json", thread_id, "-"]
+    return _execute_codex(cmd, follow_up, timeout, 0, cwd, origin_id, resume_id=thread_id)
 
 
 # Delegate task definitions
@@ -991,7 +1028,9 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
         enriched = enriched[:max_ctx * 4]
 
     # Cache check
-    ckey = hashlib.md5(f"codex|{task_type}|{model}|{enriched}|{task}".encode()).hexdigest()
+    from cli.tools._grants import session_id
+    origin = session_id(svc)
+    ckey = hashlib.md5(f"codex|{svc.project_path}|{origin}|{task_type}|{model}|{enriched}|{task}".encode()).hexdigest()
     if ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
         return finalize("c3_delegate", {"task_type": task_type, "backend": "codex", "cached": True},
@@ -1004,7 +1043,7 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
         task=task, context=enriched,
         model=model, sandbox=sandbox,
         reasoning=reasoning, timeout=timeout,
-        cwd=str(svc.project_path),
+        cwd=str(svc.project_path), origin_id=origin,
     )
     elapsed = round(time.monotonic() - t0, 1)
 
@@ -1279,8 +1318,9 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                 "codex directly.",
                 "blocked")
         timeout = int(dcfg.get("codex_timeout", 120))
+        from cli.tools._grants import session_id
         output, ok = _run_codex_resume(task, timeout=timeout,
-                                        cwd=str(svc.project_path))
+                                        cwd=str(svc.project_path), origin_id=session_id(svc))
         return finalize("c3_delegate", {"task_type": "codex_resume"},
                         output, "ok" if ok else "error")
 

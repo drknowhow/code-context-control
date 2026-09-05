@@ -74,6 +74,9 @@ _CODEX_EVENT_NAMES = {
     "posttool": "PostToolUse",
     "prompt": "UserPromptSubmit",
     "stop": "Stop",
+    "start": "SessionStart",
+    "compact": "PreCompact",
+    "end": "SessionEnd",
 }
 
 # Keys each event's hookSpecificOutput accepts. "stop" is absent deliberately:
@@ -85,6 +88,7 @@ _CODEX_HSO_KEYS = {
     },
     "posttool": {"hookEventName", "additionalContext", "updatedMCPToolOutput"},
     "prompt": {"hookEventName", "additionalContext"},
+    "start": {"hookEventName", "additionalContext"},
 }
 
 # ── Routing tables (parity with the pre-v2.42 per-matcher registration) ─────
@@ -159,10 +163,12 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
             yield "hook_edit_ledger"
     elif event == "stop":
         yield "hook_session_stats"
-        yield "hook_auto_snapshot"
+        yield "hook_codex_lifecycle" if host == HOST_CODEX else "hook_auto_snapshot"
         yield "hook_terse_advisor"
     elif event == "prompt":
         yield "hook_prompt_recall"
+    elif event in ("start", "compact", "end") and host == HOST_CODEX:
+        yield "hook_codex_lifecycle"
 
 
 _RUN_CACHE: dict = {}
@@ -413,7 +419,7 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
     return result or None
 
 
-def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dict | None:
+def _collect(event: str, payload: dict, project_path: Path | None = None):
     """Run all applicable sub-hooks in-process and merge their outputs."""
     raw_tool = str(payload.get("tool_name", ""))
     norm_tool = normalize_tool_name(raw_tool)
@@ -457,6 +463,39 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
         if event == "pretool" and outputs and _is_deny(outputs[-1]):
             break
 
+    return outputs, warnings
+
+
+def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dict | None:
+    host = detect_host(payload)
+    payload = {**payload, "hook_event_name": payload.get("hook_event_name") or _CODEX_EVENT_NAMES.get(event, event)}
+    if payload.get("tool_name") == "apply_patch" and event in ("pretool", "posttool"):
+        from core.codex_patch import patch_targets
+        base = Path(project_path or payload.get("cwd") or Path.cwd()).resolve()
+        try:
+            targets = patch_targets((payload.get("tool_input") or {}).get("command"), base)
+        except Exception as exc:
+            out = _fail_closed_deny("apply_patch", str(exc)) if event == "pretool" else {"_text": "[c3:hook-error] Could not audit malformed apply_patch payload"}
+            return merge_outputs([out], [], event=event, host=host)
+        if event == "posttool" and _hook_utils.tool_response_failed(payload):
+            return None
+        if event == "posttool":
+            response, _ = _hook_utils.get_tool_output(payload)
+            if str(response).lstrip().lower().startswith(("failed", "error", "apply_patch verification failed")):
+                return None
+        outputs, warnings = [], []
+        for target in targets:
+            translated = {**payload, "tool_name": "Write" if target.change_type == "created" else "Edit",
+                          "_c3_host": host, "_c3_change_type": target.change_type,
+                          "_c3_original_tool": "apply_patch",
+                          "tool_input": {"file_path": target.path}}
+            found, notices = _collect(event, translated, base)
+            outputs.extend(found)
+            warnings.extend(notices)
+            if event == "pretool" and any(_is_deny(o) for o in found):
+                break
+    else:
+        outputs, warnings = _collect(event, payload, project_path)
     if event == "pretool":
         outputs = _settle_grants(outputs)
     return merge_outputs(outputs, warnings, event=event, host=host)
@@ -466,8 +505,14 @@ def main() -> None:
     # Windows hook subprocesses get cp1252 pipes; sub-hook _text may carry
     # box-drawing chars / emoji, so print(text) below would UnicodeEncodeError.
     _hook_utils.ensure_utf8_stdio()
-    event = sys.argv[1].strip().lower() if len(sys.argv) > 1 else ""
-    if event not in VALID_EVENTS:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("event", nargs="?", default="")
+    parser.add_argument("--host", choices=["codex", "claude", "claude-code", "gemini"])
+    parser.add_argument("--project")
+    args = parser.parse_args()
+    event = args.event.strip().lower()
+    if event not in (*VALID_EVENTS, "start", "compact", "end"):
         log_hook_error(
             "hook_dispatch",
             ValueError(f"unknown or missing event arg: {event!r} (expected {VALID_EVENTS})"),
@@ -477,18 +522,28 @@ def main() -> None:
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            raise ValueError("Hook payload must be a JSON object")
     except Exception as exc:
         log_hook_error("hook_dispatch", exc)
+        if event == "pretool":
+            print("C3 could not validate the hook payload", file=sys.stderr)
+            raise SystemExit(2)
         return
 
     try:
-        output = dispatch(event, payload)
+        if args.host:
+            payload["_c3_host"] = args.host
+        output = dispatch(event, payload, Path(args.project).resolve() if args.project else None)
     except Exception as exc:
         # The dispatcher itself failing is critical — say so. Route the notice
         # through merge_outputs so even the panic path speaks the host's
         # dialect: a raw {"additionalContext": ...} is itself invalid on Codex,
         # which would turn one crash into two error reports.
         log_hook_error("hook_dispatch", exc)
+        if event == "pretool":
+            print("C3 could not complete the pre-tool checks", file=sys.stderr)
+            raise SystemExit(2)
         notice = {
             "additionalContext": (
                 f"[c3:hook-error] hook_dispatch: {type(exc).__name__}: {exc}; "

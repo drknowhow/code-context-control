@@ -4,6 +4,72 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.119.0] - 2026-09-05
+
+### Added — native Codex integration: hooks, thread-bound handoffs, additive installs
+
+Codex and Claude Code now coexist in one repository. Installing one host no
+longer strips the other's configuration, and every launcher says which host
+it is instead of guessing from a parent's environment.
+
+- `c3 install-mcp --ide codex` installs the C3 hook dispatcher into
+  `.codex/hooks.json` (PreToolUse, PostToolUse, UserPromptSubmit, Stop,
+  SessionStart, PreCompact, SessionEnd), keeping unrelated handlers. It never
+  bypasses hook trust: review and trust the hooks in Codex, then restart.
+- `[mcp_servers.c3]` in `.codex/config.toml` is merged with `tomlkit`
+  (`core/mcp_toml.merge_toml_section`): user keys, comments, subtables and an
+  explicit `enabled = false` survive a reinstall, and malformed TOML is an
+  error rather than an overwrite. New installs default to
+  `startup_timeout_sec = 30` and `tool_timeout_sec = 60`; existing values win.
+- Every installed launcher passes `--host <name>`. `core/host.py` resolves the
+  process identity from that flag, then `C3_HOST`, then the host session env,
+  then the project preference. Delegated children drop inherited
+  `CODEX_THREAD_ID` / `CLAUDE_CODE_SESSION_ID`, so a Claude child cannot
+  impersonate its Codex caller. `detect_host` no longer reads the parent's env.
+- Codex `apply_patch` payloads are audited per target — adds, updates, deletes
+  and moves — through the existing pre-tool guard and edit ledger. A malformed
+  patch or a failed guard denies; a failed patch is not recorded as an edit.
+- Thread-bound handoffs under `.c3/host_sessions/codex/`: the MCP server
+  checkpoints after tool responses, and SessionStart restores only the same
+  thread's snapshot for the same project, labelled as potentially stale.
+- `c3 doctor --ide codex` reports CLI support, installed configuration and
+  hook activity observed for the current thread, with no model call and no
+  environment values in the output.
+- Codex transcripts sync from `CODEX_HOME/sessions` rollout files after a
+  project match; reasoning records are skipped. Session stats take the latest
+  cumulative `token_count` and separate cached input from total input.
+- Codex delegation runs `exec --json` with the prompt on stdin, an explicit
+  sandbox and `approval_policy="never"`; the removed `--full-auto` flag is
+  gone. Resume is bound to the thread id persisted for this project and
+  caller, never `resume --last`.
+
+### Changed
+
+- The machine-wide Codex fallback in `CODEX_HOME/config.toml` is opt-in via
+  `--global-fallback`. The Codex install path no longer touches Antigravity's
+  config or deletes a Claude `.mcp.json`.
+- `.codex/hooks.json` and `AGENTS.override.md` join the agent-config confirm
+  tier and artifact history.
+- Session ids carry a random suffix so two hosts starting in the same second
+  no longer collide.
+- `c3_delegate` / `c3_agent` progress lines go through the MCP session
+  (`ctx.info`) instead of raw stdout writes.
+- `c3_status(view='sessions')` shows one cumulative row per host session and
+  prints `n/a` where usage is unavailable instead of zero.
+- New dependency: `tomlkit>=0.13.2`.
+
+### Fixed
+
+- `services/atomic_json.write_text_atomic` retries a `WinError 5` replace
+  eight times over about 2.5 s instead of four times over 0.14 s. The short
+  budget covered a scanner holding a handle but not several threads replacing
+  the same destination at once, which `windows-latest` hit in two of four CI
+  runs of the six-thread concurrency test.
+
+Existing installations need one `c3 install-mcp --ide codex` (or `--ide
+claude`) to receive the `--host` arguments and hooks. See
+`docs/codex-native.md`.
+
 ## [2.118.2] - 2026-09-05
 
 ### Fixed — the WinError 5 race had four more copies, including the lock store

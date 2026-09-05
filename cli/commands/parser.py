@@ -17,6 +17,10 @@ def build_parser(version: str, parse_cli_ide_arg):
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    p_doctor = subparsers.add_parser("doctor", help="Inspect native Codex integration without a model call")
+    p_doctor.add_argument("project_path", nargs="?", default=".")
+    p_doctor.add_argument("--ide", choices=["codex"], default="codex")
+
     p_init = subparsers.add_parser("init", help="Initialize C3 for a project")
     p_init.add_argument("project_path", nargs="?", default=".")
     p_init.add_argument("--force", action="store_true", help="Skip prompts and apply update non-interactively")
@@ -137,6 +141,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_install_mcp.add_argument("targets", nargs="*", help="Optional project path and/or IDE shorthand (for example: `claude` or `. codex`)")
     p_install_mcp.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity}", help="Target IDE (default: auto-detect)")
     p_install_mcp.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="MCP entrypoint mode (default: direct)")
+    p_install_mcp.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_install_mcp.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")
     p_install_mcp.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
 
@@ -144,6 +149,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_mcp_install.add_argument("targets", nargs="*", help="Optional project path and/or IDE shorthand")
     p_mcp_install.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity}", help="Target IDE (default: auto-detect)")
     p_mcp_install.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="MCP entrypoint mode (default: direct)")
+    p_mcp_install.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_mcp_install.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")
     p_mcp_install.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
 

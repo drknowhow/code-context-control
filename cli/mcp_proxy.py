@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.config import load_proxy_config
-from core.ide import get_profile, load_ide_config
+from core.ide import get_profile
 from services.ollama_client import OllamaClient
 from services.proxy_state import ProxyState
 from services.tool_classifier import ToolClassifier
@@ -31,7 +31,7 @@ from services.tool_classifier import ToolClassifier
 class MCPProxy:
     """Bidirectional JSON-RPC proxy with optional tool filtering and context injection."""
 
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, host: str | None = None):
         self.project_path = project_path
         self.config = load_proxy_config(project_path)
         self.disabled = self.config.get("PROXY_DISABLE", False)
@@ -40,7 +40,8 @@ class MCPProxy:
         self.state_tracking_enabled = self.filtering_enabled or self.context_injection_enabled
 
         # Identify the IDE
-        self.ide_name = load_ide_config(project_path)
+        from core.host import resolve_host
+        self.ide_name = resolve_host(project_path, host).provider
         self.ide_profile = get_profile(self.ide_name)
 
         # Initialize Ollama client (optional, for SLM classification)
@@ -100,7 +101,7 @@ class MCPProxy:
 
         self._process = await asyncio.create_subprocess_exec(
             python_exe, server_script,
-            "--project", self.project_path,
+            "--project", self.project_path, "--host", self.ide_name,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -418,9 +419,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="C3 MCP Proxy")
     parser.add_argument("--project", required=True, help="Project root path")
+    parser.add_argument("--host")
     args = parser.parse_args()
-
-    proxy = MCPProxy(args.project)
+    proxy = MCPProxy(args.project, host=args.host)
     asyncio.run(proxy.run())
 
 

@@ -20,9 +20,9 @@ class IDEProfile:
     needs_type_field: bool                 # VS Code requires "type": "stdio"
     instructions_file: Optional[str]       # "CLAUDE.md", ".github/copilot-instructions.md"
     instructions_line_limit: Optional[int] # 200 for Claude, None for others
-    supports_hooks: bool                   # Only Claude Code
-    supports_transcripts: bool             # Only Claude Code (reads ~/.claude/)
-    supports_clear: bool                   # Only Claude Code has /clear
+    supports_hooks: bool                   # Host capability; activation requires trust
+    supports_transcripts: bool             # A host-specific transcript adapter exists
+    supports_clear: bool                   # Host supports clearing session context
     settings_path: Optional[str]           # ".claude/settings.local.json" or None
     config_format: str = "json"            # "json" or "toml"
     config_path_global: bool = False       # True = config_path resolved from home dir, not project
@@ -79,10 +79,10 @@ PROFILES = {
         needs_type_field=False,
         instructions_file="AGENTS.md",
         instructions_line_limit=None,
-        supports_hooks=False,
-        supports_transcripts=False,
-        supports_clear=False,
-        settings_path=None,
+        supports_hooks=True,
+        supports_transcripts=True,
+        supports_clear=True,
+        settings_path=".codex/hooks.json",
         config_format="toml",
     ),
     "antigravity": IDEProfile(

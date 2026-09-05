@@ -100,6 +100,32 @@ def read_transcript_usage(transcript_path) -> dict:
 
 def run(payload: dict, project_path: Path | None = None):
     """Core logic — importable by the dispatcher and tests. Returns None."""
+    from cli._hook_utils import HOST_CODEX, detect_host
+    if detect_host(payload) == HOST_CODEX:
+        from services.codex_transcript import read_rollout
+        base = Path(project_path or payload.get("cwd") or Path.cwd()).resolve()
+        transcript = payload.get("transcript_path")
+        data = None
+        if transcript and payload.get("session_id"):
+            try:
+                data = read_rollout(Path(transcript), base, str(payload["session_id"]), max_turns=0)
+            except (OSError, ValueError):
+                pass
+        usage = (data or {}).get("usage")
+        row = {"ts": datetime.now(timezone.utc).isoformat(), "session_id": payload.get("session_id"),
+               "provider": "codex", "source": "transcript" if usage is not None else "none",
+               "usage_available": bool((data or {}).get("usage_available")), "usage": usage,
+               # Codex input includes cached input; C3's cross-provider fields
+               # count cache reads separately, as Claude's wire format does.
+               "input_tokens": max(0, usage["input_tokens"] - usage.get("cached_input_tokens", 0)) if usage is not None and "input_tokens" in usage else None,
+               "input_tokens_including_cache": usage.get("input_tokens") if usage is not None else None,
+               "output_tokens": usage.get("output_tokens") if usage is not None else None,
+               "cache_read_tokens": usage.get("cached_input_tokens") if usage is not None else None,
+               "cache_creation_tokens": None, "cost_usd": None, "model": (data or {}).get("model", "")}
+        if (base / ".c3").is_dir():
+            with (base / ".c3" / "session_stats.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(row) + "\n")
+        return None
     usage = payload.get("usage") or {}
     if isinstance(usage, dict) and any(usage.get(src) for src, _ in _USAGE_FIELDS):
         # A future Claude Code that does send usage wins over re-reading.

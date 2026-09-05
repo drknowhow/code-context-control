@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastmcp import Context, FastMCP
 
-from core.ide import get_profile, load_ide_config
+from core.host import resolve_host
+from core.ide import get_profile
 from services.auto_memory import AutoMemory
 from services.context_snapshot import ContextSnapshot
 from services.runtime import C3Runtime, build_runtime, start_runtime, stop_runtime
@@ -68,7 +69,10 @@ def _get_project_path() -> str:
 
 
 PROJECT_PATH = _get_project_path()
-_IDE_NAME = load_ide_config(PROJECT_PATH)
+_host_parser = argparse.ArgumentParser(add_help=False)
+_host_parser.add_argument("--host")
+_HOST = resolve_host(PROJECT_PATH, _host_parser.parse_known_args()[0].host)
+_IDE_NAME = _HOST.provider
 _IDE_PROFILE = get_profile(_IDE_NAME)
 
 
@@ -114,7 +118,7 @@ async def lifespan(server):
     snapshots = services.snapshots or ContextSnapshot(project)
     services.snapshots = snapshots
 
-    if _IDE_PROFILE.supports_transcripts:
+    if _IDE_NAME == "claude-code":
         if not (Path(project) / ".c3" / "transcript_index" / "index.json").exists():
             transcript_index.build_index()
         else:
@@ -187,6 +191,8 @@ async def lifespan(server):
 
             threading.Thread(target=_bg_doc_index, daemon=True, name="c3-doc-index").start()
 
+    services.host_context = _HOST
+    services.session_mgr.host_context = _HOST
     started_session = services.session_mgr.start_session("MCP server session", source_system=_IDE_NAME)
     start_runtime(services)
 
@@ -194,7 +200,7 @@ async def lifespan(server):
     services.convo_store = convo_store
     if _IDE_PROFILE.supports_transcripts:
         try:
-            convo_store.sync(source="claude")
+            convo_store.sync(source="codex" if _IDE_NAME == "codex" else "claude")
             if services.retrieval:
                 services.retrieval.mark_sessions_dirty()
         except Exception:
@@ -206,7 +212,7 @@ async def lifespan(server):
         def _bg_convo_sync():
             while not _convo_sync_stop.wait(timeout=60):
                 try:
-                    convo_store.sync(source="claude")
+                    convo_store.sync(source="codex" if _IDE_NAME == "codex" else "claude")
                     if services.retrieval:
                         services.retrieval.mark_sessions_dirty()
                 except Exception:
@@ -226,7 +232,7 @@ async def lifespan(server):
     # Auto-restore latest snapshot if recent (< 30 min).
     # Deferred to background thread so first tool call isn't blocked.
     # Skipped in benchmark mode to prevent snapshot budget from carrying over between tasks.
-    if not os.environ.get("C3_BENCHMARK_MODE"):
+    if _IDE_NAME != "codex" and not os.environ.get("C3_BENCHMARK_MODE"):
         import threading as _restore_t
 
         def _bg_auto_restore():
@@ -318,7 +324,7 @@ async def lifespan(server):
         services.session_mgr.save_session()
         if _IDE_PROFILE.supports_transcripts:
             try:
-                convo_store.sync(source="claude", force=True)
+                convo_store.sync(source="codex" if _IDE_NAME == "codex" else "claude", force=True)
                 if services.retrieval:
                     services.retrieval.mark_sessions_dirty()
             except Exception:
@@ -434,6 +440,14 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
         except Exception:
             pass
     svc.session_mgr.track_response(tool_name, persisted_response, response_tokens=response_tokens)
+    if svc.ide_name == "codex":
+        from cli.hook_codex_lifecycle import checkpoint
+        try:
+            with _finalize_lock:
+                checkpoint(Path(svc.project_path), svc.session_mgr.current_session or {})
+        except (OSError, ValueError, TypeError):
+            print("[c3:handoff] Could not persist Codex checkpoint", file=sys.stderr)
+
 
     hybrid_cfg = svc.hybrid_config or {}
 
@@ -658,23 +672,12 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    # Wire progress notifications (same direct-stdout approach as c3_agent)
-    import json as _json
-    import threading as _threading
-    _stdout_lock = _threading.Lock()
-
+    loop = asyncio.get_running_loop()
     def _progress_cb(message: str):
-        try:
-            line = _json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/message",
-                "params": {"level": "info", "data": message},
-            }, separators=(",", ":")) + "\n"
-            with _stdout_lock:
-                sys.stdout.buffer.write(line.encode("utf-8"))
-                sys.stdout.buffer.flush()
-        except Exception:
-            pass
+        def schedule():
+            task = loop.create_task(ctx.info(message))
+            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+        loop.call_soon_threadsafe(schedule)
     svc._agent_progress_cb = _progress_cb
     try:
         return await asyncio.to_thread(handle_delegate, task, task_type, context,
@@ -696,29 +699,11 @@ async def c3_agent(workflow: str, scope: str = "", context: str = "",
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    # Wire live progress notifications: _log_progress calls this from the worker thread.
-    # We write raw JSON-RPC notifications directly to stdout instead of going through
-    # the async transport (session.send_log_message / ctx.info). The async approach fails
-    # because asyncio.run_coroutine_threadsafe coroutines never complete in time — the
-    # event loop is technically free (awaiting to_thread) but the transport write stalls.
-    # Direct stdout writes are safe here because the event loop is idle during to_thread
-    # (no concurrent transport writes until the tool response is sent after to_thread returns).
-    import json as _json
-    import threading as _threading
-    _stdout_lock = _threading.Lock()
-
     def _progress_cb(message: str):
-        try:
-            line = _json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/message",
-                "params": {"level": "info", "data": message},
-            }, separators=(",", ":")) + "\n"
-            with _stdout_lock:
-                sys.stdout.buffer.write(line.encode("utf-8"))
-                sys.stdout.buffer.flush()
-        except Exception:
-            pass
+        def schedule():
+            task = loop.create_task(ctx.info(message))
+            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+        loop.call_soon_threadsafe(schedule)
     svc._agent_progress_cb = _progress_cb
     try:
         return await asyncio.to_thread(handle_agent, workflow, scope, context, svc, finalize)

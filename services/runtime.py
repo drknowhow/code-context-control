@@ -151,6 +151,8 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
 
     ollama_client = OllamaClient(hybrid_config.get("ollama_base_url", "http://localhost:11434"))
     session_mgr = SessionManager(str(project), str(c3_dir / "sessions"), ollama_client=ollama_client)
+    from core.host import resolve_host
+    session_mgr.host_context = resolve_host(str(project), resolved_ide)
 
     vector_store = None
     if not hybrid_config.get("HYBRID_DISABLE_SLTM"):

@@ -64,12 +64,14 @@ class ConversationStore:
         Returns {synced, total, by_source, errors?}.
         """
         selected = self._normalize_source(source)
+        from services.codex_transcript import codex_home
         claude_dir = self._find_transcript_dir()
         gemini_dir = self._find_gemini_transcript_dir()
         imports_root = self.store_dir / "imports"
         imports_available = imports_root.exists() and any(imports_root.rglob("*.jsonl"))
 
         availability = {
+            "codex": (codex_home() / "sessions").is_dir(),
             "claude": bool(claude_dir),
             "gemini": bool(gemini_dir),
             "imports": bool(imports_available),
@@ -93,6 +95,12 @@ class ConversationStore:
                 providers.append(("gemini", lambda: self._sync_gemini(force=force)))
             elif selected == "gemini":
                 warnings.append("Gemini transcript directory not found for this project")
+
+        if selected in ("all", "codex"):
+            if availability["codex"]:
+                providers.append(("codex", lambda: self._sync_codex(force=force)))
+            elif selected == "codex":
+                warnings.append("Codex transcripts unavailable")
 
         if selected in ("all", "imports"):
             if availability["imports"]:
@@ -251,6 +259,36 @@ class ConversationStore:
         }
 
     # ── Transcript Parsing ─────────────────────────────────────────────────
+
+    def _sync_codex(self, force: bool = False) -> int:
+        from services.codex_transcript import codex_home, read_rollout
+        existing = {s.get("source_file"): s for s in self._load_sessions() if s.get("source") == "codex"}
+        files = sorted((codex_home() / "sessions").rglob("rollout-*.jsonl"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        synced = 0
+        for path in files:
+            if synced >= self.MAX_TRANSCRIPT_FILES:
+                break
+            source_file = str(path)
+            mtime = path.stat().st_mtime_ns
+            previous = existing.get(source_file, {})
+            if not force and previous.get("source_mtime") == mtime:
+                continue
+            try:
+                data = read_rollout(path, self.project_path, max_turns=self.MAX_TURNS_PER_SESSION,
+                                    max_text=self.MAX_TEXT_LEN)
+            except (OSError, ValueError):
+                continue
+            if not data or not data["turns"]:
+                continue
+            for turn in data["turns"]:
+                turn["tokens"] = count_tokens(turn["text"])
+            # Hash untrusted transcript IDs before using them in a filename.
+            import hashlib
+            session_id = "codex_" + hashlib.sha256(data["session_id"].encode()).hexdigest()[:32]
+            self._upsert_synced_session(session_id, data["turns"], "codex", source_file, mtime)
+            synced += 1
+        return synced
 
     def _find_transcript_dir(self):
         """Locate Claude Code's project transcript directory."""

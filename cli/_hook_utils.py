@@ -375,30 +375,20 @@ HOST_GEMINI = "gemini"
 HOST_CODEX = "codex"
 
 
-def detect_host(data: dict) -> str:
-    """Identify which agent runtime sent this hook payload.
-
-    Codex is detected by `turn_id`, which its wire schema marks required on
-    every turn-scoped event C3 hooks (pre/post tool use, user prompt submit,
-    stop) and documents as "Codex extension". Claude Code never sends it.
-
-    Codex MUST be checked before Gemini: Codex declares `tool_response` as
-    free-form, so an MCP tool that returns an object would otherwise trip the
-    isinstance-dict test and be mistaken for Gemini.
-
-    The CODEX_* env fallback covers a future Codex that drops `turn_id`. A
-    false positive there degrades gracefully — Claude Code also accepts
-    hookSpecificOutput.additionalContext — so guessing "codex" is the safe
-    direction to be wrong in.
-    """
+def detect_host(data: dict, explicit_host: str | None = None) -> str:
+    """Use the hook's explicit host or wire identity, never its parent's env."""
+    named = explicit_host or (data.get("_c3_host") if isinstance(data, dict) else None)
+    aliases = {"claude-code": HOST_CLAUDE, "claude": HOST_CLAUDE,
+               "codex": HOST_CODEX, "gemini": HOST_GEMINI, "antigravity": HOST_GEMINI}
+    if named in aliases:
+        return aliases[named]
     if not isinstance(data, dict):
         return HOST_CLAUDE
     if data.get("turn_id"):
         return HOST_CODEX
-    if isinstance(data.get("tool_response"), dict):
+    response = data.get("tool_response")
+    if isinstance(response, dict) and ("llmContent" in response or "returnDisplay" in response):
         return HOST_GEMINI
-    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_MANAGED_BY_NPM"):
-        return HOST_CODEX
     return HOST_CLAUDE
 
 

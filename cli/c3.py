@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.118.2"
+__version__ = "2.119.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -4298,17 +4298,9 @@ _C3_HOOKLESS_WORKFLOW = _adapt_workflow_for_ide(
 
 _COPILOT_INSTRUCTIONS_CONTENT = _VSCODE_SESSION_INIT + "\n\n" + _C3_HOOKLESS_WORKFLOW
 
-_AGENTS_MD_CONTENT = _C3_HOOKLESS_WORKFLOW + """
+from services.codex_integration import CODEX_WORKFLOW
 
-## IDE Configuration (Codex)
-This project uses project-scoped MCP servers. Ensure your `.codex/config.toml` includes:
-```toml
-[mcp_servers.c3]
-command = "c3-mcp"
-args = ["--project", "."]
-enabled = true
-```
-"""
+_AGENTS_MD_CONTENT = CODEX_WORKFLOW
 
 _TERSE_SKILL_CONTENT = """\
 # /terse — Terse Output Mode
@@ -4426,50 +4418,13 @@ def _toml_escape_str(value: str) -> str:
 
 
 def _upsert_toml_section(toml_path: Path, section: str, entries: dict) -> None:
-    """Add or replace a dotted TOML section (e.g. 'mcp_servers.c3') in-place.
-
-    Reads the existing file, removes the old section if present, and appends
-    the new section at the end. Handles simple scalar and list values only.
-    """
-    content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
-    header = f"[{section}]"
-
-    # Strip existing section (header + its key=value lines). Also strip any
-    # dotted child subtables (e.g. "[mcp_servers.c3.env]" under
-    # "[mcp_servers.c3]") so they are not orphaned beneath the re-appended
-    # section, which would corrupt the file on re-run.
-    child_prefix = f"{header[:-1]}."  # "[mcp_servers.c3]" -> "[mcp_servers.c3."
-    lines = content.splitlines()
-    new_lines: list[str] = []
-    skip = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == header:
-            skip = True
-            continue
-        if skip and stripped.startswith("["):
-            if not stripped.startswith(child_prefix):
-                skip = False
-        if not skip:
-            new_lines.append(line)
-
-    content = "\n".join(new_lines).rstrip()
-
-    # Build new section
-    section_lines = [f"\n\n{header}"]
-    for k, v in entries.items():
-        if isinstance(v, list):
-            # Escape each list item individually
-            items = ", ".join(f'"{_toml_escape_str(x)}"' for x in v)
-            section_lines.append(f'"{k}" = [{items}]')
-        elif isinstance(v, bool):
-            section_lines.append(f'"{k}" = {"true" if v else "false"}')
-        else:
-            section_lines.append(f'"{k}" = "{_toml_escape_str(v)}"')
-    section_lines.append("")
-
-    toml_path.parent.mkdir(parents=True, exist_ok=True)
-    toml_path.write_text(content + "\n".join(section_lines), encoding="utf-8")
+    from core.mcp_toml import merge_toml_section
+    owned = dict(entries)
+    defaults = {}
+    for key in ("enabled", "startup_timeout_sec", "tool_timeout_sec"):
+        if key in owned:
+            defaults[key] = owned.pop(key)
+    merge_toml_section(toml_path, section, owned, defaults)
 
 
 def _toml_section_bool_value(toml_path: Path, section: str, key: str) -> bool | None:
@@ -4555,20 +4510,10 @@ def _ensure_instruction_workflow(instructions_path: Path, template: str,
 def _ensure_codex_agents_workflow(agents_md_path: Path,
                                   project_path: str = "") -> str:
     """Ensure AGENTS.md contains the mandatory C3 workflow for Codex sessions."""
-    required_markers = [
-        "C3 Tools",
-        "MANDATORY",
-        "SEARCH FIRST",
-        "Anti-patterns",
-        "c3_search",
-        "c3_read",
-        "c3_validate",
-        "c3_edit",
-        "c3_memory",
-        "c3_filter",
-    ]
-    return _ensure_instruction_workflow(agents_md_path, _AGENTS_MD_CONTENT,
-                                        required_markers, project_path)
+    from services.claude_md import write_c3_instruction_doc
+    existing = agents_md_path.read_text(encoding="utf-8") if agents_md_path.exists() else None
+    rendered = write_c3_instruction_doc(agents_md_path, _AGENTS_MD_CONTENT, project_path or None)
+    return "written" if existing is None else ("kept" if rendered == existing else "updated")
 
 
 def _ensure_vscode_instructions_workflow(instructions_path: Path,
@@ -4654,6 +4599,7 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
     else:
         mcp_command = "python"
         server_args = [server_script_posix, "--project", target.as_posix()]
+    server_args += ["--host", "codex"]
 
     if primary_profile != "codex":
         codex_path = target / ".codex" / "config.toml"
@@ -4674,18 +4620,20 @@ def _ensure_project_session_configs(target: Path, server_script: str, primary_pr
 
 def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None = None,
                                      primary_profile: str | None = None) -> None:
-    """Keep user-global Codex/Antigravity MCP configs pointing at C3.
+    """Install an explicitly requested user-global Codex fallback.
 
     These fallback entries omit `--project` so the MCP server can resolve the
     active working directory dynamically when a session starts in a project that
     does not yet have a project-local Codex config file.
     """
+    if primary_profile not in (None, "codex"):
+        return
     server_script_posix = Path(server_script).as_posix()
     # With the installed entry point, no script path is needed; --project stays
     # omitted so the server resolves the working directory at session start.
-    fallback_args = [] if c3_mcp_exe else [server_script_posix]
+    fallback_args = (["--host", "codex"] if c3_mcp_exe else [server_script_posix, "--host", "codex"])
 
-    codex_path = Path.home() / ".codex" / "config.toml"
+    codex_path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
     try:
         codex_state = "updated" if codex_path.exists() else "written"
         _upsert_toml_section(
@@ -4700,27 +4648,6 @@ def _ensure_global_session_fallbacks(server_script: str, c3_mcp_exe: str | None 
         print(f"{codex_state.capitalize()} {codex_path}  (global fallback)")
     except PermissionError:
         print(f"Warning: Could not update {codex_path} (global fallback skipped)")
-
-    # Antigravity shares the ~/.gemini home dir but reads its own MCP config.
-    # When Antigravity is the primary profile, the main install flow already
-    # wrote this file — here we only keep it fresh for codex installs
-    # on machines that have Antigravity (its config dir exists).
-    antigravity_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
-    if primary_profile != "antigravity" and antigravity_path.parent.is_dir():
-        try:
-            ag_state = _upsert_json_mcp_server(
-                antigravity_path,
-                "mcpServers",
-                "c3",
-                {
-                    "command": c3_mcp_exe or sys.executable,
-                    "args": fallback_args,
-                },
-            )
-            print(f"{ag_state.capitalize()} {antigravity_path}  (global fallback)")
-        except PermissionError:
-            print(f"Warning: Could not update {antigravity_path} (global fallback skipped)")
-
 
 # Every hook script C3 has ever registered in a settings file — the v2.42+
 # dispatcher plus the pre-v2.42 per-hook scripts — so uninstall recognises an
@@ -4926,7 +4853,7 @@ def _uninstall_mcp_all(project_path: str, include_global: bool = True):
                 except Exception as e:
                     print(f"  Warning: Could not update {mcp_config_path}: {e}")
 
-        # Claude Code Hooks & Settings
+        # Per-host hooks and settings; remove only C3-owned handlers.
         if profile.supports_hooks and profile.settings_path:
             settings_path = target / profile.settings_path
             if settings_path.exists():
@@ -5475,9 +5402,9 @@ def cmd_install_mcp(args):
     # Keep the script path as a single arg; 'python' keeps the source fallback
     # portable across platforms.
     if c3_mcp_exe:
-        new_entry = {"command": c3_mcp_exe, "args": ["--project", "."]}
+        new_entry = {"command": c3_mcp_exe, "args": ["--project", ".", "--host", profile.name]}
     else:
-        new_entry = {"command": "python", "args": [server_script, "--project", "."]}
+        new_entry = {"command": "python", "args": [server_script, "--project", ".", "--host", profile.name]}
     if profile.needs_type_field:
         new_entry["type"] = "stdio"
 
@@ -5489,24 +5416,7 @@ def cmd_install_mcp(args):
         mcp_config_path = target / profile.config_path
     mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Cleanup .mcp.json if it's NOT the target config but exists (to avoid confusion)
-    if profile.config_path != ".mcp.json":
-        mcp_json_legacy = target / ".mcp.json"
-        if mcp_json_legacy.exists():
-            try:
-                with open(mcp_json_legacy, 'r', encoding="utf-8") as f:
-                    legacy_data = json.load(f)
-                if "mcpServers" in legacy_data and "c3" in legacy_data["mcpServers"]:
-                    del legacy_data["mcpServers"]["c3"]
-                    if not legacy_data["mcpServers"]:
-                        mcp_json_legacy.unlink()
-                        print(f"  Removed obsolete {mcp_json_legacy}")
-                    else:
-                        with open(mcp_json_legacy, 'w', encoding="utf-8") as f:
-                            json.dump(legacy_data, f, indent=2)
-                        print(f"  Removed C3 from obsolete {mcp_json_legacy}")
-            except Exception:
-                pass
+    # Integrations coexist: only the selected host owns this install.
 
     try:
         if profile.config_format == "toml":
@@ -5518,6 +5428,9 @@ def cmd_install_mcp(args):
             if profile.name == "codex":
                 # Codex supports explicit enable/disable per server.
                 toml_entries["enabled"] = True
+                toml_entries["startup_timeout_sec"] = 30
+                toml_entries["tool_timeout_sec"] = 60
+                toml_entries["args"] += ["--host", "codex"]
             _upsert_toml_section(
                 mcp_config_path,
                 f"{profile.config_key}.c3",
@@ -5548,8 +5461,7 @@ def cmd_install_mcp(args):
         # instead of letting it surface as anonymous out-of-band drift.
         from services.artifact_defs import note_pending_write
         note_pending_write(target, profile.config_path, "install_mcp")
-    if profile.name in {"codex", "antigravity"}:
-        _ensure_project_session_configs(target, server_script, primary_profile=profile.name, c3_mcp_exe=c3_mcp_exe)
+    if getattr(args, "global_fallback", False) and profile.name == "codex":
         _ensure_global_session_fallbacks(server_script, c3_mcp_exe=c3_mcp_exe, primary_profile=profile.name)
 
     # â”€â”€ Persist IDE choice to .c3/config.json â”€â”€
@@ -5559,13 +5471,18 @@ def cmd_install_mcp(args):
 
     c3_config = _safe_read_json(c3_config_path, ".c3/config.json")
 
-    c3_config["ide"] = ide_name
+    c3_config.setdefault("ide", ide_name)
+    c3_config["installed_ides"] = sorted(set(c3_config.get("installed_ides", [])) | {ide_name})
     c3_config["mcp"] = {"mode": mcp_mode}
     with open(c3_config_path, 'w', encoding="utf-8") as f:
         json.dump(c3_config, f, indent=2)
 
     # ── Install hooks (Claude Code) ──
-    if profile.supports_hooks and profile.settings_path:
+    if profile.name == "codex":
+        from services.codex_integration import install_hooks
+        hook_state = install_hooks(target, sys.executable, cli_dir / "hook_dispatch.py")
+        print(f"Codex hooks installed; active: {hook_state['active']}. {hook_state['activation']}")
+    if profile.name == "claude-code" and profile.supports_hooks and profile.settings_path:
         settings_dir = target / Path(profile.settings_path).parent
         settings_dir.mkdir(parents=True, exist_ok=True)
         settings_path = target / profile.settings_path
@@ -5851,7 +5768,7 @@ def cmd_install_mcp(args):
             print(f"Kept  {agents_md_path}  (C3 workflow present)")
 
         # Warn about a common conflict: global Codex config disables c3.
-        global_codex_cfg = Path.home() / ".codex" / "config.toml"
+        global_codex_cfg = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
         global_enabled = _toml_section_bool_value(global_codex_cfg, "mcp_servers.c3", "enabled")
         if global_enabled is False:
             print(f"Warning: {global_codex_cfg} has [mcp_servers.c3] enabled = false.")
@@ -5860,10 +5777,11 @@ def cmd_install_mcp(args):
     _sync_project_instruction_docs(str(target), sm)
 
     # ── User-global C3 enforcement ──────────────────────────────
-    try:
-        _ensure_global_claude_md()
-    except Exception as e:
-        print(f"Warning: Could not update global CLAUDE.md: {e}")
+    if profile.name == "claude-code":
+        try:
+            _ensure_global_claude_md()
+        except Exception as e:
+            print(f"Warning: Could not update global CLAUDE.md: {e}")
 
     # ── Default Access Guard rules (first run only) ─────────────
     from services import access_guard
@@ -5874,7 +5792,7 @@ def cmd_install_mcp(args):
         print("  (remove with: c3 access remove <glob> --kind deny --global)")
 
     # ── Install /terse skill for supported IDEs ──────────────────
-    if profile.name in ("claude-code", "codex"):
+    if profile.name == "claude-code":
         try:
             _ensure_terse_skill(profile.name)
         except Exception as e:
@@ -9292,6 +9210,11 @@ def _launch_tui() -> None:
         pass
 
 
+def cmd_doctor(args):
+    from services.codex_integration import diagnose
+    print(json.dumps(diagnose(Path(args.project_path).resolve()), indent=2))
+
+
 def main():
     # Force UTF-8 on the CLI streams so server-supplied text (PR titles, branch
     # names, diffs) and our own glyphs render cleanly on Windows cp1252 consoles
@@ -9325,6 +9248,7 @@ def main():
         return
 
     commands = {
+        "doctor": cmd_doctor,
         "init": cmd_init,
         "index": cmd_index,
         "compress": cmd_compress,

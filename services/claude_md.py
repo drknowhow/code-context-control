@@ -366,6 +366,10 @@ class ClaudeMdManager:
         nano=True: ~250 tokens (vs ~800 full). Use for IDEs where instructions space is limited.
         Filters out hooks/snapshot/transcript lines for IDEs that don't support them.
         """
+        if self.instructions_file == "AGENTS.md" and self.supports_hooks:
+            from services.codex_integration import CODEX_WORKFLOW
+            return CODEX_WORKFLOW
+
         workflow = C3_NANO_WORKFLOW if nano else C3_COMPACT_WORKFLOW
 
         # Strip features unsupported by this IDE to reduce irrelevant instruction
