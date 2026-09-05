@@ -66,6 +66,12 @@ c3 init /path/to/huge-repo --force --no-embed     # skip the embedding index on 
 
 Upgrade with `c3 upgrade` (or `pipx upgrade code-context-control`). MCP is wired through the `c3-mcp` entry point, so upgrading needs no per-project reconfiguration.
 
+For native Codex hooks, thread continuity, and additive installation alongside
+Claude Code, see the [Codex integration guide](docs/codex-native.md). Run
+`c3 install-mcp --ide codex`, review hook trust in Codex, then check
+`c3 doctor --ide codex`. Existing installations need this reinstall to receive
+the new host arguments and hooks.
+
 > **Upgrading from before v2.60.1 on Windows:** existing projects are *not* repaired by upgrading — re-run `c3 init` once per project to fix hook registration.
 
 Full notes: [Upgrading](https://github.com/drknowhow/code-context-control/blob/main/docs/upgrading.md) · [Contributing](https://github.com/drknowhow/code-context-control/blob/main/docs/upgrading.md#from-source-contributors)

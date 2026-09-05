@@ -150,7 +150,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         return None
 
     # Filter to editable extensions
-    if Path(file_path).suffix.lower() not in EDITABLE_EXTS:
+    if payload.get("_c3_original_tool") != "apply_patch" and Path(file_path).suffix.lower() not in EDITABLE_EXTS:
         return None
 
     if project_path is None:
@@ -177,7 +177,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
 
     now = datetime.now(timezone.utc)
     tool_input = payload.get("tool_input", {}) or {}
-    change_type = _detect_change_type(tool_name, tool_input)
+    change_type = payload.get("_c3_change_type") or _detect_change_type(tool_name, tool_input)
 
     # Git info is enriched asynchronously by EditLedgerEnricherAgent.
     # Mark as pending so the enricher knows to process this entry.
@@ -188,7 +188,7 @@ def run(payload: dict, project_path: Path | None = None) -> dict | None:
         # server process (services/edit_ledger.py) write within the same second.
         "id": f"edit_{now.strftime('%Y%m%d_%H%M%S')}_{_next_seq(ledger_file, now):03d}_{uuid.uuid4().hex[:4]}",
         "timestamp": now.isoformat(),
-        "session_id": "",
+        "session_id": payload.get("session_id", ""),
         "file": rel,
         "change_type": change_type,
         "summary": change_type if tracking_level == "minimal" else _extract_summary(tool_name, tool_input),

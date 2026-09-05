@@ -113,6 +113,7 @@ BUILTIN_CONFIRM_WRITE = (
     # artifact table so the two cannot drift apart again.
     "**/.github/copilot-instructions.md", "**/.cursorrules",
     "**/.vscode/mcp.json", "**/.cursor/mcp.json", "**/.codex/config.toml",
+    "**/.codex/hooks.json", "**/AGENTS.override.md",
     "**/.gemini/settings.json",
     "**/.claude/plugins/**",
 )

@@ -56,7 +56,7 @@ class TestInstallMcpEntryPoint(unittest.TestCase):
 
         entry = config["mcpServers"]["c3"]
         self.assertEqual(entry["command"], Path(fake_exe).resolve().as_posix())
-        self.assertEqual(entry["args"], ["--project", "."])
+        self.assertEqual(entry["args"], ["--project", ".", "--host", "claude-code"])
         # The source path must NOT leak into the config.
         self.assertNotIn("mcp_server.py", json.dumps(entry))
 
@@ -67,7 +67,7 @@ class TestInstallMcpEntryPoint(unittest.TestCase):
         entry = config["mcpServers"]["c3"]
         self.assertEqual(entry["command"], "python")
         self.assertTrue(entry["args"][0].endswith("mcp_server.py"))
-        self.assertEqual(entry["args"][1:], ["--project", "."])
+        self.assertEqual(entry["args"][1:], ["--project", ".", "--host", "claude-code"])
 
     def test_hook_commands_are_not_wrapped_in_cmd_exe(self):
         """Windows hooks must invoke python directly, never through cmd.exe.

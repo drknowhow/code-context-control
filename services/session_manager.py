@@ -21,14 +21,15 @@ from services.git_context import GitContext
 from services.telemetry import append_telemetry_record
 
 
-def host_session_id() -> str:
+def host_session_id(provider: str | None = None) -> str:
     """The host IDE's session id for this process, or ''.
 
     Read from the environment at session start rather than cached at import:
     a runtime built for another project inside the same MCP process (the
     c3_project proxy) must inherit the same host identity.
     """
-    return str(os.environ.get(SessionManager.HOST_SESSION_ENV) or "").strip()
+    from core.host import resolve_host
+    return resolve_host(explicit_host=provider).host_session_id
 
 
 class SessionManager:
@@ -138,15 +139,17 @@ class SessionManager:
 
     def start_session(self, description: str = "", source_system: Optional[str] = None) -> dict:
         """Start a new session."""
-        session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        source_ide = self._detect_ide_name()
+        import uuid
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:12]
+        host = getattr(self, "host_context", None)
+        source_ide = host.provider if host else self._detect_ide_name()
         normalized_source = self._normalize_source_system(source_system)
         if normalized_source:
             source_ide = self._IDE_BY_SOURCE.get(normalized_source, source_ide)
         source_system_value = normalized_source or self._SOURCE_BY_IDE.get(source_ide, "manual")
         self.current_session = {
             "id": session_id,
-            "host_session_id": host_session_id(),
+            "host_session_id": host.host_session_id if host and host.provider == source_ide else host_session_id(source_ide),
             "started": datetime.now(timezone.utc).isoformat(),
             "description": description,
             "source_system": source_system_value,

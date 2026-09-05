@@ -14,6 +14,45 @@ import re
 from pathlib import Path
 
 
+def merge_toml_section(toml_path: Path, section: str, entries: dict,
+                       defaults: dict | None = None) -> None:
+    """Update owned keys while preserving user settings, subtables and comments.
+
+    Parse and serialize before replacing anything: malformed user TOML is an
+    error, never an invitation to silently replace the file.
+    """
+    import os
+    import tempfile
+
+    import tomlkit
+
+    content = toml_path.read_text(encoding="utf-8") if toml_path.exists() else ""
+    document = tomlkit.parse(content)
+    table = document
+    for key in section.split("."):
+        if key not in table:
+            table[key] = tomlkit.table()
+        table = table[key]
+        if not hasattr(table, "items"):
+            raise ValueError(f"{section} must be a TOML table")
+    for key, value in (defaults or {}).items():
+        if key not in table:
+            table[key] = value
+    for key, value in entries.items():
+        table[key] = value
+    rendered = tomlkit.dumps(document)
+    tomlkit.parse(rendered)
+    toml_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=toml_path.name + ".", dir=toml_path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(rendered)
+        os.replace(temporary, toml_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _strip_toml_comment(raw: str) -> str:
     """Strip a trailing ``#`` comment, but only when the ``#`` is outside a
     quoted string.

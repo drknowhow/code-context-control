@@ -476,7 +476,7 @@ def aggregate_session_stats(project_path, days: int = 0,
                     except (ValueError, TypeError):
                         continue
                     rows_seen += 1
-                    if not any(_as_int(rec.get(f)) for f in _SESSION_TOKEN_FIELDS):
+                    if rec.get("usage_available") is not False and not any(_as_int(rec.get(f)) for f in _SESSION_TOKEN_FIELDS):
                         all_zero += 1
                     ts = str(rec.get("ts") or "")
                     if since is not None:
@@ -486,24 +486,27 @@ def aggregate_session_stats(project_path, days: int = 0,
                     sid = str(rec.get("session_id") or "")
                     if not sid:
                         continue
-                    prev = latest.get(sid)
+                    key = (str(rec.get("provider") or "claude"), sid)
+                    prev = latest.get(key)
                     if prev is None or ts >= str(prev.get("ts") or ""):
-                        latest[sid] = rec
+                        latest[key] = rec
         except OSError:
             pass
 
     sessions = []
     totals = {f: 0 for f in _SESSION_TOKEN_FIELDS}
-    for sid, rec in latest.items():
+    for (provider, sid), rec in latest.items():
         row = {"session_id": sid, "ts": str(rec.get("ts") or ""),
                "model": str(rec.get("model") or ""),
                "assistant_messages": _as_int(rec.get("assistant_messages")),
-               "source": str(rec.get("source") or "")}
+               "source": str(rec.get("source") or ""),
+               "provider": provider, "usage_available": rec.get("usage_available", True)}
         for f in _SESSION_TOKEN_FIELDS:
             value = _as_int(rec.get(f)) or 0
-            row[f] = value
-            totals[f] += value
-        row["total_tokens"] = sum(row[f] for f in _SESSION_TOKEN_FIELDS)
+            row[f] = value if row["usage_available"] else None
+            if row["usage_available"]:
+                totals[f] += value
+        row["total_tokens"] = sum(row[f] or 0 for f in _SESSION_TOKEN_FIELDS) if row["usage_available"] else None
         sessions.append(row)
     sessions.sort(key=lambda r: r["ts"], reverse=True)
 
@@ -511,6 +514,7 @@ def aggregate_session_stats(project_path, days: int = 0,
         "days": days,
         "sessions": sessions[:limit],
         "session_count": len(sessions),
+        "unavailable_sessions": sum(not row["usage_available"] for row in sessions),
         "rows_seen": rows_seen,
         "all_zero_rows": all_zero,
         "totals": totals,

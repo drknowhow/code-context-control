@@ -131,6 +131,11 @@ def _budget_view(svc, detailed, finalize):
 
 def _health_view(svc, finalize):
     parts = []
+    if getattr(svc, "ide_name", "") == "codex":
+        from services.codex_integration import hook_state
+        current = getattr(svc.session_mgr, "current_session", None) or {}
+        state = hook_state(Path(svc.project_path), str(current.get("host_session_id") or ""))
+        parts.append(f"[host] codex hooks supported:{state['supported']} installed:{state['installed']} active:{state['active']}")
     ollama_ok = svc.ollama_client and svc.ollama_client.is_available()
     models = svc.ollama_client.list_models() if ollama_ok else []
     parts.append(f"[ollama] {'up (' + str(len(models)) + ' models)' if ollama_ok else 'unavailable'}")
@@ -257,23 +262,28 @@ def _sessions_view(svc, finalize):
     if not entries:
         return finalize("c3_status", {"view": "sessions"}, "[sessions] No sessions recorded yet.", "empty")
 
-    recent = entries[-20:]  # last 20 sessions
+    latest = {}
+    for index, entry in enumerate(entries):
+        key = (entry.get("provider", "claude"), entry.get("session_id") or f"row-{index}")
+        latest[key] = entry
+    recent = list(latest.values())[-20:]  # cumulative snapshots, one per host session
     total_cost = sum(e.get("cost_usd") or 0 for e in recent)
     total_in = sum(e.get("input_tokens") or 0 for e in recent)
     total_out = sum(e.get("output_tokens") or 0 for e in recent)
     total_cache_read = sum(e.get("cache_read_tokens") or 0 for e in recent)
 
     lines = [f"# Session Stats (last {len(recent)} of {len(entries)} sessions)"]
-    lines.append(f"Total cost: ${total_cost:.4f}  |  In: {total_in:,}  Out: {total_out:,}  Cache-read: {total_cache_read:,}")
+    cost_total = f"${total_cost:.4f}" if any(e.get("cost_usd") is not None for e in recent) else "unavailable"
+    lines.append(f"Total cost: {cost_total}  |  Known In: {total_in:,}  Out: {total_out:,}  Cache-read: {total_cache_read:,}")
     lines.append("")
     lines.append(f"{'Date':<22} {'Cost':>8} {'In':>8} {'Out':>6} {'Cache-rd':>9} Stop")
     lines.append("-" * 64)
     for e in reversed(recent):
         ts = (e.get("ts") or "")[:19].replace("T", " ")
-        cost = f"${e.get('cost_usd') or 0:.4f}"
-        inp = f"{e.get('input_tokens') or 0:,}"
-        out = f"{e.get('output_tokens') or 0:,}"
-        cr = f"{e.get('cache_read_tokens') or 0:,}"
+        cost = f"${e['cost_usd']:.4f}" if e.get("cost_usd") is not None else "n/a"
+        inp = f"{e['input_tokens']:,}" if e.get("input_tokens") is not None else "n/a"
+        out = f"{e['output_tokens']:,}" if e.get("output_tokens") is not None else "n/a"
+        cr = f"{e['cache_read_tokens']:,}" if e.get("cache_read_tokens") is not None else "n/a"
         reason = e.get("stop_reason") or ""
         lines.append(f"{ts:<22} {cost:>8} {inp:>8} {out:>6} {cr:>9} {reason}")
 
