@@ -44,10 +44,15 @@ import secrets
 import time
 from pathlib import Path
 
-# Four attempts across ~0.14s of backoff. Sized for a scanner or indexer
-# holding a handle, not for a lock a peer holds for seconds — a failure that
-# survives this is real and is re-raised.
-REPLACE_ATTEMPTS = 4
+# Eight attempts across ~2.5s of doubling backoff. Four attempts over 0.14s
+# was sized for a scanner or indexer holding a handle; it was not enough for
+# the third case, several threads replacing the same destination at once.
+# Two concurrent MoveFileEx calls on one target can also answer WinError 5,
+# and on a loaded CI runner the loser can wait longer than 0.14s for its turn
+# (windows-latest hit it in two of four runs of the six-thread test). The
+# budget only costs time on the failure path; a failure that survives it is
+# real and is re-raised.
+REPLACE_ATTEMPTS = 8
 REPLACE_BACKOFF_S = 0.02
 
 

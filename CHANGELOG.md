@@ -58,6 +58,14 @@ it is instead of guessing from a parent's environment.
   prints `n/a` where usage is unavailable instead of zero.
 - New dependency: `tomlkit>=0.13.2`.
 
+### Fixed
+
+- `services/atomic_json.write_text_atomic` retries a `WinError 5` replace
+  eight times over about 2.5 s instead of four times over 0.14 s. The short
+  budget covered a scanner holding a handle but not several threads replacing
+  the same destination at once, which `windows-latest` hit in two of four CI
+  runs of the six-thread concurrency test.
+
 Existing installations need one `c3 install-mcp --ide codex` (or `--ide
 claude`) to receive the `--host` arguments and hooks. See
 `docs/codex-native.md`.
