@@ -331,7 +331,10 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
 
     if not ranges:
         map_cached = not svc.file_memory.needs_update(rel_path)
-        file_map = svc.file_memory.get_or_build_map(rel_path)
+        budget = svc.file_memory.MAP_TOKEN_BUDGET
+        if isinstance(lines, int) and not isinstance(lines, bool) and lines > 0:
+            budget = lines   # lines=<int> with no symbols = map budget (C4)
+        file_map = svc.file_memory.get_or_build_map(rel_path, max_tokens=budget)
         if count_tokens(file_map) >= full_file_tokens():
             # A map that costs more than the file is worth nothing: serve the
             # file (docs/file-map.md § Small files).

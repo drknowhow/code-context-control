@@ -102,7 +102,7 @@ def _build_map(svc, rel: str) -> str:
         svc.file_memory.complete_updates(completed)
     if failed:
         svc.file_memory.complete_updates(failed, failed=True)
-    return svc.file_memory.get_or_build_map(rel)
+    return svc.file_memory.get_or_build_map(rel, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
 
 
 def _compress_single(file_path: str, requested: str, note: str, svc, finalize) -> str:
@@ -197,7 +197,8 @@ def _compress_batch(paths: list, requested: str, note: str, svc, finalize) -> st
                 return fp, None, None, None, "not found"
             rel = str(full.resolve().relative_to(
                 Path(svc.project_path).resolve())).replace("\\", "/")
-            res = svc.file_memory.get_or_build_map(rel)
+            res = svc.file_memory.get_or_build_map(
+                rel, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
             try:
                 raw_tok = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
                 map_tok = count_tokens(res)
