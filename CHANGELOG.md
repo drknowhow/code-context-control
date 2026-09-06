@@ -4,6 +4,28 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.123.0] - 2026-09-06
+
+### Added — `c3_read` maps directories; the map is c3_read's (c3_compress remediation, C3)
+
+- `c3_read('<dir>')` renders one line per file under a token budget
+  (`lines=<int>` sets it; default 1,500): `name (NL lang) — sym1; sym2…`,
+  recently edited files first (edit ledger), then by how much structure
+  they hold, then by path; classes before functions, public before
+  private. Traversal never follows symlinks, prunes the scanner's skip list
+  and `.gitignore` directories, stops at 400 files, and parses at most 120
+  unindexed code files per call inside a 3 s deadline (the rest show their
+  line count). `[dir_map]` lines say when it capped or dropped files
+  (docs/file-map.md § Directories).
+- Every instruction surface now teaches the c3_read form: the managed
+  CLAUDE.md block ("MAP before READ" is `c3_read(file_path)` then
+  `c3_read(symbols=['Class.method'])`), the nano workflow, the Codex
+  AGENTS.md block, the PreToolUse redirect for native Read, the guide
+  pages and the global `~/.claude/CLAUDE.md` template. `c3_compress` is
+  named as legacy, removed in 2.124.0.
+- Telemetry: directory maps carry `detail.backend = "directory"` with the
+  files seen, listed, extracted on the fly, and whether traversal capped.
+
 ## [2.122.0] - 2026-09-06
 
 ### Changed — `map` is the only compress mode (c3_compress remediation, C2)

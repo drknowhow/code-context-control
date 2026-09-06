@@ -5,7 +5,7 @@ A file map is what the model reads to decide which symbols to fetch with
 `services/file_map.render_map` from a `FileMemoryStore` record, and every
 entry point serves the same text:
 
-- `c3_read(file_path)` with no `symbols` / `lines`
+- `c3_read(file_path)` with no `symbols` / `lines` (a directory path maps its files)
 - `c3_compress(file_path)` (single or comma-separated batch)
 - the inline map under a `c3_search` hit (shortened to 600 tokens)
 - the maps `c3_agent` workflows prefetch
@@ -110,3 +110,25 @@ internal callers (delegation, the Hub REST API, context snapshots,
 benchmarks); its `map` mode renders the canonical map. `diff` and
 `bug_scan` return an error dict there, and the `*.cache` files diff left
 under `.c3/cache` are deleted on the compressor's first start.
+
+## Directories (2.123.0)
+
+`c3_read('<dir>')` renders one line per file under a token budget
+(`lines=<int>` sets it; default 1500):
+
+```
+# services/ (112 files, 55,319L)
+file_map.py (280L python) — render_map; parse_signature; parse_map; KINDS
+compressor.py (809L python) — CodeCompressor; compress_file; STRUCTURE_PATTERNS
+…
+… 70 more files
+[dir_map] recently edited first, then by structure; c3_read('<file>') maps one file
+```
+
+Files come first when the edit ledger saw them recently, then by how much
+structure they hold, then by path — the order a reader coming back to a
+tree wants. Each line shows up to six symbols, classes before functions,
+public before private. Traversal never follows symlinks, prunes the
+scanner's skip list and `.gitignore` directories, stops at 400 files
+(`[dir_map] traversal capped`), and parses at most 120 unindexed code
+files per call inside a 3-second deadline; the rest show their line count.

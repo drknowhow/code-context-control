@@ -8,7 +8,7 @@ CODEX_WORKFLOW = """# C3 — Codex workflow
 
 Use C3 for repository intelligence and audited changes:
 1. Recall relevant project facts with c3_memory; inspect .c3/MAP.md.
-2. Find candidates with c3_search; map with c3_compress(mode='map'), then
+2. Find candidates with c3_search; map with c3_read(file_path) (no symbols), then
    read exact symbols or lines with c3_read. Check shared changes with c3_impact.
 3. Edit with c3_edit, validate with c3_validate, and record decisions with
    c3_session(action='log'). Preserve unrelated work.

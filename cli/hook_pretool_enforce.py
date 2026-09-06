@@ -130,7 +130,7 @@ _VAULT_FILES = frozenset({"config.json", "secrets.enc", "cred_state.json",
 # Redirect messages per native tool
 _REDIRECTS = {
     "Read": (
-        "Use c3_compress(file_path='...', mode='map') to map the file first, "
+        "Use c3_read(file_path='...') to map the file first (one line per symbol), "
         "then c3_read(file_path='...', symbols=['...']) for surgical extraction."
     ),
     "Grep": (
