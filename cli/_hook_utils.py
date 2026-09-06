@@ -500,6 +500,40 @@ def record_json_unlocks(
         pass
 
 
+_PROJECT_WALK_UP_LEVELS = 4
+
+
+def find_project(payload: dict, project_path=None) -> Path | None:
+    """The nearest ancestor (≤ 4 levels) of ``project_path`` / ``payload.cwd``
+    that owns a ``.c3`` directory, or None.
+
+    Claude Code runs hooks from the project root, Codex passes ``--project``;
+    either way the payload's ``cwd`` may be a subdirectory (a session opened
+    in ``src/``). The walk is lexical on purpose — no path canonicalisation
+    happens here (see tests/test_access_guard_meta.py).
+    """
+    candidates = []
+    if project_path:
+        candidates.append(Path(str(project_path)))
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if cwd:
+        candidates.append(Path(str(cwd)))
+    if not candidates:
+        candidates.append(Path.cwd())
+    for base in candidates:
+        node = base
+        for _ in range(_PROJECT_WALK_UP_LEVELS):
+            try:
+                if (node / ".c3").is_dir():
+                    return node
+            except OSError:
+                break
+            if node.parent == node:
+                break
+            node = node.parent
+    return None
+
+
 def emit_additional_context(text: str, is_gemini: bool) -> None:
     """Write additionalContext JSON to stdout in the correct format for the IDE."""
     if is_gemini:

@@ -100,6 +100,92 @@ def _build_instructions(ide_name: str) -> str:
     )
 
 
+# ── Host session id (the join key between hook rows and MCP rows) ──────────
+# The PreToolUse hooks write .c3/enforcement_state.json with `session_id` =
+# the host's id for the session that just called. When the host also put its
+# id in this process's environment (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID)
+# the SessionManager already carries it and no file is read. Otherwise the
+# state file is consulted at most once per _HOST_SID_TTL_S — a tool call is
+# far hotter than that, and a per-call read would be a stat+parse on every
+# c3_* invocation for a value that changes once per session.
+_HOST_SID_TTL_S = 5.0
+_host_sid_cache = {"value": "", "read_at": 0.0, "linked": ""}
+_host_sid_lock = threading.Lock()
+
+
+def _host_session_id(svc) -> str:
+    """The host session id for this process, or ``""`` when nobody knows it."""
+    try:
+        session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        env_sid = str(session.get("host_session_id") or "").strip()
+    except Exception:
+        env_sid = ""
+    if env_sid:
+        _link_host_session(svc, env_sid)
+        return env_sid
+    now = time.monotonic()
+    with _host_sid_lock:
+        if now - _host_sid_cache["read_at"] < _HOST_SID_TTL_S:
+            return _host_sid_cache["value"]
+        _host_sid_cache["read_at"] = now
+    value = ""
+    try:
+        import json as _json
+
+        from cli._hook_utils import ENFORCEMENT_STATE_FILE
+        state_path = Path(svc.project_path) / ENFORCEMENT_STATE_FILE
+        if state_path.is_file():
+            data = _json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                value = str(data.get("session_id") or "").strip()
+    except Exception:
+        value = ""
+    with _host_sid_lock:
+        _host_sid_cache["value"] = value
+    if value:
+        _link_host_session(svc, value)
+    return value
+
+
+def _link_host_session(svc, host_sid: str) -> None:
+    """Write the host→C3 link file once per distinct host id (services.host_sessions)."""
+    with _host_sid_lock:
+        if _host_sid_cache["linked"] == host_sid:
+            return
+        _host_sid_cache["linked"] = host_sid
+    try:
+        session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        c3_id = str(session.get("id") or "")
+        if c3_id:
+            from services.host_sessions import write_link
+            write_link(svc.project_path, getattr(svc, "ide_name", "") or _IDE_NAME, host_sid, c3_id)
+    except Exception:
+        pass
+
+
+def _notify_mcp_ready(svc) -> None:
+    """``kind="mcp"`` / ``C3 connected`` — the runtime is ready to serve (D0b).
+
+    ref_id is the C3 session id, the same value ``session_start`` carries;
+    the host id rides in the message when known. Best-effort: a notification
+    failure must never keep the server from serving.
+    """
+    try:
+        session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        c3_id = str(session.get("id") or "")
+        host_sid = _host_session_id(svc)
+        short = (host_sid or c3_id)[:8] or "?"
+        from services.notifications import notify
+        notify(svc.project_path, agent="c3", severity="info",
+               title=f"C3 connected {short}",
+               message=(f"C3 {C3_VERSION} MCP runtime ready for {_IDE_NAME}"
+                        f" (session {c3_id}"
+                        + (f", host {host_sid}" if host_sid else "") + ")"),
+               kind="mcp", ref_id=c3_id)
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(server):
     """Initialize all services, auto-start session, start file watcher."""
@@ -223,9 +309,16 @@ async def lifespan(server):
     services.auto_memory = AutoMemory(services.memory, services.session_mgr, auto_mem_cfg)
 
     if services.session_mgr.current_session:
+        # host_session_id (the Claude Code UUID / Codex thread id) joins this
+        # row to the hooks' session_open / session_end rows, which only know
+        # the host id. Absent when the host did not put its id in the
+        # environment; the link file below is written lazily in that case
+        # the first time a hook reveals it (see _host_session_id).
+        _host_sid = _host_session_id(services)
         services.activity_log.log("session_start", {
             "session_id": services.session_mgr.current_session["id"],
             "source_system": started_session.get("source_system", ""),
+            **({"host_session_id": _host_sid} if _host_sid else {}),
         })
 
     # Auto-restore latest snapshot if recent (< 30 min).
@@ -287,6 +380,12 @@ async def lifespan(server):
                     message=f"{len(errors)} file(s) have syntax errors: {names}{more}",
                 )
         _t.Thread(target=_bg_validation_sweep, daemon=True, name="c3-validate-sweep").start()
+
+    # Runtime is ready to serve: say so where a client can hear it. A desktop
+    # "MCP failed to connect" sentinel keys on a session_open with no `mcp`
+    # notification within 30 s, so this must be the LAST thing before the
+    # handshake proceeds and must never be skipped on a partial init.
+    _notify_mcp_ready(services)
 
     try:
         yield services
@@ -430,8 +529,22 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
         call_ok = not _failed(response)
     except Exception:
         call_ok = True
+    # Both session ids on every tool_call row (D0b): C3's own id joins the
+    # row to session_start / the saved session file, the host id joins it to
+    # the hooks' session_open / session_end rows. Either may be absent.
+    _ids: dict = {}
+    try:
+        _c3_sid = str((svc.session_mgr.current_session or {}).get("id") or "")
+        if _c3_sid:
+            _ids["session_id"] = _c3_sid
+        _host_sid = _host_session_id(svc)
+        if _host_sid:
+            _ids["host_session_id"] = _host_sid
+    except Exception:
+        pass
     svc.activity_log.log("tool_call", {"tool": tool_name, "args": args,
-                                       "result_summary": summary, "ok": call_ok})
+                                       "result_summary": summary, "ok": call_ok,
+                                       **_ids})
     tracker = getattr(svc, "time_tracker", None)
     if tracker is not None:
         try:

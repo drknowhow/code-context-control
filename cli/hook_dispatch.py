@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-event hook dispatcher: ONE process per Claude Code / Gemini hook event.
 
-Usage: python hook_dispatch.py <pretool|posttool|stop|prompt>
+Usage: python hook_dispatch.py <pretool|posttool|stop|prompt|start|compact|end>
 
 Before v2.42 every hook was registered as its own "cmd /c python <hook>.py"
 subprocess, so a single native Read fired up to three interpreter spawns
@@ -167,8 +167,17 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
         yield "hook_terse_advisor"
     elif event == "prompt":
         yield "hook_prompt_recall"
-    elif event in ("start", "compact", "end") and host == HOST_CODEX:
-        yield "hook_codex_lifecycle"
+    elif event in ("start", "compact", "end"):
+        # Codex's thread-bound handoff runs first (it may return context on
+        # SessionStart); the session bookkeeping below is host-agnostic and
+        # returns nothing (v2.126.0: session_open / session_end rows + the
+        # `session` notifications a desktop client wakes on).
+        if host == HOST_CODEX:
+            yield "hook_codex_lifecycle"
+        if event == "start":
+            yield "hook_session_open"
+        elif event == "end":
+            yield "hook_session_end"
 
 
 _RUN_CACHE: dict = {}

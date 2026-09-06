@@ -126,6 +126,15 @@ class TestRouting(unittest.TestCase):
             self._routes("stop", ""),
             ["hook_session_stats", "hook_auto_snapshot", "hook_terse_advisor"])
 
+    def test_session_lifecycle_routes(self):
+        # v2.126.0 (D0b): SessionStart / SessionEnd are registered for Claude
+        # Code too, not only Codex. `compact` stays Codex-only (its handoff
+        # checkpoint); a Claude compaction is the same session and writes
+        # nothing.
+        self.assertEqual(self._routes("start", ""), ["hook_session_open"])
+        self.assertEqual(self._routes("end", ""), ["hook_session_end"])
+        self.assertEqual(self._routes("compact", ""), [])
+
     def test_unknown_event_routes_nowhere(self):
         self.assertEqual(self._routes("bogus", "Read"), [])
 

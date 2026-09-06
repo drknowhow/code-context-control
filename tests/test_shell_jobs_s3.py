@@ -394,7 +394,10 @@ class TestLiveJobs(_Base):
 
         out = self._call("cancel", job_id=jid)
         self.assertIn(f"[c3_shell_job:cancel] {jid} child pid {child_pid} tree killed", out)
-        job = self._wait_terminal(jid, timeout=10)
+        # A loaded Windows CI runner has needed >10 s between taskkill and the
+        # supervisor recording the state (2026-09-06, PR #166); the bound is a
+        # test budget, not a behaviour.
+        job = self._wait_terminal(jid, timeout=25)
         self.assertEqual(job.status, "cancelled", out)
         self.assertTrue(job.cancel_requested)
         self.assertFalse(sj.process_alive(child_pid, start, source), "child still alive after cancel")

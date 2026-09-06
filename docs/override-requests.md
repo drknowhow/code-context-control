@@ -114,6 +114,20 @@ routes, and auditing its taps as a phone would be false. So:
 Tests: `tests/test_mobile_clients.py`, `tests/test_oracle_loopback.py`, and
 the waiter-cap cases in `tests/test_mobile_api.py`.
 
+**Deviation (2026-09-06, v2.126.0, C3 Desk D0b): `channel` is consumed by
+the desktop client as of 2.126.0.** §3.1's `override.channel`
+(`mobile | desktop | both`) was validated, merged (last scope with an
+opinion wins) and printed by `c3 override policy`, and consumed by nothing.
+The desktop tray client now reads it to decide how a request notification is
+presented — `desktop` / `both` → toast, `mobile` → popover only. To reach it
+the gateway exposes the value in three places, all additive to the §3.3
+contract: a `channel` field on every row of `GET /api/mobile/overrides`
+(resolved once per distinct project in the page) and on the `request` object
+of `GET /api/mobile/overrides/<id>`, and a top-level `channel` on
+`GET /api/mobile/overrides/policy` beside the `policy.channel` it already
+carried. The phone ignores the field; §9 is unchanged. Nothing about the
+merge or the default (`mobile`) moved.
+
 Companion specs: `access-guard.md`, `mask-guard.md`, `agent-locks.md`.
 
 ---

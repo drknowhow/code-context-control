@@ -885,6 +885,38 @@ def _persist(project: Path, result: RunResult, run_dir: Path) -> None:
     except OSError:
         # Losing the record must not lose the result the caller already has.
         pass
+    _notify_run(project, result)
+
+
+def _notify_run(project: Path, result: RunResult) -> None:
+    """Verdict notification: ``kind="ci"``, ``ref_id=run_id`` (D0b, v2.126.0).
+
+    Written to ``.c3/notifications.jsonl`` so a desktop client holding
+    ``/feed?wait=`` learns the verdict the moment it lands instead of on its
+    next poll. ``info`` for FULL_CI_PASS, ``warning`` for PARTIAL_PASS and
+    FAIL. The run id is in the title so two runs with the same verdict and
+    counts are two records, not one collapsed one. Best-effort: a
+    notification failure never fails the run it reports on.
+    """
+    try:
+        from services.notifications import notify
+        counts = result.counts
+        passed = int(counts.get(PASSED, 0))
+        failed = int(counts.get(FAILED, 0)) + int(counts.get(TIMEOUT, 0))
+        not_run = len(result.not_run_keys)
+        bits = [f"{passed} passed"]
+        if failed:
+            bits.append(f"{failed} failed")
+        if not_run:
+            bits.append(f"{not_run} not run")
+        title = f"CI {result.verdict} ({', '.join(bits)}) run {result.run_id}"
+        message = result.note or (
+            "every job ran here and passed" if result.verdict == FULL_PASS
+            else f"failed: {', '.join(result.failed_keys) or '-'}")
+        notify(project, agent="ci", severity="info" if result.verdict == FULL_PASS else "warning",
+               title=title, message=str(message)[:400], kind="ci", ref_id=result.run_id)
+    except Exception:
+        pass
 
 
 def list_runs(project_path, limit: int = 20) -> list:

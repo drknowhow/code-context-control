@@ -4,6 +4,69 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.126.0] - 2026-09-06
+
+### Added — event notifications, session boundaries and a join key for the desktop client (C3 Desk, D0b)
+
+The mobile gateway's `GET /api/mobile/feed?wait=` wakes only when one of
+four per-project files moves, and until now a finished background job, a
+local CI verdict, a session ending or the MCP runtime becoming ready moved
+none of them. Each now writes ONE notification through
+`NotificationStore.add` with a machine-readable `kind` and the id of the
+thing it is about in `ref_id` (`services.notifications.EVENT_KINDS`):
+
+- `shell_job` (`ref_id` = job id): written by the detached supervisor on
+  every terminal state — `info` for `done`, `warning` for `failed` /
+  `timeout` / `cancelled` — and by whichever caller notices a `lost` job.
+  Title `Job <status>: <job id>`.
+- `ci` (`ref_id` = run id): `info` for `FULL_CI_PASS`, `warning` for
+  `PARTIAL_PASS` and `FAIL`. Title `CI <verdict> (<n> passed[, <n> failed]
+  [, <n> not run]) run <run id>`.
+- `session` (`ref_id` = host session id): `Session started <8>` /
+  `Session ended <8>` from the new hooks below.
+- `mcp` (`ref_id` = C3 session id): `C3 connected <8>` once the runtime is
+  ready to serve — what a desktop "MCP failed to connect" sentinel keys on.
+
+Every producer is best-effort (`services.notifications.notify` never
+raises); a notification failure never fails the job, run, hook or server it
+reports on. Titles carry the id so two events that end the same way are
+two records, never one collapsed line.
+
+- **Session end is recorded, and session ids finally join.** This repo's
+  activity log held 525 `session_start` rows and 14 `session_save` rows.
+  New `SessionStart` / `SessionEnd` hooks (`cli/hook_session_open.py`,
+  `cli/hook_session_end.py`, dispatcher events `start` / `end`, registered
+  by `c3 install-mcp` for Claude Code; Codex's existing lifecycle hook
+  keeps running first) append `session_open {host_session_id, source,
+  start_source}` and `session_end {session_id, host_session_id, reason,
+  source}` to `.c3/activity_log.jsonl`. A `SessionStart` with
+  `source: compact` writes nothing. The MCP server writes a link file
+  (`.c3/host_sessions/<provider>/<sha256(host id)>.link.json`,
+  `services/host_sessions.py`) as soon as it knows both ids, stamps
+  `host_session_id` on its `session_start` row, and stamps `session_id`
+  (C3) + `host_session_id` on every `tool_call` row. The host id comes from
+  the environment when the host provides it, else from
+  `.c3/enforcement_state.json` read at most once per 5 s.
+- **Gateway routes** (capabilities `jobs`, `ci`; `API_VERSION` unchanged):
+  `GET /api/mobile/jobs?project=&status=&limit=` over a new READ-ONLY
+  `JobStore.list_all` that never reaps, promotes or marks anything; rows are
+  `{id, project_path, session_id, status, cmd_display, cwd, created_at,
+  started_at, finished_at, exit_code, duration_ms, output_id, timed_out,
+  cancel_requested, error}` — never creds, env, pids or guard paths.
+  `GET /api/mobile/ci/runs?project=&limit=` and
+  `GET /api/mobile/ci/run?project=&run_id=` over `ci_runner.list_runs` /
+  `load_run`. Feed `notification` items always carry `kind` and `ref_id`
+  (empty for older lines); `severity=info` selects the info-level kinds
+  explicitly.
+- **`override.channel` is consumed.** `GET /api/mobile/overrides` rows,
+  `GET /api/mobile/overrides/<id>` and `GET /api/mobile/overrides/policy`
+  expose the project's `channel` (`mobile | desktop | both`); the desktop
+  routes on it (desktop/both → toast, mobile → popover only). Recorded as a
+  dated deviation note in docs/override-requests.md.
+
+Tests: `tests/test_notification_kinds.py`, `tests/test_hook_session_end.py`,
+`tests/test_mobile_jobs_ci.py`; route pins re-pinned in
+`tests/test_hook_dispatch.py` and `tests/test_hook_codex_compat.py`.
 ## [2.125.0] - 2026-09-06
 
 ### Added — per-client tokens and a loopback listener for the mobile gateway (C3 Desk, D0a)
