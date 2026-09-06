@@ -284,7 +284,9 @@ class TestInfoContract(_OpsBase):
 
     def test_info_reports_version_4_and_new_capabilities(self):
         body = self.ok("/api/mobile/info")
-        self.assertEqual(body["api_version"], 4)
+        # The ops surface arrived in 4; later versions keep it (5 added
+        # per-client tokens), so this is a floor, not an equality.
+        self.assertGreaterEqual(body["api_version"], 4)
         for cap in ("edits", "locks", "status", "insights", "insights_write",
                     "suggestions", "suggestions_write", "review"):
             self.assertIn(cap, body["capabilities"])
@@ -496,7 +498,7 @@ class TestStatus(_OpsBase):
         self.assertIsNone(body["sessions"])
         self.assertIsNone(body["notifications"])
         server = body["server"]
-        self.assertEqual(server["api_version"], 4)
+        self.assertGreaterEqual(server["api_version"], 4)
         self.assertIsInstance(server["c3_version"], str)
         self.assertFalse(server["hub_available"])
         self.assertEqual(server["ollama"], {
