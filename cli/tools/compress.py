@@ -220,8 +220,14 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
         raw_tokens = None
         map_tokens = 0
         try:
-            raw_tokens = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
+            raw_text = full.read_text(encoding="utf-8", errors="replace")
+            raw_tokens = count_tokens(raw_text)
             map_tokens = count_tokens(res)
+            if map_tokens >= raw_tokens and not res.startswith("[file_map]"):
+                # A map that costs more than the file is worth nothing
+                # (docs/file-map.md § Small files).
+                res = f"[compress:{file_path}] whole file — smaller than its map\n" + raw_text
+                map_tokens = count_tokens(res)
             summary = mode
         except Exception:
             summary = "mapped"

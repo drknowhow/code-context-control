@@ -316,6 +316,11 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     if not ranges:
         map_cached = not svc.file_memory.needs_update(rel_path)
         file_map = svc.file_memory.get_or_build_map(rel_path)
+        if count_tokens(file_map) >= full_file_tokens():
+            # A map that costs more than the file is worth nothing: serve the
+            # file (docs/file-map.md § Small files).
+            file_map = (f"[read:{file_path}] whole file — smaller than its map\n"
+                        + raw_text)
         resp = (file_map
                 + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]"
                 + maybe_related_facts(svc, rel_path, top_k=3, context="read"))
