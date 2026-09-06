@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.126.1"
+__version__ = "2.127.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -6968,8 +6968,10 @@ def cmd_override(args):
     """
     sub = getattr(args, "override_cmd", None)
     if not sub:
-        print("Usage: c3 override <policy|grant|list|revoke|check|sweep> ...")
+        print("Usage: c3 override <policy|grant|list|revoke|check|sweep|"
+              "requests|approve|deny|costs> ...")
         print("       c3 override policy    # what is escalatable right now")
+        print("       c3 override costs     # which rules keep holding the agent")
         return
 
     from services import override_grants as og
@@ -6998,6 +7000,39 @@ def cmd_override(args):
         _override_requests(args, project_path)
     elif sub in ("approve", "deny"):
         _override_decide(args, sub, project_path)
+    elif sub == "costs":
+        _override_costs(args, project_path)
+
+
+def _override_costs(args, project_path: str) -> None:
+    """`c3 override costs` — which rules keep holding the agent (§11 T5)."""
+    from services import override_costs as ocost
+
+    days = max(1, int(getattr(args, "days", None) or ocost.DEFAULT_DAYS))
+    everywhere = bool(getattr(args, "all_projects", False))
+    rows = ocost.rule_costs(project_path=None if everywhere else project_path,
+                            days=days)
+    print_header(f"Override costs — last {days} day(s)"
+                 + ("" if everywhere else f" · {Path(project_path).name}"))
+    if not rows:
+        print("  (no requests in the window)")
+        return
+    width = max(len(r["rule"]) for r in rows)
+    print(f"  {'held':>4} {'ok':>3} {'no':>3} {'exp':>3} {'wait':>4}  "
+          f"{'rule':<{width}}  suggestion")
+    for r in rows:
+        line = (f"  {r['count']:>4} {r['approved']:>3} {r['denied']:>3} "
+                f"{r['expired']:>3} {r['pending']:>4}  {r['rule']:<{width}}  "
+                f"{r['suggestion']}")
+        if r["count"] >= ocost.NUDGE_THRESHOLD:
+            line += "  <- costing you"
+        print(line)
+        if everywhere:
+            print(f"  {'':22s} {r['project_path']}")
+    print("\n  held = requests filed; ok/no/exp/wait = approved/denied/"
+          "expired/still pending (withdrawn counts in held only).")
+    print("  A rule you keep approving is friction: edit it with `c3 access`. "
+          "A rule you keep denying is working — mute the session instead.")
 
 
 def _override_requests(args, project_path: str) -> None:

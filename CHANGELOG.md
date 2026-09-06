@@ -4,6 +4,69 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.127.0] - 2026-09-06
+
+### Added — override cost data: "this rule is costing you" (C3 Desk, D3a)
+
+docs/override-requests.md §11 names approval fatigue as the real threat
+and promised that a rule generating more than N requests a week would be
+surfaced as *"this rule is costing you"*. Nothing counted. The first week
+of live use produced exactly the case: one session filed six holds on
+`**/.claude/skills/**` for ONE file in 65 minutes — four approved by hand,
+two lost to the request TTL — and every surface rendered each card as if
+it were the first. Now the cost is a number every human surface can show.
+
+- **`services/override_costs.py`** — `rule_costs(project_path=None, days=7,
+  now=None)` folds `~/.c3/oracle/override_requests.json` by
+  `(project_path, rule)` over `[now - days, now]` on `created_at`. Row
+  fields, exactly: `project_path, rule, rule_class, layer, count,
+  approved, denied, expired, pending, last_at, suggestion`; sorted by
+  `count` desc then `last_at` desc. `count` is every request in the
+  window; the four buckets leave `withdrawn` out. A pending row past its
+  `expires_at` counts as expired against the supplied clock — the fold is
+  read-only and never writes the store, not even the lazy expiry flip. A
+  missing, corrupt or non-list store is `[]`, never an exception.
+  `suggestion` is one of three literals the desktop prints verbatim:
+  `convert to allow` (approved ≥ 3 and denied = 0), `tighten or deny`
+  (denied ≥ 2), else `review`. `NUDGE_THRESHOLD = 3`; `costing(rules)`
+  filters to it.
+- **Gateway** — `GET /api/mobile/overrides/costs?project=&days=` ⇒
+  `{days, rules, count, project}`. `days` is clamped to 1..30 (default
+  7; garbage reads as 7). `project` goes through the registered-project
+  check (404 for anything the scanner does not serve); omitting it means
+  every registered project and never a row for an unregistered one — the
+  same rule `/overrides` and `/jobs` keep, because the store is one file
+  for the whole machine. New capability `override_costs`, gated by
+  `mobile_override_enabled` like the inbox it reads. `api_version` stays
+  5 (additive; the version history in `mobile_api.py` records it).
+- **`GET /api/mobile/overrides/<id>`** additionally carries
+  `allow_session_grants`, `max_ttl_s` and `session_confirm` (the literal
+  `session`) at the top level, so a client can offer a session-grant
+  button from one fetch without knowing the nested `policy` shape. Every
+  existing field, including the nested copies, is unchanged.
+- **Hub** — `GET /api/hub/overrides/costs?path=&days=` (same shape plus
+  `threshold` and `project_name`; the hub answers for every project on
+  the box, as its inbox does) and a **"Costing you" strip** above the
+  pending cards in the Access tab: one row per rule with `count ≥ 3` in
+  the last 7 days, *"`<rule>` held N× this week (A approved) —
+  suggestion"*, with an **Open rule** button that switches the read-only
+  policy matrix to that project, scrolls to it and outlines the matching
+  chip. The strip approves nothing and edits no rule.
+- **CLI** — `c3 override costs [--days N] [--path P | --all]` prints the
+  table (held / ok / no / exp / wait / rule / suggestion) and flags rows
+  at or above the threshold.
+- Tests: `tests/test_override_costs.py` (window edges, buckets,
+  withdrawn, lapsed-pending-as-expired without a write, suggestion rules,
+  grouping + canonical spelling, sort order, project filter, empty /
+  corrupt / non-list store), `tests/test_mobile_override_costs.py`
+  (capability follows the override switch, 401 / 404 posture, shape,
+  project 404, days clamp, no unregistered-project leak, corrupt store is
+  200 + `[]`), `TestCosts` in `tests/test_hub_override_routes.py`,
+  `TestDetailCarriesSessionGrantFields` in
+  `tests/test_mobile_override_routes.py` (including a round-trip of the
+  literal into `decide`). docs/override-requests.md: dated deviation
+  (2026-09-06, D3a), §8 route table, §11 Threat 5 reworded to describe
+  what exists, §14 P5 row.
 ## [2.126.1] - 2026-09-06
 
 ### Fixed

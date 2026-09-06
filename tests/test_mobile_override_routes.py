@@ -623,6 +623,55 @@ class TestSessionGrants(_OverrideRouteBase):
                        "confirm": "**/.env*"}).status_code, 400)
 
 
+class TestDetailCarriesSessionGrantFields(_OverrideRouteBase):
+    """v2.127.0 (D3a): the detail route says, at the top level, everything a
+    session-grant button needs — no second fetch, no knowledge of the policy
+    dict's shape. Every pre-existing field stays where it was."""
+
+    def test_top_level_fields_follow_the_policy(self):
+        self.write_policy(self.proj, allow_session_grants=True, max_ttl_s=300)
+        row = self.make_request()
+        body = self.get(f"/api/mobile/overrides/{row['id']}").get_json()
+        self.assertTrue(body["allow_session_grants"])
+        self.assertEqual(body["max_ttl_s"], 300)
+        self.assertEqual(body["session_confirm"], "session")
+        self.assertEqual(body["session_confirm"], orq.CONFIRM_SESSION)
+
+    def test_switch_off_reads_false(self):
+        self.write_policy(self.proj, allow_session_grants=False)
+        row = self.make_request()
+        body = self.get(f"/api/mobile/overrides/{row['id']}").get_json()
+        self.assertFalse(body["allow_session_grants"])
+        self.assertEqual(body["max_ttl_s"], 900)
+        self.assertEqual(body["session_confirm"], "session")
+
+    def test_existing_fields_are_untouched(self):
+        self.write_policy(self.proj, allow_session_grants=True)
+        row = self.make_request()
+        body = self.get(f"/api/mobile/overrides/{row['id']}").get_json()
+        for key in ("request", "policy", "needs_typed_confirm", "confirm_with"):
+            self.assertIn(key, body)
+        # The nested copies still agree with the top-level ones.
+        self.assertEqual(body["policy"]["allow_session_grants"],
+                         body["allow_session_grants"])
+        self.assertEqual(body["policy"]["max_ttl_s"], body["max_ttl_s"])
+        self.assertEqual(body["request"]["channel"], "mobile")
+
+    def test_the_literal_is_what_decide_accepts(self):
+        # Round-trip: send back exactly what the detail told us, on a layer
+        # that needs the session challenge rather than the rule glob.
+        self.write_policy(self.proj, allow_session_grants=True)
+        row = self.make_request(name="ro.txt", rule="**/ro.txt",
+                                rule_class=opol.LAYER_ACCESS_READONLY,
+                                tool="Edit", op="write")
+        body = self.get(f"/api/mobile/overrides/{row['id']}").get_json()
+        resp = self.post(f"/api/mobile/overrides/{row['id']}/decide",
+                         {"decision": "approve", "mode": "session",
+                          "confirm": body["session_confirm"]})
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        self.assertEqual(resp.get_json()["request"]["grant_mode"], "session")
+
+
 class TestTtlClamping(_OverrideRouteBase):
 
     def test_a_week_becomes_the_policy_ceiling_and_says_so(self):

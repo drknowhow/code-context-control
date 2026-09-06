@@ -5,8 +5,9 @@ v2.72.0 / v2.71.0). P4 built and installed on the phone; its first live run
 found the P2a gap, which is what v2.72.0 closes. P5 approval surface shipped
 v2.98.0 (Hub Access tab: cross-project pending cards, decide routes with
 `decided_by="desktop"`, typed-glob challenge, read-only policy matrix —
-see docs/confirm-guard.md §7). Still outstanding from P5: the Settings UI
-for `override.layers` and the "this rule is costing you" nudge.**
+see docs/confirm-guard.md §7). The "this rule is costing you" nudge shipped
+v2.127.0 (see the deviation dated 2026-09-06 below). Still outstanding from
+P5: the Settings UI for `override.layers`.**
 Written 2026-08-07 from a survey of the live blocking layers, the Oracle mobile
 API, and the c3-mobile client. Changes from here need a documented reason in
 the PR description (same rule as `access-guard.md`).
@@ -22,7 +23,7 @@ Implementation status per phase (§14):
 | P3 Oracle routes | **shipped v2.71.0** | `oracle/services/mobile_api.py` (6 routes + 2 capabilities), `oracle/config.py` switches, mute store in `services/override_requests.py` |
 | P4 mobile Requests pane | **built — awaiting live end-to-end** | separate repo `c3-mobile` (local, no remote): `50f0c49` + `5c1769b` — `src/api/{types,queries,mutations}.ts`, `src/components/guard/overrides.tsx`, `src/notifications/{routing,route-map}.ts`, 43 node:test cases. arm64 release APK delivered 2026-08-07 |
 | **P4a wake on decide + long-poll delivery** | **shipped v2.73.0** | `services/override_wake.py`, `override.wake` policy key, `/api/mobile/feed?wait=` (`feed_wait` capability, api_version 3), `c3-mobile` live-push loop |
-| P5 desktop parity | **approval surface shipped v2.98.0** (Hub Access tab + `/api/hub/overrides` routes; layers Settings UI + cost nudge still open) | `cli/hub_server.py`, `cli/hub_ui/components/hub_access.js`, `tests/test_hub_override_routes.py` |
+| P5 desktop parity | **approval surface shipped v2.98.0** (Hub Access tab + `/api/hub/overrides` routes); **cost nudge shipped v2.127.0** (`services/override_costs.py`, `/api/mobile/overrides/costs`, `/api/hub/overrides/costs`, Hub "Costing you" strip, `c3 override costs`); layers Settings UI still open | `cli/hub_server.py`, `cli/hub_ui/components/hub_access.js`, `tests/test_hub_override_routes.py`, `tests/test_override_costs.py`, `tests/test_mobile_override_costs.py` |
 
 **Resolved deviation (P1 → P2).** §10's `c3 override approve <id>` / `deny
 <id>` needed the request store; both shipped in P2 alongside `requests`. The
@@ -127,6 +128,50 @@ of `GET /api/mobile/overrides/<id>`, and a top-level `channel` on
 `GET /api/mobile/overrides/policy` beside the `policy.channel` it already
 carried. The phone ignores the field; §9 is unchanged. Nothing about the
 merge or the default (`mobile`) moved.
+
+**Deviation (2026-09-06, v2.127.0, C3 Desk D3a): the §11 Threat 5 nudge
+shipped, as a number rather than a Requests-pane heuristic.** §11 promised
+that "if a rule generates more than N requests per week the Requests pane
+surfaces it"; nothing did, and the first week of real use produced the case
+it was written for — one session filed six holds on `**/.claude/skills/**`
+for ONE file in 65 minutes, four approved by hand and two lost to the TTL,
+every card rendered as if it were the first. What shipped:
+
+1. **`services/override_costs.py`** — `rule_costs(project_path, days, now)`
+   folds `~/.c3/oracle/override_requests.json` by `(project_path, rule)`
+   over `[now - days, now]` on `created_at`. Row shape, exactly:
+   `project_path, rule, rule_class, layer, count, approved, denied,
+   expired, pending, last_at, suggestion`, sorted count desc then
+   `last_at` desc. `count` is every request in the window; the four
+   buckets leave `withdrawn` out (the agent cancelling its own question
+   says nothing about the rule). A pending row past its `expires_at`
+   counts as expired against the supplied clock — the fold is READ-ONLY
+   and never performs the store's lazy expiry flip. Corrupt or missing
+   store ⇒ `[]`, never a raise. `suggestion` is one of three literals the
+   desktop prints verbatim: `convert to allow` (approved ≥ 3, denied = 0),
+   `tighten or deny` (denied ≥ 2), else `review`. `NUDGE_THRESHOLD = 3`.
+2. **Gateway** — `GET /api/mobile/overrides/costs?project=&days=` ⇒
+   `{days, rules, count, project}`; `days` clamped to 1..30 (default 7);
+   `project` goes through the registered-project check (404 unknown) and
+   omitting it means every project the scanner registers — never a row for
+   an unregistered one, same rule as `/overrides` and `/jobs`. Capability
+   `override_costs`, gated by `mobile_override_enabled` like the inbox.
+   `api_version` stays 5 (additive). `GET /overrides/<id>` additionally
+   carries `allow_session_grants`, `max_ttl_s` and `session_confirm`
+   (the literal `session`) at the top level so a client can draw a
+   session-grant button from one fetch; every existing field is unchanged.
+3. **Hub** — `GET /api/hub/overrides/costs?path=&days=` (same shape plus
+   `threshold` and `project_name`) and a "Costing you" strip above the
+   pending cards in the Access tab: one row per rule with `count ≥ 3` in
+   7 days, *"`<rule>` held N× this week (A approved) — suggestion"*, with
+   an "Open rule" affordance that switches the policy matrix to that
+   project, scrolls to it and outlines the chip. The strip decides nothing
+   and edits no rule.
+4. **CLI** — `c3 override costs [--days N] [--path P | --all]`.
+
+§11 Threat 5 below is reworded to describe what exists. The threshold and
+the three strings are contract: the desktop tray (C3 Desk D3b) codes
+against them.
 
 Companion specs: `access-guard.md`, `mask-guard.md`, `agent-locks.md`.
 
@@ -600,9 +645,11 @@ to see.
 | `POST /api/mobile/overrides/<id>/mute` | Deny + suppress identical requests for this session. |
 | `GET /api/mobile/overrides/policy` | The effective `override` section for a project (read-only view of §3.1). |
 | `POST /api/mobile/overrides/policy` | Edit it, gated on `override_write` + typed confirm for any widening. |
+| `GET /api/mobile/overrides/costs` | Per-(project, rule) counts over a trailing window (v2.127.0, §11 T5). Params `project` (optional — omit for every registered project), `days` (1..30, default 7). `{days, rules, count, project}`. |
 
 Capabilities added to `mobile_api.CAPABILITIES`: `override`, `override_write`,
-mapped to `mobile_override_enabled` / `mobile_override_write`.
+mapped to `mobile_override_enabled` / `mobile_override_write`; `override_costs`
+(v2.127.0) rides on `mobile_override_enabled`.
 
 Confirmation follows the existing challenge protocol — the server answers
 `{needs_confirmation: true, confirm_with: "<string>"}` and the client re-sends
@@ -745,8 +792,16 @@ that isn't there.
 **Threat 5 — approval fatigue.** The real one. Defaults are `enabled: false`
 and every layer `false`, so the feature does not exist until the user turns on
 exactly the layer that is actually costing them. "Fix it properly" is on every
-card. If a rule generates more than N requests per week the Requests pane
-surfaces it as *"this rule is costing you — edit it or accept it."*
+card. And the cost is counted, not guessed (v2.127.0, deviation above):
+`services/override_costs.py` folds the request store by `(project, rule)`
+over a trailing window, and every human surface — Hub "Costing you" strip,
+desktop tray, `c3 override costs` — says *"`<rule>` held N× this week
+(A approved) — convert to allow | tighten or deny | review"* once a rule
+reaches `NUDGE_THRESHOLD` (3) holds in 7 days. The verdict is deliberately
+about the RULE: a rule the user keeps approving is friction and should be
+edited; a rule they keep denying is working against an agent that will not
+stop asking, and the answer is a mute or a narrower glob, never a grant. The
+nudge itself approves nothing and edits nothing.
 
 ---
 
@@ -826,8 +881,8 @@ test client.
 Requests segment, badge, notification tap-through, "Fix it properly" deep-link.
 
 **P5 — Desktop parity + polish.** Dashboard Requests card, Settings UI for
-`override.layers`, the "this rule is costing you" nudge, optional session
-grants.
+`override.layers`, the "this rule is costing you" nudge (shipped v2.127.0 —
+deviation at the top), optional session grants.
 
 Ship gate for each phase: green suite **and** a live end-to-end run — request
 from a real blocked tool call, approve on the real phone, watch the retry
