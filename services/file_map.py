@@ -56,7 +56,7 @@ _PY_DEF = re.compile(r"^(?:async\s+)?def\s+[\w.]+\s*\((?P<params>.*)\)\s*(?:->\s
 _PY_CLASS = re.compile(r"^class\s+\w+\s*(?:\((?P<bases>.*)\))?\s*:?$")
 _GO_FUNC = re.compile(r"^func\s+(?:\((?P<recv>[^)]*)\)\s*)?\w+\s*\((?P<params>.*?)\)\s*(?P<ret>[^{]*?)\s*\{?$")
 _RS_FN = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|const\s+|unsafe\s+)*fn\s+\w+(?:<[^>]*>)?\s*\((?P<params>.*)\)\s*(?:->\s*(?P<ret>[^{]+?))?\s*(?:where\b.*)?\{?$")
-_JS_FUNC = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*\w*\s*(?:<[^>]*>)?\s*\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^{]+?))?\s*\{?$")
+_JS_FUNC = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*[\w$]*\s*(?:<[^>]*>)?\s*\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^{]+?))?\s*\{?\s*$")
 _JS_ARROW = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:async\s+)?\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^=]+?))?\s*=>")
 _JS_ARROW1 = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?P<params>\w+)\s*=>")
 _JS_CLASS = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+\w+(?:<[^>]*>)?\s*(?:extends\s+(?P<base>[\w.<>, ]+?))?\s*(?:implements\s+(?P<impl>[\w.<>, ]+?))?\s*\{?$")
@@ -65,6 +65,40 @@ _JS_METHOD = re.compile(r"^(?:(?:public|private|protected|static|readonly|async|
 
 def _norm(text: str) -> str:
     return _WS.sub(" ", str(text or "")).strip()
+
+
+def _declaration_head(sig: str) -> str:
+    """Cut a brace-language signature after its parameter list and return
+    type: the text up to the body's `{`, an arrow, or a `;`. Parentheses
+    are depth-matched, so a 400-char minified chunk holding several
+    declarations yields only the first one's head."""
+    i = sig.find("(")
+    if i < 0:
+        j = sig.find("{")
+        return sig if j < 0 else sig[:j].rstrip()
+    depth = 0
+    close = -1
+    for k in range(i, len(sig)):
+        ch = sig[k]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                close = k
+                break
+    if close < 0:
+        return sig
+    rest = sig[close + 1:]
+    cut = len(rest)
+    for stop in ("{", ";"):
+        j = rest.find(stop)
+        if 0 <= j < cut:
+            cut = j
+    j = rest.find("=>")
+    if 0 <= j < cut:
+        cut = j + 2   # keep the arrow: the arrow-function grammar needs it
+    return (sig[:close + 1] + rest[:cut]).rstrip()
 
 
 def parse_signature(signature: str, language: str) -> dict:
@@ -78,6 +112,10 @@ def parse_signature(signature: str, language: str) -> dict:
     if not sig:
         return {}
     lang = (language or "").lower()
+    if lang in ("javascript", "typescript", "go", "rust") and not sig.lstrip().startswith(
+            ("class ", "export class", "export default class", "abstract class",
+             "struct ", "pub struct", "enum ", "pub enum", "trait ", "pub trait", "impl ", "type ")):
+        sig = _declaration_head(sig)
     out: dict = {}
     if lang == "python":
         m = _PY_DEF.match(sig)
@@ -290,6 +328,25 @@ def render_map(record: dict, *, include_docs: bool = False,
     header = f"# {path} ({total_lines}L {language})".rstrip()
     body: list = []
 
+    shape = record.get("shape") or {}
+    parser = str(record.get("parser") or "")
+    minified = bool(shape.get("minified"))
+    if parser == "skipped" or shape.get("oversized"):
+        body.append(f"[map:not mapped] {shape.get('bytes', 0):,} bytes on {total_lines} lines, "
+                    f"longest line {shape.get('longest_line', 0):,} chars — read with lines=[a,b]")
+        return "\n".join([header] + body)
+    if parser == "lexical":
+        body.append("[map:lexical-fallback] the parse overran its deadline; "
+                    "symbols come from a line scan and may be incomplete")
+    if minified:
+        # A minified bundle's `var` soup is not structure; named declarations are.
+        soup = [s for s in sections if s.get("type") in ("variable", "constant")]
+        sections = [s for s in sections if s.get("type") not in ("variable", "constant")]
+        body.append(f"[map:minified] longest line {shape.get('longest_line', 0):,} chars; "
+                    f"{len(soup)} var bindings omitted")
+    elif shape.get("generated"):
+        body.append("[map:generated] the file says it is generated")
+
     imports = [s for s in sections if s.get("type") == "import"]
     others = [s for s in sections if s.get("type") != "import"]
     if imports:
@@ -329,7 +386,9 @@ def render_map(record: dict, *, include_docs: bool = False,
         while kept and count_tokens("\n".join([header] + kept)) > max_tokens:
             kept.pop()
         dropped = len(body) - len(kept)
-        text = "\n".join([header] + kept + [f"… {dropped} more symbols"])
+        text = "\n".join([header] + kept + [
+            f"… {dropped} more symbols (map budget {max_tokens} tokens; "
+            f"pass symbols=[…] or lines=[a,b] for the part you need)"])
     return text
 
 

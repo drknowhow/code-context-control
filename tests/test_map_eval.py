@@ -133,7 +133,8 @@ class TestSuiteShape:
         assert any(c.gate == "must_pass" for c in cases)
         # C1 shipped in 2.121.0 and its cases were promoted; C4 is still open.
         assert not any(c.gate == "xfail" and c.phase == "C1" for c in cases)
-        assert any(c.gate == "xfail" and c.phase == "C4" for c in cases)
+        # C4 shipped in 2.124.0: the minified case is must_pass too.
+        assert not any(c.gate == "xfail" for c in cases)
 
     def test_checks_use_known_vocabulary(self):
         _, raw = _raw_cases()

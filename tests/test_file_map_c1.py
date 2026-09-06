@@ -122,8 +122,10 @@ class TestRenderGrammar(unittest.TestCase):
             store, rec = self._record(tmp)
             full = render_map(rec)
             short = render_map(rec, max_tokens=40)
-            self.assertLessEqual(count_tokens(short), 40 + count_tokens("… 9 more symbols"))
-            self.assertTrue(short.splitlines()[-1].startswith("… "))
+            note = short.splitlines()[-1]
+            self.assertTrue(note.startswith("… "))
+            self.assertIn("more symbols", note)
+            self.assertLessEqual(count_tokens(short), 40 + count_tokens(note))
             self.assertTrue(short.startswith(full.splitlines()[0]))
             self.assertLess(len(short.splitlines()), len(full.splitlines()))
 

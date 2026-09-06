@@ -57,6 +57,28 @@ PARSER_VERSION = "4"  # 4: records carry parser attribution, no summary, posix p
 
 _WS_RUN = re.compile(r"\s+")
 
+#: A signature is never longer than this. A 680 KB minified line used to be
+#: copied into every one of its 20,000 symbols (176 s, an 11 MB record).
+SIGNATURE_MAX_CHARS = 400
+
+
+def _sig_line(lines: List[str], node) -> str:
+    """The node's first line from its start column, capped at SIGNATURE_MAX_CHARS."""
+    row, col = node.start_point
+    line = lines[row] if row < len(lines) else ""
+    chunk = line[col:col + SIGNATURE_MAX_CHARS] if len(line) - col > SIGNATURE_MAX_CHARS else line[col:]
+    if not chunk.strip():
+        chunk = line[:SIGNATURE_MAX_CHARS]
+    return chunk.strip()
+
+
+def _sig_span(lines: List[str], start_row: int, end_row: int) -> str:
+    """Lines start_row..end_row joined, capped at SIGNATURE_MAX_CHARS."""
+    text = "\n".join(lines[start_row:end_row + 1]).strip()
+    if len(text) > SIGNATURE_MAX_CHARS:
+        text = text[:SIGNATURE_MAX_CHARS].rstrip() + "…"
+    return text
+
 
 def _node_text(node, lines: List[str]) -> str:
     """The source text of a node, joined across lines, whitespace-normalized."""
@@ -157,7 +179,7 @@ def _walk_python(node, lines: List[str], sections: List[Dict[str, Any]], parent_
             # Find the colon
             colon_node = next((c for c in child.children if c.type == ':'), None)
             sig_end = colon_node.end_point[0] if colon_node else sig_start
-            signature = '\n'.join(lines[sig_start:sig_end+1]).strip()
+            signature = _sig_span(lines, sig_start, sig_end)
 
             section = {
                 "type": "class",
@@ -186,7 +208,7 @@ def _walk_python(node, lines: List[str], sections: List[Dict[str, Any]], parent_
             sig_start = child.start_point[0]
             colon_node = next((c for c in child.children if c.type == ':'), None)
             sig_end = colon_node.end_point[0] if colon_node else sig_start
-            signature = '\n'.join(lines[sig_start:sig_end+1]).strip()
+            signature = _sig_span(lines, sig_start, sig_end)
 
             is_async = any(c.type == 'async' for c in child.children)
 
@@ -232,7 +254,7 @@ def _walk_python(node, lines: List[str], sections: List[Dict[str, Any]], parent_
                                 "name": name,
                                 "line_start": child.start_point[0] + 1,
                                 "line_end": child.end_point[0] + 1,
-                                "signature": lines[child.start_point[0]].strip()
+                                "signature": _sig_line(lines, child)
                             })
 
         elif child.type == 'comment':
@@ -249,10 +271,10 @@ def _walk_python(node, lines: List[str], sections: List[Dict[str, Any]], parent_
         elif child.type in ('import_statement', 'import_from_statement'):
             section = {
                 "type": "import",
-                "name": lines[child.start_point[0]].strip(),
+                "name": _sig_line(lines, child),
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
-                "signature": lines[child.start_point[0]].strip()
+                "signature": _sig_line(lines, child)
             }
             if not parent_section:
                 sections.append(section)
@@ -294,7 +316,7 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
             name = lines[name_node.start_point[0]][name_node.start_point[1]:name_node.end_point[1]] if name_node else 'Unknown'
 
             # Simple signature heuristic: first line
-            signature = lines[child.start_point[0]].strip()
+            signature = _sig_line(lines, child)
 
             t = child.type.split('_')[0]
             section = {
@@ -321,7 +343,7 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
             name_node = next((c for c in child.children if c.type in ('property_identifier', 'identifier', 'private_property_identifier')), None)
             name = lines[name_node.start_point[0]][name_node.start_point[1]:name_node.end_point[1]] if name_node else 'Unknown'
 
-            signature = lines[child.start_point[0]].strip()
+            signature = _sig_line(lines, child)
 
             is_async = any(c.type == 'async' for c in child.children)
 
@@ -373,7 +395,7 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
                         "name": name,
                         "line_start": child.start_point[0] + 1,
                         "line_end": child.end_point[0] + 1,
-                        "signature": lines[child.start_point[0]].strip()
+                        "signature": _sig_line(lines, child)
                     }
                     if is_async: section["async"] = True
                     doc = _extract_docstring_js(child, lines)
@@ -391,7 +413,7 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
                         "name": name,
                         "line_start": child.start_point[0] + 1,
                         "line_end": child.end_point[0] + 1,
-                        "signature": lines[child.start_point[0]].strip()
+                        "signature": _sig_line(lines, child)
                     })
 
         elif child.type == 'comment':
@@ -408,10 +430,10 @@ def _walk_js_ts(node, lines: List[str], sections: List[Dict[str, Any]], parent_s
         elif child.type == 'import_statement':
             section = {
                 "type": "import",
-                "name": lines[child.start_point[0]].strip(),
+                "name": _sig_line(lines, child),
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
-                "signature": lines[child.start_point[0]].strip()
+                "signature": _sig_line(lines, child)
             }
             if not parent_section:
                 sections.append(section)
@@ -446,7 +468,7 @@ def _walk_html(node, lines: List[str], sections: List[Dict[str, Any]]):
                         "name": f"{tag_name}: {text_content.strip()[:60]}",
                         "line_start": child.start_point[0] + 1,
                         "line_end": child.end_point[0] + 1,
-                        "signature": lines[child.start_point[0]].strip()
+                        "signature": _sig_line(lines, child)
                     })
 
                 # Check for ID attribute
@@ -474,7 +496,7 @@ def _walk_html(node, lines: List[str], sections: List[Dict[str, Any]]):
                             "tag": tag_name,
                             "line_start": child.start_point[0] + 1,
                             "line_end": child.end_point[0] + 1,
-                            "signature": lines[child.start_point[0]].strip()
+                            "signature": _sig_line(lines, child)
                         })
 
             # Recurse into element children
@@ -504,7 +526,7 @@ def _walk_markdown(node, lines: List[str], sections: List[Dict[str, Any]]):
                 "name": f"{level}: {content_text.strip()[:60]}",
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
-                "signature": lines[child.start_point[0]].strip()
+                "signature": _sig_line(lines, child)
             })
 
         # Recurse if needed (atx headings are top level usually, but just in case)
@@ -582,7 +604,7 @@ def _walk_go(node, lines: List[str], sections: List[Dict[str, Any]]):
             name_node = next((c for c in child.children if c.type == 'identifier' or c.type == 'field_identifier'), None)
             name = lines[name_node.start_point[0]][name_node.start_point[1]:name_node.end_point[1]] if name_node else 'Unknown'
 
-            signature = lines[child.start_point[0]].strip()
+            signature = _sig_line(lines, child)
 
             receiver = ""
             if child.type == 'method_declaration':
@@ -609,7 +631,7 @@ def _walk_go(node, lines: List[str], sections: List[Dict[str, Any]]):
                             "name": _node_text(ident, lines),
                             "line_start": spec.start_point[0] + 1,
                             "line_end": spec.end_point[0] + 1,
-                            "signature": lines[spec.start_point[0]].strip()
+                            "signature": _sig_line(lines, spec)
                         })
         elif child.type == 'type_declaration':
             # Drill into type specs
@@ -625,7 +647,7 @@ def _walk_go(node, lines: List[str], sections: List[Dict[str, Any]]):
                         "name": name,
                         "line_start": child.start_point[0] + 1,
                         "line_end": child.end_point[0] + 1,
-                        "signature": lines[child.start_point[0]].strip()
+                        "signature": _sig_line(lines, child)
                     })
         _walk_go(child, lines, sections)
 
@@ -656,9 +678,9 @@ def _walk_rust(node, lines: List[str], sections: List[Dict[str, Any]]):
                     sig.append(ln)
                     if '{' in ln or ln.rstrip().endswith(';'):
                         break
-                signature = " ".join(x.strip() for x in sig)
+                signature = " ".join(x.strip() for x in sig)[:SIGNATURE_MAX_CHARS]
             else:
-                signature = lines[child.start_point[0]].strip()
+                signature = _sig_line(lines, child)
             sections.append({
                 "type": stype,
                 "name": name,

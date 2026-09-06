@@ -4,6 +4,40 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.124.0] - 2026-09-06
+
+### Changed — large files are bounded; `c3_compress` leaves the MCP surface (c3_compress remediation, C4)
+
+Measured before this release: a 680 KB minified bundle took 176 s to map
+and rendered a 199k-token map; a 250 KB generated module rendered 117k
+tokens (the MCP response cap is 25k). The cost was not tree-sitter — it
+was copying the whole line into every symbol's signature, then rendering
+every symbol (docs/file-map.md § Large files).
+
+- A signature is at most 400 characters, sliced from the symbol's start
+  column. The bundle maps in 0.6 s; its record shrinks from 11 MB to
+  under 300 KB.
+- `FileMemoryStore.classify_large` runs before any parse. A file of 2 MB
+  or more is not parsed (`[map:not mapped] … read with lines=[a,b]`). A
+  minified file (longest line ≥ 2,000 chars, average ≥ 400) is parsed but
+  its `var`/`const` binding soup is dropped from the map
+  (`[map:minified] … N var bindings omitted`); named declarations stay. A
+  generated file is labelled `[map:generated]`.
+- The tree-sitter parse runs under a 1.5 s deadline; an overrun is
+  abandoned for the regex scan and the map says `[map:lexical-fallback]`.
+  Records carry `parser = lexical | skipped` for telemetry.
+- Every map served to the model is budgeted at 6,000 tokens; over budget
+  it keeps its first lines and ends with `… N more symbols (map budget …)`.
+  The regex fallback no longer counts trailing blank lines into a block.
+- `c3_compress` is no longer an MCP tool. `c3_read(file_path)` serves the
+  same map, `c3_read('a.py,b.py')` the same batch, `c3_read('<dir>')` a
+  directory. `handle_compress` remains for `c3_project(action='compress')`,
+  the Oracle bridge and the CLI. The MCP tool list is one entry shorter.
+
+map-eval: `js_minified` 7,133 → 113 tokens with all six planted
+declarations found; promoted to `must_pass`. Every annotated fixture is now
+`must_pass` (signature completeness mean 0.91, precision 0.99).
+
 ## [2.123.0] - 2026-09-06
 
 ### Added — `c3_read` maps directories; the map is c3_read's (c3_compress remediation, C3)

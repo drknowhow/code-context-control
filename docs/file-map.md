@@ -6,7 +6,7 @@ A file map is what the model reads to decide which symbols to fetch with
 entry point serves the same text:
 
 - `c3_read(file_path)` with no `symbols` / `lines` (a directory path maps its files)
-- `c3_compress(file_path)` (single or comma-separated batch)
+- `c3_read('a.py,b.py')` for a batch (`c3_compress` left the MCP surface in 2.124.0; `handle_compress` still backs `c3_project` and the Oracle bridge)
 - the inline map under a `c3_search` hit (shortened to 600 tokens)
 - the maps `c3_agent` workflows prefetch
 - `c3 map` on the command line
@@ -132,3 +132,30 @@ public before private. Traversal never follows symlinks, prunes the
 scanner's skip list and `.gitignore` directories, stops at 400 files
 (`[dir_map] traversal capped`), and parses at most 120 unindexed code
 files per call inside a 3-second deadline; the rest show their line count.
+
+## Large files (2.124.0)
+
+Measured before the fix: a 680 KB minified bundle took 176 s to map and
+produced a 199k-token map; a 250 KB generated module produced 117k tokens.
+The cost was not tree-sitter — it was copying the whole line into every
+symbol's signature, then rendering every symbol.
+
+- A signature is at most 400 characters, sliced from the symbol's start
+  column (`SIGNATURE_MAX_CHARS`). The bundle now maps in 0.6 s.
+- `FileMemoryStore.classify_large` runs before any parse: longest line,
+  average line, generated-file markers in the first lines, size. A file
+  of 2 MB or more is not parsed (`[map:not mapped] … read with
+  lines=[a,b]`). A minified file (longest line ≥ 2,000 chars and average
+  line ≥ 400) is parsed, but its `var`/`const` binding soup is dropped from
+  the map (`[map:minified] … N var bindings omitted`); named declarations
+  stay. A generated file is mapped and labelled `[map:generated]`.
+- The tree-sitter parse runs on a worker under a 1.5 s deadline
+  (`PARSE_DEADLINE_S`); tree-sitter 0.26 has no parse timeout, so an
+  overrun is abandoned, the regex scan answers, and the map says
+  `[map:lexical-fallback]`. The record's `parser` field reads `lexical`
+  (or `skipped`) so telemetry can count them.
+- Every map served to the model is budgeted at 6,000 tokens
+  (`FileMemoryStore.MAP_TOKEN_BUDGET`); over budget it keeps its first
+  lines and ends with `… N more symbols (map budget …)`; ask for the part
+  you need with `symbols=[…]` or `lines=[a,b]`. (For a directory map,
+  `lines=<int>` sets the budget — a directory has no line numbers.)
