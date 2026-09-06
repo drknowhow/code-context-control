@@ -78,7 +78,8 @@ def build_parser(version: str, parse_cli_ide_arg):
 
     p_compress = subparsers.add_parser("compress", help="Compress a file")
     p_compress.add_argument("file", help="File to compress")
-    p_compress.add_argument("--mode", choices=["map", "dense_map", "smart", "diff"], default="smart")
+    p_compress.add_argument("--mode", choices=["map", "smart", "structure", "outline"], default="map",
+                            help="map (default) is the canonical file map; the others are signature summaries")
     p_compress.add_argument("--output", "-o", action="store_true", help="Show compressed output")
 
     p_context = subparsers.add_parser("context", help="Get relevant context for a query")

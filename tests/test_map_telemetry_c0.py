@@ -140,18 +140,18 @@ class TestCompressDetail(unittest.TestCase):
             self.assertEqual(rows[0]["target"], "pkg/mod.py")
             self.assertGreater(rows[0]["raw_tokens"], rows[0]["optimized_tokens"])
 
-    def test_compressor_mode_detail_and_cache_hit(self):
+    def test_retired_mode_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc = _project(tmp)
             fin = _finalize_via(svc.session_mgr)
-            handle_compress("pkg/mod.py", "smart", svc, fin, _no_facts)
-            handle_compress("pkg/mod.py", "smart", svc, fin, _no_facts)
+            out = handle_compress("pkg/mod.py", "smart", svc, fin, _no_facts)
+            self.assertTrue(out.startswith("[compress:deprecated] mode 'smart'"))
+            self.assertIn("C Thing [L", out)
             rows = [r["detail"] for r in _rows(tmp) if r["tool"] == "c3_compress"]
-            self.assertEqual(rows[0]["backend"], "compressor")
+            self.assertEqual(rows[0]["backend"], "file_memory")
             self.assertEqual(rows[0]["requested_mode"], "smart")
-            self.assertFalse(rows[0]["cache_hit"])
-            self.assertTrue(rows[1]["cache_hit"])
-            self.assertIn(rows[0]["actual_mode"], ("full", "outline", "structure", "smart"))
+            self.assertEqual(rows[0]["deprecated_mode"], "smart")
+            self.assertEqual(rows[0]["parser"], "tree_sitter")
 
     def test_batch_detail(self):
         with tempfile.TemporaryDirectory() as tmp:

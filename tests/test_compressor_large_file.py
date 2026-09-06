@@ -208,17 +208,27 @@ class TestLargeFileFastPath(unittest.TestCase):
 
     # ── mode exemptions ─────────────────────────────────────────────────
 
-    def test_diff_mode_not_intercepted(self):
-        # diff is the documented alternative for large files — it must keep
-        # its own path and never return the fast-path header.
+    def test_diff_mode_is_retired(self):
+        # diff was retired in 2.122.0: it cached full copies of every file
+        # keyed by basename. The answer is an error naming the replacement,
+        # never a fast-path header.
         content = _make_python_source(LARGE_FILE_LINE_THRESHOLD + 100, "dif")
         fpath = self._write("diffable.py", content)
 
         res = self.comp.compress_file(str(fpath), "diff")
 
+        self.assertTrue(res.get("retired"))
+        self.assertIn("retired in 2.122.0", res["error"])
         self.assertNotIn("fast_path", res)
-        self.assertTrue(res["mode"].startswith("diff"))
-        self.assertNotIn(LARGE_FILE_GUIDANCE, res["compressed"])
+
+    def test_map_mode_is_the_canonical_map_even_for_large_files(self):
+        content = _make_python_source(LARGE_FILE_LINE_THRESHOLD + 100, "mp")
+        fpath = self._write("mapbig.py", content)
+        res = self.comp.compress_file(str(fpath), "map")
+        self.assertEqual(res["mode"], "map")
+        self.assertNotIn("fast_path", res)
+        self.assertTrue(res["compressed"].startswith("# "))
+        self.assertIn("[L", res["compressed"])
 
     def test_smart_mode_takes_fast_path(self):
         content = _make_python_source(LARGE_FILE_LINE_THRESHOLD + 100, "smt")

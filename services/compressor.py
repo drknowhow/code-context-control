@@ -2,10 +2,12 @@
 AST-based Code Compression Service
 
 Parses source files into AST and generates compressed summaries:
-- Function/class signatures only (skip bodies)
-- Structural outline mode
-- Smart truncation with context preservation
-- Diff-only mode for edits
+- "map": the canonical file map (services/file_map) — what the tools serve
+- "structure" / "outline" / "smart": signature-only summaries kept for
+  internal callers (delegate, Hub REST, context snapshots, benchmarks)
+- "summary": an LLM summary through the router, when one is configured
+
+"diff" and "bug_scan" were retired in 2.122.0 (docs/file-map.md).
 """
 import hashlib
 import json
@@ -145,6 +147,30 @@ class CodeCompressor:
         if protected_files:
             self._protected_files.update(self._normalize_rel_path(p) for p in protected_files)
         self.router = router
+        self._sweep_retired_caches()
+
+    #: Modes the compressor no longer implements, and where to go instead.
+    RETIRED_MODES = {
+        "diff": "use `git diff` or the edit ledger",
+        "bug_scan": "use c3_search(action='exact', query='except ')",
+        "dense_map": "use mode='map'",
+    }
+
+    def _sweep_retired_caches(self) -> int:
+        """Delete the pre-2.122.0 diff caches: one full copy of every file
+        ever diffed, keyed by BASENAME (so every __init__.py collided).
+        Cheap — only diff wrote `*.cache`; after one sweep there are none."""
+        removed = 0
+        try:
+            for f in self.cache_dir.glob("*.cache"):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    continue
+        except Exception:
+            pass
+        return removed
 
     @staticmethod
     def _normalize_rel_path(path: str) -> str:
@@ -192,13 +218,17 @@ class CodeCompressor:
         Compress a source file.
 
         Modes:
+        - "map": the canonical file map (services/file_map.render_map)
         - "structure": Function/class signatures + imports (most compressed)
         - "outline": Structure + docstrings + key comments
         - "smart": Adaptive - more detail for small files, less for large
-        - "diff": Only changes since last seen (requires prior state)
         - "summary": High-level LLM summary (requires router)
-        - "bug_scan": Structure map + annotated exception-handling hotspots with line numbers
+        Retired (2.122.0): "diff", "bug_scan", "dense_map" -> error dict.
         """
+        if mode in self.RETIRED_MODES:
+            return {"error": f"mode '{mode}' retired in 2.122.0 — "
+                             f"{self.RETIRED_MODES[mode]} (docs/file-map.md)",
+                    "compressed": "", "retired": True}
         # Access Guard: read verdict before any cache or disk access — denied
         # paths raise AccessDenied (docs/access-guard.md §3). Callers that
         # need string returns catch it and surface exc.message. Checked
@@ -241,8 +271,9 @@ class CodeCompressor:
         content_hash = hashlib.md5(content.encode()).hexdigest()
         ext = filepath.suffix.lower()
 
-        # Check persistent cache (except for diff/summary which have their own logic)
-        if mode not in ("diff", "summary"):
+        # Check persistent cache (summary has its own logic; map is served
+        # from file_memory's own cache below)
+        if mode not in ("summary", "map"):
             cache_key = f"{content_hash}_{mode}{ext}.json"
             if mask_view is not None:
                 cache_key = f"mask-{mask_view.view_hash}_{cache_key}"
@@ -271,7 +302,10 @@ class CodeCompressor:
         # entries (keyed on content hash) still win. diff/summary are exempt:
         # diff is the recommended targeted alternative and summary delegates
         # to the router.
-        if mode not in ("diff", "summary"):
+        if mode == "map":
+            return self._canonical_map(filepath, content)
+
+        if mode != "summary":
             line_count = content.count("\n")
             if content and not content.endswith("\n"):
                 line_count += 1
@@ -285,9 +319,6 @@ class CodeCompressor:
                     filepath, content, content_hash, ext, mode,
                     byte_size, line_count)
 
-        if mode == "diff":
-            return self._diff_compress(filepath, content)
-
         if mode == "summary":
             if not self.router:
                 return {"error": "Summary mode requires a router", "compressed": ""}
@@ -295,31 +326,6 @@ class CodeCompressor:
             summary = sum_res.get("summary", "Could not summarize")
             result = f"# {filepath.name} — SUMMARY\n{summary}"
             return {"compressed": result, "mode": "summary", **measure_savings(content, result)}
-
-        if mode == "bug_scan":
-            # Structure map + exception-handling annotation pass
-            structure = self._extract_structure(content, ext, "outline")
-            exception_section = self._scan_exception_handlers(content)
-            compressed_parts = [structure]
-            if exception_section:
-                compressed_parts.append(exception_section)
-            compressed = "\n".join(compressed_parts)
-            header = f"# {filepath.name} ({filepath.suffix}) — {len(content.splitlines())} lines [bug_scan]\n"
-            result = header + compressed
-            savings = measure_savings(content, result)
-            savings["compressed"] = result
-            savings["mode"] = "bug_scan"
-            savings["filepath"] = str(filepath)
-            self._file_hashes[str(filepath)] = content_hash
-            cache_key = f"{content_hash}_bug_scan{ext}.json"
-            self._mem_cache[cache_key] = dict(savings)
-            cache_file = self.cache_dir / cache_key
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(savings, f, indent=2)
-            except Exception:
-                pass
-            return savings
 
         if mode == "smart":
             tokens = count_tokens(content)
@@ -354,8 +360,8 @@ class CodeCompressor:
         # Cache hash for diff mode
         self._file_hashes[str(filepath)] = content_hash
 
-        # Persist to cache (except diff which uses its own file format)
-        if mode not in ("diff", "summary"):
+        # Persist to cache
+        if mode != "summary":
             cache_key = f"{content_hash}_{mode}{ext}.json"
             # Store in memory first (fast path for repeat access)
             if len(self._mem_cache) >= self._MEM_CACHE_MAX:
@@ -648,51 +654,6 @@ class CodeCompressor:
 
         return None
 
-    def _scan_exception_handlers(self, content: str) -> str:
-        """Scan for exception-handling hotspots and return an annotated section.
-
-        Returns a formatted block listing every bare/broad except clause with:
-          - line number
-          - the except line itself
-          - the immediately enclosing function name (if detectable)
-
-        Returns an empty string if no exception handlers are found.
-        """
-        lines = content.splitlines()
-        # Patterns ranked from most to least problematic
-        _EXCEPT_PATTERNS = [
-            (re.compile(r"^\s*except\s*:"),          "bare-except"),
-            (re.compile(r"^\s*except\s+Exception\s*:"), "broad-except"),
-            (re.compile(r"^\s*except\s+Exception\s+as\s+\w+\s*:"), "broad-except"),
-            (re.compile(r"^\s*except\s+\("),          "multi-except"),
-        ]
-        _FUNC_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
-
-        hits: list[str] = []
-        # Track the most recently seen function name for context
-        current_func = "<module>"
-        for idx, line in enumerate(lines, start=1):
-            m = _FUNC_DEF.match(line)
-            if m:
-                current_func = m.group(1)
-            for pattern, label in _EXCEPT_PATTERNS:
-                if pattern.match(line):
-                    # Show up to 2 continuation lines (body of the except block)
-                    body_lines = []
-                    for j in range(idx, min(idx + 2, len(lines))):
-                        body = lines[j].strip()
-                        if body and not body.startswith("except") and not body.startswith("try"):
-                            body_lines.append(body)
-                    body_preview = " | ".join(body_lines[:2]) if body_lines else ""
-                    suffix = f"  → {body_preview}" if body_preview else ""
-                    hits.append(f"  L{idx} [{label}] in `{current_func}`: {line.strip()}{suffix}")
-                    break  # one label per line
-
-        if not hits:
-            return ""
-        header = f"\n# Exception-handling hotspots ({len(hits)} found):"
-        return header + "\n" + "\n".join(hits)
-
     def _generic_compress(self, content: str, ext: str) -> str:
         """Fallback compression for unknown languages."""
         lines = content.split('\n')
@@ -712,48 +673,32 @@ class CodeCompressor:
                 kept.append(stripped)
         return '\n'.join(kept)
 
-    def _diff_compress(self, filepath: Path, current_content: str) -> dict:
-        """Generate diff-based compression against cached version."""
-        cache_file = self.cache_dir / f"{filepath.name}.cache"
-        current_hash = hashlib.md5(current_content.encode()).hexdigest()
+    def _canonical_map(self, filepath: Path, content: str) -> dict:
+        """mode="map": the same text c3_read / c3_compress serve.
 
-        if cache_file.exists():
-            cached = cache_file.read_text(encoding="utf-8", errors="replace")
-            cached_hash = hashlib.md5(cached.encode()).hexdigest()
-
-            if cached_hash == current_hash:
-                result = f"# {filepath.name} — NO CHANGES"
-                return {"compressed": result, "mode": "diff-unchanged", **measure_savings(current_content, result)}
-
-            # Generate contextual diff
-            diff = self._contextual_diff(cached.split('\n'), current_content.split('\n'), filepath.name)
-            savings = measure_savings(current_content, diff)
-            savings["compressed"] = diff
-            savings["mode"] = "diff"
-        else:
-            # No cache — fall back to structure mode
-            compressed = self._extract_structure(current_content, filepath.suffix.lower(), "structure")
-            header = f"# {filepath.name} (FIRST SEEN) — {len(current_content.splitlines())} lines\n"
-            result = header + compressed
-            savings = measure_savings(current_content, result)
-            savings["compressed"] = result
-            savings["mode"] = "diff-first"
-
-        # Update cache
-        cache_file.write_text(current_content, encoding="utf-8")
+        Built from a throwaway FileMemoryStore-style extraction so callers
+        that only hold a compressor (Hub REST, `c3 compress`, delegate)
+        get the canonical map rather than a structure-only summary.
+        """
+        from services.file_map import render_map
+        from services.file_memory import LANG_MAP, FileMemoryStore
+        ext = filepath.suffix.lower()
+        sections, parser = FileMemoryStore._extract_sections_with_parser(
+            FileMemoryStore.__new__(FileMemoryStore), filepath, content)
+        record = {
+            "path": self._relative_to_project(filepath),
+            "lines": len(content.splitlines()),
+            "language": LANG_MAP.get(ext, ext.lstrip(".")),
+            "parser": parser,
+            "sections": sections,
+        }
+        result = render_map(record)
+        savings = measure_savings(content, result)
+        savings["compressed"] = result
+        savings["mode"] = "map"
+        savings["parser"] = parser
+        savings["filepath"] = str(filepath)
         return savings
-
-    def _contextual_diff(self, old_lines: list, new_lines: list, filename: str) -> str:
-        """Generate a contextual diff with surrounding structure."""
-        import difflib
-        differ = difflib.unified_diff(old_lines, new_lines, lineterm='', n=1)
-        diff_text = '\n'.join(differ)
-
-        if not diff_text.strip():
-            return f"# {filename} — NO CHANGES"
-
-        header = f"# {filename} — CHANGES ONLY\n"
-        return header + diff_text
 
     def compress_directory(self, dirpath: str, mode: str = "smart",
                           extensions: Optional[list] = None,

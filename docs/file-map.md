@@ -86,3 +86,27 @@ A map of a very small file can cost more tokens than the file (measured:
 a 15-line module mapped at 94 tokens against 49 for the source). When the
 map would not be smaller, `c3_read(file_path)` and `c3_compress` serve the
 whole file instead, headed `whole file — smaller than its map`.
+
+## Retired modes (2.122.0)
+
+`c3_compress` accepted six modes; telemetry over 3,932 tool calls showed
+two calls that were not `map`. The others are retired. Asking for one
+still returns the map, headed by one line —
+`[compress:deprecated] mode '<name>' retired in 2.122.0 — map is the
+only mode (<what to use instead>); see docs/file-map.md` — and the
+telemetry row carries `deprecated_mode` so the notice can be removed once
+nothing asks any more.
+
+| mode | instead |
+|---|---|
+| `dense_map` | the map is dense now |
+| `smart`, `structure`, `outline` | the map carries full signatures |
+| `diff` | `git diff`, or the edit ledger (`c3_edits`) — diff cached a full copy of every file it saw, keyed by basename |
+| `bug_scan` | `c3_search(action='exact', query='except ')` |
+| `ast` | it never read `file_path`; project architecture comes from codebase-memory-mcp `cli get_architecture` or `c3_status` |
+
+`CodeCompressor.compress_file` keeps `smart` / `structure` / `outline` for
+internal callers (delegation, the Hub REST API, context snapshots,
+benchmarks); its `map` mode renders the canonical map. `diff` and
+`bug_scan` return an error dict there, and the `*.cache` files diff left
+under `.c3/cache` are deleted on the compressor's first start.
