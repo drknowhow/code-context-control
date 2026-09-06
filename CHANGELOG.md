@@ -4,6 +4,30 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.122.0] - 2026-09-06
+
+### Changed — `map` is the only compress mode (c3_compress remediation, C2)
+
+Telemetry over 3,932 tool calls showed two `c3_compress` calls that were
+not `mode='map'`. The other modes are retired (docs/file-map.md § Retired
+modes):
+
+- `dense_map`, `smart`, `structure`, `outline`, `diff`, `bug_scan` and `ast`
+  now answer with the canonical map headed by one line —
+  `[compress:deprecated] mode '<name>' retired in 2.122.0 — map is the only
+  mode (<what to use instead>)` — and the telemetry row carries
+  `deprecated_mode`, so the notice can go once nothing asks.
+- `CodeCompressor` drops `diff` (it cached a full copy of every file it
+  saw under `.c3/cache`, keyed by basename, so every `__init__.py`
+  collided) and `bug_scan`; both return an error dict naming the
+  replacement. The stale `*.cache` files are deleted on the compressor's
+  first start. `mode='map'` in the compressor renders the canonical map,
+  so the Hub REST API, `c3 compress` (default now `map`) and delegation
+  get the same text as the tools. `smart`/`structure`/`outline` stay for
+  those internal callers.
+- `handle_compress` no longer touches the compressor at all: one code
+  path, the map, for single files and batches.
+
 ## [2.121.0] - 2026-09-06
 
 ### Changed — one canonical file map (c3_compress remediation, C1)
