@@ -1,0 +1,20 @@
+# Fixture config for the map-eval harness: five top-level keys.
+name: map-eval
+version: 1
+
+# Paths are project-relative.
+paths:
+  fixtures: tests/map_eval/fixtures
+  baseline: tests/map_eval/baseline_fixture.json
+
+# Gate vocabulary, in order of severity.
+gates:
+  - must_pass
+  - xfail
+  - info
+
+floors:
+  pass_rate_must_pass: 1.0
+  symbol_recall_mean: 0.9
+  # nested comment inside a mapping
+  determinism_rate: 1.0
