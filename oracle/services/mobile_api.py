@@ -50,10 +50,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request
 
 from oracle.config import ORACLE_DIR, load_config
-from oracle.services import api_auth, discovery_audit
+from oracle.services import api_auth, client_tokens, discovery_audit, local_session
 from oracle.services.api_auth import extract_bearer
 from oracle.services.tool_registry import _c3_version
 from services.atomic_json import write_json_atomic
@@ -66,11 +66,16 @@ from services.atomic_json import write_json_atomic
 # 4: the ops surface — /edits, /locks, /status, /insights, /suggestions,
 #    /review. Reads are always on; the two capabilities that WRITE
 #    (insight dismissal, suggestion approval) carry their own switches.
-API_VERSION = 4
+# 5: per-client tokens (`clients` capability, /clients routes). A request
+#    is authenticated by the Discovery token OR a live client token, /info
+#    reports the caller as `client: {kind, client_id}`, and override
+#    decisions are attributed to that kind ("desk" for the tray client,
+#    "mobile" for a phone or the legacy Discovery token).
+API_VERSION = 5
 
 CAPABILITIES = [
     "feed", "feed_wait", "projects", "health", "pm", "pm_events", "digest",
-    "notifications_ack",
+    "notifications_ack", "clients",
     "credentials", "credentials_write",
     "access", "access_write",
     "enforcement", "enforcement_write",
@@ -133,9 +138,49 @@ _WAIT_TICK_S = 1.0
 # serves the desktop UI and discovery off the same pool. Past the cap `wait`
 # degrades to an ordinary immediate answer rather than queueing behind other
 # waiters. One phone needs one slot; four leaves room for the watch and a
-# spare.
-_MAX_WAITERS = 4
+# spare. Since v2.125.0 the desk tray client holds a slot too, so the total
+# is eight with a per-KIND cap of four: a phone that reconnects in a loop
+# cannot take the desk's slots, and vice versa. The kind is the authenticated
+# principal's (`g.c3_client["kind"]`), never a client-supplied field.
+_MAX_WAITERS = 8
+_MAX_WAITERS_PER_KIND = 4
 _waiters = threading.Semaphore(_MAX_WAITERS)
+_kind_waiters: dict[str, threading.Semaphore] = {}
+_kind_waiters_lock = threading.Lock()
+
+
+def _kind_semaphore(kind: str) -> threading.Semaphore:
+    with _kind_waiters_lock:
+        sem = _kind_waiters.get(kind)
+        if sem is None:
+            sem = threading.Semaphore(_MAX_WAITERS_PER_KIND)
+            _kind_waiters[kind] = sem
+        return sem
+
+
+def _acquire_waiter(kind: str) -> bool:
+    """Take one long-poll slot for *kind*. False when either the per-kind or
+    the global budget is spent — the caller then answers immediately."""
+    per_kind = _kind_semaphore(kind)
+    if not per_kind.acquire(blocking=False):
+        return False
+    if not _waiters.acquire(blocking=False):
+        per_kind.release()
+        return False
+    return True
+
+
+def _release_waiter(kind: str) -> None:
+    _waiters.release()
+    _kind_semaphore(kind).release()
+
+
+def _reset_waiters() -> None:
+    """Fresh semaphores (tests)."""
+    global _waiters
+    with _kind_waiters_lock:
+        _waiters = threading.Semaphore(_MAX_WAITERS)
+        _kind_waiters.clear()
 
 #: Files whose mtime means "the feed may have changed" — the same set
 #: ``_last_activity`` reports on, kept literal in both places on purpose. Here
@@ -177,6 +222,36 @@ def _cfg() -> dict:
 
 # ── Auth guard ────────────────────────────────────────────
 
+#: The one route a client may reach WITHOUT a Bearer: it is how a client
+#: obtains one. It carries its own gate (local address + bootstrap key) in
+#: the handler, plus the shared rate bucket applied below.
+_PAIR_ENDPOINT = "mobile.mobile_clients_mint"
+
+
+def authenticate(token: str | None) -> dict | None:
+    """Principal for a presented Bearer, or ``None``.
+
+    The Discovery token authenticates as the legacy ``mobile``/``discovery``
+    principal so every phone paired before per-client tokens keeps working
+    and keeps its audit attribution. Otherwise the token must belong to a
+    live (un-revoked) row in ``clients.json``. Shared with ``chat_poll`` so
+    the two mobile blueprints cannot drift on what counts as a credential.
+    """
+    if not token:
+        return None
+    if api_auth.verify(token):
+        return dict(client_tokens.DISCOVERY_PRINCIPAL)
+    return client_tokens.principal_for(token)
+
+
+def principal() -> dict:
+    """The authenticated caller for this request (set by the guard).
+
+    Falls back to the Discovery principal so a route exercised outside the
+    blueprint guard (a test calling a view directly) still has a kind."""
+    return getattr(g, "c3_client", None) or dict(client_tokens.DISCOVERY_PRINCIPAL)
+
+
 @bp.before_request
 def _mobile_auth_guard():
     """Bearer gate for the whole mobile surface — every method, GETs included.
@@ -184,14 +259,28 @@ def _mobile_auth_guard():
     Deliberately stricter than ``_discovery_auth_guard``: there is no
     ``require_auth`` opt-out and no session-cookie fallback. Mutating methods
     additionally consume from the shared Discovery rate-limit bucket.
+
+    Two credentials satisfy it (api_version 5): the Discovery token, or a
+    per-client token minted by ``POST /clients``. Whichever matched is
+    stashed as ``g.c3_client = {"kind", "client_id"}`` for the routes that
+    attribute what they do.
     """
     if request.method == "OPTIONS":
         return None  # CORS preflight
     if not _cfg().get("mobile_api_enabled", True):
         return jsonify({"error": "mobile API disabled"}), 404
     token = extract_bearer(request.headers.get("Authorization"))
-    if not api_auth.verify(token):
-        return jsonify({"error": "unauthorized"}), 401
+    if request.endpoint == _PAIR_ENDPOINT:
+        # No Bearer yet by definition. The handler checks address + key; the
+        # rate bucket below still applies, keyed on the caller's address, so
+        # a key-guessing loop is throttled like any other mutation.
+        g.c3_client = None
+        token = None
+    else:
+        who = authenticate(token)
+        if who is None:
+            return jsonify({"error": "unauthorized"}), 401
+        g.c3_client = who
     if request.method in ("POST", "PUT", "DELETE") and _get_limiter is not None:
         limiter = _get_limiter()
         allowed, retry_after = limiter.check(
@@ -389,7 +478,99 @@ def mobile_info():
         "c3_version": _c3_version(),
         "server_time": datetime.now(timezone.utc).isoformat(),
         "capabilities": _capabilities(),
+        # Who the server thinks is asking (api_version 5). A client uses it
+        # to confirm its pairing survived and to label itself in its own UI.
+        "client": principal(),
     })
+
+
+# ── Clients (per-device tokens, api_version 5) ───────────
+#
+# One Bearer per paired device, stored hashed in ~/.c3/oracle/clients.json
+# (oracle/services/client_tokens.py). Minting needs proof of same-OS-user
+# access to this machine — the on-disk bootstrap key, presented from a local
+# address — the same boundary `POST /api/session/bootstrap` enforces for the
+# dashboard cookie. The token crosses the wire exactly once, in the 201.
+
+def _client_row_for_wire(row: dict, caller: dict | None) -> dict:
+    out = dict(row)
+    out["current"] = bool(caller and caller.get("client_id") == row.get("client_id"))
+    return out
+
+
+@bp.route("/clients", methods=["POST"])
+def mobile_clients_mint():
+    """Exchange the bootstrap key for a per-client token.
+
+    Body ``{"bootstrap_key": str, "kind": "desk"|"mobile", "label": str}``.
+    No Bearer (this is how a client obtains one); instead the request must
+    come from a local address AND carry the key ``~/.c3/oracle/bootstrap.key``
+    holds, compared in constant time. 201 ``{client_id, token, kind, label}``.
+    """
+    gate = _security_gate()
+    if gate:
+        return gate
+    if not local_session.is_local(request.remote_addr, _cfg().get("bind_host")):
+        return jsonify({"error": "local requests only"}), 403
+    data = request.get_json(silent=True) or {}
+    presented = str(data.get("bootstrap_key") or "").strip() or \
+        request.headers.get("X-C3-Bootstrap-Key", "")
+    if not local_session.verify_bootstrap_key(presented):
+        _gw_audit("mobile.clients.mint", {"kind": str(data.get("kind") or "")},
+                  status="refused")
+        return jsonify({"error": "unauthorized"}), 401
+    kind = str(data.get("kind") or "").strip().lower()
+    if kind not in client_tokens.KINDS:
+        return jsonify({"error": f"kind must be one of "
+                                 f"{', '.join(client_tokens.KINDS)}"}), 400
+    try:
+        row, token = client_tokens.mint(kind, str(data.get("label") or ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return _svc_error(exc)
+    _gw_audit("mobile.clients.mint", {"kind": kind, "client_id": row["client_id"]})
+    return jsonify({
+        "client_id": row["client_id"],
+        "token": token,
+        "kind": row["kind"],
+        "label": row["label"],
+        "created": row["created"],
+    }), 201
+
+
+@bp.route("/clients", methods=["GET"])
+def mobile_clients_list():
+    """Every paired client, hashes and tokens never included. ``current``
+    marks the row the presenting token belongs to (false for the Discovery
+    token, which has no row)."""
+    caller = principal()
+    try:
+        rows = client_tokens.list_clients()
+    except Exception as exc:
+        return _svc_error(exc)
+    return jsonify({
+        "clients": [_client_row_for_wire(r, caller) for r in rows],
+        "client": caller,
+    })
+
+
+@bp.route("/clients/<client_id>", methods=["DELETE"])
+def mobile_clients_revoke(client_id):
+    """Revoke one client. Its token fails auth from the next request on.
+    Revoking yourself is allowed — that is how a client signs out."""
+    gate = _security_gate()
+    if gate:
+        return gate
+    try:
+        row = client_tokens.revoke(str(client_id))
+    except Exception as exc:
+        return _svc_error(exc)
+    if row is None:
+        return jsonify({"error": "unknown client"}), 404
+    _gw_audit("mobile.clients.revoke", {"client_id": str(client_id)})
+    return jsonify({"client": _client_row_for_wire(row, principal()),
+                    "revoked": True})
 
 
 # ── Projects overview ─────────────────────────────────────
@@ -565,12 +746,13 @@ def _hold_for_items(targets: list, collect, wait_s: int):
     matching item — a severity this client filters out, say — re-baselines
     instead of re-scanning on every subsequent tick.
 
-    Returns immediately when every waiter slot is taken. The caller then
-    behaves exactly as if ``wait`` had not been passed: a slower client, not a
-    wrong one.
+    Returns immediately when every waiter slot is taken — globally, or for
+    this caller's kind. The caller then behaves exactly as if ``wait`` had
+    not been passed: a slower client, not a wrong one.
     """
     started = time.monotonic()
-    if not _waiters.acquire(blocking=False):
+    kind = str(principal().get("kind") or "mobile")
+    if not _acquire_waiter(kind):
         return [], 0.0
     try:
         seen = _feed_mtime(targets)
@@ -588,7 +770,7 @@ def _hold_for_items(targets: list, collect, wait_s: int):
             if found:
                 return found, time.monotonic() - started
     finally:
-        _waiters.release()
+        _release_waiter(kind)
 
 
 @bp.route("/feed")
@@ -1815,8 +1997,12 @@ _OVERRIDE_FIELDS = (
     "justification", "resolved_at", "decided_by", "decision_note",
 )
 
-#: Decisions made here are always attributed to the phone (§3.3 decided_by).
-_DECIDED_BY = "mobile"
+#: Decisions made here are attributed to the authenticated principal's kind
+#: (§3.3 decided_by): "mobile" for a phone or the legacy Discovery token,
+#: "desk" for the tray client. Never a client-supplied field — a body key
+#: cannot make a phone look like the desk.
+def _decided_by() -> str:
+    return str(principal().get("kind") or "mobile")
 
 
 def _override_row(row: dict) -> dict:
@@ -2243,7 +2429,7 @@ def mobile_override_decide(request_id):
         result = orq.decide(
             str(request_id), decision, uses=requested_uses,
             ttl_s=requested_ttl, note=str(data.get("note") or ""),
-            decided_by=_DECIDED_BY, confirm=confirm, mode=mode,
+            decided_by=_decided_by(), confirm=confirm, mode=mode,
             mute=bool(data.get("mute")))
     except orq.OverrideError as exc:
         _override_audit(f"{decision}_refused", row)
@@ -2313,7 +2499,7 @@ def mobile_override_mute(request_id):
     try:
         result = orq.decide(str(request_id), orq.DECISION_DENY,
                             note=str(data.get("note") or ""),
-                            decided_by=_DECIDED_BY, mute=True)
+                            decided_by=_decided_by(), mute=True)
     except orq.OverrideError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:

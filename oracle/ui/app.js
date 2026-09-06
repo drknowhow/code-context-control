@@ -3,7 +3,7 @@
 // ── Init ──
 // ═══════════════════════════════════════════════════════════
 (async function init() {
-  await Promise.all([refreshHeader(), loadProjects(), loadInsights(), loadSuggestions(), loadSettings(), loadDiscoveryKey(), chatLoadConversations(), chatLoadCommands()]);
+  await Promise.all([refreshHeader(), loadProjects(), loadInsights(), loadSuggestions(), loadSettings(), loadDiscoveryKey(), loadPairedClients(), chatLoadConversations(), chatLoadCommands()]);
   // Restore persisted UI preferences (loadSettings cached the config).
   restoreLastTab(window.oracleConfig || {});
   // Auto-refresh every 60s

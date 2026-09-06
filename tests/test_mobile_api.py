@@ -181,10 +181,15 @@ class TestMobileAPI(unittest.TestCase):
         # connection open instead of discovering support by timing a request.
         # 4 since the ops surface (/edits, /locks, /status, /insights,
         # /suggestions, /review) — see tests/test_mobile_extras.py.
-        self.assertEqual(body["api_version"], 4)
+        # 5 since per-client tokens (`clients` capability, `client` field) —
+        # see tests/test_mobile_clients.py.
+        self.assertGreaterEqual(body["api_version"], 5)
         self.assertIn("feed", body["capabilities"])
         self.assertIn("feed_wait", body["capabilities"])
         self.assertIn("pm", body["capabilities"])
+        self.assertIn("clients", body["capabilities"])
+        self.assertEqual(body["client"],
+                         {"kind": "mobile", "client_id": "discovery"})
 
     # ── Projects ─────────────────────────────────────────
 
@@ -355,6 +360,85 @@ class TestMobileAPI(unittest.TestCase):
             for ok in held:
                 if ok:
                     mobile_api._waiters.release()
+
+    # ── Waiter budget per kind (v2.125.0) ────────────────
+    # Eight slots total, four per client KIND: a phone reconnecting in a loop
+    # cannot take the desk tray client's slots, and vice versa. The kind is
+    # the authenticated principal's, so the Discovery token counts as mobile.
+
+    def test_waiter_budget_is_eight_with_four_per_kind(self):
+        self.assertEqual(mobile_api._MAX_WAITERS, 8)
+        self.assertEqual(mobile_api._MAX_WAITERS_PER_KIND, 4)
+        self.assertEqual(2 * mobile_api._MAX_WAITERS_PER_KIND, mobile_api._MAX_WAITERS)
+
+    def test_acquire_waiter_enforces_both_caps(self):
+        mobile_api._reset_waiters()
+        try:
+            for _ in range(mobile_api._MAX_WAITERS_PER_KIND):
+                self.assertTrue(mobile_api._acquire_waiter("mobile"))
+            # A fifth phone is refused by the per-kind cap...
+            self.assertFalse(mobile_api._acquire_waiter("mobile"))
+            # ...while the desk still has its four.
+            for _ in range(mobile_api._MAX_WAITERS_PER_KIND):
+                self.assertTrue(mobile_api._acquire_waiter("desk"))
+            self.assertFalse(mobile_api._acquire_waiter("desk"))
+            # Releasing one phone slot frees exactly one phone slot.
+            mobile_api._release_waiter("mobile")
+            self.assertFalse(mobile_api._acquire_waiter("desk"))
+            self.assertTrue(mobile_api._acquire_waiter("mobile"))
+        finally:
+            mobile_api._reset_waiters()
+
+    def test_feed_wait_phone_cannot_starve_the_desk(self):
+        from oracle.services import client_tokens
+        mobile_api._reset_waiters()
+        home = tempfile.TemporaryDirectory()
+        held = []
+        try:
+            with mock.patch("pathlib.Path.home", return_value=Path(home.name)):
+                _, desk_token = client_tokens.mint("desk", "tray")
+                held = [mobile_api._acquire_waiter("mobile")
+                        for _ in range(mobile_api._MAX_WAITERS_PER_KIND)]
+                self.assertTrue(all(held))
+                # The Discovery token is a `mobile` principal: every phone
+                # slot is taken, so it degrades to an immediate answer.
+                started = time.monotonic()
+                body = self._raw_feed(wait=5, since="2099-01-01T00:00:00+00:00",
+                                      project=str(self.beta))
+                self.assertLess(time.monotonic() - started, 3)
+                self.assertEqual(body["waited_s"], 0.0)
+                # The desk client's own budget is untouched: it really holds.
+                started = time.monotonic()
+                r = self.client.get("/api/mobile/feed",
+                                    query_string={"wait": 2,
+                                                  "since": "2099-01-01T00:00:00+00:00",
+                                                  "project": str(self.beta)},
+                                    headers={"Authorization": "Bearer " + desk_token})
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertGreaterEqual(r.get_json()["waited_s"], 1.0)
+                self.assertLess(time.monotonic() - started, 10)
+        finally:
+            for ok in held:
+                if ok:
+                    mobile_api._release_waiter("mobile")
+            mobile_api._reset_waiters()
+            client_tokens.reset_touch_cache()
+            home.cleanup()
+
+    def test_feed_wait_desk_cannot_starve_the_phone(self):
+        mobile_api._reset_waiters()
+        held = [mobile_api._acquire_waiter("desk")
+                for _ in range(mobile_api._MAX_WAITERS_PER_KIND)]
+        try:
+            self.assertTrue(all(held))
+            body = self._raw_feed(wait=2, since="2099-01-01T00:00:00+00:00",
+                                  project=str(self.beta))
+            self.assertGreaterEqual(body["waited_s"], 1.0)
+        finally:
+            for ok in held:
+                if ok:
+                    mobile_api._release_waiter("desk")
+            mobile_api._reset_waiters()
 
     def test_feed_unknown_type(self):
         r = self.client.get("/api/mobile/feed",

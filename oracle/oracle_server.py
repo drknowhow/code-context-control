@@ -21,7 +21,7 @@ from flask import Flask, Response, jsonify, redirect, request, url_for  # noqa: 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
 from oracle.listeners import OracleListeners, listener_hosts  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
-from oracle.services import api_auth, local_session  # noqa: E402
+from oracle.services import api_auth, client_tokens, local_session  # noqa: E402
 from oracle.services.activity_reporter import ActivityReporter  # noqa: E402
 from oracle.services.api_auth import extract_bearer  # noqa: E402
 from oracle.services.api_auth import verify as verify_api_key  # noqa: E402
@@ -233,6 +233,14 @@ def _local_write_guard():
     """
     path = request.path or ""
     if not path.startswith("/api/") or path.startswith("/api/discovery"):
+        return None
+    # The mobile gateway authenticates itself: both of its blueprints gate
+    # EVERY method (GETs included) on a Bearer — the Discovery token or a
+    # per-client token (v2.125.0) — and the one route that takes no Bearer,
+    # ``POST /api/mobile/clients``, runs its own local-address + bootstrap-key
+    # check. Applying this cookie-or-Discovery gate on top would refuse every
+    # per-client token before the blueprint ever saw it.
+    if path.startswith("/api/mobile/"):
         return None
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
@@ -1085,6 +1093,63 @@ def api_apikey_clear():
         return jsonify(_apikey_status())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Paired clients (dashboard side of oracle/services/client_tokens.py) ──
+# Cookie-authenticated like the apikey routes: the mutations sit behind
+# _local_write_guard, the list is a GET and returns no secret. The QR the
+# Settings tab renders now carries a per-device token minted here, so
+# rotating the Discovery token no longer un-pairs every phone.
+
+@app.route("/api/pair/clients", methods=["GET"])
+def api_pair_clients():
+    """Every paired client (never a hash or token). Signed-in dashboard only
+    — the list names devices, which is more than an anonymous local process
+    should learn."""
+    if not (verify_api_key(extract_bearer(request.headers.get("Authorization")))
+            or local_session.verify(request.cookies.get(local_session.COOKIE_NAME))):
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify({"clients": client_tokens.list_clients()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pair/mobile", methods=["POST"])
+def api_pair_mobile():
+    """Mint a per-device ``mobile`` client token for the pairing QR.
+
+    Body ``{label?}``. The token is revealed exactly once, here, for the QR;
+    the store keeps only its hash. ``url`` is what the phone should dial —
+    the dashboard overrides it with the Tailscale/LAN address it entered.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        row, token = client_tokens.mint("mobile", str(data.get("label") or "phone"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "client_id": row["client_id"],
+        "kind": row["kind"],
+        "label": row["label"],
+        "created": row["created"],
+        "token": token,
+        "url": request.host_url.rstrip("/"),
+    }), 201
+
+
+@app.route("/api/pair/clients/<client_id>", methods=["DELETE"])
+def api_pair_revoke(client_id):
+    """Un-pair one device. Its token fails on the next request."""
+    try:
+        row = client_tokens.revoke(str(client_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    if row is None:
+        return jsonify({"error": "unknown client"}), 404
+    return jsonify({"client": row, "revoked": True})
 
 
 # ── Error handlers ────────────────────────────────────────

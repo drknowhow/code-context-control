@@ -33,9 +33,8 @@ import threading
 import time
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
-from oracle.services import api_auth
 from oracle.services.api_auth import extract_bearer
 
 #: Capability advertised on ``/api/mobile/info``. Wired into
@@ -115,8 +114,14 @@ def _chat_auth_guard():
         return None  # CORS preflight
     if not _cfg().get("mobile_api_enabled", True):
         return jsonify({"error": "mobile API disabled"}), 404
-    if not api_auth.verify(extract_bearer(request.headers.get("Authorization"))):
+    # Same credential set as the gateway proper (Discovery token OR a live
+    # per-client token, v2.125.0), resolved by the one shared function so a
+    # device paired with a client token can chat too.
+    from oracle.services import mobile_api
+    who = mobile_api.authenticate(extract_bearer(request.headers.get("Authorization")))
+    if who is None:
         return jsonify({"error": "unauthorized"}), 401
+    g.c3_client = who
     return None
 
 
