@@ -67,6 +67,15 @@ it were the first. Now the cost is a number every human surface can show.
   literal into `decide`). docs/override-requests.md: dated deviation
   (2026-09-06, D3a), §8 route table, §11 Threat 5 reworded to describe
   what exists, §14 P5 row.
+## [2.126.1] - 2026-09-06
+
+### Fixed
+- **Job supervisor: the terminal notification is written last.** 2.126.0 emitted the
+  `shell_job` notification between the status save and the activity/telemetry rows, so
+  a reader woken by the notification (or a test polling the job status) could find the
+  status flipped while `.c3/activity_log.jsonl` had not been written yet. The order is
+  now status → activity row → telemetry → notification. Surfaced by the release gate on
+  `v2.126.0` (macOS 3.12 / Ubuntu 3.11 `test_injected_credential_never_lands_on_disk`).
 
 ## [2.126.0] - 2026-09-06
 
