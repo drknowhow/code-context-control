@@ -72,7 +72,7 @@ def cmd_index(args, deps: CommandDeps):
 def cmd_compress(args, deps: CommandDeps):
     """Compress a file and show results."""
     config = deps.load_config()
-    mode = args.mode or "smart"
+    mode = args.mode or "map"
 
     compressor = deps.CodeCompressor(str(Path(config.get("project_path", ".")) / ".c3/cache"))
     result = compressor.compress_file(args.file, mode)

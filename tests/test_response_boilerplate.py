@@ -270,21 +270,22 @@ class TestCompressAccountingAndHeaders(unittest.TestCase):
         svc.file_memory.get_or_build_map.return_value = "def foo()\nclass Bar"
         return svc
 
-    def test_smart_mode_telemetry_parity(self):
+    def test_retired_mode_serves_the_map_with_a_notice(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "x.py").write_text("x = 1\n" * 50, encoding="utf-8")
             svc = self._svc(tmp)
             out = handle_compress("x.py", "smart", svc,
                                   _finalize_via(svc.session_mgr), _noop_facts)
-            self.assertIn("SUMMARY OF FILE", out)
+            self.assertTrue(out.startswith("[compress:deprecated] mode 'smart' retired in"))
+            self.assertIn("def foo()", out)
+            svc.compressor.compress_file.assert_not_called()
             recs = read_telemetry_records(tmp)
             self.assertEqual(len(recs), 1)
             rec = recs[0]
             self.assertEqual(rec["tool"], "c3_compress")
             self.assertEqual(rec["source"], "structured")
-            self.assertEqual(rec["raw_tokens"], 300)
-            self.assertEqual(rec["optimized_tokens"], 30)
-            usage = svc.session_mgr.current_session["token_usage"]
-            self.assertEqual(usage["estimated_saved_vs_full_read"], 270)
+            self.assertGreater(rec["raw_tokens"], rec["optimized_tokens"])
+            self.assertEqual(rec["detail"]["deprecated_mode"], "smart")
             summary = svc.session_mgr.current_session["tool_calls"][-1]["result_summary"]
             self.assertNotIn("->", summary)
 
@@ -310,27 +311,28 @@ class TestCompressAccountingAndHeaders(unittest.TestCase):
             for name in ("a.py", "b.py"):
                 (Path(tmp) / name).write_text("y = 2\n", encoding="utf-8")
             svc = self._svc(tmp)
-            out = handle_compress("a.py,b.py", "smart", svc,
+            out = handle_compress("a.py,b.py", "map", svc,
                                   _finalize_via(svc.session_mgr), _noop_facts)
-            self.assertIn("[compress:batch] 2/2 files (smart)", out)
-            self.assertIn("## a.py\nSUMMARY OF FILE", out)
-            self.assertIn("## b.py\nSUMMARY OF FILE", out)
+            self.assertIn("[compress:batch] 2/2 files (map)", out)
+            self.assertIn("## a.py\ndef foo()", out)
+            self.assertIn("## b.py\ndef foo()", out)
             self.assertNotIn("->", out)
             # Aggregate accounting: batch totals flow structurally
             rec = read_telemetry_records(tmp)[0]
             self.assertEqual(rec["source"], "structured")
-            self.assertEqual(rec["raw_tokens"], 600)
-            self.assertEqual(rec["optimized_tokens"], 60)
+            self.assertGreater(rec["raw_tokens"], 0)
+            self.assertGreater(rec["optimized_tokens"], 0)
+            self.assertEqual(rec["detail"]["files"], 2)
 
     def test_batch_per_file_headers_restored_with_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             for name in ("a.py", "b.py"):
                 (Path(tmp) / name).write_text("y = 2\n", encoding="utf-8")
             svc = self._svc(tmp, ratios=True)
-            out = handle_compress("a.py,b.py", "smart", svc,
+            out = handle_compress("a.py,b.py", "map", svc,
                                   _finalize_via(svc.session_mgr), _noop_facts)
-            self.assertIn("## a.py (300->30tok)", out)
-            self.assertIn("## b.py (300->30tok)", out)
+            self.assertRegex(out, r"## a\.py \(\d+->\d+tok\)")
+            self.assertRegex(out, r"## b\.py \(\d+->\d+tok\)")
 
 
 # ---------------------------------------------------------------------------
