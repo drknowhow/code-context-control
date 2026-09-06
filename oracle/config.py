@@ -11,6 +11,11 @@ DEFAULTS = {
     "port": 3331,
     # ── Discovery API (external LLM tool surface, v2.32.0) ──
     "bind_host": "127.0.0.1",       # loopback only by default (was 0.0.0.0)
+    # When bind_host is a specific non-loopback address (a Tailscale / LAN
+    # IP), ALSO serve the same app on 127.0.0.1 so same-machine clients (the
+    # desk tray client, `c3 oracle open`, curl) are not refused. No effect on
+    # a loopback or wildcard bind. See oracle/listeners.py.
+    "loopback_listener": True,
     "api_enabled": True,            # expose /api/discovery/* REST surface
     "api_require_auth": True,       # require Bearer token on /api/discovery/*
     "api_max_tier": "action",       # cap exposed tools: "read" | "action"

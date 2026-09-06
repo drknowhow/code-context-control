@@ -185,12 +185,55 @@ async function _dkCopy(text, okMsg) {
 
 // ── Mobile pairing (companion app QR) ──
 // Renders {v, kind, url, token} as a QR for the C3 mobile app scanner.
-// The token is the Discovery Bearer key — the QR only renders on explicit
-// click, and never on page load.
+// Since v2.125.0 the token is a PER-DEVICE client token minted by
+// POST /api/pair/mobile (revealed exactly once, stored hashed), so rotating
+// the Discovery token no longer un-pairs every phone and one device can be
+// revoked on its own. The Discovery-token code remains as a fallback for an
+// app build that predates client tokens. Nothing renders on page load.
 
-async function showMobilePairQr() {
+function _renderPairQr(payload) {
+  try {
+    const qr = qrcode(0, 'M'); // type auto, medium error correction
+    qr.addData(JSON.stringify(payload));
+    qr.make();
+    document.getElementById('mpQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
+  } catch (e) {
+    toast('QR render failed', String(e), 'error');
+    return false;
+  }
+  document.getElementById('mpQrWrap').style.display = '';
+  document.getElementById('mpHideBtn').style.display = '';
+  return true;
+}
+
+function _pairUrl() {
   const urlInput = document.getElementById('mpUrl');
   if (!urlInput.value.trim()) urlInput.value = window.location.origin;
+  return urlInput.value.trim().replace(/\/+$/, '');
+}
+
+async function showMobilePairQr() {
+  const url = _pairUrl();
+  const answer = prompt('Name this device (shown in the paired-devices list):', 'phone');
+  if (answer === null) return; // cancelled — mint nothing
+  const label = answer.trim() || 'phone';
+  let minted;
+  try {
+    minted = await api('/api/pair/mobile', { method: 'POST', body: { label: label || 'phone' } });
+  } catch (e) {
+    toast('Pairing failed', e.message || String(e), 'error');
+    return;
+  }
+  if (_renderPairQr({ v: 1, kind: 'c3-oracle', url, token: minted.token })) {
+    const note = document.getElementById('mpQrNote');
+    if (note) note.textContent = `Device token for "${minted.label}" (${minted.client_id}) — shown once. Revoke it below if the phone is lost.`;
+    toast('Pairing code ready', `Scan it now; the token for "${minted.label}" is not shown again.`, 'success', 4000);
+  }
+  loadPairedClients();
+}
+
+async function showDiscoveryPairQr() {
+  const url = _pairUrl();
   let s = window._discoveryKey;
   if (!s) { await loadDiscoveryKey(); s = window._discoveryKey; }
   if (!s || !s.exists) {
@@ -201,29 +244,42 @@ async function showMobilePairQr() {
     toast('Token unavailable', 'Open the dashboard via "c3 oracle open" so this session may reveal the token.', 'warning');
     return;
   }
-  const payload = JSON.stringify({
-    v: 1,
-    kind: 'c3-oracle',
-    url: urlInput.value.trim().replace(/\/+$/, ''),
-    token: s.key,
-  });
-  try {
-    const qr = qrcode(0, 'M'); // type auto, medium error correction
-    qr.addData(payload);
-    qr.make();
-    document.getElementById('mpQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
-  } catch (e) {
-    toast('QR render failed', String(e), 'error');
-    return;
+  if (_renderPairQr({ v: 1, kind: 'c3-oracle', url, token: s.key })) {
+    const note = document.getElementById('mpQrNote');
+    if (note) note.textContent = 'Discovery token (legacy) — rotating it un-pairs every phone that scanned this.';
   }
-  document.getElementById('mpQrWrap').style.display = '';
-  document.getElementById('mpHideBtn').style.display = '';
 }
 
 function hideMobilePairQr() {
   document.getElementById('mpQrWrap').style.display = 'none';
   document.getElementById('mpQr').innerHTML = '';
   document.getElementById('mpHideBtn').style.display = 'none';
+}
+
+// ── Paired devices (client tokens) ──
+
+async function loadPairedClients() {
+  const el = document.getElementById('mpClients');
+  if (!el) return;
+  let rows;
+  try { rows = (await api('/api/pair/clients')).clients || []; }
+  catch { el.innerHTML = '<div style="font-size:11px;color:var(--text2)">Sign in (c3 oracle open) to list paired devices.</div>'; return; }
+  const live = rows.filter(r => !r.revoked_at);
+  if (!live.length) { el.innerHTML = '<div style="font-size:11px;color:var(--text2)">No paired devices yet.</div>'; return; }
+  el.innerHTML = live.map(r => `
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border);font-size:12px">
+      <span style="font-family:monospace;color:var(--text2)">${esc(r.kind)}</span>
+      <span style="flex:1">${esc(r.label || r.client_id)} <span style="color:var(--text2);font-size:11px">· ${esc(r.client_id)}${r.last_seen ? ' · seen ' + esc(r.last_seen.slice(0, 16).replace('T', ' ')) : ' · never used'}</span></span>
+      <button class="btn btn-ghost" style="font-size:11px" onclick="revokePairedClient('${esc(r.client_id)}')">Revoke</button>
+    </div>`).join('');
+}
+
+async function revokePairedClient(clientId) {
+  if (!confirm(`Revoke ${clientId}? That device stops working on its next request.`)) return;
+  await tracked('Revoking device', async () => {
+    await api('/api/pair/clients/' + encodeURIComponent(clientId), { method: 'DELETE' });
+    await loadPairedClients();
+  }, { successMsg: 'Device revoked' });
 }
 
 // ═══════════════════════════════════════════════════════════

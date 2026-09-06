@@ -76,6 +76,44 @@ write must not be convertible into the agent minting its own grants. §11
 threat 3 argued this from `BUILTIN_WRITE_DENY`; P1 also enforces it at the
 grant layer, so it holds even if that builtin is ever switched off.
 
+**Deviation recorded 2026-09-06 (C3 Desk D0a, v2.125.0) — `decided_by` gains
+a fourth value, and the gateway gains per-client tokens.** §3.3 freezes
+`decided_by` as `"mobile"|"desktop"|"cli"`, and §8 hard-coded `"mobile"` on
+the gateway routes because the phone was the gateway's only client. The
+desk tray client (C3 Desk) now decides through the same `/api/mobile`
+routes, and auditing its taps as a phone would be false. So:
+
+1. **`decided_by` is the authenticated principal's kind**, never a body
+   field: `"desk"` for a request bearing a `desk` client token, `"mobile"`
+   for a `mobile` client token *or* the legacy Discovery token (every phone
+   paired before this release keeps its attribution byte-for-byte). Hub
+   stays `"desktop"`, the CLI stays `"cli"`. The row schema, field order and
+   allowlist serialiser are untouched.
+2. **Per-client tokens** (`oracle/services/client_tokens.py`,
+   `~/.c3/oracle/clients.json`, hashes only, owner-only ACL). A gateway
+   request authenticates with the Discovery token OR a live client token;
+   the principal rides on `flask.g.c3_client = {kind, client_id}`. Routes:
+   `POST /api/mobile/clients` (no Bearer — local address + the on-disk
+   bootstrap key, constant-time, security-bucket throttled; 201 with the
+   token exactly once), `GET /api/mobile/clients` (rows without hashes,
+   `current` marks the caller), `DELETE /api/mobile/clients/<id>` (revoke;
+   the token fails on its next request). `/info` reports `client` and the
+   `clients` capability; `api_version` is 5. The Settings-tab QR now carries
+   a per-device `mobile` token instead of the Discovery token, so rotating
+   the Discovery token no longer un-pairs every phone.
+3. **Loopback listener.** A `bind_host` naming a specific non-loopback
+   address (the Tailscale IP) also serves the same app on `127.0.0.1`
+   (`loopback_listener`, default true; `oracle/listeners.py`), so the desk
+   client and `curl 127.0.0.1:3331` are no longer refused on the Oracle's
+   own machine. Same app object, same Host allowlist and Bearer gates.
+4. **Long-poll budget** (§7.1 / P4a): `_MAX_WAITERS` 4 → 8 with a per-kind
+   cap of 4, counted on the principal's kind, so a phone cannot take the
+   desk's slots or vice versa. Past either cap `wait` still degrades to an
+   immediate answer.
+
+Tests: `tests/test_mobile_clients.py`, `tests/test_oracle_loopback.py`, and
+the waiter-cap cases in `tests/test_mobile_api.py`.
+
 **Deviation (2026-09-06, v2.126.0, C3 Desk D0b): `channel` is consumed by
 the desktop client as of 2.126.0.** §3.1's `override.channel`
 (`mobile | desktop | both`) was validated, merged (last scope with an
@@ -257,7 +295,7 @@ Oracle-owned, JSON array, house style of `oracle/services/memory_writer.py`
   "refusal": "[c3-access:denied] ...",   // verbatim denial the agent received
   "justification": "…agent-supplied…",   // UNTRUSTED, ≤400 chars, rendered quoted
   "resolved_at": null,
-  "decided_by": null,                    // "mobile"|"desktop"|"cli"
+  "decided_by": null,                    // "mobile"|"desktop"|"cli"|"desk" (desk added v2.125.0, see deviation at top)
   "decision_note": null
 }
 ```
