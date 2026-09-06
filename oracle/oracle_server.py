@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from flask import Flask, Response, jsonify, redirect, request, url_for  # noqa: E402
 
 from oracle.config import ORACLE_DIR, load_config, save_config  # noqa: E402
+from oracle.listeners import OracleListeners, listener_hosts  # noqa: E402
 from oracle.mcp_oracle import mcp_url, start_mcp_thread  # noqa: E402
 from oracle.services import api_auth, local_session  # noqa: E402
 from oracle.services.activity_reporter import ActivityReporter  # noqa: E402
@@ -1215,7 +1216,27 @@ def run_oracle(port: int = None, open_browser: bool = None):
         signed_in = f"{url}/?{local_session.BOOTSTRAP_PARAM}={local_session.mint_code()}"
         threading.Timer(0.8, lambda: webbrowser.open(signed_in)).start()
 
-    app.run(host=cfg.get("bind_host", "127.0.0.1"), port=actual_port, debug=False, use_reloader=False)
+    _serve(bind_host, actual_port,
+           loopback_listener=bool(cfg.get("loopback_listener", True)))
+
+
+def _serve(bind_host: str, port: int, *, loopback_listener: bool = True) -> None:
+    """Block serving ``app`` on ``bind_host`` — and on loopback too when the
+    bind is a specific non-loopback address (``oracle/listeners.py``).
+
+    Replaces ``app.run``: the same threaded werkzeug server, minus the
+    dev-server banner, plus the second socket. Every listener is stopped on
+    the way out (Ctrl-C, service stop, an error) and at interpreter exit.
+    """
+    hosts = listener_hosts(bind_host, loopback_listener)
+    listeners = OracleListeners(app, hosts, port).start()
+    atexit.register(listeners.shutdown)
+    if len(listeners.servers) > 1:
+        print(f"Loopback listener  →  {listeners.urls[-1]}  (same app, same guards)")
+    elif len(hosts) > 1:
+        print(f"Warning: loopback listener on 127.0.0.1:{port} could not start "
+              f"(port in use?) — same-machine clients must dial {bind_host}.")
+    listeners.serve_forever()
 
 
 if __name__ == "__main__":
