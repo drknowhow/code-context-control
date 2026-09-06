@@ -334,5 +334,78 @@ class TestAccessView(HubOverrideBase):
             404)
 
 
+class TestCosts(HubOverrideBase):
+    """`GET /api/hub/overrides/costs` — the "Costing you" strip's feed (D3a).
+
+    Rows are filed through the REAL service so the fold sees exactly what
+    the inbox writes; the strip's threshold rides on the response so the UI
+    and the desktop tray agree on when to speak.
+    """
+
+    def file_confirm(self, name):
+        target = self.proj / "infra" / name
+        target.write_text("x", encoding="utf-8")
+        denial = ag.check(str(target), "write", str(self.proj))
+        return orq.create(str(self.proj), session_id=SESSION, tool="c3_edit",
+                          op="write", path=str(target), denial=denial,
+                          justification=CANARY)
+
+    def test_empty_store_is_an_empty_list(self):
+        resp = self.client.get("/api/hub/overrides/costs")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["rules"], [])
+        self.assertEqual(data["days"], 7)
+        self.assertEqual(data["threshold"], 3)
+
+    def test_counts_and_buckets_from_real_decisions(self):
+        a = self.file_confirm("a.tf")
+        b = self.file_confirm("b.tf")
+        self.file_confirm("c.tf")                      # stays pending
+        self.decide(a["id"], {"decision": "approve"})
+        self.decide(b["id"], {"decision": "deny"})
+        data = self.client.get(
+            f"/api/hub/overrides/costs?path={self.proj}").get_json()
+        self.assertEqual(data["count"], 1)
+        row = data["rules"][0]
+        self.assertEqual(row["rule"], "infra/**")
+        self.assertEqual(row["rule_class"], opol.LAYER_ACCESS_CONFIRM)
+        self.assertEqual((row["count"], row["approved"], row["denied"],
+                          row["expired"], row["pending"]), (3, 1, 1, 0, 1))
+        self.assertEqual(row["suggestion"], "review")
+        self.assertEqual(row["project_name"], "proj")
+        self.assertEqual(data["project"], str(self.proj.resolve()))
+
+    def test_three_approvals_say_convert_to_allow(self):
+        for name in ("a.tf", "b.tf", "c.tf"):
+            self.decide(self.file_confirm(name)["id"], {"decision": "approve"})
+        row = self.client.get("/api/hub/overrides/costs").get_json()["rules"][0]
+        self.assertEqual(row["count"], 3)
+        self.assertEqual(row["suggestion"], "convert to allow")
+
+    def test_justification_never_reaches_the_strip(self):
+        self.file_confirm("a.tf")
+        text = json.dumps(self.client.get("/api/hub/overrides/costs").get_json())
+        self.assertNotIn(CANARY, text)
+        self.assertNotIn("path_key", text)
+
+    def test_days_is_clamped(self):
+        for raw, want in (("0", 1), ("14", 14), ("400", 30), ("soon", 7)):
+            data = self.client.get(f"/api/hub/overrides/costs?days={raw}").get_json()
+            self.assertEqual(data["days"], want, raw)
+
+    def test_unknown_path_is_404(self):
+        self.assertEqual(
+            self.client.get("/api/hub/overrides/costs?path=Q:/nope/never")
+            .status_code, 404)
+
+    def test_get_on_costs_is_not_the_decide_route(self):
+        # `<request_id>` is POST-only; a GET on `costs` must land on the
+        # aggregation, not a 405 from the id rule.
+        resp = self.client.get("/api/hub/overrides/costs")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("rules", resp.get_json())
+
+
 if __name__ == "__main__":
     unittest.main()

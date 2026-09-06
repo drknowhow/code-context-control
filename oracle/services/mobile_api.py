@@ -71,6 +71,11 @@ from services.atomic_json import write_json_atomic
 #    reports the caller as `client: {kind, client_id}`, and override
 #    decisions are attributed to that kind ("desk" for the tray client,
 #    "mobile" for a phone or the legacy Discovery token).
+# 5 (unchanged, additive, v2.127.0): `override_costs` capability and
+#    GET /overrides/costs — per-(project, rule) request counts over a
+#    trailing window, the "this rule is costing you" nudge (D3a). The
+#    /overrides/<id> detail also carries `allow_session_grants`,
+#    `max_ttl_s` and `session_confirm` at the top level.
 API_VERSION = 5
 
 CAPABILITIES = [
@@ -79,7 +84,7 @@ CAPABILITIES = [
     "credentials", "credentials_write",
     "access", "access_write",
     "enforcement", "enforcement_write",
-    "override", "override_write",
+    "override", "override_write", "override_costs",
     "edits", "locks", "status",
     "insights", "insights_write",
     "suggestions", "suggestions_write",
@@ -103,6 +108,9 @@ _CAPABILITY_SWITCHES = {
     "enforcement_write": "mobile_access_write",
     "override": "mobile_override_enabled",
     "override_write": "mobile_override_write",
+    # The cost view is a read over the same store the inbox serves, so it
+    # goes dark with the inbox rather than carrying a switch of its own.
+    "override_costs": "mobile_override_enabled",
     # The ops reads (edits, locks, status, insights, suggestions, review) are
     # deliberately absent: they expose nothing the feed does not already, so
     # gating them would only cost a client a capability probe. Only the two
@@ -2439,6 +2447,60 @@ def _write_override_section(project: Path, section: dict) -> dict:
     return block
 
 
+def _days_arg(default: int, ceiling: int) -> int:
+    """``?days=`` clamped to ``[1, ceiling]``; garbage reads as the default.
+
+    A clamp rather than a 400 because the value only sizes a window — a
+    client asking for a quarter gets the month it is allowed, and the answer
+    echoes the window actually used so it can say so.
+    """
+    try:
+        want = int(request.args.get("days", default))
+    except (TypeError, ValueError):
+        want = default
+    return max(1, min(ceiling, want))
+
+
+@bp.route("/overrides/costs", methods=["GET"])
+def mobile_overrides_costs():
+    """Per-(project, rule) request counts over a trailing window (§11 T5).
+
+    The "this rule is costing you" number. Query: project (optional — omit
+    for every project this gateway serves), days (1..30, default 7).
+    Response: {days, rules: [{project_path, rule, rule_class, layer, count,
+    approved, denied, expired, pending, last_at, suggestion}], count,
+    project}. Rows sort by count desc then last_at desc; the desktop shows
+    `suggestion` verbatim and nudges at count >= 3.
+
+    Registered BEFORE `/overrides/<id>` for the same reason `policy` is: the
+    ordering is explicit so `costs` can never become a request id.
+    """
+    gate = _feature_or_404("override_costs")
+    if gate:
+        return gate
+    from services import override_costs as ocost
+    raw_project = (request.args.get("project") or "").strip()
+    project_path = ""
+    if raw_project:
+        resolved, err = _project_or_404(raw_project)
+        if err:
+            return err
+        project_path = str(resolved)
+    days = _days_arg(ocost.DEFAULT_DAYS, ocost.MAX_DAYS)
+    try:
+        rules = ocost.rule_costs(project_path=project_path or None, days=days)
+    except Exception as exc:
+        return _svc_error(exc)
+    if not project_path:
+        # Same rule as /overrides and /jobs: the store is one file for the
+        # whole machine, and a cross-project view must not name a project
+        # this token cannot otherwise see.
+        rules = [r for r in rules
+                 if _resolve_registered(str(r.get("project_path") or "")) is not None]
+    return jsonify({"days": days, "rules": rules, "count": len(rules),
+                    "project": project_path})
+
+
 @bp.route("/overrides/<request_id>", methods=["GET"])
 def mobile_override_get(request_id):
     """One request, full context."""
@@ -2481,6 +2543,15 @@ def mobile_override_get(request_id):
         "confirm_with": (
             row.get("rule") if str(row.get("rule_class") or "")
             in opol.TYPED_CONFIRM_LAYERS else ""),
+        # Top-level as well as under `policy` (v2.127.0): what a session-grant
+        # button needs, in one fetch — whether the switch is on, how long the
+        # grant would last, and the literal the client must send as
+        # `confirm` (`decide()` demands it on the layers that are otherwise
+        # one-tap). Duplicated on purpose: a client should not need the
+        # policy dict's shape to draw one button.
+        "allow_session_grants": bool(policy.allow_session_grants),
+        "max_ttl_s": int(policy.max_ttl_s),
+        "session_confirm": orq.CONFIRM_SESSION,
     })
 
 

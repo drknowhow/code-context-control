@@ -3215,6 +3215,43 @@ def api_hub_overrides():
                     "limit": limit})
 
 
+@app.route("/api/hub/overrides/costs", methods=["GET"])
+def api_hub_override_costs():
+    """Per-(project, rule) request counts over a trailing window (§11 T5).
+
+    The "this rule is costing you" strip. Query: path (optional — omit for
+    every project in the store; the hub is this machine's own surface and
+    does not filter to a registry), days (1..30, default 7). Response:
+    {days, threshold, rules: [...], count, project} with the row shape of
+    ``services.override_costs.FIELDS``; ``threshold`` is the count at which
+    the UI says something, so the strip and the desktop tray agree on it.
+    Registered before the POST-only ``<request_id>`` route so a GET on
+    ``costs`` can never fall through to a 405 there.
+    """
+    from services import override_costs as ocost
+    project_path = ""
+    raw_project = (request.args.get("path") or "").strip()
+    if raw_project:
+        try:
+            project_path = str(_resolve_project_path(raw_project))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    try:
+        days = int(request.args.get("days") or ocost.DEFAULT_DAYS)
+    except (TypeError, ValueError):
+        days = ocost.DEFAULT_DAYS
+    days = max(1, min(ocost.MAX_DAYS, days))
+    try:
+        rules = ocost.rule_costs(project_path=project_path or None, days=days)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    for r in rules:
+        r["project_name"] = Path(str(r.get("project_path") or ".")).name
+    return jsonify({"days": days, "threshold": ocost.NUDGE_THRESHOLD,
+                    "rules": rules, "count": len(rules),
+                    "project": project_path})
+
+
 @app.route("/api/hub/overrides/<request_id>", methods=["POST"])
 def api_hub_override_decide(request_id):
     """Approve (minting a grant) or deny one request. decided_by='desktop'.

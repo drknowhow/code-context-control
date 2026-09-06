@@ -779,6 +779,18 @@ def build_parser(version: str, parse_cli_ide_arg):
     ov_deny.add_argument("--path", dest="project_path", default=".",
                          help="Project directory (default: current)")
 
+    # Costs: which rules keep asking (spec §11 Threat 5, v2.127.0). A read
+    # over the request store — it decides nothing and edits no rule.
+    ov_costs = override_subs.add_parser(
+        "costs", help="Which rules held the agent most, and how you answered"
+    )
+    ov_costs.add_argument("--days", type=int, default=7,
+                          help="Trailing window in days (default 7)")
+    ov_costs.add_argument("--all", dest="all_projects", action="store_true",
+                          help="Every project, not just this one")
+    ov_costs.add_argument("--path", dest="project_path", default=".",
+                          help="Project directory (default: current)")
+
     # ── Tool discipline / enforcement mode (v2.66.0) ────────────────────
     # LAYER C: how hard C3 pushes the agent toward c3_* tools. Distinct from
     # `c3 access` (path policy — a security boundary) and from

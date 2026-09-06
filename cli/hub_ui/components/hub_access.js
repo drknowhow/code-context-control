@@ -185,11 +185,79 @@ function AccRequestCard({ row, busy, onDecide, onTypedApprove, onRuleApprove }) 
   );
 }
 
+// ── "Costing you" — the §11 Threat 5 nudge ─────────────────────────────────
+// One row per rule that held at least `threshold` times in the window. The
+// count is the argument: a rule the user keeps approving is friction, and a
+// rule they keep denying is doing its job against an agent that will not
+// stop asking. Either way the fix is the RULE, not the next card — so the
+// only affordance is "open the rule", which jumps to it in the policy matrix
+// below. The strip never approves anything and never edits policy; it says
+// the number out loud, which is the mitigation the spec asks for.
+function accSamePath(a, b) {
+  const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+function AccCostStrip({ onOpenRule }) {
+  const [data, setData] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api.get('/api/hub/overrides/costs?days=7'));
+    } catch { /* keep the last good strip */ }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  usePoll(load, 15000);
+
+  if (!data) return null;
+  const threshold = Number(data.threshold) || 3;
+  const rows = (data.rules || []).filter(r => (Number(r.count) || 0) >= threshold);
+  if (rows.length === 0) return null;
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.warn}`, borderRadius: 10,
+      padding: '10px 14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.warn }}>Costing you</span>
+        <span style={{ fontSize: 11, color: T.textDim }}>
+          rules that held {threshold}+ times in the last {data.days} days — fix the
+          rule, not the next card
+        </span>
+      </div>
+      {rows.map(r => (
+        <div key={`${r.project_path}|${r.rule}`} style={{
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          padding: '4px 0', fontSize: 11.5, color: T.textMuted,
+        }}>
+          <span className="mono" title={r.project_path} style={{
+            fontSize: 10.5, padding: '2px 7px', borderRadius: 4,
+            background: T.surfaceAlt, color: T.textMuted,
+          }}>{r.project_name || r.project_path}</span>
+          <span>
+            <b className="mono" style={{ color: T.text }}>{r.rule}</b>
+            {' '}held {r.count}× this week ({r.approved} approved) — {r.suggestion}
+          </span>
+          <div style={{ flex: 1 }} />
+          <Btn variant="ghost" onClick={() => onOpenRule(r)}
+            style={{ padding: '4px 10px' }}>Open rule</Btn>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Read-only per-project policy matrix ────────────────────────────────────
-function AccRulesPanel({ projects }) {
+// `focus` ({path, rule, seq}) comes from the cost strip's "Open rule": the
+// panel switches to that project, scrolls itself into view and outlines the
+// chip whose glob is the rule. A synthetic rule (discipline / shell) has no
+// chip, so the scroll alone is the answer there.
+function AccRulesPanel({ projects, focus }) {
   const [path, setPath] = useState('');
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
+  const panelRef = useRef(null);
 
   const load = useCallback(async (p) => {
     if (!p) { setData(null); setErr(''); return; }
@@ -199,10 +267,28 @@ function AccRulesPanel({ projects }) {
     } catch (e) { setData(null); setErr(apiErr(e)); }
   }, []);
 
+  // Deliberately keyed on `focus` alone: `projects` is rebuilt by the hub's
+  // own poll, and re-running this on every poll would re-scroll the page
+  // under the user every few seconds.
+  useEffect(() => {
+    if (!focus || !focus.path) return;
+    // Prefer the hub's own spelling of the project so the <select> shows it;
+    // the store's spelling still loads when the project is not registered.
+    const known = (projects || []).find(p => accSamePath(p.path, focus.path));
+    const target = known ? known.path : focus.path;
+    setPath(target);
+    load(target);
+    const el = panelRef.current;
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hot = focus && focus.rule ? String(focus.rule) : '';
   const scopes = (data && data.rules) || {};
   const layerRows = data && data.policy ? Object.entries(data.policy.layers || {}) : [];
   return (
-    <div style={{
+    <div ref={panelRef} style={{
       background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
       padding: '12px 16px',
     }}>
@@ -249,14 +335,21 @@ function AccRulesPanel({ projects }) {
                   <div style={{ fontSize: 11.5, color: T.textDim }}>no rules</div>
                 ) : (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {rows.map(([kind, glob], i) => (
-                      <span key={i} className="mono" style={{
-                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
-                        color: ACC_KIND_COLOR(kind),
-                        background: `${ACC_KIND_COLOR(kind)}18`,
-                        border: `1px solid ${ACC_KIND_COLOR(kind)}44`,
-                      }} title={kind}>{kind}: {glob}</span>
-                    ))}
+                    {rows.map(([kind, glob], i) => {
+                      const lit = hot && glob === hot;
+                      return (
+                        <span key={i} className="mono" style={{
+                          fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                          color: ACC_KIND_COLOR(kind),
+                          background: `${ACC_KIND_COLOR(kind)}18`,
+                          border: `1px solid ${ACC_KIND_COLOR(kind)}44`,
+                          outline: lit ? `2px solid ${T.warn}` : 'none',
+                          outlineOffset: lit ? 2 : 0,
+                        }} title={lit ? `${kind} — this rule is costing you` : kind}>
+                          {kind}: {glob}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
                 {scope === 'builtin' && (sec.disabled || []).length > 0 && (
@@ -395,6 +488,11 @@ function HubAccess({ projects }) {
   const [chip, setChip] = useState('pending');
   const [busyId, setBusyId] = useState('');
   const [confirmSpec, setConfirmSpec] = useState(null);
+  // `seq` makes a second click on the same rule re-fire the panel's effect.
+  const [ruleFocus, setRuleFocus] = useState(null);
+  const openRule = (r) => setRuleFocus({
+    path: r.project_path, rule: r.rule, seq: Date.now(),
+  });
 
   const load = useCallback(async () => {
     try {
@@ -459,6 +557,8 @@ function HubAccess({ projects }) {
         ))}
       </div>
 
+      <AccCostStrip onOpenRule={openRule} />
+
       {!loaded ? (
         <div style={{ fontSize: 12, color: T.textDim }}>Loading…</div>
       ) : rows.length === 0 ? (
@@ -479,7 +579,7 @@ function HubAccess({ projects }) {
       )}
 
       <AccGrantsPanel projects={projects} />
-      <AccRulesPanel projects={projects} />
+      <AccRulesPanel projects={projects} focus={ruleFocus} />
       {confirmSpec && (
         <CredConfirm spec={confirmSpec} onClose={() => setConfirmSpec(null)} />
       )}
