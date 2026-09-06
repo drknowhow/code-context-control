@@ -14,6 +14,48 @@ from core import count_tokens
 from services import access_guard
 
 
+def map_detail(svc, rel: str, requested_mode: str, *, cache_hit: bool,
+               symbols: int = 0, fallback: str = "") -> dict:
+    """Telemetry `detail` for a map served from file_memory (C0, 2.120.0).
+
+    backend names the code path, parser the extractor that built the record
+    (tree_sitter | regex | generic, "" for a pre-2.120.0 record), cache_hit
+    whether the record was already fresh. `symbols` is how many the caller
+    asked for and `fallback` why a read served a map instead of source.
+    Flat so telemetry.aggregate_tool_telemetry can fold it without a schema.
+    """
+    record = None
+    try:
+        record = svc.file_memory.get(rel)
+    except Exception:
+        record = None
+    if not isinstance(record, dict):
+        record = None
+    detail = {
+        "requested_mode": requested_mode,
+        "backend": "file_memory",
+        "parser": str((record or {}).get("parser") or ""),
+        "cache_hit": bool(cache_hit),
+        "sections": len((record or {}).get("sections") or []),
+    }
+    if symbols:
+        detail["symbols"] = int(symbols)
+    if fallback:
+        detail["fallback"] = fallback
+    return detail
+
+
+def compressor_detail(res: dict, requested_mode: str) -> dict:
+    """Telemetry `detail` for a CodeCompressor result (smart/diff/bug_scan…)."""
+    backend = "large_fast_path" if res.get("fast_path") else "compressor"
+    return {
+        "requested_mode": requested_mode,
+        "backend": backend,
+        "actual_mode": str(res.get("mode") or ""),
+        "cache_hit": bool(res.get("cache_hit")),
+    }
+
+
 def _run_memory_mcp_cli(args: list, cwd: str, timeout: int = 30) -> tuple:
     """Run codebase-memory-mcp CLI and return (success, output_or_error)."""
     binary = shutil.which("codebase-memory-mcp")
@@ -150,6 +192,8 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
             return ("[file_map:error] not found. To create a new file use "
                     "c3_edit(file_path=..., old_string='', new_string=<content>).")
         rel = str(full.resolve().relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
+        # C0 measurement: was the record already fresh before this call?
+        cache_hit = not svc.file_memory.needs_update(rel)
         queued = svc.file_memory.drain_queue()
         completed = []
         failed = []
@@ -183,7 +227,8 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
             finalize, svc, "c3_compress", {"file_path": file_path, "mode": mode},
             res, summary,
             raw_tokens=raw_tokens, optimized_tokens=map_tokens or None,
-            response_tokens=map_tokens)
+            response_tokens=map_tokens,
+            detail=map_detail(svc, rel, mode, cache_hit=cache_hit))
 
     try:
         res = svc.compressor.compress_file(str(full), mode)
@@ -197,7 +242,8 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
         finalize, svc, "c3_compress", {"file_path": file_path},
         resp + maybe_facts(svc, Path(file_path).name), mode,
         raw_tokens=res.get('original_tokens'),
-        optimized_tokens=res.get('compressed_tokens'))
+        optimized_tokens=res.get('compressed_tokens'),
+        detail=compressor_detail(res, mode))
 
 
 def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
@@ -288,4 +334,6 @@ def _compress_batch(paths: list, mode: str, svc, finalize, maybe_facts) -> str:
         {"file_path": ",".join(paths), "mode": mode, "batch": True},
         body, f"batch {total_ok}/{len(paths)}",
         raw_tokens=total_raw if measured else None,
-        optimized_tokens=total_opt if measured else None)
+        optimized_tokens=total_opt if measured else None,
+        detail={"requested_mode": mode, "backend": "batch",
+                "files": len(paths), "ok": total_ok})

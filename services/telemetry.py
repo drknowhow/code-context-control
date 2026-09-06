@@ -277,6 +277,8 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
     by_session: dict = {}
     by_target: dict = {}
     shell_classes: dict = {}
+    map_backends: dict = {}
+    chain = _MapReadChain(window=MAP_CHAIN_WINDOW)
     total_calls = 0
     total_response = 0
     total_saved = 0
@@ -285,6 +287,10 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         tool = str(rec.get("tool") or "unknown")
         if tool == "c3_shell" and isinstance(rec.get("detail"), dict):
             _fold_shell_detail(shell_classes, rec)
+        if tool in ("c3_compress", "c3_read"):
+            if isinstance(rec.get("detail"), dict):
+                _fold_map_detail(map_backends, rec)
+            chain.observe(rec)
         entry = by_tool.setdefault(tool, {
             "calls": 0,
             "response_tokens": 0,
@@ -381,6 +387,16 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         # exceed the S1 budget, how many were filtered, how long they ran.
         "shell_by_class": {k: shell_classes[k] for k in sorted(shell_classes)},
         "shell_budget_bytes": SHELL_BUDGET_BYTES,
+        # File maps by backend/parser — only records that carry a `detail`
+        # (2.120.0+). The before/after instrument for the c3_compress
+        # remediation: how many maps were served, by which extractor, how
+        # many tokens each cost against the full-read baseline.
+        "map_by_backend": {k: _finish_map_slot(map_backends[k])
+                           for k in sorted(map_backends)},
+        # Did a map lead to a targeted read, and was a targeted read preceded
+        # by a map? Counted per session within MAP_CHAIN_WINDOW calls; works
+        # on any record with a `target` (2.111.0+), detail or not.
+        "map_read_chain": chain.result(),
     }
 
 
@@ -426,6 +442,125 @@ def _fold_shell_detail(classes: dict, rec: dict) -> None:
             slot["_durations"].append(float(dur))
         except (ValueError, TypeError):
             pass
+
+
+# How many tool calls apart a map and a read on the same file still count as
+# one "map → read" chain. Five is the window the 2026-09-06 evaluation used.
+MAP_CHAIN_WINDOW = 5
+
+
+def _is_map_record(rec: dict) -> bool:
+    """A record that served a file MAP rather than source lines.
+
+    c3_compress always maps (every mode is a structural summary). c3_read
+    maps only when it fell back — its detail says so (2.120.0+); a read
+    without detail is assumed to be a source read.
+    """
+    tool = str(rec.get("tool") or "")
+    if tool == "c3_compress":
+        return True
+    if tool == "c3_read":
+        detail = rec.get("detail") or {}
+        return bool(detail.get("fallback"))
+    return False
+
+
+def _fold_map_detail(slots: dict, rec: dict) -> None:
+    """Accumulate one c3_compress / c3_read record's `detail` by backend."""
+    detail = rec.get("detail") or {}
+    backend = str(detail.get("backend") or "unknown")
+    if backend == "file_memory":
+        parser = str(detail.get("parser") or "unknown")
+        key = f"file_memory/{parser}"
+    elif backend == "compressor":
+        key = f"compressor/{detail.get('actual_mode') or detail.get('requested_mode') or '?'}"
+    else:
+        key = backend
+    slot = slots.setdefault(key, {
+        "calls": 0, "response_tokens": 0, "raw_tokens": 0, "optimized_tokens": 0,
+        "measured_calls": 0, "cache_hits": 0, "symbol_reads": 0,
+        "map_fallbacks": 0, "_ratios": [],
+    })
+    slot["calls"] += 1
+    slot["response_tokens"] += _as_int(rec.get("response_tokens")) or 0
+    raw = _as_int(rec.get("raw_tokens"))
+    opt = _as_int(rec.get("optimized_tokens"))
+    if raw and opt is not None:
+        slot["raw_tokens"] += raw
+        slot["optimized_tokens"] += opt
+        slot["measured_calls"] += 1
+        slot["_ratios"].append(opt / raw)
+    if detail.get("cache_hit"):
+        slot["cache_hits"] += 1
+    if detail.get("symbols"):
+        slot["symbol_reads"] += 1
+    if detail.get("fallback"):
+        slot["map_fallbacks"] += 1
+
+
+def _finish_map_slot(slot: dict) -> dict:
+    ratios = sorted(slot.pop("_ratios"))
+    slot["ratio_p50"] = round(ratios[len(ratios) // 2], 3) if ratios else None
+    slot["ratio_p95"] = (round(ratios[min(len(ratios) - 1, int(0.95 * len(ratios)))], 3)
+                         if ratios else None)
+    return slot
+
+
+class _MapReadChain:
+    """Map → read adjacency, per session, within a call window.
+
+    `maps_followed_by_read`: a map on file F followed within `window` calls
+    by a source read of F (the map did its job). `reads_preceded_by_map`: a
+    source read of F with a map of F in the previous `window` calls (the
+    model needed the map to pick its target). Reads with no map before them
+    found their symbols some other way — usually a c3_search hit.
+    """
+
+    def __init__(self, window: int):
+        self.window = window
+        self._recent: dict = {}   # session_id -> list[(kind, target)]
+        self.maps = 0
+        self.maps_followed = 0
+        self.reads = 0
+        self.reads_preceded = 0
+
+    def observe(self, rec: dict) -> None:
+        tool = str(rec.get("tool") or "")
+        if tool not in ("c3_compress", "c3_read"):
+            return
+        sid = str(rec.get("session_id") or "")
+        targets = [t for t in str(rec.get("target") or "").split(",") if t]
+        if not targets:
+            return
+        kind = "map" if _is_map_record(rec) else "read"
+        recent = self._recent.setdefault(sid, [])
+        if kind == "read":
+            self.reads += 1
+            if any(k == "map" and t in targets for k, t, _ in recent):
+                self.reads_preceded += 1
+            # A read that resolves an earlier map's target closes that map.
+            for entry in recent:
+                if entry[0] == "map" and entry[1] in targets and not entry[2]:
+                    entry[2] = True
+                    self.maps_followed += 1
+        else:
+            self.maps += 1
+        for t in targets:
+            recent.append([kind, t, False])
+        del recent[:-self.window]
+
+    def result(self) -> dict:
+        return {
+            "window": self.window,
+            "maps": self.maps,
+            "maps_followed_by_read": self.maps_followed,
+            "reads": self.reads,
+            "reads_preceded_by_map": self.reads_preceded,
+            "map_follow_rate": (round(self.maps_followed / self.maps, 3)
+                                if self.maps else None),
+            "read_mapped_first_rate": (round(self.reads_preceded / self.reads, 3)
+                                       if self.reads else None),
+        }
 
 
 # ── Claude Code session stats (Stop-hook rows) ───────────────────────────────

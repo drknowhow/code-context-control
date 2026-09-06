@@ -250,6 +250,7 @@ class CodeCompressor:
             if cache_key in self._mem_cache:
                 hit = dict(self._mem_cache[cache_key])
                 hit["filepath"] = str(filepath)
+                hit["cache_hit"] = "memory"
                 return hit
             cache_file = self.cache_dir / cache_key
             if cache_file.exists():
@@ -258,7 +259,9 @@ class CodeCompressor:
                         cached_result = json.load(f)
                     cached_result["filepath"] = str(filepath)
                     self._mem_cache[cache_key] = cached_result
-                    return cached_result
+                    hit = dict(cached_result)
+                    hit["cache_hit"] = "disk"
+                    return hit
                 except Exception:
                     pass
 
