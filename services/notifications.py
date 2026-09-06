@@ -16,6 +16,37 @@ _COOLDOWN_MINUTES = {"critical": 5, "warning": 30, "info": 60}
 # Duplicate collapse: keep the most severe label when merging records.
 _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 
+# Event kinds written by C3's own producers (v2.126.0). A client ROUTES on
+# ``kind`` + ``ref_id`` rather than parsing the title; every kind here also
+# lands in .c3/notifications.jsonl, which is one of the files the mobile
+# gateway's long-poll watches — so writing one of these is what wakes a
+# waiting desktop or phone client.
+#   shell_job  ref_id = job id        (services/shell_jobs.py, the supervisor)
+#   ci         ref_id = run id        (services/ci_runner.py)
+#   session    ref_id = host session  (cli/hook_session_open.py, hook_session_end.py)
+#   mcp        ref_id = C3 session id (cli/mcp_server.py, runtime ready)
+#   override   ref_id = request id    (services/override_requests.py)
+EVENT_KINDS = ("shell_job", "ci", "session", "mcp", "override")
+
+
+def notify(project_path, agent: str, severity: str, title: str, message: str,
+           *, kind: str = "", ref_id: str = "",
+           replace_if_unacked: bool = False) -> dict | None:
+    """Best-effort ``NotificationStore.add`` that NEVER raises.
+
+    For producers that run in odd processes — the detached job supervisor,
+    a short-lived hook subprocess, a background thread — where a
+    notification failure must not fail the thing it reports on (the same
+    shape ``services.override_requests._notify`` uses). Returns the entry,
+    or None when deduped or when the store could not be written.
+    """
+    try:
+        return NotificationStore(str(project_path)).add(
+            agent=agent, severity=severity, title=title, message=message,
+            kind=kind, ref_id=ref_id, replace_if_unacked=replace_if_unacked)
+    except Exception:
+        return None
+
 
 def _recency_key(entry: dict) -> str:
     """Sort key: last occurrence of a (possibly collapsed) notification."""

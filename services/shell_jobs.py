@@ -114,7 +114,7 @@ from services.shell_output import (
 
 __all__ = [
     "JOBS_DIRNAME", "DEFAULT_TIMEOUT_S", "MAX_TIMEOUT_S", "STATUSES", "TERMINAL",
-    "JobState", "JobAccessError", "JobStore",
+    "JobState", "JobAccessError", "JobStore", "JOB_ROW_FIELDS", "job_row",
     "process_start_time", "process_alive", "kill_tree_by_pid",
     "new_job_id", "supervise", "main",
 ]
@@ -804,7 +804,40 @@ class JobStore:
             except Exception as exc:
                 job.error += f"; spool not kept ({type(exc).__name__}: {exc})"
         self.save(job)
+        _notify_job(job)                              # whoever noticed the loss reports it
         return job
+
+    # -- read-only enumeration (mobile/desktop gateway) --
+    def list_all(self, project_path=None, limit: int = 50) -> list[dict]:
+        """Every job record under the root, newest first, WITHOUT touching anything.
+
+        The gateway's ``GET /api/mobile/jobs`` reads this. Unlike ``list`` /
+        ``reap`` it never promotes a spool, never writes ``lost`` and never
+        polls a supervisor — a remote reader must not change what the owning
+        session sees, and a stat-only walk cannot. Rows are the wire shape
+        (``job_row``): identity, timing and status; never creds, env or the
+        guard paths. ``project_path`` narrows to one project.
+        """
+        rows: list[dict] = []
+        want_pid = project_id(project_path) if project_path else ""
+        for directory in self._job_dirs():
+            if want_pid and directory.parent.parent.name != want_pid:
+                continue
+            try:
+                entries = os.listdir(directory)
+            except OSError:
+                continue
+            for entry in entries:
+                if not _JOB_FILE_RE.match(entry):
+                    continue
+                job = _load_job(directory / entry)
+                if job is None:
+                    continue
+                if want_pid and job.project_id != want_pid:
+                    continue
+                rows.append(job_row(job))
+        rows.sort(key=lambda r: (r.get("created_at") or ""), reverse=True)
+        return rows[:max(1, int(limit or 50))]
 
     # -- retention --
     def _job_dirs(self):
@@ -882,6 +915,48 @@ def _spool_id(job: JobState) -> str:
     return job.output_id
 
 
+# Wire shape of one job for a remote reader. Deliberately a fixed tuple, not
+# ``to_dict()``: creds (names), env, guard paths, spool paths and pids stay
+# on this machine.
+JOB_ROW_FIELDS = ("id", "project_path", "session_id", "status", "cmd_display", "cwd",
+                  "created_at", "started_at", "finished_at", "exit_code", "duration_ms",
+                  "output_id", "timed_out", "cancel_requested", "error")
+
+
+def job_row(job: JobState) -> dict:
+    """The allowlisted view of ``job`` that may leave the machine."""
+    return {k: getattr(job, k, None) for k in JOB_ROW_FIELDS}
+
+
+def _notify_job(job: JobState) -> None:
+    """Terminal-state notification: ``kind="shell_job"``, ``ref_id=job.id``.
+
+    Lands in ``.c3/notifications.jsonl`` — one of the four files the
+    gateway's ``/feed?wait=`` watches — so a finished background job wakes a
+    waiting desktop client. The title carries the job id so two jobs that end
+    the same way never collapse into one record. Severity ``info`` for
+    ``done``, ``warning`` for every other terminal state. Best-effort: the
+    supervisor is a detached process and a notification failure must never
+    fail the job it reports on.
+    """
+    try:
+        if not job.terminal:
+            return
+        from services.notifications import notify
+        severity = "info" if job.status == "done" else "warning"
+        cmd = (job.cmd_display or "")[:120]
+        secs = (job.duration_ms or 0) / 1000.0
+        parts = [cmd or "(no command)", f"exit {job.exit_code}", f"{secs:.1f}s"]
+        if job.error:
+            parts.append(str(job.error)[:200])
+        notify(job.project_path, agent="shell_job", severity=severity,
+               title=f"Job {job.status}: {job.id}",
+               message=" — ".join(parts),
+               kind="shell_job", ref_id=job.id)
+    except Exception:
+        pass
+
+
 # ── Supervisor ──────────────────────────────────────────────────────────────
 
 def _read_payload(timeout: float) -> tuple[dict | None, str]:
@@ -952,6 +1027,7 @@ def _finish(store: JobStore, job: JobState, status: str, *, exit_code=None, time
     if error:
         job.error = (job.error + "; " if job.error else "") + error
     store.save(job)
+    _notify_job(job)                                  # wakes a /feed?wait= client (D0b)
     payload = payload or {}
     raw_cmd = str(payload.get("cmd") or "")
     try:
