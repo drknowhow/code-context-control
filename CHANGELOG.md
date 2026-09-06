@@ -4,6 +4,16 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.126.1] - 2026-09-06
+
+### Fixed
+- **Job supervisor: the terminal notification is written last.** 2.126.0 emitted the
+  `shell_job` notification between the status save and the activity/telemetry rows, so
+  a reader woken by the notification (or a test polling the job status) could find the
+  status flipped while `.c3/activity_log.jsonl` had not been written yet. The order is
+  now status → activity row → telemetry → notification. Surfaced by the release gate on
+  `v2.126.0` (macOS 3.12 / Ubuntu 3.11 `test_injected_credential_never_lands_on_disk`).
+
 ## [2.126.0] - 2026-09-06
 
 ### Added — event notifications, session boundaries and a join key for the desktop client (C3 Desk, D0b)
