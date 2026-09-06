@@ -4,6 +4,99 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.121.0] - 2026-09-06
+
+### Changed — one canonical file map (c3_compress remediation, C1)
+
+Every map C3 serves is now rendered by one function,
+`services/file_map.render_map`: one line per symbol with kind, qualified
+name, the complete signature, the return type when the source has one,
+and the exact `[La-Lb]` range — no emoji, no column padding, no generated
+prose (docs/file-map.md). `c3_read(file_path)` with no symbols,
+`c3_compress`, the inline map under a `c3_search` hit, `c3_agent`
+prefetch, `c3 map` and the benchmarks all serve the same text.
+
+```
+# services/compressor.py (809L python)
+I 8 imports
+K LARGE_FILE_LINE_THRESHOLD [L77-L77]
+C CodeCompressor [L130-L809]
+  M CodeCompressor.compress_file(self, filepath: str, mode: str = "structure") -> dict [L166-L188]
+F handle_compress(file_path: str, mode: str, svc, finalize, maybe_facts) -> str [L94-L114]
+```
+
+- `c3_read(symbols=['Class.method'])` resolves qualified names exactly,
+  the way the map prints them; a bare name still matches every class.
+- The Ollama summary that opened every map is gone. It was generated from
+  symbol names alone and 134 of the 267 stored ones were cut mid-sentence;
+  every record is purged once at startup (marker
+  `.c3/file_memory/_summaries_purged`) and `FileMemoryAgent` no longer
+  generates them.
+- Records store project-relative posix paths on every platform (562 of
+  591 records here carried backslashes from the watcher).
+- A map that would cost more tokens than the file it maps is replaced by
+  the file (`whole file — smaller than its map`).
+- Parsers fixed where the map-eval fixtures caught them: YAML files that
+  start with a comment rendered no keys; HTML ids were never extracted;
+  CSS multi-line selectors and `@media` queries; Markdown's last heading
+  ended one line past EOF; Go const blocks, struct/interface kinds and
+  receivers; Rust const/static/type items, `impl Trait for Type` naming,
+  impl methods as methods, multi-line fn signatures; Python decorators
+  recorded so `@property` renders as `P`; the regex fallback (R) named
+  symbols by their raw line and counted indented assignments as constants.
+- Tool descriptions and the MCP workflow hint now say the truth: the map
+  is ~10% of the file's tokens and bare `c3_read` serves it — the model is
+  no longer told to make two calls. `PARSER_VERSION` is 4.
+
+Measured on the map-eval fixtures against 2.120.0: signature completeness
+0.20 → 0.82 (1.0 on every fixture that has signatures), symbol recall
+0.72 → 0.94, range accuracy 0.97 → 1.0, chrome share 0.14 → 0.0, total map
+tokens over the fixtures 23,745 → 15,654 (−34%) with full signatures.
+The ten C1 fixtures are promoted to `must_pass`.
+
+## [2.120.0] - 2026-09-06
+
+### Added — every file map is measured (c3_compress remediation, C0)
+
+Measured on this repository's telemetry (3,932 tool calls, Jul–Sep 2026):
+`c3_compress` was called 132 times, 130 of them `mode='map'`, and its rows
+never said which backend built the map, which parser extracted the
+symbols, whether the record was already fresh, or whether the map led to
+a targeted read. This release adds the instrument before the renderer
+changes (2.121.0) so the change can be graded.
+
+- `file_memory` records carry `parser` (`tree_sitter | regex | generic`);
+  a pre-2.120.0 record without it is re-extracted on its next update.
+- `c3_compress` and `c3_read` rows carry a flat `detail`: requested mode,
+  backend (`file_memory`, `compressor`, `large_fast_path`, `batch`,
+  `source`), parser, `cache_hit`, section count, symbols requested, and
+  why a read served a map (`map_only`, `symbols_not_found`) or how much
+  source it served (`ranges`, `lines_served`, `file_lines`).
+- `aggregate_tool_telemetry` folds them into `map_by_backend` (calls,
+  tokens, cache hits, ratio p50/p95 per backend/parser) and
+  `map_read_chain` (maps followed by a read of the same file within five
+  calls, reads preceded by a map) — the before/after instrument for the
+  remediation. The chain works on `target` alone, so rows written since
+  2.111.0 count.
+- `c3 map-eval`: a hand-annotated gold harness for the file map
+  (`services/bench/map_eval.py`, `tests/map_eval/`), mirroring
+  `c3 shell-eval`: 16 fixtures across Python, TypeScript, JavaScript, Go,
+  Rust, Markdown, YAML, JSON, CSS, HTML, R (regex fallback), Java
+  (generic), a malformed file, a minified bundle and a 250 KB generated
+  file. Each case scores tokens, symbol recall/precision, signature
+  completeness, range accuracy and determinism against the annotation —
+  not against tree-sitter, which would be circular. Baseline committed in
+  `tests/map_eval/baseline_fixture.json` (docs/map-eval.md).
+
+### Measured on the baseline (what 2.121.0 fixes)
+
+Signature completeness 0.20, symbol recall 0.72, 14% of map characters are
+emoji and padding; multi-line Python signatures print with newlines; YAML
+files that start with a comment render no keys; HTML ids, CSS media
+queries, Go const blocks and receivers, Rust impl methods and nested-class
+methods are missing; a 20 KB minified line becomes 549 symbols and an
+11 MB record.
+
 ## [2.119.0] - 2026-09-05
 
 ### Added — native Codex integration: hooks, thread-bound handoffs, additive installs

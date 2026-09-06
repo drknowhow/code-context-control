@@ -630,6 +630,10 @@ class FileMemoryStore:
                         # Method inside a class
                         section["type"] = "method"
                         current_class["children"].append(section)
+                    elif kind == 'assignment' and indent > 0:
+                        # An indented assignment lives inside a body; it is
+                        # not a module constant (map-eval r_regex_fallback).
+                        pass
                     else:
                         sections.append(section)
 
@@ -657,7 +661,8 @@ class FileMemoryStore:
         if ext == '.py':
             return self._find_python_block_end(lines, start)
         # For brace-based languages, find matching brace
-        if ext in ('.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.cs'):
+        if ext in ('.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.cs',
+                   '.r', '.R'):
             return self._find_brace_block_end(lines, start)
         # Default: use indentation
         return self._find_python_block_end(lines, start)
@@ -738,6 +743,10 @@ class FileMemoryStore:
                     if found_open and depth == 0:
                         return i + 1  # 1-indexed
                 j += 1
+            if i == start and not found_open and depth == 0:
+                # A one-line statement with no block (an assignment, a
+                # prototype): it ends where it starts.
+                return start + 1
         return len(lines)
 
     def _normalize_type(self, kind: str) -> str:
@@ -755,6 +764,11 @@ class FileMemoryStore:
         """Extract the name from a matched line."""
         if kind in ('import', 'library'):
             return line.strip()
+
+        # R: `name <- function(...)` and `NAME <- value`
+        m = re.match(r'^([\w.]+)\s*<-', line.strip())
+        if m:
+            return m.group(1)
 
         # Try to extract identifier from common patterns
         # class Foo, def foo, function foo, const foo, etc.
