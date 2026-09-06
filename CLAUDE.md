@@ -12,7 +12,7 @@ When falling back, state which c3_* tool was attempted and why it was insufficie
 ## Workflow (follow this order — do not skip steps)
 1. **RECALL**: `c3_memory(action='recall')` — before any multi-step or context-dependent task. Large memory stores: use `index` first (compact list), then `fetch` for specific IDs
 2. **SEARCH FIRST**: `c3_search(action='code|files|semantic')` — before ANY file discovery or content search. Never start with Grep/Glob
-3. **MAP before READ**: `c3_compress(mode='map')` then `c3_read(symbols=...|lines=...)` — for ANY file read. Never start with native Read. Use `mode='ast'` for knowledge-graph overview (requires codebase-memory-mcp)
+3. **MAP before READ**: `c3_read(file_path)` with no symbols/lines returns the file map (one line per symbol with signature and `[La-Lb]` range, ~10% of the file's tokens; a directory path maps its files), then `c3_read(symbols=['Class.method']|lines=[a,b])` for the source you need. Never start with native Read. `c3_compress` is the same map for a comma-separated batch (legacy; removed in 2.124.0)
 4. **IMPACT** (shared symbols): `c3_impact(target='symbol')` — blast-radius check before editing any function/class used across files
 5. **EDIT via C3**: `c3_edit(file_path, old_string, new_string, summary)` — for ALL edits. Parallel across files; `edits=[]` batch for same file
 6. **FILTER**: `c3_filter(text=...)` — for terminal output >10 lines or log files
@@ -35,7 +35,7 @@ In plan mode, all c3_* read tools (search, read, compress, filter, validate, sta
 ## Anti-patterns (DO NOT do these)
 - Starting with native file search/read/grep without a prior c3_* call
 - Using native Edit when c3_edit is available
-- Reading entire files when c3_compress + c3_read would be more surgical
+- Reading entire files when a c3_read map + a symbol read would be more surgical
 - Skipping c3_validate after making edits
 
 ---
