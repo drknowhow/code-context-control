@@ -923,29 +923,10 @@ class FileMemoryAgent(BackgroundAgent):
         completed = []
         failed = []
         for rel_path in files_to_process:
-            ai_summary = None
-
-            # Generate AI summary if available
-            if self.ai_available:
-                record = self.file_memory.get(rel_path)
-                section_names = ""
-                if record:
-                    names = [s.get("name", "") for s in record.get("sections", [])
-                             if s.get("type") not in ("import", "decorator")]
-                    section_names = ", ".join(names[:10])
-
-                if section_names:
-                    ai_summary = self._ai_generate(
-                        f"File: {rel_path}\n"
-                        f"Symbols: {section_names}\n\n"
-                        f"Describe the purpose of this file and its main symbols in 1-2 concise sentences. "
-                        f"Focus on what they do, not how they are implemented.",
-                        system="You are a senior architect summarizing code for an AI assistant. "
-                               "Be technical, concise, and highlight the main responsibilities of the symbols.",
-                        max_tokens=100,
-                    )
-
-            result = self.file_memory.update(rel_path, ai_summary=ai_summary)
+            # No generated summary: it was produced from symbol names alone
+            # and half of the stored ones were cut mid-sentence (2026-09-06).
+            # The map carries symbols and ranges only (docs/file-map.md).
+            result = self.file_memory.update(rel_path)
             if result:
                 updated_count += 1
                 completed.append(rel_path)

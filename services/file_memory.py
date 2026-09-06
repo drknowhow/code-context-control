@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from services.compressor import STRUCTURE_PATTERNS
+from services.file_map import render_map
 from services.parser import PARSER_VERSION, extract_sections_ast
 from services.text_index import TextIndex
 
@@ -55,9 +56,54 @@ class FileMemoryStore:
         # update()'s add_or_update on the shared TextIndex. Reentrant so
         # search() may hold it across _ensure_search_index() + the query.
         self._search_lock = threading.RLock()
+        # One-time cleanup of pre-2.121.0 generated summaries (marker-gated).
+        try:
+            self.purge_summaries()
+        except Exception:
+            pass
+
+    #: Marker written once the pre-2.121.0 `summary` fields are gone.
+    _PURGE_MARKER = "_summaries_purged"
+
+    def purge_summaries(self) -> int:
+        """Drop the generated `summary` from every stored record, once.
+
+        Those summaries were produced from symbol NAMES only and half of them
+        were cut mid-sentence (measured 2026-09-06: 134 of 267); the map no
+        longer renders them and nothing else reads them. Returns the number
+        of records rewritten. Idempotent via a marker file.
+        """
+        marker = self.store_dir / self._PURGE_MARKER
+        if marker.exists():
+            return 0
+        rewritten = 0
+        for f in self.store_dir.glob("*.json"):
+            if f.name.startswith("_"):
+                continue
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+            if "summary" not in data:
+                continue
+            data.pop("summary", None)
+            try:
+                rel = str(data.get("path") or "").replace("\\", "/")
+                data["path"] = rel
+                self._save(rel, data)
+                rewritten += 1
+            except Exception:
+                continue
+        try:
+            marker.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
+        except Exception:
+            pass
+        return rewritten
 
     def get(self, rel_path: str) -> Optional[dict]:
         """Load a file's memory record, or None if not tracked."""
+        rel_path = str(rel_path).replace("\\", "/")
         store_file = self._store_path(rel_path)
         if not store_file.exists():
             return None
@@ -94,7 +140,10 @@ class FileMemoryStore:
         """Re-extract sections from file and persist the record.
 
         Returns the updated record, or None if the file doesn't exist.
+        `ai_summary` is accepted for call-site compatibility and ignored:
+        maps carry no generated prose (docs/file-map.md).
         """
+        rel_path = str(rel_path).replace("\\", "/")
         full_path = self.project_path / rel_path
         if not full_path.exists():
             return None
@@ -122,11 +171,6 @@ class FileMemoryStore:
             stale_parser = (existing.get("parser_version") != PARSER_VERSION
                             or "parser" not in existing)  # pre-2.120.0 record
             if not ((was_generic and ext in CODE_EXTENSIONS) or stale_parser):
-                # Only update AI summary if provided and different
-                if ai_summary and existing.get("summary") != ai_summary:
-                    existing["summary"] = ai_summary
-                    existing["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                    self._save(rel_path, existing)
                 with self._search_lock:
                     if not self._search_dirty:
                         self._search_index.add_or_update(rel_path, self._search_doc(existing))
@@ -144,7 +188,6 @@ class FileMemoryStore:
             "size_bytes": stat.st_size,
             "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
             "language": LANG_MAP.get(ext, ext.lstrip('.')),
-            "summary": ai_summary or (existing.get("summary") if existing else None),
             "parser_version": PARSER_VERSION,
             # Which extractor produced `sections` (C0 measurement, 2.120.0):
             # tree_sitter | regex | generic. Telemetry folds this so the map
@@ -186,14 +229,8 @@ class FileMemoryStore:
         return f"[file_map] Could not build map for {rel_path} — file not found or unreadable."
 
     def get_or_build_dense_map(self, rel_path: str) -> str:
-        """Get a compact single-line-per-symbol map (4b). Saves ~40% tokens vs full map."""
-        record = self.get(rel_path)
-        if record and not self.needs_update(rel_path):
-            return self._format_dense_map(record)
-        updated = self.update(rel_path)
-        if updated:
-            return self._format_dense_map(updated)
-        return f"[file_map] Could not build map for {rel_path} — file not found or unreadable."
+        """Retired alias: the canonical map IS the dense map (2.121.0)."""
+        return self.get_or_build_map(rel_path)
 
     def needs_update(self, rel_path: str) -> bool:
         """True if the file has changed since we last indexed it."""
@@ -258,19 +295,26 @@ class FileMemoryStore:
                 return True
             return False
 
-        def search_sections(sections):
+        def search_sections(sections, parent_name=""):
             for sec in sections:
                 sec_name = sec.get("name", "")
+                qualified = f"{parent_name}.{sec_name}" if parent_name else sec_name
                 for target_data in compiled_targets:
-                    if _matches(sec_name, target_data):
+                    hit = _matches(sec_name, target_data)
+                    # A dotted target (`Class.method`, as the canonical map
+                    # prints it) matches the qualified name exactly and
+                    # never a bare name that merely contains a fragment.
+                    if "." in str(target_data[0]) and not isinstance(target_data[1], re.Pattern):
+                        hit = qualified.lower() == str(target_data[0]).lower()
+                    if hit:
                         ranges.append((sec["line_start"], sec["line_end"]))
-                        matches.append({"target": target_data[0], "match": sec_name, "range": (sec["line_start"], sec["line_end"])})
-                        # Don't break here, let it find all matches for this section if multiple targets apply
-                        # But wait, if one target matches, we don't want to add the section multiple times for the same target
-                        # We'll deduplicate later
+                        matches.append({"target": target_data[0], "match": qualified,
+                                        "range": (sec["line_start"], sec["line_end"])})
 
                 if "children" in sec:
-                    search_sections(sec["children"])
+                    search_sections(sec["children"], qualified if sec.get("type") in
+                                    ("class", "impl", "trait", "struct", "enum", "interface")
+                                    else parent_name)
 
         search_sections(record["sections"])
 
@@ -427,8 +471,10 @@ class FileMemoryStore:
         return self.store_dir / f"{key}.json"
 
     def _save(self, rel_path: str, record: dict):
-        """Persist a record to disk."""
+        """Persist a record to disk. The stored path is always posix."""
         store_file = self._store_path(rel_path)
+        if isinstance(record, dict) and record.get("path"):
+            record["path"] = str(record["path"]).replace("\\", "/")
         try:
             with open(store_file, "w", encoding="utf-8") as f:
                 json.dump(record, f, indent=2)
@@ -442,12 +488,12 @@ class FileMemoryStore:
         cached = self._map_cache.get(cache_key)
         if cached and cached[0] == content_hash:
             return cached[1]
-        rendered = self._format_map(record)
+        rendered = render_map(record)
         self._map_cache[cache_key] = (content_hash, rendered)
         return rendered
 
     def _search_doc(self, record: dict) -> str:
-        fields = [record.get("path", ""), record.get("language", ""), record.get("summary", "")]
+        fields = [record.get("path", ""), record.get("language", "")]
         for section in record.get("sections", []):
             fields.append(section.get("name", ""))
             fields.append(section.get("type", ""))
@@ -584,6 +630,10 @@ class FileMemoryStore:
                         # Method inside a class
                         section["type"] = "method"
                         current_class["children"].append(section)
+                    elif kind == 'assignment' and indent > 0:
+                        # An indented assignment lives inside a body; it is
+                        # not a module constant (map-eval r_regex_fallback).
+                        pass
                     else:
                         sections.append(section)
 
@@ -611,7 +661,8 @@ class FileMemoryStore:
         if ext == '.py':
             return self._find_python_block_end(lines, start)
         # For brace-based languages, find matching brace
-        if ext in ('.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.cs'):
+        if ext in ('.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.cs',
+                   '.r', '.R'):
             return self._find_brace_block_end(lines, start)
         # Default: use indentation
         return self._find_python_block_end(lines, start)
@@ -692,6 +743,10 @@ class FileMemoryStore:
                     if found_open and depth == 0:
                         return i + 1  # 1-indexed
                 j += 1
+            if i == start and not found_open and depth == 0:
+                # A one-line statement with no block (an assignment, a
+                # prototype): it ends where it starts.
+                return start + 1
         return len(lines)
 
     def _normalize_type(self, kind: str) -> str:
@@ -709,6 +764,11 @@ class FileMemoryStore:
         """Extract the name from a matched line."""
         if kind in ('import', 'library'):
             return line.strip()
+
+        # R: `name <- function(...)` and `NAME <- value`
+        m = re.match(r'^([\w.]+)\s*<-', line.strip())
+        if m:
+            return m.group(1)
 
         # Try to extract identifier from common patterns
         # class Foo, def foo, function foo, const foo, etc.
@@ -753,100 +813,8 @@ class FileMemoryStore:
         return None
 
     def _format_map(self, record: dict) -> str:
-        """Format a record into a readable structural map."""
-        path = record["path"]
-        total_lines = record.get("lines", 0)
-        lang = record.get("language", "")
-        summary = record.get("summary")
-        sections = record.get("sections", [])
-
-        parts = [f"# {path} ({total_lines} lines, {lang})"]
-
-        if summary:
-            parts.append(summary)
-
-        parts.append("")  # blank line
-
-        icons = {
-            "class": "🏗️",
-            "function": "✨",
-            "method": "⚙️",
-            "import": "📦",
-            "constant": "💎",
-            "variable": "📄",
-            "interface": "🧩",
-            "type": "🏷️",
-            "enum": "🔢",
-            "comment": "💬",
-            "property": "🔧",
-            "decorator": "🎨",
-            "heading": "🔖",
-            "section": "📍",
-            "struct": "🧱",
-            "trait": "📜",
-            "impl": "🛠️"
-        }
-
-        import_sections = [section for section in sections if section.get("type") == "import"]
-        other_sections = [section for section in sections if section.get("type") != "import"]
-
-        if len(import_sections) > 6:
-            parts.append(f"  imports    {len(import_sections)} statements (collapsed)")
-        else:
-            # Re-integrate imports if few
-            other_sections = sections
-
-        for section in other_sections:
-            stype = section.get("type", "")
-            name = section.get("name", "")
-            ls = section.get("line_start", 0)
-            le = section.get("line_end", 0)
-            doc = section.get("doc")
-            is_async = section.get("async", False)
-            access = section.get("access")
-
-            line_range = f"{ls}-{le}".ljust(10)
-            icon = icons.get(stype, "  ")
-
-            if stype == "import":
-                label = f"{icon} {name}"
-            elif stype == "comment":
-                label = f"{icon} {name}"
-            elif stype in ("heading", "section"):
-                label = f"{icon} {name}"
-            else:
-                async_prefix = "async " if is_async else ""
-                access_prefix = f"{access} " if access else ""
-                sig = section.get("signature", "")
-                params = f"({self._extract_params(sig)})" if stype in ("function", "method") else ""
-                label = f"{icon} {access_prefix}{async_prefix}{stype} {name}{params}"
-
-            parts.append(f"  {line_range}{label}")
-            if doc:
-                parts.append(f"            {doc}")
-
-            # Children (methods inside classes)
-            for child in section.get("children", []):
-                ctype = child.get("type", "")
-                cname = child.get("name", "")
-                cls = child.get("line_start", 0)
-                cle = child.get("line_end", 0)
-                sig = child.get("signature", "")
-                c_async = child.get("async", False)
-                c_access = child.get("access")
-
-                child_range = f"{cls}-{cle}".ljust(8)
-                c_icon = icons.get(ctype, "  ")
-
-                async_prefix = "async " if c_async else ""
-                access_prefix = f"{c_access} " if c_access else ""
-
-                if ctype == "method":
-                    parts.append(f"            {child_range}{c_icon} {access_prefix}{async_prefix}{cname}({self._extract_params(sig)})")
-                else:
-                    parts.append(f"            {child_range}{c_icon} {access_prefix}{async_prefix}{ctype} {cname}")
-
-        return "\n".join(parts)
+        """Canonical map (services/file_map.render_map). Kept as a name."""
+        return render_map(record)
 
     def _extract_params(self, signature: str) -> str:
         """Extract parameter list from a function signature."""
@@ -860,35 +828,5 @@ class FileMemoryStore:
         return ""
 
     def _format_dense_map(self, record: dict) -> str:
-        """Format a compact one-line-per-symbol map (4b). ~40% fewer tokens than full map."""
-        path = record["path"]
-        total_lines = record.get("lines", 0)
-        lang = record.get("language", "")
-        sections = record.get("sections", [])
-
-        abbrev = {"class": "C", "function": "F", "method": "M", "import": "I",
-                  "constant": "K", "interface": "IF", "type": "T", "enum": "E",
-                  "variable": "V", "decorator": "D", "property": "P"}
-
-        parts = [f"# {path} ({total_lines}L {lang})"]
-
-        # Collapse imports into a single count
-        imports = [s for s in sections if s.get("type") == "import"]
-        others = [s for s in sections if s.get("type") != "import"]
-        if imports:
-            parts.append(f"  I: {len(imports)} imports")
-
-        for s in others:
-            t = abbrev.get(s.get("type", ""), "?")
-            name = s.get("name", "")
-            ls = s.get("line_start", 0)
-            le = s.get("line_end", 0)
-            parts.append(f"  {t} {name} [{ls}-{le}]")
-            for child in s.get("children", []):
-                ct = abbrev.get(child.get("type", ""), "?")
-                cn = child.get("name", "")
-                cls = child.get("line_start", 0)
-                cle = child.get("line_end", 0)
-                parts.append(f"    {ct} {cn} [{cls}-{cle}]")
-
-        return "\n".join(parts)
+        """Retired: there is one map now (2.121.0)."""
+        return render_map(record)

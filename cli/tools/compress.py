@@ -1,5 +1,7 @@
-"""c3_compress — Token-efficient file summaries (6 modes: map, dense_map, smart, diff, bug_scan, ast).
-Supports comma-separated paths for batch compression with parallel execution."""
+"""c3_compress — the canonical file map (services/file_map.render_map), one file or a batch.
+
+mode='map' (default) is the same text c3_read(file_path) serves. The other
+modes (dense_map, smart, diff, bug_scan, ast) are legacy and retire in 2.122.0."""
 
 import json
 import shutil
@@ -218,8 +220,14 @@ def _compress_single(file_path: str, mode: str, svc, finalize, maybe_facts) -> s
         raw_tokens = None
         map_tokens = 0
         try:
-            raw_tokens = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
+            raw_text = full.read_text(encoding="utf-8", errors="replace")
+            raw_tokens = count_tokens(raw_text)
             map_tokens = count_tokens(res)
+            if map_tokens >= raw_tokens and not res.startswith("[file_map]"):
+                # A map that costs more than the file is worth nothing
+                # (docs/file-map.md § Small files).
+                res = f"[compress:{file_path}] whole file — smaller than its map\n" + raw_text
+                map_tokens = count_tokens(res)
             summary = mode
         except Exception:
             summary = "mapped"

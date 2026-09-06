@@ -131,7 +131,8 @@ class TestSuiteShape:
         bad = [c.id for c in cases if c.gate == "xfail" and c.phase not in me.PHASES]
         assert not bad, f"xfail cases must name a phase: {bad}"
         assert any(c.gate == "must_pass" for c in cases)
-        assert any(c.gate == "xfail" and c.phase == "C1" for c in cases)
+        # C1 shipped in 2.121.0 and its cases were promoted; C4 is still open.
+        assert not any(c.gate == "xfail" and c.phase == "C1" for c in cases)
         assert any(c.gate == "xfail" and c.phase == "C4" for c in cases)
 
     def test_checks_use_known_vocabulary(self):
@@ -469,7 +470,8 @@ class TestFixtureGate:
         r = next(x for x in report.results if x.id == "py_basic")
         r.symbol_recall = 0.5
         try:
-            _, warnings_ = me.compare_to_baseline(report, data)
-            assert any("py_basic symbol_recall 0.5" in w for w in warnings_)
+            violations, warnings_ = me.compare_to_baseline(report, data)
+            # py_basic is must_pass since 2.121.0: a lost symbol is a violation.
+            assert any("py_basic symbol_recall 0.5" in v for v in violations + warnings_)
         finally:
             r.symbol_recall = 1.0
