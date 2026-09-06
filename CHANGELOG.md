@@ -4,6 +4,70 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — per-client tokens and a loopback listener for the mobile gateway (C3 Desk, D0a)
+
+The Oracle's `/api/mobile/*` gateway had one credential (the Discovery
+token) and one client (the phone). The C3 Desk tray client is a second
+same-machine client, and on a Tailscale-bound Oracle it could not even
+connect: `bind_host` = the tailnet IP meant `http://127.0.0.1:3331` was
+refused on the Oracle's own box.
+
+- **Loopback listener** (`oracle/listeners.py`, config `loopback_listener`,
+  default true): when `bind_host` is a specific non-loopback address the
+  same Flask app is also served on `127.0.0.1`, same port, same Host
+  allowlist and Bearer gates. `GET /api/health` answers on both; shutdown
+  (Ctrl-C, service stop, interpreter exit) stops both. Wildcard and
+  loopback binds are unchanged. `run_oracle` now serves through
+  `werkzeug.serving.make_server` instead of `app.run` (no dev-server
+  banner; behaviour otherwise identical).
+- **Per-client tokens** (`oracle/services/client_tokens.py`,
+  `~/.c3/oracle/clients.json`, SHA-256 hashes only, atomic write,
+  owner-only ACL). A gateway request now authenticates with the Discovery
+  token OR a live client token; the caller rides on
+  `flask.g.c3_client = {kind, client_id}` with kind `mobile` or `desk`
+  (the Discovery token maps to `{"kind": "mobile", "client_id":
+  "discovery"}` so every existing phone keeps working). `chat_poll` shares
+  the same credential check. Verification compares against every stored
+  hash in constant time; `last_seen` is touched at most once a minute.
+- **Routes**: `POST /api/mobile/clients` — no Bearer; requires a local
+  address plus the owner-only `~/.c3/oracle/bootstrap.key`, throttled by
+  the security bucket, 201 `{client_id, token, kind, label, created}` with
+  the token exactly once. `GET /api/mobile/clients` lists rows without
+  hashes and marks the caller (`current`). `DELETE
+  /api/mobile/clients/<id>` revokes; the token fails on its next request.
+  `GET /api/mobile/info` now carries `client` and the `clients`
+  capability; `api_version` is 5.
+- **Attribution**: override `decide` / `mute` on the gateway write
+  `decided_by` from the principal's kind — `"desk"` for the tray client,
+  `"mobile"` for a phone or the Discovery token — never from a body field.
+  Hub stays `"desktop"`, CLI stays `"cli"`. Recorded as a dated deviation
+  in the frozen `docs/override-requests.md`.
+- **Dashboard pairing**: Settings → *Mobile app* → *Show pairing code*
+  now mints a per-device `mobile` token (`POST /api/pair/mobile`, label
+  prompted, cookie-gated) and puts that in the QR, so rotating the
+  Discovery token no longer un-pairs every phone. A *Paired devices* list
+  with per-device revoke (`GET /api/pair/clients`, `DELETE
+  /api/pair/clients/<id>`) sits under it; a legacy *Discovery-token code*
+  button remains for an app build that predates client tokens.
+- **Long-poll budget**: `_MAX_WAITERS` 4 → 8 with a per-kind cap of 4,
+  counted on the principal's kind, so a phone reconnecting in a loop cannot
+  take the desk client's `feed?wait=` slots or vice versa. Past either cap
+  `wait` still degrades to an immediate answer.
+
+### Changed
+
+- `_local_write_guard` (oracle_server) no longer applies its cookie-or-
+  Discovery gate to `/api/mobile/*`: both mobile blueprints gate every
+  method themselves, and the app-level gate would have refused every
+  per-client token before the blueprint saw it. A client token does NOT
+  unlock dashboard mutations (`/api/apikey/rotate`, `/api/config`) — it is
+  narrower than the Discovery token on purpose.
+
+Tests: `tests/test_mobile_clients.py`, `tests/test_oracle_loopback.py`,
+waiter-cap cases in `tests/test_mobile_api.py`.
+
 ## [2.124.0] - 2026-09-06
 
 ### Changed — large files are bounded; `c3_compress` leaves the MCP surface (c3_compress remediation, C4)
