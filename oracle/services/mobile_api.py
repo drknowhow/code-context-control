@@ -79,6 +79,9 @@ CAPABILITIES = [
     "insights", "insights_write",
     "suggestions", "suggestions_write",
     "review",
+    # Background shell jobs (/jobs) and local CI runs (/ci/runs, /ci/run):
+    # read-only views over the job store and the CI index (v2.126.0, D0b).
+    "jobs", "ci",
     # Poll-based chat transport, served by services/chat_poll.py under
     # /api/mobile/chat/*. Advertised here because /info is the single place a
     # client probes; the routes themselves live in that blueprint.
@@ -489,12 +492,21 @@ def _feed_items_for(path: str, name: str, types: set, severities: set,
             from services.notifications import NotificationStore
             for e in NotificationStore(path).get_history(limit=_SOURCE_CAP):
                 ts = e.get("last_seen") or e.get("timestamp", "")
+                # `severity` is an explicit allowlist: a client that wants
+                # the info-level event kinds (shell_job done, ci pass,
+                # session, mcp) names `info`; with no filter every severity
+                # is served.
                 if severities and e.get("severity") not in severities:
                     continue
                 if not _within(ts, since, before):
                     continue
+                # `kind` / `ref_id` are always present on the wire (empty
+                # for lines that predate them) so a client routes on
+                # presence-free field reads rather than `in` checks.
                 emit(f"ntf:{_hash_id(path, e.get('id'))}", ts,
-                     "notification", e)
+                     "notification",
+                     {**e, "kind": e.get("kind") or "",
+                      "ref_id": e.get("ref_id") or ""})
         except Exception:
             pass
 
@@ -695,6 +707,117 @@ def mobile_notifications_ack():
     if not nid:
         return jsonify({"error": "id or all is required"}), 400
     return jsonify({"acked": 1 if store.acknowledge(nid) else 0})
+
+
+# ── Background shell jobs + local CI (D0b, v2.126.0) ──────
+# The feed tells a client THAT a job or a CI run ended (the `shell_job` /
+# `ci` notifications carry the id in `ref_id`); these routes are what the
+# client opens on the tap. Both are READ-ONLY by construction:
+# ``JobStore.list_all`` walks the job files without reaping, promoting or
+# marking anything — a remote reader must never change what the owning
+# session sees — and the CI routes read the index and one run.json.
+# Session ids in job rows are the OWNING session's id (host id when the host
+# supplied one); the gateway never resolves or authorises a job under it, it
+# only reports it, so the desktop can join rows to session_open/session_end.
+
+_JOB_STATUSES: tuple = ()
+
+
+def _job_statuses() -> tuple:
+    global _JOB_STATUSES
+    if not _JOB_STATUSES:
+        from services.shell_jobs import STATUSES
+        _JOB_STATUSES = tuple(STATUSES)
+    return _JOB_STATUSES
+
+
+@bp.route("/jobs", methods=["GET"])
+def mobile_jobs():
+    """Background shell jobs, newest first.
+
+    Query: project (optional — omit for every registered project), status
+    (optional, one of queued|running|done|failed|timeout|cancelled|lost),
+    limit (default 50, max 200).
+
+    Response: {jobs: [{id, project_path, session_id, status, cmd_display,
+    cwd, created_at, started_at, finished_at, exit_code, duration_ms,
+    output_id, timed_out, cancel_requested, error}], count, project, status,
+    limit}. Never creds, env, pids or guard paths.
+    """
+    raw_project = (request.args.get("project") or "").strip()
+    project_path = ""
+    if raw_project:
+        resolved, err = _project_or_404(raw_project)
+        if err:
+            return err
+        project_path = str(resolved)
+    status = (request.args.get("status") or "").strip().lower()
+    if status and status not in _job_statuses():
+        return jsonify({"error": f"unknown status: {status}"}), 400
+    limit = _limit_arg()
+    try:
+        from services.shell_jobs import JobStore
+        # Enough headroom to filter by status and still fill a page; the
+        # store sorts newest-first before cutting.
+        rows = JobStore().list_all(project_path=project_path or None,
+                                   limit=_SOURCE_CAP)
+    except Exception as exc:
+        return _svc_error(exc)
+    if not project_path:
+        # Cross-project listing must not leak rows for projects this gateway
+        # does not serve (the store root is shared across every project on
+        # the machine).
+        rows = [r for r in rows
+                if _resolve_registered(str(r.get("project_path") or "")) is not None]
+    if status:
+        rows = [r for r in rows if r.get("status") == status]
+    rows = rows[:limit]
+    return jsonify({"jobs": rows, "count": len(rows), "project": project_path,
+                    "status": status, "limit": limit})
+
+
+@bp.route("/ci/runs", methods=["GET"])
+def mobile_ci_runs():
+    """Local CI run index for one project, newest first.
+
+    Query: project (required), limit (default 20, max 200).
+    Response: {runs: [{run_id, started_at, finished_at, verdict, counts,
+    selection, note, fingerprint}], count, project}.
+    """
+    resolved, err = _project_or_404(request.args.get("project", ""))
+    if err:
+        return err
+    limit = _limit_arg(20)
+    try:
+        from services.ci_runner import list_runs
+        runs = list_runs(str(resolved), limit=limit)
+    except Exception as exc:
+        return _svc_error(exc)
+    return jsonify({"runs": runs, "count": len(runs), "project": str(resolved)})
+
+
+@bp.route("/ci/run", methods=["GET"])
+def mobile_ci_run():
+    """One CI run's full record (``run.json``). Empty run_id = most recent.
+
+    Query: project (required), run_id (optional).
+    Response: {run: <RunResult.to_dict()>, project} — 404 when there is no
+    such run (or no run at all).
+    """
+    resolved, err = _project_or_404(request.args.get("project", ""))
+    if err:
+        return err
+    run_id = (request.args.get("run_id") or "").strip()
+    if run_id and not run_id.replace("-", "").replace("_", "").isalnum():
+        return jsonify({"error": "invalid run_id"}), 400
+    try:
+        from services.ci_runner import load_run
+        run = load_run(str(resolved), run_id)
+    except Exception as exc:
+        return _svc_error(exc)
+    if not run:
+        return jsonify({"error": "unknown run"}), 404
+    return jsonify({"run": run, "project": str(resolved)})
 
 
 # ── PM board (mirrors the hub's /api/projects/pm handlers) ─
@@ -1918,13 +2041,40 @@ def mobile_overrides_list():
         # machine, including ones the scanner has since dropped.
         rows = [r for r in rows
                 if _resolve_registered(str(r.get("project_path") or "")) is not None]
+    channels = _override_channels(rows)
+    cards = []
+    for r in rows:
+        card = _override_row(r)
+        card["channel"] = channels.get(str(r.get("project_path") or ""), "mobile")
+        cards.append(card)
     return jsonify({
-        "requests": [_override_row(r) for r in rows],
+        "requests": cards,
         "count": len(rows),
         "project": project_path,
         "status": status,
         "limit": limit,
     })
+
+
+def _override_channels(rows: list) -> dict:
+    """``project_path -> override.channel`` for every project in ``rows``.
+
+    `channel` (mobile | desktop | both, services/override_policy.CHANNELS)
+    was validated and printed but never consumed until v2.126.0. The desktop
+    client reads it: desktop/both → toast, mobile → popover only. One policy
+    resolve per distinct project, not per row.
+    """
+    from services import override_policy as opol
+    out: dict = {}
+    for r in rows:
+        project = str(r.get("project_path") or "")
+        if not project or project in out:
+            continue
+        try:
+            out[project] = opol.resolve(project).channel
+        except Exception:
+            out[project] = opol.DEFAULTS["channel"]
+    return out
 
 
 @bp.route("/overrides/policy", methods=["GET"])
@@ -1946,6 +2096,10 @@ def mobile_overrides_policy_get():
     return jsonify({
         "path": str(resolved),
         "policy": policy.as_dict(),
+        # Also at the top level (v2.126.0): the desktop routes a request
+        # notification on it — desktop/both → toast, mobile → popover only —
+        # and should not have to know the policy dict's shape to do so.
+        "channel": policy.channel,
         "layers": list(opol.LAYER_KEYS),
         "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
         "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
@@ -2116,8 +2270,10 @@ def mobile_override_get(request_id):
     from services import override_grants as og
     from services import override_policy as opol
     policy = opol.resolve(str(row.get("project_path") or "."))
+    card = _override_row(row)
+    card["channel"] = policy.channel
     return jsonify({
-        "request": _override_row(row),
+        "request": card,
         # What approving would actually cost, so the card can say it BEFORE
         # the tap rather than reporting a clamp afterwards.
         "policy": {

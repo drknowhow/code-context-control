@@ -204,6 +204,41 @@ class TestWakeIsNotRemotelyWritable(_OverrideRouteBase):
         self.assertNotIn("c3-wake", json.dumps(body))
 
 
+class TestChannelIsExposed(_OverrideRouteBase):
+    """v2.126.0 (D0b): `override.channel` reaches the wire.
+
+    Validated and printed since P1, consumed by nobody until the desktop
+    client: desktop/both → toast, mobile → popover only. It rides on every
+    request row (per-project resolve, one per distinct project) and at the
+    top level of the policy route, so a client routing a notification does
+    not need the policy dict's shape.
+    """
+
+    def test_rows_and_policy_carry_the_project_channel(self):
+        self.write_policy(self.proj, channel="desktop")
+        self.write_policy(self.other, channel="both")
+        a = self.make_request(project=self.proj, name="a.env")
+        b = self.make_request(project=self.other, name="b.env")
+
+        listed = self.get("/api/mobile/overrides").get_json()["requests"]
+        by_id = {r["id"]: r for r in listed}
+        self.assertEqual(by_id[a["id"]]["channel"], "desktop")
+        self.assertEqual(by_id[b["id"]]["channel"], "both")
+
+        one = self.get(f"/api/mobile/overrides/{a['id']}").get_json()
+        self.assertEqual(one["request"]["channel"], "desktop")
+
+        policy = self.get(f"/api/mobile/overrides/policy?project={self.proj}").get_json()
+        self.assertEqual(policy["channel"], "desktop")
+        self.assertEqual(policy["policy"]["channel"], "desktop")
+
+    def test_unset_channel_is_the_mobile_default(self):
+        row = self.make_request()
+        listed = self.get(f"/api/mobile/overrides?project={self.proj}").get_json()
+        self.assertEqual(listed["requests"][0]["id"], row["id"])
+        self.assertEqual(listed["requests"][0]["channel"], "mobile")
+
+
 class TestWireContract(_OverrideRouteBase):
     """The cross-repo contract. See the comment inside the test."""
 
