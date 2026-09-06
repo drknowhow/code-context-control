@@ -271,7 +271,7 @@ _STALE_MCP_TOOLS = {
     "mcp__c3__c3_remember",           # → c3_memory(action='add')
     "mcp__c3__c3_recall",             # → c3_memory(action='recall')
     "mcp__c3__c3_sltm_add",           # → c3_memory(action='add')
-    "mcp__c3__c3_file_map",           # → c3_compress(mode='map')
+    "mcp__c3__c3_file_map",           # → c3_read(file_path) map
     "mcp__c3__c3_extract",            # → c3_read
     "mcp__c3__c3_transcript_search",  # → c3_search(action='transcript')
     "mcp__c3__c3_session_log",        # → c3_session(action='log')
@@ -3935,7 +3935,7 @@ def cmd_benchmark(args):
             "prompt_budget_multiplier": round(_prompt_gain(comp_comp, comp_orig), 2),
         },
         "file_navigation": {
-            "description": "Use c3_compress(mode='map') to choose targeted reads instead of opening whole files blindly.",
+            "description": "Use the c3_read file map to choose targeted reads instead of opening whole files blindly.",
             "performance_metric": "map success rate",
             "with_c3": {"tool": "c3_compress(mode='map')", "total_tokens": file_map_comp, "avg_latency_ms": round(_avg(file_map_c3_latencies), 2), "performance": round((file_map_successes / len(file_map_sample) * 100), 1) if file_map_sample else 0.0},
             "without_c3": {"approach": "read full files into context", "total_tokens": file_map_orig, "avg_latency_ms": round(_avg(file_map_baseline_latencies), 2), "performance": 100.0},
@@ -4969,7 +4969,7 @@ back to native tools as the task progresses.
 
 ## Quick Reference
 - **Search**: `c3_search(query=..., action='code|files|semantic')` — before Grep/Glob
-- **Read**: `c3_compress(mode='map')` then `c3_read(symbols=...)` — before native Read
+- **Read**: `c3_read(file_path)` maps a file (or directory), then `c3_read(symbols=['Class.method'])` — before native Read
 - **Impact**: `c3_impact(target='symbol')` — blast-radius check before editing shared symbols
 - **Edit**: `c3_edit(file_path=..., old_string=..., new_string=...)` — before Edit/Write
 - **Validate**: `c3_validate(file_path=...)` — after every edit (pyright/tsc type check if installed)

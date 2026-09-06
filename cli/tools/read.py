@@ -177,6 +177,22 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
 
     rel_path = str(full.resolve().relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
 
+    if full.is_dir():
+        # A directory maps to one line per file, budgeted
+        # (docs/file-map.md § Directories). `lines=<int>` sets the budget.
+        from services.dir_map import DEFAULT_MAX_TOKENS, render_directory_map
+        budget = DEFAULT_MAX_TOKENS
+        if isinstance(lines, int) and not isinstance(lines, bool) and lines > 0:
+            budget = lines
+        text, dir_detail = render_directory_map(svc, rel_path, max_tokens=budget)
+        tok = count_tokens(text)
+        if finalize is None:
+            return text
+        return finalize_with_tokens(
+            finalize, svc, "c3_read", {"file": file_path}, text,
+            f"dir:{dir_detail['files']}files->{tok}tok",
+            optimized_tokens=tok, response_tokens=tok, detail=dir_detail)
+
     # Resolve ranges
     ranges = []
 
