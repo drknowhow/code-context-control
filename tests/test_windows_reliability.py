@@ -15,7 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".c3",
               # Build artifacts: gitignored copies of sources we already scan.
-              "build", "dist", ".eggs"}
+              "build", "dist", ".eggs",
+              # Sibling worktrees (.claude/worktrees) hold their own copy of
+              # the tree; each is scanned by its own test run.
+              ".claude"}
 _SKIP_FRAGMENTS = (".tmp.",)
 
 # Sequence produced when UTF-8 text is written then re-read as cp1252 and

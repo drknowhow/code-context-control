@@ -1,0 +1,21 @@
+{
+  "name": "map-eval",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "pytest -q tests/test_map_eval.py",
+    "lint": "ruff check services/bench/map_eval.py"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.21",
+    "tiktoken": "^0.7"
+  },
+  "keywords": [
+    "map",
+    "eval",
+    "c3"
+  ],
+  "engines": {
+    "python": ">=3.10"
+  }
+}

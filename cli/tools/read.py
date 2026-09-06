@@ -8,6 +8,7 @@ from typing import Any
 
 from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens, maybe_related_facts
+from cli.tools.compress import map_detail
 from core import count_tokens
 from services import access_guard
 
@@ -301,15 +302,19 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
                 ranges.extend(main_ranges)
 
     if not ranges and symbols:
+        map_cached = not svc.file_memory.needs_update(rel_path)
         file_map = svc.file_memory.get_or_build_map(rel_path)
         resp = f"[read:{file_path}] symbols not found: {symbols}. Showing file map:\n{file_map}"
         map_tok = count_tokens(file_map)
         return finalize_with_tokens(
             finalize, svc, "c3_read", {"file": file_path, "symbols": symbols},
             resp, f"{full_file_tokens()}->{map_tok}tok",
-            raw_tokens=full_file_tokens(), optimized_tokens=map_tok)
+            raw_tokens=full_file_tokens(), optimized_tokens=map_tok,
+            detail=map_detail(svc, rel_path, "read", cache_hit=map_cached,
+                              symbols=len(symbols), fallback="symbols_not_found"))
 
     if not ranges:
+        map_cached = not svc.file_memory.needs_update(rel_path)
         file_map = svc.file_memory.get_or_build_map(rel_path)
         resp = (file_map
                 + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]"
@@ -319,7 +324,9 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
             finalize, svc, "c3_read", {"file": file_path},
             resp, f"{full_file_tokens()}->{map_tok}tok",
             raw_tokens=full_file_tokens(), optimized_tokens=map_tok,
-            response_tokens=map_tok)
+            response_tokens=map_tok,
+            detail=map_detail(svc, rel_path, "read", cache_hit=map_cached,
+                              fallback="map_only"))
     else:
         # Sort and merge overlapping ranges
         ranges.sort()
@@ -359,7 +366,16 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     resp = final_content + maybe_related_facts(svc, rel_path, top_k=3, context="read")
     tokens = count_tokens(resp)
     summary = f"{full_file_tokens()}->{tokens}tok" if tokens < full_file_tokens() else f"{tokens}tok"
+    # C0 measurement: what the read asked for and how much source it took.
+    read_detail = {
+        "backend": "source",
+        "symbols": len(symbols) if symbols else 0,
+        "by_lines": bool(lines),
+        "ranges": len(ranges),
+        "lines_served": sum(e - s_ + 1 for s_, e in ranges),
+        "file_lines": len(content_lines),
+    }
     return finalize_with_tokens(
         finalize, svc, "c3_read", {"file": file_path, "symbols": symbols}, resp, summary,
         raw_tokens=full_file_tokens(), optimized_tokens=tokens,
-        response_tokens=tokens)
+        response_tokens=tokens, detail=read_detail)

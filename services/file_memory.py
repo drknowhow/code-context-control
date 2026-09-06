@@ -119,7 +119,8 @@ class FileMemoryStore:
             # If it was a generic "full file" but now we have structural tools, force update
             was_generic = len(existing.get("sections", [])) <= 1 and existing.get("sections", [{}])[0].get("name") == "(full file)"
             # Also force re-extraction when the parser logic has been bumped
-            stale_parser = existing.get("parser_version") != PARSER_VERSION
+            stale_parser = (existing.get("parser_version") != PARSER_VERSION
+                            or "parser" not in existing)  # pre-2.120.0 record
             if not ((was_generic and ext in CODE_EXTENSIONS) or stale_parser):
                 # Only update AI summary if provided and different
                 if ai_summary and existing.get("summary") != ai_summary:
@@ -133,7 +134,7 @@ class FileMemoryStore:
                 return existing
             # If we are here, we are forcing a fresh extraction
 
-        sections = self._extract_sections(full_path, content)
+        sections, parser = self._extract_sections_with_parser(full_path, content)
 
         record = {
             "path": rel_path,
@@ -145,6 +146,10 @@ class FileMemoryStore:
             "language": LANG_MAP.get(ext, ext.lstrip('.')),
             "summary": ai_summary or (existing.get("summary") if existing else None),
             "parser_version": PARSER_VERSION,
+            # Which extractor produced `sections` (C0 measurement, 2.120.0):
+            # tree_sitter | regex | generic. Telemetry folds this so the map
+            # remediation can grade renderer changes per parser, not in bulk.
+            "parser": parser,
             "sections": sections,
         }
 
@@ -501,20 +506,35 @@ class FileMemoryStore:
         except Exception:
             pass
 
+    #: Parser attribution values stored on records and folded by telemetry.
+    PARSER_TREE_SITTER = "tree_sitter"
+    PARSER_REGEX = "regex"
+    PARSER_GENERIC = "generic"
+
     def _extract_sections(self, filepath: Path, content: str) -> list:
         """Extract structural sections with line ranges from source code."""
+        return self._extract_sections_with_parser(filepath, content)[0]
+
+    def _extract_sections_with_parser(self, filepath: Path, content: str) -> tuple:
+        """(sections, parser) — the sections plus WHICH extractor produced them.
+
+        tree_sitter when the AST walk handled the extension, regex when it
+        fell back to STRUCTURE_PATTERNS, generic when the file is a single
+        "(full file)" section. Kept separate from _extract_sections so the
+        older single-value call keeps working.
+        """
         ext = filepath.suffix.lower()
 
         # Try AST parser first
         ast_sections = extract_sections_ast(content, ext)
         if ast_sections is not None:
-            return ast_sections
+            return ast_sections, self.PARSER_TREE_SITTER
 
         lines = content.splitlines()
         patterns = STRUCTURE_PATTERNS.get(ext, {})
 
         if not patterns:
-            return self._extract_generic_sections(lines)
+            return self._extract_generic_sections(lines), self.PARSER_GENERIC
 
         sections = []
         i = 0
@@ -580,7 +600,7 @@ class FileMemoryStore:
             for child in s.get("children", []):
                 child.pop("_indent", None)
 
-        return sections
+        return sections, self.PARSER_REGEX
 
     def _extract_generic_sections(self, lines: list) -> list:
         """Fallback for unknown languages — just report line count."""

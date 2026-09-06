@@ -92,7 +92,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.119.0"
+__version__ = "2.120.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -1560,6 +1560,42 @@ def cmd_shell_eval(args):
         she.write_baseline(report, path, floors=floors, ceilings=ceilings)
         report.baseline_violations, report.baseline_warnings = she.compare_to_baseline(
             report, she.load_baseline(path))
+        print(f"baseline written: {path}")
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.render())
+    if report.baseline_violations:
+        sys.exit(1)
+
+
+def cmd_map_eval(args):
+    """Run the file-map gold suite and compare it to its baseline.
+
+    Renders the hand-annotated fixtures through the renderer the MCP tool
+    uses and grades symbol recall, signatures, ranges and determinism. Exit
+    status 1 when the baseline is violated (a must_pass case failed, an
+    aggregate fell under its floor or rose over its ceiling, a complete map
+    grew). See docs/map-eval.md.
+    """
+    from services.bench import map_eval as me
+
+    try:
+        report = me.run_suite(args.suite, baseline=args.baseline)
+    except FileNotFoundError as e:
+        raise RuntimeError(str(e))
+
+    if args.update_baseline:
+        path = args.baseline or me.BUNDLED_BASELINES.get(report.suite)
+        if not path:
+            raise RuntimeError(
+                f"suite {report.suite!r} has no bundled baseline; pass --baseline PATH")
+        floors = json.loads(args.floors) if args.floors else None
+        ceilings = json.loads(args.ceilings) if args.ceilings else None
+        me.write_baseline(report, path, floors=floors, ceilings=ceilings)
+        report.baseline_violations, report.baseline_warnings = me.compare_to_baseline(
+            report, me.load_baseline(path))
         print(f"baseline written: {path}")
 
     if args.json:
@@ -9261,6 +9297,7 @@ def main():
         "stats": cmd_stats,
         "search-eval": cmd_search_eval,
         "shell-eval": cmd_shell_eval,
+        "map-eval": cmd_map_eval,
         "benchmark": cmd_benchmark,
         "session-benchmark": cmd_session_benchmark,
         "benchmark-e2e": cmd_benchmark_e2e,

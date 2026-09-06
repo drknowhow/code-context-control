@@ -4,6 +4,49 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.120.0] - 2026-09-06
+
+### Added — every file map is measured (c3_compress remediation, C0)
+
+Measured on this repository's telemetry (3,932 tool calls, Jul–Sep 2026):
+`c3_compress` was called 132 times, 130 of them `mode='map'`, and its rows
+never said which backend built the map, which parser extracted the
+symbols, whether the record was already fresh, or whether the map led to
+a targeted read. This release adds the instrument before the renderer
+changes (2.121.0) so the change can be graded.
+
+- `file_memory` records carry `parser` (`tree_sitter | regex | generic`);
+  a pre-2.120.0 record without it is re-extracted on its next update.
+- `c3_compress` and `c3_read` rows carry a flat `detail`: requested mode,
+  backend (`file_memory`, `compressor`, `large_fast_path`, `batch`,
+  `source`), parser, `cache_hit`, section count, symbols requested, and
+  why a read served a map (`map_only`, `symbols_not_found`) or how much
+  source it served (`ranges`, `lines_served`, `file_lines`).
+- `aggregate_tool_telemetry` folds them into `map_by_backend` (calls,
+  tokens, cache hits, ratio p50/p95 per backend/parser) and
+  `map_read_chain` (maps followed by a read of the same file within five
+  calls, reads preceded by a map) — the before/after instrument for the
+  remediation. The chain works on `target` alone, so rows written since
+  2.111.0 count.
+- `c3 map-eval`: a hand-annotated gold harness for the file map
+  (`services/bench/map_eval.py`, `tests/map_eval/`), mirroring
+  `c3 shell-eval`: 16 fixtures across Python, TypeScript, JavaScript, Go,
+  Rust, Markdown, YAML, JSON, CSS, HTML, R (regex fallback), Java
+  (generic), a malformed file, a minified bundle and a 250 KB generated
+  file. Each case scores tokens, symbol recall/precision, signature
+  completeness, range accuracy and determinism against the annotation —
+  not against tree-sitter, which would be circular. Baseline committed in
+  `tests/map_eval/baseline_fixture.json` (docs/map-eval.md).
+
+### Measured on the baseline (what 2.121.0 fixes)
+
+Signature completeness 0.20, symbol recall 0.72, 14% of map characters are
+emoji and padding; multi-line Python signatures print with newlines; YAML
+files that start with a comment render no keys; HTML ids, CSS media
+queries, Go const blocks and receivers, Rust impl methods and nested-class
+methods are missing; a 20 KB minified line becomes 549 symbols and an
+11 MB record.
+
 ## [2.119.0] - 2026-09-05
 
 ### Added — native Codex integration: hooks, thread-bound handoffs, additive installs
