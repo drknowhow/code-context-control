@@ -55,7 +55,7 @@ class TestMcpServerSmoke(unittest.TestCase):
         # If no introspection path worked, at least confirm the module
         # imported `handle_*` for the documented tool surface.
         if not names:
-            for tool in ("handle_search", "handle_read", "handle_compress",
+            for tool in ("handle_search", "handle_read",
                          "handle_edit", "handle_validate", "handle_filter",
                          "handle_status", "handle_session", "handle_memory",
                          "handle_delegate", "handle_shell"):
@@ -63,11 +63,13 @@ class TestMcpServerSmoke(unittest.TestCase):
                                 f"missing tool handler import: {tool}")
             return
 
-        for expected in ("c3_search", "c3_read", "c3_compress", "c3_edit",
+        for expected in ("c3_search", "c3_read", "c3_edit",
                          "c3_validate", "c3_filter", "c3_status", "c3_shell"):
             # Names may be prefixed by FastMCP; substring match is sufficient.
             self.assertTrue(any(expected in n for n in names),
                             f"tool {expected!r} not registered (registered: {sorted(names)})")
+        # 2.124.0: the map is c3_read's; c3_compress is not an MCP tool any more.
+        self.assertFalse(any("c3_compress" in n for n in names), sorted(names))
 
 
 if __name__ == "__main__":

@@ -763,6 +763,14 @@ class FileMemoryStore:
 
         base_indent = len(lines[start]) - len(lines[start].lstrip())
 
+        def _last_code_line(upto: int) -> int:
+            # 1-indexed line number of the last non-blank line before `upto`
+            # (0-indexed exclusive): blank lines belong to nobody.
+            j = upto
+            while j > start + 1 and not lines[j - 1].strip():
+                j -= 1
+            return j
+
         for i in range(start + 1, len(lines)):
             line = lines[i]
             stripped = line.strip()
@@ -770,11 +778,11 @@ class FileMemoryStore:
                 continue
             current_indent = len(line) - len(line.lstrip())
             if current_indent <= base_indent:
-                return i  # 1-indexed
+                return _last_code_line(i)  # 1-indexed
             # Check for decorators at same level (next function)
             if current_indent == base_indent and stripped.startswith('@'):
-                return i
-        return len(lines)
+                return _last_code_line(i)
+        return _last_code_line(len(lines))
 
     def _find_brace_block_end(self, lines: list, start: int) -> int:
         """Find end of a brace-delimited block.

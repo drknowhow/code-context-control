@@ -388,7 +388,7 @@ def render_map(record: dict, *, include_docs: bool = False,
         dropped = len(body) - len(kept)
         text = "\n".join([header] + kept + [
             f"… {dropped} more symbols (map budget {max_tokens} tokens; "
-            f"pass symbols=[…] or lines=[a,b], or lines=<int> for a bigger budget)"])
+            f"pass symbols=[…] or lines=[a,b] for the part you need)"])
     return text
 
 

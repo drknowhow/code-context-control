@@ -47,7 +47,6 @@ C3_VERSION = _read_version()
 # Tool handlers
 from cli.tools._helpers import maybe_related_facts, validate_file_path
 from cli.tools.agent import handle_agent
-from cli.tools.compress import handle_compress
 from cli.tools.delegate import handle_delegate
 from cli.tools.edit import handle_edit
 from cli.tools.filter import handle_filter
@@ -85,7 +84,7 @@ def _build_instructions(ide_name: str) -> str:
     return (
         "C3 — local code intelligence. Route by goal:\n"
         "  FIND candidates → c3_search\n"
-        "  MAP a file → c3_read(file_path) with no symbols, then READ → c3_read(symbols=…); batch maps → c3_compress\n"
+        "  MAP a file/dir → c3_read(file_path) with no symbols (comma paths batch), then READ → c3_read(symbols=…)\n"
         "  EDIT code → c3_edit (always; it logs to the ledger automatically)\n"
         "  VALIDATE after every edit → c3_validate\n"
         "  BLAST RADIUS before shared-symbol edits → c3_impact\n"
@@ -598,22 +597,10 @@ async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
     return await asyncio.to_thread(handle_read, file_path, symbols, lines, include_docstrings, svc, finalize)
 
 
-@mcp.tool()
-async def c3_compress(file_path: str, mode: str = "map", ctx: Context = None) -> str:
-    """MAP a file — one line per symbol with full signature and [La-Lb] range, ~10% of the
-    file's tokens (read-only, plan-mode safe). Same map as c3_read(file_path) with no symbols;
-    use this form for a comma-separated batch (up to 10). mode: map (default); other modes
-    are legacy."""
-    path_err = validate_file_path(file_path)
-    if path_err:
-        return f"[c3_compress:error] {path_err}"
-    svc = _svc(ctx)
-
-    def finalize(name, args, resp, summ, **kw):
-        return _finalize_response(ctx, name, args, resp, summ, **kw)
-
-    return await asyncio.to_thread(handle_compress, file_path, mode, svc, finalize, maybe_related_facts)
-
+# c3_compress left the MCP surface in 2.124.0: c3_read(file_path) serves the
+# same map, c3_read('a.py,b.py') the same batch, c3_read('<dir>') a directory.
+# handle_compress stays importable for c3_project, the Oracle bridge and the
+# CLI (docs/file-map.md § Retired modes).
 
 @mcp.tool()
 async def c3_validate(file_path: str, ctx: Context = None) -> str:

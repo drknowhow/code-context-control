@@ -1,31 +1,31 @@
 {
   "suite": "fixture",
-  "generated_at": "2026-09-06T10:08:46",
-  "c3_version": "2.120.0",
+  "generated_at": "2026-09-06T10:21:28",
+  "c3_version": "2.121.0",
   "renderer": "services.file_map.render_map",
   "aggregates": {
     "n_cases": 16,
     "n_executed": 16,
     "n_errors": 0,
     "pass_rate_must_pass": 1.0,
-    "pass_rate_xfail": 0.0,
+    "pass_rate_xfail": null,
     "pass_rate_info": 0.0,
     "symbol_recall_mean": 0.9375,
     "symbol_recall_mean_must_pass": 1.0,
-    "symbol_precision_mean": 0.9285,
-    "signature_completeness_mean": 0.8182,
+    "symbol_precision_mean": 0.9944,
+    "signature_completeness_mean": 0.9091,
     "range_accuracy_mean": 1.0,
     "determinism_rate": 1.0,
     "chrome_share_mean": 0.0,
-    "ratio_mean": 0.5292,
-    "ratio_p50": 0.5403,
+    "ratio_mean": 0.4868,
+    "ratio_p50": 0.5121,
     "ratio_p95": 0.7939,
-    "tokens_p50": 112.0,
-    "tokens_p95": 5982.75,
-    "tokens_total": 15654,
+    "tokens_p50": 104.0,
+    "tokens_p95": 2447.25,
+    "tokens_total": 10822,
     "raw_tokens_total": 128248,
-    "render_ms_p50": 0.95,
-    "render_ms_p95": 30.85,
+    "render_ms_p50": 1.15,
+    "render_ms_p95": 19.375,
     "grammars": {
       "canonical": 16
     },
@@ -33,12 +33,7 @@
     "xfail_passing": [],
     "errors": []
   },
-  "by_phase": {
-    "C4": {
-      "n": 1,
-      "passing": 0
-    }
-  },
+  "by_phase": {},
   "floors": {
     "pass_rate_must_pass": 1.0,
     "symbol_recall_mean_must_pass": 1.0,
@@ -235,15 +230,15 @@
       "determinism": true
     },
     "js_minified": {
-      "status": "fail",
-      "gate": "xfail",
-      "phase": "C4",
+      "status": "pass",
+      "gate": "must_pass",
+      "phase": null,
       "grammar": "canonical",
-      "map_tokens": 4945,
-      "ratio": 0.6948,
+      "map_tokens": 113,
+      "ratio": 0.0159,
       "symbol_recall": 1.0,
-      "symbol_precision": 0.011,
-      "signature_completeness": 0.0,
+      "symbol_precision": 1.0,
+      "signature_completeness": 1.0,
       "range_accuracy": 1.0,
       "determinism": true
     },
