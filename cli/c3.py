@@ -5558,6 +5558,8 @@ def cmd_install_mcp(args):
         hook_posttool_cmd = f"{_dispatch_base} posttool"
         hook_stop_cmd     = f"{_dispatch_base} stop"
         hook_prompt_cmd   = f"{_dispatch_base} prompt"
+        hook_start_cmd    = f"{_dispatch_base} start"
+        hook_end_cmd      = f"{_dispatch_base} end"
 
         shell_matcher  = "Bash"
         read_matcher   = "Read"
@@ -5696,6 +5698,25 @@ def cmd_install_mcp(args):
         )
         settings.setdefault("hooks", {})[prompt_event] = existing_prompt
 
+        # ── SessionStart / SessionEnd hooks (v2.126.0: session_open /
+        # session_end activity rows + `session` notifications, the join key
+        # a desktop client needs). Same merge discipline: replace only C3's
+        # own dispatcher entries, keep user-added ones. SessionStart's
+        # matcher is the payload `source` (startup|resume|clear|compact);
+        # empty matches all — the hook itself ignores `compact`.
+        for _lifecycle_event, _lifecycle_cmd in (
+            ("SessionStart", hook_start_cmd),
+            ("SessionEnd", hook_end_cmd),
+        ):
+            _kept = [
+                h for h in settings.get("hooks", {}).get(_lifecycle_event, [])
+                if not _is_c3_prompt_hook(h)
+            ]
+            _kept.append(
+                {"matcher": "", "hooks": [{"type": "command", "command": _lifecycle_cmd}]}
+            )
+            settings.setdefault("hooks", {})[_lifecycle_event] = _kept
+
         # Claude Code only: enable MCP server prompt settings
         if profile.name == "claude-code":
             settings["enableAllProjectMcpServers"] = True
@@ -5742,6 +5763,7 @@ def cmd_install_mcp(args):
         print(f"  Hooks ({hook_event}): dispatcher (1 spawn/event) — filter/ghost/read-guard/ledger/unlock/signal via cli/hook_dispatch.py posttool")
         print(f"  Hooks ({pre_event}): dispatcher — {read_matcher}/{grep_matcher}/{glob_matcher}/{edit_matcher}/{write_matcher} (c3 enforcement)")
         print("  Hooks (Stop): dispatcher — session_stats + auto_snapshot + terse_advisor")
+        print("  Hooks (SessionStart/SessionEnd): dispatcher — session_open / session_end rows + session notifications")
         if profile.name == "claude-code":
             print("  Claude MCP prompt settings enabled for this project")
         if perm_tier and profile.name == "claude-code":

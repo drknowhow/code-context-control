@@ -154,6 +154,17 @@ class TestCodexRouting(unittest.TestCase):
         self.assertEqual(self._routes("pretool", "Edit", HOST_CODEX),
                          ["hook_access_guard", "hook_pretool_enforce"])
 
+    def test_codex_lifecycle_routes(self):
+        # v2.126.0 (D0b): the thread-bound handoff stays first (it may return
+        # SessionStart context); the host-agnostic session bookkeeping runs
+        # after it and returns nothing.
+        self.assertEqual(self._routes("start", "", HOST_CODEX),
+                         ["hook_codex_lifecycle", "hook_session_open"])
+        self.assertEqual(self._routes("end", "", HOST_CODEX),
+                         ["hook_codex_lifecycle", "hook_session_end"])
+        self.assertEqual(self._routes("compact", "", HOST_CODEX),
+                         ["hook_codex_lifecycle"])
+
 
 class TestCodexOutputShape(unittest.TestCase):
     def test_tool_result_never_reaches_codex(self):
