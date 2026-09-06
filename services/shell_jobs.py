@@ -1041,7 +1041,6 @@ def _finish(store: JobStore, job: JobState, status: str, *, exit_code=None, time
     if error:
         job.error = (job.error + "; " if job.error else "") + error
     store.save(job)
-    _notify_job(job)                                  # wakes a /feed?wait= client (D0b)
     payload = payload or {}
     raw_cmd = str(payload.get("cmd") or "")
     try:
@@ -1094,6 +1093,9 @@ def _finish(store: JobStore, job: JobState, status: str, *, exit_code=None, time
             _ct.record_use([r for r in job.creds if r not in tmpl], action=_ct.ACTION_INJECT, **common)
         except Exception:
             pass
+    # Last, so a reader woken by the notification finds the status, the
+    # activity row and the telemetry row already on disk (2.126.1).
+    _notify_job(job)
 
 
 def supervise(job_id: str, root=None) -> int:
