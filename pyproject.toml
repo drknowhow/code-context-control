@@ -163,6 +163,8 @@ extend-exclude = [
     "commercial",
     "tui/build.bat",
     "tui/build.sh",
+    # map-eval fixtures are parser input, one of them deliberately malformed.
+    "tests/map_eval/fixtures",
 ]
 
 [tool.ruff.lint]
