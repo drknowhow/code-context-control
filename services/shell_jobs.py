@@ -104,6 +104,7 @@ from services.shell_output import (
     _display,
     _iso,
     _mkdir_private,
+    _norm_project,
     _parse_iso,
     _restrict_file,
     _session_dir,
@@ -821,18 +822,11 @@ class JobStore:
         rows: list[dict] = []
         # A caller may hand us the registered spelling of the path OR its
         # resolved form (macOS `/var` -> `/private/var`, Windows 8.3 temp
-        # names). Jobs were filed under the id of whichever spelling the
-        # owning session used, so accept every id the path can take.
-        want_pids: set[str] = set()
-        if project_path:
-            want_pids.add(project_id(project_path))
-            try:
-                want_pids.add(project_id(os.path.realpath(os.fspath(project_path))))
-            except (OSError, ValueError):
-                pass
+        # names), while a job was filed under the id of whichever spelling
+        # the owning session used. Ids cannot be reconciled from the resolved
+        # side, so match on the canonical real path each record carries.
+        want_key = _canonical_project_key(project_path) if project_path else ""
         for directory in self._job_dirs():
-            if want_pids and directory.parent.parent.name not in want_pids:
-                continue
             try:
                 entries = os.listdir(directory)
             except OSError:
@@ -843,7 +837,7 @@ class JobStore:
                 job = _load_job(directory / entry)
                 if job is None:
                     continue
-                if want_pids and job.project_id not in want_pids:
+                if want_key and _canonical_project_key(job.project_path) != want_key:
                     continue
                 rows.append(job_row(job))
         rows.sort(key=lambda r: (r.get("created_at") or ""), reverse=True)
@@ -937,6 +931,16 @@ def job_row(job: JobState) -> dict:
     """The allowlisted view of ``job`` that may leave the machine."""
     return {k: getattr(job, k, None) for k in JOB_ROW_FIELDS}
 
+
+
+def _canonical_project_key(path) -> str:
+    """One spelling per directory: realpath (symlinks, 8.3 names) then the
+    store's own normalisation (slashes, trailing slash, casefold on Windows)."""
+    try:
+        real = os.path.realpath(os.path.abspath(os.fspath(path)))
+    except (OSError, ValueError):
+        real = os.path.abspath(os.fspath(path))
+    return _norm_project(real, windows=(os.name == "nt"))
 
 def _notify_job(job: JobState) -> None:
     """Terminal-state notification: ``kind="shell_job"``, ``ref_id=job.id``.
