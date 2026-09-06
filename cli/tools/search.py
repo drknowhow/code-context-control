@@ -13,6 +13,7 @@ from pathlib import Path
 from cli.tools._helpers import finalize_with_tokens, show_token_ratios
 from core import count_tokens
 from services import access_guard
+from services.file_map import render_map
 from services.indexer import DEFAULT_CODE_EXTS
 from services.lexical_index import Filters, doc_kind
 from services.scanner import SKIP_DIRS, iter_files
@@ -473,21 +474,15 @@ def _first_file_map(rel: str, svc) -> str:
         watcher_active = (hasattr(svc, "watcher") and svc.watcher._observer.is_alive())
         if not watcher_active and svc.file_memory.needs_update(rel):
             svc.file_memory.update(rel)
-        fmap = svc.file_memory.get_or_build_map(rel)
+        record = svc.file_memory.get(rel)
+        if not record:
+            return ""
+        # Same renderer as c3_read/c3_compress, shortened to the cap by
+        # dropping symbol lines from the end (docs/file-map.md).
+        fmap = render_map(record, max_tokens=_MAP_TOKEN_CAP)
         if not fmap:
             return ""
-        if count_tokens(fmap) <= _MAP_TOKEN_CAP:
-            return f"\n  {fmap.replace(chr(10), chr(10) + '  ')}"
-        # Truncate large maps: keep first N lines
-        truncated = []
-        tok = 0
-        for fl in fmap.split("\n"):
-            tok += count_tokens(fl)
-            if tok > _MAP_TOKEN_CAP:
-                break
-            truncated.append(fl)
-        truncated.append("  [map truncated]")
-        return f"\n  {chr(10).join(truncated).replace(chr(10), chr(10) + '  ')}"
+        return f"\n  {fmap.replace(chr(10), chr(10) + '  ')}"
     except Exception:
         return ""
 
@@ -720,11 +715,13 @@ def _append_prefetch(resp: str, query: str, top_k: int, svc) -> str:
         uncached.append(fp)
 
     def compress_one(fp):
+        # The canonical map from file_memory — the same text c3_read serves
+        # (compressor.compress_file never had a "map" mode; it rendered a
+        # structure-only summary under that name).
         try:
-            full = str(Path(svc.project_path) / fp)
-            result = svc.compressor.compress_file(full, "map")
-            if isinstance(result, dict) and result.get("compressed"):
-                return fp, result["compressed"]
+            fmap = svc.file_memory.get_or_build_map(fp.replace("\\", "/"))
+            if fmap and not fmap.startswith("[file_map]"):
+                return fp, fmap
         except Exception:
             pass
         return fp, None

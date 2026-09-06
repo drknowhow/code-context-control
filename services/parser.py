@@ -53,7 +53,7 @@ except ImportError:
 
 # Bump this any time extract_sections_ast / _walk_* logic changes so that
 # file_memory records extracted with an older version are force-refreshed.
-PARSER_VERSION = "3"  # 3: markdown headings span their section body
+PARSER_VERSION = "4"  # 4: records carry parser attribution, no summary, posix paths (2.121.0)
 
 def get_parser(ext: str) -> Optional['tree_sitter.Parser']:
     if not HAS_TREE_SITTER or ext not in LANGUAGES:
@@ -170,6 +170,17 @@ def _walk_python(node, lines: List[str], sections: List[Dict[str, Any]], parent_
                 "signature": signature
             }
             if is_async: section["async"] = True
+            # A decorated def is reached through its decorated_definition
+            # parent; record the decorator names so the map can mark
+            # @property (kind P) without re-reading the source.
+            if node.type == 'decorated_definition':
+                decos = []
+                for d in node.children:
+                    if d.type == 'decorator':
+                        text = lines[d.start_point[0]][d.start_point[1]:d.end_point[1]].lstrip('@')
+                        decos.append(text.split('(')[0].strip())
+                if decos:
+                    section["decorators"] = decos
 
             doc = _extract_docstring_python(child, lines)
             if doc: section["doc"] = doc

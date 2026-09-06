@@ -877,11 +877,10 @@ def _parallel_compress(files: list, svc, steps_log: list,
     maps = {}
 
     def compress_one(fp):
-        full_path = str(Path(svc.project_path) / fp)
         try:
-            res = svc.compressor.compress_file(full_path, "map")
-            if isinstance(res, dict) and res.get("compressed"):
-                return fp, res["compressed"]
+            fmap = svc.file_memory.get_or_build_map(fp.replace("\\", "/"))
+            if fmap and not fmap.startswith("[file_map]"):
+                return fp, fmap
         except Exception:
             pass
         return fp, None
@@ -936,11 +935,10 @@ def _parallel_validate_and_compress(files: list, svc, steps_log: list):
             return "validate", fp, "ERROR", str(e)
 
     def compress_one(fp):
-        full_path = str(Path(svc.project_path) / fp)
         try:
-            res = svc.compressor.compress_file(full_path, "map")
-            if isinstance(res, dict) and res.get("compressed"):
-                return "compress", fp, res["compressed"]
+            fmap = svc.file_memory.get_or_build_map(fp.replace("\\", "/"))
+            if fmap and not fmap.startswith("[file_map]"):
+                return "compress", fp, fmap
         except Exception:
             pass
         return "compress", fp, None

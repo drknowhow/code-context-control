@@ -85,7 +85,7 @@ def _build_instructions(ide_name: str) -> str:
     return (
         "C3 — local code intelligence. Route by goal:\n"
         "  FIND candidates → c3_search\n"
-        "  MAP file shape → c3_compress(mode='map') then READ content → c3_read(symbols=…)\n"
+        "  MAP a file → c3_read(file_path) with no symbols, then READ → c3_read(symbols=…); batch maps → c3_compress\n"
         "  EDIT code → c3_edit (always; it logs to the ledger automatically)\n"
         "  VALIDATE after every edit → c3_validate\n"
         "  BLAST RADIUS before shared-symbol edits → c3_impact\n"
@@ -583,8 +583,10 @@ async def c3_memory(action: str, query: str = "", fact: str = "",
 @mcp.tool()
 async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
             include_docstrings: bool = True, ctx: Context = None) -> str:
-    """READ exact content. Use after c3_compress when you need real source (read-only, plan-mode safe).
-    file_path: single or comma-separated. symbols: function/class names. lines: int, [start,end], or list of ranges."""
+    """READ source, or MAP a file when called with only file_path (read-only, plan-mode safe).
+    file_path: single or comma-separated. symbols: names as the map prints them (Class.method ok).
+    lines: int, [start,end], or list of ranges. No symbols/lines = one line per symbol with
+    signature and [La-Lb] range at ~10% of the file's tokens; then read the symbols you need."""
     path_err = validate_file_path(file_path)
     if path_err:
         return f"[c3_read:error] {path_err}"
@@ -597,10 +599,11 @@ async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
 
 
 @mcp.tool()
-async def c3_compress(file_path: str, mode: str = "smart", ctx: Context = None) -> str:
-    """MAP file shape — classes/functions/imports at 40-70% tokens (read-only, plan-mode safe).
-    Use before c3_read to know which symbols to fetch. Modes: map, dense_map, smart, diff, bug_scan, ast.
-    file_path: single or comma-separated."""
+async def c3_compress(file_path: str, mode: str = "map", ctx: Context = None) -> str:
+    """MAP a file — one line per symbol with full signature and [La-Lb] range, ~10% of the
+    file's tokens (read-only, plan-mode safe). Same map as c3_read(file_path) with no symbols;
+    use this form for a comma-separated batch (up to 10). mode: map (default); other modes
+    are legacy."""
     path_err = validate_file_path(file_path)
     if path_err:
         return f"[c3_compress:error] {path_err}"

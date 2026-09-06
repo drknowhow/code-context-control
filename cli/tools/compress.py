@@ -1,5 +1,7 @@
-"""c3_compress — Token-efficient file summaries (6 modes: map, dense_map, smart, diff, bug_scan, ast).
-Supports comma-separated paths for batch compression with parallel execution."""
+"""c3_compress — the canonical file map (services/file_map.render_map), one file or a batch.
+
+mode='map' (default) is the same text c3_read(file_path) serves. The other
+modes (dense_map, smart, diff, bug_scan, ast) are legacy and retire in 2.122.0."""
 
 import json
 import shutil
