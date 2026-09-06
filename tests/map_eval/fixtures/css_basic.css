@@ -1,0 +1,34 @@
+:root {
+  --bg: #fff;
+  --fg: #111;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.card {
+  padding: 1rem;
+  border-radius: 8px;
+}
+
+.card .title,
+.card h2 {
+  font-weight: 600;
+}
+
+#sidebar {
+  width: 240px;
+}
+
+@media (max-width: 600px) {
+  #sidebar {
+    display: none;
+  }
+}
+
+a:hover {
+  text-decoration: underline;
+}
