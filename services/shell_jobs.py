@@ -819,9 +819,19 @@ class JobStore:
         guard paths. ``project_path`` narrows to one project.
         """
         rows: list[dict] = []
-        want_pid = project_id(project_path) if project_path else ""
+        # A caller may hand us the registered spelling of the path OR its
+        # resolved form (macOS `/var` -> `/private/var`, Windows 8.3 temp
+        # names). Jobs were filed under the id of whichever spelling the
+        # owning session used, so accept every id the path can take.
+        want_pids: set[str] = set()
+        if project_path:
+            want_pids.add(project_id(project_path))
+            try:
+                want_pids.add(project_id(os.path.realpath(os.fspath(project_path))))
+            except (OSError, ValueError):
+                pass
         for directory in self._job_dirs():
-            if want_pid and directory.parent.parent.name != want_pid:
+            if want_pids and directory.parent.parent.name not in want_pids:
                 continue
             try:
                 entries = os.listdir(directory)
@@ -833,7 +843,7 @@ class JobStore:
                 job = _load_job(directory / entry)
                 if job is None:
                     continue
-                if want_pid and job.project_id != want_pid:
+                if want_pids and job.project_id not in want_pids:
                     continue
                 rows.append(job_row(job))
         rows.sort(key=lambda r: (r.get("created_at") or ""), reverse=True)
