@@ -32,8 +32,11 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from cli import hook_dispatch  # noqa: E402
-from cli import hook_session_end, hook_session_open  # noqa: E402
+from cli import (  # noqa: E402
+    hook_dispatch,
+    hook_session_end,
+    hook_session_open,
+)
 from cli._hook_utils import HOST_CLAUDE, HOST_CODEX, HOST_GEMINI  # noqa: E402
 from services.host_sessions import link_path, write_link  # noqa: E402
 

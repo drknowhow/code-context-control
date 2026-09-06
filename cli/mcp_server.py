@@ -131,6 +131,7 @@ def _host_session_id(svc) -> str:
     value = ""
     try:
         import json as _json
+
         from cli._hook_utils import ENFORCEMENT_STATE_FILE
         state_path = Path(svc.project_path) / ENFORCEMENT_STATE_FILE
         if state_path.is_file():
