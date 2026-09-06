@@ -55,6 +55,34 @@ except ImportError:
 # file_memory records extracted with an older version are force-refreshed.
 PARSER_VERSION = "4"  # 4: records carry parser attribution, no summary, posix paths (2.121.0)
 
+_WS_RUN = re.compile(r"\s+")
+
+
+def _node_text(node, lines: List[str]) -> str:
+    """The source text of a node, joined across lines, whitespace-normalized."""
+    if node is None:
+        return ""
+    r0, c0 = node.start_point
+    r1, c1 = node.end_point
+    if r0 == r1:
+        text = lines[r0][c0:c1]
+    else:
+        parts = [lines[r0][c0:]] + lines[r0 + 1:r1] + [lines[r1][:c1]]
+        text = " ".join(parts)
+    return _WS_RUN.sub(" ", text).strip()
+
+
+def _first_descendant(node, types):
+    """Depth-first search for the first descendant whose type is in `types`."""
+    for c in node.children:
+        if c.type in types:
+            return c
+        found = _first_descendant(c, types)
+        if found is not None:
+            return found
+    return None
+
+
 def get_parser(ext: str) -> Optional['tree_sitter.Parser']:
     if not HAS_TREE_SITTER or ext not in LANGUAGES:
         return None
@@ -83,7 +111,7 @@ def extract_sections_ast(content: str, ext: str) -> Optional[List[Dict[str, Any]
             _walk_html(tree.root_node, lines, sections)
         elif ext == '.md':
             _walk_markdown(tree.root_node, lines, sections)
-            _extend_markdown_headings(sections, len(lines))
+            _extend_markdown_headings(sections, len(content.splitlines()))
         elif ext == '.css':
             _walk_css(tree.root_node, lines, sections)
         elif ext == '.go':
@@ -431,6 +459,10 @@ def _walk_html(node, lines: List[str], sections: List[Dict[str, Any]]):
                                 attr_name = lines[attr_name_node.start_point[0]][attr_name_node.start_point[1]:attr_name_node.end_point[1]]
                                 if attr_name == 'id':
                                     val_node = next((c for c in subchild.children if c.type == 'attribute_value'), None)
+                                    if val_node is None:
+                                        quoted = next((c for c in subchild.children if c.type == 'quoted_attribute_value'), None)
+                                        if quoted is not None:
+                                            val_node = next((c for c in quoted.children if c.type == 'attribute_value'), None) or quoted
                                     if val_node:
                                         id_attr = lines[val_node.start_point[0]][val_node.start_point[1]:val_node.end_point[1]].strip('"\'')
                                         break
@@ -438,7 +470,8 @@ def _walk_html(node, lines: List[str], sections: List[Dict[str, Any]]):
                     if id_attr:
                         sections.append({
                             "type": "section",
-                            "name": f"#{id_attr} ({tag_name})",
+                            "name": f"#{id_attr}",
+                            "tag": tag_name,
                             "line_start": child.start_point[0] + 1,
                             "line_end": child.end_point[0] + 1,
                             "signature": lines[child.start_point[0]].strip()
@@ -507,18 +540,21 @@ def _walk_css(node, lines: List[str], sections: List[Dict[str, Any]]):
     for child in node.children:
         if child.type == 'rule_set':
             selector_node = next((c for c in child.children if c.type == 'selectors'), None)
-            selector = lines[selector_node.start_point[0]][selector_node.start_point[1]:selector_node.end_point[1]].strip() if selector_node else "Unknown"
+            selector = _node_text(selector_node, lines) if selector_node else "Unknown"
 
             sections.append({
                 "type": "section",
-                "name": selector[:60],
+                "name": selector[:80],
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
                 "signature": selector
             })
         elif child.type == 'media_statement':
-            query_node = next((c for c in child.children if c.type == 'media_query'), None)
-            query = lines[query_node.start_point[0]][query_node.start_point[1]:query_node.end_point[1]].strip() if query_node else "@media"
+            # The query is everything between `@media` and the block, whatever
+            # node types the grammar version uses for it.
+            parts = [c for c in child.children if c.type not in ('@media', 'block')]
+            query = " ".join(_node_text(c, lines) for c in parts).strip() or "@media"
+            query = _WS_RUN.sub(" ", query).replace("( ", "(").replace(" )", ")").replace(" :", ":")
 
             section = {
                 "type": "section",
@@ -548,21 +584,44 @@ def _walk_go(node, lines: List[str], sections: List[Dict[str, Any]]):
 
             signature = lines[child.start_point[0]].strip()
 
+            receiver = ""
+            if child.type == 'method_declaration':
+                recv_list = next((c for c in child.children if c.type == 'parameter_list'), None)
+                if recv_list is not None:
+                    tid = _first_descendant(recv_list, ('type_identifier',))
+                    if tid is not None:
+                        receiver = _node_text(tid, lines)
             sections.append({
                 "type": "function" if child.type == 'function_declaration' else "method",
                 "name": name,
+                **({"receiver": receiver} if receiver else {}),
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
                 "signature": signature
             })
+        elif child.type == 'const_declaration':
+            for spec in child.children:
+                if spec.type == 'const_spec':
+                    ident = next((c for c in spec.children if c.type == 'identifier'), None)
+                    if ident is not None:
+                        sections.append({
+                            "type": "constant",
+                            "name": _node_text(ident, lines),
+                            "line_start": spec.start_point[0] + 1,
+                            "line_end": spec.end_point[0] + 1,
+                            "signature": lines[spec.start_point[0]].strip()
+                        })
         elif child.type == 'type_declaration':
             # Drill into type specs
             for spec in child.children:
                 if spec.type == 'type_spec':
                     name_node = next((c for c in spec.children if c.type == 'type_identifier'), None)
                     name = lines[name_node.start_point[0]][name_node.start_point[1]:name_node.end_point[1]] if name_node else 'Unknown'
+                    kinds = {c.type for c in spec.children}
+                    stype = ("struct" if 'struct_type' in kinds
+                             else "interface" if 'interface_type' in kinds else "type")
                     sections.append({
-                        "type": "type",
+                        "type": stype,
                         "name": name,
                         "line_start": child.start_point[0] + 1,
                         "line_end": child.end_point[0] + 1,
@@ -573,23 +632,39 @@ def _walk_go(node, lines: List[str], sections: List[Dict[str, Any]]):
 def _walk_rust(node, lines: List[str], sections: List[Dict[str, Any]]):
     """Extract functions, structs, enums, and impls from Rust AST."""
     for child in node.children:
-        if child.type in ('function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item'):
+        if child.type in ('function_item', 'struct_item', 'enum_item', 'trait_item',
+                          'impl_item', 'const_item', 'static_item', 'type_item'):
             name_node = next((c for c in child.children if c.type in ('identifier', 'type_identifier')), None)
             name = lines[name_node.start_point[0]][name_node.start_point[1]:name_node.end_point[1]] if name_node else 'Unknown'
 
             if child.type == 'impl_item':
-                # For impl, the name is the type being implemented
-                type_node = next((c for c in child.children if c.type == 'type_identifier'), None)
-                if type_node:
-                    name = f"impl {lines[type_node.start_point[0]][type_node.start_point[1]:type_node.end_point[1]]}"
+                # `impl Trait for Type` names Type; `impl Type` names Type.
+                type_nodes = [c for c in child.children if c.type in ('type_identifier', 'generic_type', 'scoped_type_identifier')]
+                if type_nodes:
+                    name = _node_text(type_nodes[-1], lines)
 
-            stype = child.type.replace('_item', '')
+            stype = {'const': 'constant', 'static': 'constant', 'type': 'type'}.get(
+                child.type.replace('_item', ''), child.type.replace('_item', ''))
+            if stype == 'function' and node.type in ('declaration_list',) and \
+                    node.parent is not None and node.parent.type in ('impl_item', 'trait_item'):
+                stype = 'method'
+            sig_lines = lines[child.start_point[0]:child.end_point[0] + 1]
+            if stype in ('function', 'method'):
+                # up to the opening brace of the body, joined
+                sig = []
+                for ln in sig_lines:
+                    sig.append(ln)
+                    if '{' in ln or ln.rstrip().endswith(';'):
+                        break
+                signature = " ".join(x.strip() for x in sig)
+            else:
+                signature = lines[child.start_point[0]].strip()
             sections.append({
                 "type": stype,
                 "name": name,
                 "line_start": child.start_point[0] + 1,
                 "line_end": child.end_point[0] + 1,
-                "signature": lines[child.start_point[0]].strip()
+                "signature": signature
             })
         _walk_rust(child, lines, sections)
 
@@ -613,27 +688,39 @@ def _walk_json(node, lines: List[str], sections: List[Dict[str, Any]]):
         break
 
 def _walk_yaml(node, lines: List[str], sections: List[Dict[str, Any]]):
-    """Extract top-level keys from YAML AST."""
+    """Extract top-level keys from every YAML document in the stream.
+
+    A leading comment is a sibling of the first document, so stopping at
+    the first stream child rendered nothing for most CI configs (measured
+    2026-09-06 by the map-eval harness).
+    """
     for doc in node.children:
-        if doc.type == 'document':
-            block = next((c for c in doc.children if c.type == 'block_node'), None)
-            if block:
-                mapping = next((c for c in block.children if c.type == 'block_mapping'), None)
-                if mapping:
-                    for pair in mapping.children:
-                        if pair.type == 'block_mapping_pair':
-                            key_node = next((c for c in pair.children if c.type == 'flow_node' or c.type == 'block_node'), None)
-                            if key_node:
-                                key = lines[key_node.start_point[0]][key_node.start_point[1]:key_node.end_point[1]].strip()
-                                sections.append({
-                                    "type": "property",
-                                    "name": key,
-                                    "line_start": pair.start_point[0] + 1,
-                                    "line_end": pair.end_point[0] + 1,
-                                    "signature": key
-                                })
-        # Typically only top level for mapping
-        break
+        if doc.type != 'document':
+            continue
+        block = next((c for c in doc.children if c.type == 'block_node'), None)
+        if not block:
+            continue
+        mapping = next((c for c in block.children if c.type == 'block_mapping'), None)
+        if not mapping:
+            continue
+        for pair in mapping.children:
+            if pair.type == 'block_mapping_pair':
+                key_node = next((c for c in pair.children if c.type == 'flow_node' or c.type == 'block_node'), None)
+                if key_node:
+                    key = lines[key_node.start_point[0]][key_node.start_point[1]:key_node.end_point[1]].strip()
+                    end = pair.end_point[0] + 1
+                    # tree-sitter folds the blank lines before the next key
+                    # into this pair; a reader does not.
+                    while end > pair.start_point[0] + 1 and (
+                            not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+                        end -= 1
+                    sections.append({
+                        "type": "property",
+                        "name": key,
+                        "line_start": pair.start_point[0] + 1,
+                        "line_end": end,
+                        "signature": key
+                    })
 
 def check_syntax_ast(content: str, ext: str) -> List[Dict[str, Any]]:
     """

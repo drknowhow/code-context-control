@@ -59,6 +59,7 @@ _RS_FN = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|const\s+|unsafe\s+)*
 _JS_FUNC = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*\w*\s*(?:<[^>]*>)?\s*\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^{]+?))?\s*\{?$")
 _JS_ARROW = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:async\s+)?\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^=]+?))?\s*=>")
 _JS_ARROW1 = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?P<params>\w+)\s*=>")
+_JS_CLASS = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+\w+(?:<[^>]*>)?\s*(?:extends\s+(?P<base>[\w.<>, ]+?))?\s*(?:implements\s+(?P<impl>[\w.<>, ]+?))?\s*\{?$")
 _JS_METHOD = re.compile(r"^(?:(?:public|private|protected|static|readonly|async|get|set|override)\s+)*[\w$#]+\s*(?:<[^>]*>)?\s*\((?P<params>.*)\)\s*(?::\s*(?P<ret>[^{]+?))?\s*\{?$")
 
 
@@ -109,6 +110,12 @@ def parse_signature(signature: str, language: str) -> dict:
                 out["ret"] = _norm(m.group("ret"))
         return out
     if lang in ("javascript", "typescript"):
+        m = _JS_CLASS.match(sig)
+        if m:
+            bases = [b.strip() for b in (m.group("base") or "").split(",") if b.strip()]
+            if bases:
+                out["bases"] = ", ".join(bases)
+            return out
         for rx in (_JS_FUNC, _JS_ARROW, _JS_METHOD):
             m = rx.match(sig)
             if m:
@@ -127,10 +134,16 @@ def parse_signature(signature: str, language: str) -> dict:
     return out
 
 
+#: Languages whose `property` sections are top-level keys, not members.
+DATA_LANGUAGES = {"json", "yaml", "toml", "ini"}
+
+
 def _kind_for(section: dict, language: str) -> Optional[str]:
     stype = str(section.get("type") or "")
     if stype in SKIP_TYPES:
         return None
+    if stype == "property" and (language or "").lower() in DATA_LANGUAGES:
+        return "SEC"
     kind = KINDS.get(stype)
     if kind is None:
         return None
