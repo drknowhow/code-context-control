@@ -108,11 +108,18 @@ def _register_session(port: int, project_path: str, project_name: str):
         entries = _registry_read()
         # Remove our own port and any stale (dead) entries
         entries = [e for e in entries if e.get("port") != port and _port_alive(e.get("port", 0))]
+        # owner says who asked for this server: "session" when an IDE session
+        # start launched it (cli/hook_session_open), "user" for `c3 ui`, the
+        # hub's Open UI button and the TUI. Only session-owned servers are
+        # ever reaped automatically (ProjectManager.sweep_registry).
         entries.append({
             "port": port,
             "project_path": project_path,
             "project_name": project_name,
             "started_at": time.time(),
+            "pid": os.getpid(),
+            "owner": (os.environ.get("C3_UI_OWNER") or "user").strip().lower(),
+            "owner_session": (os.environ.get("C3_UI_OWNER_SESSION") or "").strip(),
         })
         _registry_write(entries)
 

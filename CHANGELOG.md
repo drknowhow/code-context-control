@@ -4,6 +4,109 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.128.0] - 2026-09-08
+
+### Fixed — starting an IDE session now brings up that project's UI
+
+Opening a session in a project left you with no UI "in some cases", and the
+cases were not random: **nothing in C3 connected a session starting to a UI
+server running.** `ProjectManager.launch_session` had five callers — two hub
+endpoints, the per-project server, the TUI, and a thread in `run_hub` that
+fired ONCE, two seconds after hub startup, over projects with
+`autostart_ui=true` (true on 0 of the 60 projects registered on the machine
+this was found on). So when a UI *was* there it was a detached `pythonw`
+server a previous session had left behind — survival, not startup. Reboot,
+`taskkill`, or the hub's Stop button, and the next session had nothing.
+
+- **`cli/hook_session_open.ensure_ui(project, host_session_id)`** — the
+  SessionStart hook now launches the project's UI when one is not already
+  running. Guards, in order: `C3_NO_UI_AUTOSTART` / `C3_BENCHMARK_MODE`,
+  `.c3/config.json → {"ui": {"autostart_on_session": false}}`, the project
+  being registered with the hub at all (a scratch clone or a test fixture
+  gets nothing), and a live registry port for this project — which is what
+  keeps `resume` and `clear`, both real SessionStart events, from stacking a
+  second server. `source: compact` returns before any of it. Failures go to
+  `.c3/hook_errors.log`; the hook still prints nothing, because SessionStart
+  stdout becomes model context.
+- **`cli/hub_server.run_hub`** — the one-shot autostart thread is now a 60 s
+  sweep (`_UI_SWEEP_INTERVAL_S`) that reaps orphans and chases autostart
+  projects with a live session, so a hub started *after* the IDE, or a UI that
+  died mid-session, is no longer a dead end. The first pass keeps the old
+  contract ("autostart launches the UI when the hub starts").
+- **Ownership** — `cli/server._register_session` records `pid`, `owner`
+  (`session` when a session launched it, else `user`, from `C3_UI_OWNER`) and
+  `owner_session`. `ProjectManager.sweep_registry` stops a **session**-owned
+  server once its project has no heartbeat left and its activity log has been
+  untouched for `ui_reap_minutes` (new `~/.c3/hub_config.json` key, default
+  30, `0` disables) — and returns `{"dropped", "reaped"}`. A server a human
+  started with `c3 ui` or Open UI is never touched. This is what stops the
+  orphan collection: the registry on the machine above held a UI server from
+  a session that had ended 24 hours earlier.
+
+### Fixed — session liveness is a fact now, not an inference
+
+`ProjectManager._get_live_session_info` read the newest `session_start` row
+and ended it only on a `session_save` — written solely when a human clicks end
+in the hub — or after 20 minutes of tool-call silence. Both halves were wrong
+in the ordinary case: a closed IDE read "live" for up to 20 minutes (the
+`session_end` row added in 2.126.0 was read by NOTHING), an open-but-quiet
+session read dead while its MCP process sat there serving, and two sessions on
+one project collapsed into one.
+
+- **`services/session_live.py`** (new) — one heartbeat file per session,
+  `.c3/live/<session_id>.json` = `{session_id, host_session_id, ide, pid, ts}`,
+  written through `services/atomic_json.write_json_atomic` (the Windows-safe
+  publish; a pid-only temp suffix races across threads). `beat()`, `clear()`,
+  `live_sessions(ttl=180)`, `is_live()`. Liveness is decided by the timestamp,
+  never by probing the pid: pids are reused across reboots and there is no
+  cheap portable "is this pid alive" (C3 has no psutil dependency).
+  `HEARTBEAT_INTERVAL_S = 60`, `HEARTBEAT_TTL_S = 180` — three missed beats.
+  A session id is sanitised before it becomes a filename.
+- **`cli/mcp_server.lifespan`** — beats once right after `session_start`, then
+  on a `c3-session-heartbeat` daemon thread; the `finally` block stops the
+  thread and removes the file *before* the slow teardown steps, so a reader
+  polling during shutdown already sees the session as gone.
+- **`ProjectManager`** — `_get_live_sessions(path)` returns EVERY live session,
+  newest first: heartbeats first (authoritative), then the old activity-log
+  inference for a session with no heartbeat (a pre-2.128 C3 in another
+  checkout, or a process killed without cleanup). The inference now treats a
+  `session_end` row as terminal as well, matching on `session_id` **or**
+  `host_session_id` (the hook writes `session_id: ""` when no link file
+  exists yet). `_get_live_session_info` is kept as "the newest one".
+  `list_projects` gains `sessions` and `session_count`; every singular field
+  (`session_active`, `live_session_id`, `started_at`, …) still describes the
+  newest session, so existing consumers are unaffected.
+- **Hub card** — `MCP×N` when a project has more than one live session (two
+  IDEs, or a repo and its worktrees).
+
+### Fixed — hooks added to the installer now reach installed projects
+
+The 2.126.0 `SessionStart` / `SessionEnd` hooks were registered by
+`c3 install-mcp` only, so no project installed before that release ever wrote
+a `session_open` or `session_end` row — 60 projects here, C3's own repo among
+them, which is why the end of a session had no signal to read.
+`cli/hub_server._migrate_project_hooks` already rewrote every registered
+project's settings at hub startup, but for exactly one hardcoded entry
+(`hook_c3read` on `PostToolUse`).
+
+- **`c3_hook_migrations()` + `migrate_hooks_for_project(path)`** — the
+  migration is now a table of `(settings file, event, "is C3's entry already
+  here", entry)` rows, with the lifecycle hooks added for Claude (Gemini has
+  no session-lifecycle event). Additive and idempotent: a user's own
+  `SessionStart` hook survives, a second run writes nothing, an unparseable
+  settings file is left alone, and a settings file that does not exist is
+  never created — the hub is not the place to decide a project should be
+  installed for an IDE. Future hooks cost one row.
+- **The migration's commands were unrunnable on Windows** — it quoted paths
+  with `shlex.quote`, which on Windows produces a SINGLE-quoted backslash
+  path. cmd.exe does not treat single quotes as quoting, so every entry it
+  wrote for a path containing a space (every path under `1. Projects`, say)
+  was dead on arrival — the `hook_c3read` entry it has been writing since
+  2.21 included. The installer learned this on 2026-07-26 and has used a
+  double-quoted forward-slash path ever since; that logic now lives in
+  `cli/_hook_utils.hook_command_arg` and both writers call it. A test pins
+  the migration's command string against the installer's, byte for byte.
+
 ## [2.127.0] - 2026-09-06
 
 ### Added — override cost data: "this rule is costing you" (C3 Desk, D3a)

@@ -59,6 +59,12 @@ class _Base(unittest.TestCase):
         (self.project / ".c3" / "config.json").write_text(
             json.dumps({"hybrid": {"ollama_base_url": "http://127.0.0.1:9"}}),
             encoding="utf-8")
+        # SessionStart also brings up the project UI (v2.128.0). These cases
+        # are about the rows and notifications, and none of them wants a real
+        # web server — TestEnsureUI covers that path with the launch patched.
+        env = mock.patch.dict(os.environ, {"C3_NO_UI_AUTOSTART": "1"})
+        env.start()
+        self.addCleanup(env.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -123,6 +129,125 @@ class TestSessionOpen(_Base):
             hook_session_open.run(self._payload(), self.project)
         self.assertEqual(len([r for r in self.activity() if r["type"] == "session_open"]), 1)
         self.assertEqual(self.notifications(), [])
+
+
+class TestEnsureUI(unittest.TestCase):
+    """v2.128.0: the session that just opened gets its project UI.
+
+    Nothing used to connect the two — the hub's autostart fired once at hub
+    startup for flagged projects (flagged on 0 of 60 registered projects on
+    the machine this was found on), so a UI was only ever present because an
+    earlier session had left one running.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmp.name) / "proj"
+        (self.project / ".c3").mkdir(parents=True)
+        self.addCleanup(self.tmp.cleanup)
+        for var in ("C3_NO_UI_AUTOSTART", "C3_BENCHMARK_MODE",
+                    "C3_UI_OWNER", "C3_UI_OWNER_SESSION"):
+            os.environ.pop(var, None)
+        env = mock.patch.dict(os.environ, {})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _config(self, data: dict):
+        (self.project / ".c3" / "config.json").write_text(
+            json.dumps(data), encoding="utf-8")
+
+    def _patched(self, *, registered=True, registry=None, port_alive=True,
+                 launched=True, error=""):
+        from services.project_manager import ProjectManager
+        projects = [{"path": str(self.project.resolve())}] if registered else []
+        result = {"launched": launched}
+        if not launched:
+            result["error"] = error
+        return (
+            mock.patch.object(ProjectManager, "_read_projects", return_value=projects),
+            mock.patch.object(ProjectManager, "_read_registry",
+                              return_value=registry if registry is not None else []),
+            mock.patch.object(ProjectManager, "_port_alive", return_value=port_alive),
+            mock.patch.object(ProjectManager, "launch_session", return_value=result),
+        )
+
+    def _run(self, **kwargs):
+        patches = self._patched(**kwargs)
+        started = [p.start() for p in patches]
+        try:
+            return hook_session_open.ensure_ui(self.project, HOST_SID), started[-1]
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_launches_when_nothing_is_running(self):
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once_with(str(self.project.resolve()))
+        self.assertEqual(os.environ.get("C3_UI_OWNER"), "session")
+        self.assertEqual(os.environ.get("C3_UI_OWNER_SESSION"), HOST_SID)
+
+    def test_live_ui_for_this_project_is_left_alone(self):
+        registry = [{"port": 4321, "project_path": str(self.project.resolve())}]
+        verdict, launch = self._run(registry=registry)
+        self.assertEqual(verdict, "already-running")
+        launch.assert_not_called()
+
+    def test_dead_port_does_not_count_as_running(self):
+        registry = [{"port": 4321, "project_path": str(self.project.resolve())}]
+        verdict, launch = self._run(registry=registry, port_alive=False)
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+
+    def test_another_projects_ui_does_not_count(self):
+        registry = [{"port": 4321, "project_path": str(Path(self.tmp.name) / "other")}]
+        verdict, launch = self._run(registry=registry)
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+
+    def test_unregistered_project_gets_nothing(self):
+        verdict, launch = self._run(registered=False)
+        self.assertEqual(verdict, "unregistered")
+        launch.assert_not_called()
+
+    def test_config_opt_out(self):
+        self._config({"ui": {"autostart_on_session": False}})
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "disabled")
+        launch.assert_not_called()
+
+    def test_config_opt_in_is_the_default(self):
+        self._config({"ui": {}})
+        verdict, _ = self._run()
+        self.assertEqual(verdict, "launched")
+
+    def test_env_opt_outs(self):
+        for var in ("C3_NO_UI_AUTOSTART", "C3_BENCHMARK_MODE"):
+            with mock.patch.dict(os.environ, {var: "1"}):
+                verdict, launch = self._run()
+            self.assertEqual(verdict, "disabled", var)
+            launch.assert_not_called()
+
+    def test_launch_failure_is_reported_not_raised(self):
+        verdict, _ = self._run(launched=False, error="boom")
+        self.assertTrue(verdict.startswith("failed"), verdict)
+        self.assertIn("boom", verdict)
+
+    def test_session_open_calls_ensure_ui_with_the_host_id(self):
+        with mock.patch.object(hook_session_open, "ensure_ui",
+                              return_value="launched") as ensure:
+            hook_session_open.run(
+                {"session_id": HOST_SID, "cwd": str(self.project),
+                 "hook_event_name": "SessionStart", "source": "startup"},
+                self.project)
+        ensure.assert_called_once_with(self.project, HOST_SID)
+
+    def test_compact_never_touches_the_ui(self):
+        with mock.patch.object(hook_session_open, "ensure_ui") as ensure:
+            hook_session_open.run(
+                {"session_id": HOST_SID, "cwd": str(self.project),
+                 "source": "compact"}, self.project)
+        ensure.assert_not_called()
 
 
 class TestSessionEnd(_Base):

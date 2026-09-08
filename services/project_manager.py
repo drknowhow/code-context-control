@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -18,6 +19,10 @@ _PROJECTS_FILE = _GLOBAL_C3_DIR / "projects.json"
 _REGISTRY_FILE = _GLOBAL_C3_DIR / "registry.json"
 _SESSION_ACTIVITY_GRACE_SECONDS = 20 * 60
 _REGISTRY_STARTUP_GRACE = 30  # seconds: keep registry entry while server is still starting
+# Minutes of project-wide silence, with no session heartbeat left, before a
+# UI server that a session launched is stopped. Overridable per machine via
+# ~/.c3/hub_config.json -> ui_reap_minutes (0 = never reap).
+_DEFAULT_UI_REAP_MINUTES = 30
 
 
 def _pythonw() -> str:
@@ -139,18 +144,140 @@ class ProjectManager:
                 pass
         return None
 
-    def _get_live_session_info(self, path: str) -> dict | None:
-        """Return live session info inferred from the project's activity log."""
+    def _ended_session_ids(self, activity, limit: int = 8) -> set:
+        """Ids (C3 and host) of sessions with a terminal row in the log.
+
+        ``session_save`` is the hub's "end session" button. ``session_end`` is
+        what the SessionEnd hook writes when the IDE actually closes (v2.126.0)
+        and was read by nothing until now — which is why a closed IDE kept
+        reading "live" until the 20-minute idle grace expired.
+        """
+        ended = set()
+        for event_type in ("session_save", "session_end"):
+            try:
+                rows = activity.get_recent(limit=limit, event_type=event_type) or []
+            except Exception:
+                rows = []
+            for row in rows:
+                for key in ("session_id", "host_session_id"):
+                    value = str(row.get(key) or "").strip()
+                    if value:
+                        ended.add(value)
+        return ended
+
+    def _last_activity_since(self, activity, started: str) -> str:
+        try:
+            recent = activity.get_recent(limit=1, since=started)
+        except Exception:
+            recent = []
+        return (recent[0].get("timestamp") if recent else started) or started
+
+    def _session_timing(self, started: str, last_activity: str) -> dict | None:
+        started_dt = self._parse_timestamp(started)
+        last_activity_dt = self._parse_timestamp(last_activity)
+        if not started_dt or not last_activity_dt:
+            return None
+        now = datetime.now(timezone.utc)
+        return {
+            "duration_seconds": max(0, int((now - started_dt).total_seconds())),
+            "idle_seconds": max(0, int((now - last_activity_dt).total_seconds())),
+        }
+
+    def _get_live_sessions(self, path: str) -> list:
+        """Every session live for this project right now, newest start first.
+
+        Two sources, in order of trust:
+
+        1. heartbeat files under ``.c3/live`` — the MCP process saying it is
+           alive. Authoritative, and unlike activity rows it does not call a
+           quiet-but-open session dead.
+        2. the activity log, for a session with no heartbeat: a pre-2.128 C3
+           serving another checkout, or a process that died without cleanup.
+        """
         try:
             activity = ActivityLog(path)
+        except Exception:
+            return []
+        try:
+            from services import session_live
+            beats = session_live.live_sessions(path)
+        except Exception:
+            beats = []
+
+        sessions = []
+        seen = set()
+        # Typed get_recent scans 100x its limit, so these few rows reach well
+        # back past the tool_call traffic between them.
+        starts = []
+        if beats:
+            try:
+                starts = activity.get_recent(limit=8, event_type="session_start") or []
+            except Exception:
+                starts = []
+        for beat in beats:
+            session_id = str(beat.get("session_id") or "")
+            host_sid = str(beat.get("host_session_id") or "")
+            if not session_id or session_id in seen:
+                continue
+            row = next(
+                (
+                    r for r in starts
+                    if str(r.get("session_id") or "") == session_id
+                    or (host_sid and str(r.get("host_session_id") or "") == host_sid)
+                ),
+                {},
+            )
+            started = row.get("timestamp") or self._epoch_to_iso(beat.get("ts"))
+            if not started:
+                continue
+            last_activity = self._last_activity_since(activity, started)
+            timing = self._session_timing(started, last_activity)
+            if timing is None:
+                continue
+            seen.add(session_id)
+            if host_sid:
+                seen.add(host_sid)
+            sessions.append({
+                "session_id": session_id,
+                "host_session_id": host_sid,
+                "started_at": started,
+                "last_activity": last_activity,
+                "description": row.get("description", ""),
+                "source": "heartbeat",
+                "ide": str(beat.get("ide") or ""),
+                "pid": beat.get("pid"),
+                **timing,
+            })
+
+        inferred = self._infer_live_session(path, activity)
+        if inferred and inferred["session_id"] not in seen:
+            sessions.append(inferred)
+        sessions.sort(key=lambda s: str(s.get("started_at") or ""), reverse=True)
+        return sessions
+
+    def _epoch_to_iso(self, value) -> str | None:
+        epoch = _coerce_epoch(value)
+        if epoch is None:
+            return None
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+    def _infer_live_session(self, path: str, activity=None) -> dict | None:
+        """Liveness guessed from activity rows — the pre-heartbeat path.
+
+        Kept as a fallback, so a project served by an older C3 (or one whose
+        MCP process was killed) still reports something. Its weakness is the
+        reason the heartbeat exists: a session is "live" only while tool calls
+        keep arriving, and stays live for the whole grace period after the
+        last one.
+        """
+        try:
+            activity = activity if activity is not None else ActivityLog(path)
 
             # Use the public API — get_recent's scan_factor=100 for typed queries
             # handles sparse rare events (session_start can sit far behind many
             # tool_call entries). Going through the API also lets tests stub it.
             starts = activity.get_recent(limit=1, event_type="session_start")
-            saves = activity.get_recent(limit=1, event_type="session_save")
             last_start = starts[0] if starts else None
-            last_save = saves[0] if saves else None
 
             if last_start is None:
                 return None
@@ -159,31 +286,35 @@ class ProjectManager:
             if not session_id or not started:
                 return None
 
-            # If the most recent save belongs to this session, it has ended.
-            if last_save and last_save.get("session_id") == session_id:
+            # Ended if either id carries a terminal row (hub save, or the
+            # SessionEnd hook's session_end).
+            ended = self._ended_session_ids(activity)
+            host_sid = str(last_start.get("host_session_id") or "").strip()
+            if session_id in ended or (host_sid and host_sid in ended):
                 return None
 
-            recent = activity.get_recent(limit=1, since=started)
-            last_activity = recent[0].get("timestamp") if recent else started
-            started_dt = self._parse_timestamp(started)
-            last_activity_dt = self._parse_timestamp(last_activity)
-            if not started_dt or not last_activity_dt:
+            last_activity = self._last_activity_since(activity, started)
+            timing = self._session_timing(started, last_activity)
+            if timing is None:
                 return None
-            now = datetime.now(timezone.utc)
-            idle_seconds = max(0, int((now - last_activity_dt).total_seconds()))
-            if idle_seconds > _SESSION_ACTIVITY_GRACE_SECONDS:
+            if timing["idle_seconds"] > _SESSION_ACTIVITY_GRACE_SECONDS:
                 return None
-            duration_seconds = max(0, int((now - started_dt).total_seconds()))
             return {
                 "session_id": session_id,
+                "host_session_id": host_sid,
                 "started_at": started,
                 "last_activity": last_activity,
                 "description": last_start.get("description", ""),
-                "duration_seconds": duration_seconds,
-                "idle_seconds": idle_seconds,
+                "source": "activity_log",
+                **timing,
             }
         except Exception:
             return None
+
+    def _get_live_session_info(self, path: str) -> dict | None:
+        """The newest live session, or None. Kept for callers that want one."""
+        sessions = self._get_live_sessions(path)
+        return sessions[0] if sessions else None
 
     def _get_last_session_timestamp(
         self, path: str, stored_value: str | None = None, live_session: dict | None = None
@@ -287,18 +418,106 @@ class ProjectManager:
             return True
         return False
 
-    def sweep_registry(self):
-        """Remove stale registry entries (dead ports). Call on hub startup."""
+    def _reap_minutes(self) -> int:
+        """Idle grace before a session-owned UI server is stopped.
+
+        ``~/.c3/hub_config.json -> ui_reap_minutes``; 0 disables reaping.
+        """
+        value = _DEFAULT_UI_REAP_MINUTES
+        try:
+            with open(_GLOBAL_C3_DIR / "hub_config.json", encoding="utf-8") as f:
+                value = json.load(f).get("ui_reap_minutes", _DEFAULT_UI_REAP_MINUTES)
+        except Exception:
+            pass
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return _DEFAULT_UI_REAP_MINUTES
+
+    def _is_orphan_session_ui(self, entry: dict, now: float, reap_minutes: int) -> bool:
+        """True for a UI server whose launching session is gone for good.
+
+        Only ``owner == "session"`` entries qualify: a server a human started
+        with ``c3 ui`` or the hub's Open UI button is never reaped. The session
+        is judged gone when no heartbeat is left in the project AND the
+        activity log has not been touched for the whole grace period — the log
+        file's mtime is the cheapest honest answer to "when did work stop".
+        """
+        if str(entry.get("owner") or "user").strip().lower() != "session":
+            return False
+        project = str(entry.get("project_path") or "")
+        if not project or not Path(project).is_dir():
+            # An unreachable path (offline drive, unmounted share) makes both
+            # signals below read "nothing happening here". Fail closed.
+            return False
+        try:
+            from services import session_live
+            if session_live.live_sessions(project, prune=False):
+                return False  # a session is live here; it needs its UI
+        except Exception:
+            return False  # can't tell → leave it alone
+        cutoff = reap_minutes * 60
+        last_seen = None
+        try:
+            log_file = Path(project) / ".c3" / "activity_log.jsonl"
+            if log_file.exists():
+                last_seen = log_file.stat().st_mtime
+        except OSError:
+            last_seen = None
+        if last_seen is None:
+            last_seen = _coerce_epoch(entry.get("started_at"))
+        if last_seen is None:
+            return False
+        return (now - last_seen) > cutoff
+
+    def _stop_entry(self, entry: dict) -> bool:
+        """Stop one registered UI server — by pid when the entry has one."""
+        pid = entry.get("pid")
+        if pid:
+            try:
+                kwargs = {}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                    subprocess.run(f"taskkill /PID {int(pid)} /F", shell=True,
+                                   capture_output=True, **kwargs)
+                else:
+                    os.kill(int(pid), signal.SIGTERM)
+                return True
+            except Exception:
+                pass
+        port = entry.get("port")
+        return self.stop_session(port) if port else False
+
+    def sweep_registry(self) -> dict:
+        """Drop dead registry entries and reap orphaned session-owned servers.
+
+        Called on hub startup and from the hub's periodic sweep. Returns
+        ``{"dropped": n, "reaped": [ports]}``.
+        """
         registry = self._read_registry()
         if not registry:
-            return
-        valid = [e for e in registry if e.get("port") and self._port_alive(e["port"])]
+            return {"dropped": 0, "reaped": []}
+        reap_minutes = self._reap_minutes()
+        now = time.time()
+        reaped: list = []
+        valid: list = []
+        for entry in registry:
+            port = entry.get("port")
+            if not (port and self._port_alive(port)):
+                continue
+            if reap_minutes and self._is_orphan_session_ui(entry, now, reap_minutes):
+                if self._stop_entry(entry):
+                    reaped.append(port)
+                    continue
+            valid.append(entry)
         if len(valid) != len(registry):
             try:
                 with open(_REGISTRY_FILE, "w", encoding="utf-8") as f:
                     json.dump(valid, f, indent=2)
             except Exception:
                 pass
+        return {"dropped": len(registry) - len(valid) - len(reaped),
+                "reaped": reaped}
 
     def list_projects(self) -> list:
         projects = self._read_projects()
@@ -340,9 +559,14 @@ class ProjectManager:
             path_accessible = Path(p["path"]).is_dir()
             enriched["accessible"] = path_accessible
             ui_active = ui_active_by_path.get(p["path"])
-            live_session = self._get_live_session_info(p["path"]) if path_accessible else None
+            live_sessions = self._get_live_sessions(p["path"]) if path_accessible else []
+            live_session = live_sessions[0] if live_sessions else None
             enriched["ui_active"] = ui_active is not None
             enriched["session_active"] = live_session is not None
+            # Newest session keeps the singular fields every existing consumer
+            # reads; the list is there for two IDEs / a repo and its worktrees.
+            enriched["sessions"] = live_sessions
+            enriched["session_count"] = len(live_sessions)
             # A project is active if either the web UI is live or the activity log shows a
             # currently running C3 session. The hub card should not fall back to "idle"
             # just because the session has no live UI port.
