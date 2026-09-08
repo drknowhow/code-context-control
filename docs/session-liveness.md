@@ -52,7 +52,13 @@ cleanup). Its two failure modes are the reason the heartbeat exists:
 - **a quiet session read dead** — no tool call for 20 minutes meant "gone",
   even with the MCP process right there. A fresh heartbeat now outranks any
   amount of silence, and it also outranks a `session_save`: the process is
-  still serving, and a bookkeeping row does not kill it.
+  still serving, and a bookkeeping row does not kill it;
+- **a busy session read dead too**, for the opposite reason — the lookup used
+  `get_recent(limit=1, event_type=...)`, which scans only the last 100 lines
+  of the log. In this repo the running session's `session_start` sat 319 lines
+  from the end of a 20,825-line log, so nothing was found at all. Rare-event
+  lookups go through `ActivityLog.find_last` since 2.128.1, which scans
+  backwards until it finds the row (and is faster than the call it replaced).
 
 ## The UI follows the session
 

@@ -144,6 +144,29 @@ class ProjectManager:
                 pass
         return None
 
+    def _rare_rows(self, activity, event_type: str, limit: int = 1) -> list:
+        """Newest rows of a RARE type, whatever the traffic in front of them.
+
+        ``get_recent`` scans only the last ``limit * 100`` lines, so on a busy
+        project a session's own ``session_start`` falls out of the window
+        within minutes — 319 lines from the end of a 20,825-line log in C3's
+        own repo — and every liveness lookup here saw nothing.
+        ``ActivityLog.find_last`` scans backwards until it finds the row.
+
+        The ``get_recent`` fallback keeps test stubs and older ActivityLog
+        copies (another checkout serving the same project) working.
+        """
+        finder = getattr(activity, "find_last", None)
+        if callable(finder):
+            try:
+                return finder(event_type, limit=limit) or []
+            except Exception:
+                pass
+        try:
+            return activity.get_recent(limit=limit, event_type=event_type) or []
+        except Exception:
+            return []
+
     def _ended_session_ids(self, activity, limit: int = 8) -> set:
         """Ids (C3 and host) of sessions with a terminal row in the log.
 
@@ -154,11 +177,7 @@ class ProjectManager:
         """
         ended = set()
         for event_type in ("session_save", "session_end"):
-            try:
-                rows = activity.get_recent(limit=limit, event_type=event_type) or []
-            except Exception:
-                rows = []
-            for row in rows:
+            for row in self._rare_rows(activity, event_type, limit):
                 for key in ("session_id", "host_session_id"):
                     value = str(row.get(key) or "").strip()
                     if value:
@@ -206,14 +225,9 @@ class ProjectManager:
 
         sessions = []
         seen = set()
-        # Typed get_recent scans 100x its limit, so these few rows reach well
-        # back past the tool_call traffic between them.
-        starts = []
-        if beats:
-            try:
-                starts = activity.get_recent(limit=8, event_type="session_start") or []
-            except Exception:
-                starts = []
+        # Only to decorate the heartbeats with what the log knows (start time,
+        # description). A heartbeat with no matching row is still a session.
+        starts = self._rare_rows(activity, "session_start", 8) if beats else []
         for beat in beats:
             session_id = str(beat.get("session_id") or "")
             host_sid = str(beat.get("host_session_id") or "")
@@ -276,7 +290,7 @@ class ProjectManager:
             # Use the public API — get_recent's scan_factor=100 for typed queries
             # handles sparse rare events (session_start can sit far behind many
             # tool_call entries). Going through the API also lets tests stub it.
-            starts = activity.get_recent(limit=1, event_type="session_start")
+            starts = self._rare_rows(activity, "session_start", 1)
             last_start = starts[0] if starts else None
 
             if last_start is None:
@@ -336,8 +350,8 @@ class ProjectManager:
             remember(live_session.get("started_at"))
         try:
             activity = ActivityLog(path)
-            remember((activity.get_recent(limit=1, event_type="session_save") or [{}])[0].get("timestamp"))
-            remember((activity.get_recent(limit=1, event_type="session_start") or [{}])[0].get("timestamp"))
+            for event_type in ("session_save", "session_end", "session_start"):
+                remember((self._rare_rows(activity, event_type, 1) or [{}])[0].get("timestamp"))
         except Exception:
             pass
         return latest_raw
