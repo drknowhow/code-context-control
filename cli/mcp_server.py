@@ -321,6 +321,33 @@ async def lifespan(server):
             **({"host_session_id": _host_sid} if _host_sid else {}),
         })
 
+    # Liveness heartbeat: THIS process is the session, so say so in a file a
+    # reader can trust. Without it the hub has to infer liveness from tool
+    # activity, which calls a quiet-but-open session dead after 20 min and a
+    # closed one live for 20 min. Refreshed on a 60 s daemon thread (same
+    # shape as _bg_convo_sync) and removed in the finally block below.
+    _heartbeat_stop = threading.Event()
+    _live_session_id = str((services.session_mgr.current_session or {}).get("id") or "")
+    if _live_session_id:
+        from services import session_live
+
+        def _do_beat():
+            session_live.beat(services.project_path, _live_session_id,
+                              host_session_id=_host_session_id(services) or "",
+                              ide=_IDE_NAME)
+
+        _do_beat()
+
+        def _bg_heartbeat():
+            while not _heartbeat_stop.wait(timeout=session_live.HEARTBEAT_INTERVAL_S):
+                try:
+                    _do_beat()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg_heartbeat, daemon=True,
+                         name="c3-session-heartbeat").start()
+
     # Auto-restore latest snapshot if recent (< 30 min).
     # Deferred to background thread so first tool call isn't blocked.
     # Skipped in benchmark mode to prevent snapshot budget from carrying over between tasks.
@@ -391,6 +418,15 @@ async def lifespan(server):
         yield services
     finally:
         _convo_sync_stop.set()
+        # Stop claiming to be alive before anything slow runs: a reader that
+        # polls during teardown should already see this session as gone.
+        _heartbeat_stop.set()
+        if _live_session_id:
+            try:
+                from services import session_live as _sl
+                _sl.clear(services.project_path, _live_session_id)
+            except Exception:
+                pass
         # Auto-memory: extract remaining learnings and generate session summary.
         if hasattr(services, "auto_memory"):
             try:

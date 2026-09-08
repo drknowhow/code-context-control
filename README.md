@@ -102,6 +102,8 @@ c3 ui                             # binds the first free port from 3333
 
 Twelve tabs. The dashboard above shows token savings, indexed files, the live session, and a stream of recent tool calls and file changes.
 
+Since v2.128.0 you rarely start it by hand: opening an IDE session in a registered project brings its UI up, and a session proves it is alive with a heartbeat rather than with tool-call traffic — so a quiet session stays live and a closed one disappears at once. Servers a session started are reaped once the session is gone; the ones you started are not. → [Session liveness](https://github.com/drknowhow/code-context-control/blob/main/docs/session-liveness.md)
+
 | Tab | What it's for |
 |---|---|
 | **Dashboard** | Token savings, codebase breakdown, live session counters, recent activity |

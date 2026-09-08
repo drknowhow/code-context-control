@@ -29,6 +29,7 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from cli._hook_utils import hook_command_arg
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
 from services import access_guard
 from services.activity_log import ActivityLog
@@ -71,7 +72,13 @@ _HUB_CONFIG_DEFAULTS = {
     "projects_view": "list",
     "main_view": "projects",
     "oracle_url": "",
+    # Minutes of project silence, with no session heartbeat left, before a UI
+    # server that an IDE session launched is stopped. 0 = never reap.
+    "ui_reap_minutes": 30,
 }
+
+# How often the hub reaps orphaned UI servers and chases autostart projects.
+_UI_SWEEP_INTERVAL_S = 60
 
 
 def _read_hub_config() -> dict:
@@ -4373,64 +4380,137 @@ def method_not_allowed(e):
 
 # ─── Hook migration ──────────────────────────────────────────────────────────
 
-def _migrate_project_hooks():
-    """Idempotently add new C3 hooks to all registered projects' Claude and Gemini settings.
+def _has_matcher(value: str):
+    return lambda entries: any(e.get("matcher") == value for e in entries)
 
-    Runs at hub startup so that existing projects pick up hook changes
-    without requiring a manual 'c3 mcp install' on each project.
-    """
-    cli_dir = Path(__file__).parent
-    hook_c3read_cmd = (
-        f"{shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(cli_dir / 'hook_c3read.py'))}"
+
+def _has_command(fragment: str):
+    return lambda entries: any(
+        fragment in (hk.get("command") or "")
+        for e in entries
+        for hk in e.get("hooks", [])
     )
-    new_hook = {
-        "matcher": "mcp__c3__c3_read",
-        "hooks": [{"type": "command", "command": hook_c3read_cmd}],
-    }
 
-    # (settings_path, hook_event) pairs to check per project
-    _HOOK_TARGETS = [
-        (".claude/settings.local.json", "PostToolUse"),
-        (".gemini/settings.json", "AfterTool"),
+
+def c3_hook_migrations(cli_dir: Path | None = None) -> list:
+    """C3's own hook entries, per settings file and hook event.
+
+    Adding a hook to the installer (``cli/c3.py``) does NOT reach a project
+    that is already installed. The v2.126.0 SessionStart / SessionEnd entries
+    landed in the installer only, so every existing project kept writing no
+    ``session_open`` / ``session_end`` rows at all — 60 projects on the
+    machine this was found on, including C3's own. This table is how they
+    catch up: the hub applies it at startup, additively and idempotently.
+
+    ``present`` decides "C3's entry for this event is already here", so a
+    re-run is a no-op and a user's own entries for the same event survive.
+    """
+    cli_dir = cli_dir or Path(__file__).parent
+    # hook_command_arg, not shlex.quote: on Windows the latter writes a
+    # single-quoted backslash path that cmd.exe does not unquote, so every
+    # command this table produced for a path with a space — every path under
+    # "1. Projects", say — was dead on arrival. The installer has used the
+    # double-quoted forward-slash form since 2026-07-26; this now matches it.
+    dispatch = (
+        f"{hook_command_arg(sys.executable)} "
+        f"{hook_command_arg(str(cli_dir / 'hook_dispatch.py'))}"
+    )
+    c3read_entry = {
+        "matcher": "mcp__c3__c3_read",
+        "hooks": [{
+            "type": "command",
+            "command": (f"{hook_command_arg(sys.executable)} "
+                        f"{hook_command_arg(str(cli_dir / 'hook_c3read.py'))}"),
+        }],
+    }
+    c3read_present = _has_matcher("mcp__c3__c3_read")
+    dispatch_present = _has_command("hook_dispatch.py")
+
+    def _lifecycle(event: str, arg: str) -> dict:
+        return {
+            "settings": ".claude/settings.local.json",
+            "event": event,
+            "present": dispatch_present,
+            "entry": {"matcher": "",
+                      "hooks": [{"type": "command",
+                                 "command": f"{dispatch} {arg}"}]},
+        }
+
+    return [
+        {"settings": ".claude/settings.local.json", "event": "PostToolUse",
+         "present": c3read_present, "entry": c3read_entry},
+        {"settings": ".gemini/settings.json", "event": "AfterTool",
+         "present": c3read_present, "entry": c3read_entry},
+        # Claude only — Gemini has no session-lifecycle event to hang these on.
+        _lifecycle("SessionStart", "start"),
+        _lifecycle("SessionEnd", "end"),
     ]
 
+
+def migrate_hooks_for_project(path: str, migrations: list | None = None) -> int:
+    """Apply the hook table to one project. Returns settings files changed.
+
+    Never creates a settings file that is not already there: a project with no
+    ``.claude/settings.local.json`` has not been installed for Claude, and the
+    hub is not the place to decide that it should be.
+    """
+    migrations = migrations if migrations is not None else c3_hook_migrations()
+    by_file: dict = {}
+    for migration in migrations:
+        by_file.setdefault(migration["settings"], []).append(migration)
+
+    changed_files = 0
+    for rel_settings, items in by_file.items():
+        settings_path = Path(path) / rel_settings
+        if not settings_path.exists():
+            continue
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                settings = json.load(f)
+        except Exception:
+            continue
+        changed = False
+        for migration in items:
+            event = migration["event"]
+            existing = list(settings.get("hooks", {}).get(event, []))
+            if migration["present"](existing):
+                continue
+            existing.append(migration["entry"])
+            settings.setdefault("hooks", {})[event] = existing
+            changed = True
+        if not changed:
+            continue
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+            changed_files += 1
+        except Exception:
+            pass
+    return changed_files
+
+
+def _migrate_project_hooks():
+    """Idempotently add missing C3 hooks to every registered project.
+
+    Runs at hub startup so existing projects pick up hook changes without a
+    manual 'c3 install-mcp' per project.
+    """
     try:
         projects = _pm().list_projects()
     except Exception:
         return
 
+    migrations = c3_hook_migrations()
     updated = 0
     for p in projects:
         path = p.get("path", "")
         if not path:
             continue
-        for rel_settings, hook_event in _HOOK_TARGETS:
-            settings_path = Path(path) / rel_settings
-            if not settings_path.exists():
-                continue
-            try:
-                with open(settings_path, encoding="utf-8") as f:
-                    settings = json.load(f)
-            except Exception:
-                continue
-
-            existing = settings.get("hooks", {}).get(hook_event, [])
-            if any(h.get("matcher") == "mcp__c3__c3_read" for h in existing):
-                continue  # already present — skip
-
-            existing.append(new_hook)
-            settings.setdefault("hooks", {})[hook_event] = existing
-            try:
-                with open(settings_path, "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=2)
-                updated += 1
-            except Exception:
-                pass
+        updated += migrate_hooks_for_project(path, migrations)
 
     if updated:
         logging.getLogger(__name__).info(
-            "[c3] Migrated hook_c3read to %d project settings file(s)", updated
+            "[c3] Migrated C3 hooks into %d project settings file(s)", updated
         )
 
 
@@ -4478,21 +4558,39 @@ def run_hub(
         pass
     _migrate_project_hooks()
 
-    # Auto-launch UI servers for projects with autostart_ui=True
-    def _autostart_ui_servers():
+    # Periodic UI sweep. Before 2.128 this ran ONCE, two seconds after
+    # startup, over autostart_ui projects — so a project whose session started
+    # after the hub (the normal case), or whose UI died mid-session, never got
+    # one. Now it also reaps the session-owned servers whose session is gone.
+    def _ui_sweep_loop():
         import time
         time.sleep(2)  # Give Flask a moment to bind
-        try:
-            pm = _pm()
-            for proj_path in pm.get_autostart_projects():
-                try:
-                    pm.launch_session(proj_path)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        first_pass = True
+        while True:
+            try:
+                pm = _pm()
+                pm.sweep_registry()
+                wanted = set(pm.get_autostart_projects())
+                if wanted:
+                    for proj in pm.list_projects():
+                        if proj.get("path") not in wanted or proj.get("ui_active"):
+                            continue
+                        # First pass keeps the old contract ("autostart launches
+                        # the UI when the hub starts"); later passes only chase
+                        # projects that actually have a live session.
+                        if not (first_pass or proj.get("session_active")):
+                            continue
+                        try:
+                            pm.launch_session(proj["path"])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            first_pass = False
+            time.sleep(_UI_SWEEP_INTERVAL_S)
 
-    threading.Thread(target=_autostart_ui_servers, daemon=True).start()
+    threading.Thread(target=_ui_sweep_loop, daemon=True,
+                     name="c3-hub-ui-sweep").start()
 
     bind_host = str(cfg.get("host", "127.0.0.1") or "127.0.0.1").strip()
     if bind_host not in ("127.0.0.1", "localhost", "::1") and not quiet:

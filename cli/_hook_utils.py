@@ -8,6 +8,7 @@ All hook reads/writes of enforcement state MUST go through this module.
 import json
 import os
 import re
+import shlex
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -32,6 +33,27 @@ LEGACY_UNLOCK_FILE = ".c3/unlocked_files.json"
 # dispatcher as an additionalContext line so enforcement never silently stops
 # enforcing. Drained via drain_state_warnings().
 STATE_WARNINGS: list = []
+
+
+def hook_command_arg(raw) -> str:
+    """Quote one argv element for a hook ``command`` string in settings.
+
+    Windows: a DOUBLE-quoted forward-slash path. Claude Code runs hooks through
+    Git Bash, where ``shlex.quote`` produces SINGLE quotes around a backslash
+    path — cmd.exe does not treat single quotes as quoting, so any path with a
+    space or parentheses (``Claude Code Companion (C3)``) breaks. A
+    double-quoted forward-slash path is parsed correctly by bash AND cmd.
+    Verified 2026-07-26 under Git Bash on Windows 11; the installer in
+    cli/c3.py carries the full investigation, including why no ``cmd.exe /c``
+    wrapper belongs here.
+
+    Anything that writes a hook command — the installer and the hub's
+    migration — must go through this, or the entry it writes is dead on
+    Windows.
+    """
+    if sys.platform == "win32":
+        return '"' + str(raw).replace("\\", "/") + '"'
+    return shlex.quote(str(raw))
 
 
 def ensure_utf8_stdio() -> None:

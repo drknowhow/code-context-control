@@ -33,7 +33,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -92,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.127.0"
+__version__ = "2.128.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -5542,10 +5541,10 @@ def cmd_install_mcp(args):
         # the wrapper was never needed. A double-quoted forward-slash path is parsed
         # correctly by bash AND cmd, including paths containing spaces or parentheses
         # (e.g. "Claude Code Companion (C3)"), which is why the wrapper was added.
-        def _hook_arg(raw: str) -> str:
-            if sys.platform == "win32":
-                return '"' + str(raw).replace("\\", "/") + '"'
-            return shlex.quote(str(raw))
+        # Lives in cli/_hook_utils so the hub's hook migration quotes commands
+        # the same way — it used shlex.quote and wrote entries that Windows
+        # could not run.
+        from cli._hook_utils import hook_command_arg as _hook_arg
 
         # v2.42: single dispatcher script per hook event instead of N separate
         # per-hook commands. One interpreter spawn per event; the dispatcher

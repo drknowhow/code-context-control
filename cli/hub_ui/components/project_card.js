@@ -493,7 +493,12 @@ function ProjectCard({ p, isChild, rollup, expanded, onToggleExpand, onChanged, 
     } catch (err) { notify('IDE: ' + err.message, 'err'); }
   };
 
-  const portLabel = p.port ? `:${p.port}` : (p.session_active ? 'MCP' : '—');
+  // session_count > 1 = two IDEs / a repo and its worktrees on one project.
+  const sessionCount = p.session_count || (p.session_active ? 1 : 0);
+  const mcpLabel = sessionCount > 1 ? `MCP×${sessionCount}` : 'MCP';
+  const portLabel = p.port
+    ? (sessionCount > 1 ? `:${p.port} · ${mcpLabel}` : `:${p.port}`)
+    : (p.session_active ? mcpLabel : '—');
   const metaText = `${ideLabel(p.ide)} · ${portLabel} · ${p.last_session ? timeAgo(p.last_session) : 'never'}`;
 
   const identity = (

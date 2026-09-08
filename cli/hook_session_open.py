@@ -22,6 +22,14 @@ Records:
 - a ``session`` notification (``kind="session"``, ``ref_id=host id``,
   ``info``, title ``Session started <short id>``).
 
+It also brings up the project's UI server when one is not already running
+(``ensure_ui`` below, v2.128.0) — the only place in C3 where "a session
+started" causes "the UI is up". It needs the project to be registered with
+the hub, and it skips a project that already has a live UI port, so a
+``resume`` or ``clear`` never stacks a second server. Opt out with
+``C3_NO_UI_AUTOSTART=1`` or
+``.c3/config.json → {"ui": {"autostart_on_session": false}}``.
+
 ``source: "compact"`` writes NOTHING: a compaction is the same session and
 the same MCP process, and a "Session started" toast on every compaction
 would teach the user to ignore the real ones.
@@ -37,6 +45,8 @@ this hook has nothing to tell the model.
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +56,98 @@ from cli._hook_utils import detect_host, find_project, log_hook_error  # noqa: E
 from cli.hook_session_end import short_id  # noqa: E402
 
 _SILENT_SOURCES = {"compact"}
+
+
+def _ui_autostart_enabled(project: Path) -> bool:
+    """Opt-outs, in the order a user reaches for them."""
+    if os.environ.get("C3_NO_UI_AUTOSTART") or os.environ.get("C3_BENCHMARK_MODE"):
+        return False
+    try:
+        cfg = json.loads((project / ".c3" / "config.json").read_text(encoding="utf-8"))
+    except Exception:
+        return True  # no readable config is not a reason to withhold the UI
+    ui = cfg.get("ui")
+    if isinstance(ui, dict) and "autostart_on_session" in ui:
+        return bool(ui.get("autostart_on_session"))
+    return True
+
+
+def _is_registered(pm, project: Path) -> bool:
+    """True when the hub knows this project.
+
+    The UI server is a hub-level surface: a directory the user never
+    registered gets nothing automatic (``c3 ui`` still works). This is also
+    what keeps a test fixture or a scratch clone from growing a web server.
+    """
+    target = os.path.normcase(str(project))
+    for entry in pm._read_projects():
+        raw = str(entry.get("path") or "")
+        if raw and os.path.normcase(raw) == target:
+            return True
+        try:
+            if raw and os.path.normcase(str(Path(raw).resolve())) == target:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _ui_running(pm, project: Path) -> bool:
+    """True when a live UI server is already registered for this project.
+
+    This is what keeps `resume` / `clear` — both real SessionStart events —
+    from stacking a second server on every reconnect.
+    """
+    target = os.path.normcase(str(project))
+    for entry in pm._read_registry():
+        raw = str(entry.get("project_path") or "")
+        if not raw:
+            continue
+        try:
+            same = os.path.normcase(str(Path(raw).resolve())) == target
+        except Exception:
+            same = os.path.normcase(raw) == target
+        if same and entry.get("port") and pm._port_alive(entry["port"]):
+            return True
+    return False
+
+
+def ensure_ui(project: Path, host_session_id: str = "") -> str:
+    """Bring up this project's UI server for the session that just opened.
+
+    Nothing else in C3 connected "a session started" to "the UI is running":
+    the hub's sweep only chases projects flagged `autostart_ui`, and before
+    2.128.0 it ran once at hub startup — so a UI was only ever there because
+    an earlier session had left one behind.
+
+    Returns a short reason string (tests and diagnostics read it). Never
+    raises and never prints — SessionStart stdout becomes model context.
+    """
+    try:
+        project = Path(project).resolve()
+    except Exception:
+        project = Path(project)
+    if not _ui_autostart_enabled(project):
+        return "disabled"
+    try:
+        from services.project_manager import ProjectManager
+        pm = ProjectManager()
+        if not _is_registered(pm, project):
+            return "unregistered"
+        if _ui_running(pm, project):
+            return "already-running"
+        # launch_session copies os.environ into the detached child, which is
+        # where cli/server._register_session reads the ownership from.
+        os.environ["C3_UI_OWNER"] = "session"
+        if host_session_id:
+            os.environ["C3_UI_OWNER_SESSION"] = host_session_id
+        result = pm.launch_session(str(project))
+        if result.get("launched"):
+            return "launched"
+        return f"failed: {result.get('error', '')}".strip()
+    except Exception as exc:
+        log_hook_error("hook_session_open", exc)
+        return "error"
 
 
 def run(payload: dict, project_path: Path | None = None):
@@ -76,11 +178,11 @@ def run(payload: dict, project_path: Path | None = None):
                kind="session", ref_id=host_sid)
     except Exception:
         pass
+    ensure_ui(project, host_sid)
     return None
 
 
 def main() -> None:
-    import json
     try:
         data = json.load(sys.stdin)
     except Exception as exc:
