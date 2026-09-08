@@ -58,6 +58,54 @@ class ActivityLog:
         except Exception:
             pass
 
+    def find_last(self, event_type: str, limit: int = 1,
+                  chunk_bytes: int = 256 * 1024) -> list:
+        """Last N events of one type, however far back they are.
+
+        ``get_recent`` only ever looks at the last ``limit * 100`` lines. For a
+        rare event in a busy log that window is minutes wide: in C3's own repo
+        the running session's ``session_start`` sat 319 lines from the end of a
+        20,825-line log, so every liveness lookup missed it and the project
+        reported idle while a session was serving. Liveness must not depend on
+        how chatty the session has been since it started.
+
+        Reads backwards in chunks and stops at the first ``limit`` matches, so
+        the common case (the row is near the end) touches one chunk instead of
+        the whole file. Newest first, like ``get_recent``.
+        """
+        if not self.log_file.exists():
+            return []
+        events: list = []
+        try:
+            with open(self.log_file, "rb") as handle:
+                handle.seek(0, 2)
+                position = handle.tell()
+                tail = b""
+                while position > 0 and len(events) < limit:
+                    step = min(chunk_bytes, position)
+                    position -= step
+                    handle.seek(position)
+                    block = handle.read(step) + tail
+                    lines = block.split(b"\n")
+                    # The first element may be a partial line: keep it for the
+                    # next (earlier) chunk unless we are at the file start.
+                    tail = lines.pop(0) if position > 0 else b""
+                    for raw in reversed(lines):
+                        if not raw.strip():
+                            continue
+                        try:
+                            entry = json.loads(raw.decode("utf-8", "replace"))
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+                        if entry.get("type") != event_type:
+                            continue
+                        events.append(entry)
+                        if len(events) >= limit:
+                            break
+        except OSError:
+            return events
+        return events
+
     def get_recent(self, limit: int = 100, event_type: str = None,
                     since: str = None, until: str = None) -> list:
         """Read last N events, optionally filtered by type and time range.

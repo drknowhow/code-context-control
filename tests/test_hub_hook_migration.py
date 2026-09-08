@@ -128,6 +128,40 @@ class TestHookMigration(unittest.TestCase):
                 self.assertNotIn("'", command, command)
                 self.assertNotIn("\\", command, command)
 
+    def test_new_entries_follow_the_project_s_existing_c3_install(self):
+        """The hub runs from site-packages; C3's own repo runs its hooks from
+        the checkout. Writing the hub's path into that project would make an
+        edited hook a no-op until the next install."""
+        checkout_cli = self.project / "checkout" / "cli"
+        checkout_cli.mkdir(parents=True)
+        (checkout_cli / "hook_dispatch.py").write_text("", encoding="utf-8")
+        existing = f'"{sys.executable}" "{checkout_cli / "hook_dispatch.py"}" stop'
+        self._write(CLAUDE_SETTINGS, {"hooks": {"Stop": [
+            {"matcher": "", "hooks": [{"type": "command", "command": existing}]}]}})
+        self._migrate()
+        commands = self._commands(self._read(CLAUDE_SETTINGS), "SessionStart")
+        self.assertTrue(commands)
+        expected = str(checkout_cli).replace("\\", "/")
+        for command in commands:
+            self.assertIn(expected, command.replace("\\", "/"))
+
+    def test_falls_back_to_the_hubs_own_cli_dir(self):
+        self._write(CLAUDE_SETTINGS, {"hooks": {}})
+        self._migrate()
+        cli_dir = Path(hub_server.__file__).resolve().parent
+        for command in self._commands(self._read(CLAUDE_SETTINGS), "SessionStart"):
+            self.assertIn(cli_dir.name, command)
+
+    def test_a_dead_install_path_is_not_followed(self):
+        """An old entry pointing at a cli/ that no longer exists is ignored."""
+        gone = self.project / "uninstalled" / "cli" / "hook_dispatch.py"
+        self._write(CLAUDE_SETTINGS, {"hooks": {"Stop": [{"matcher": "", "hooks": [
+            {"type": "command", "command": f'"{sys.executable}" "{gone}" stop'}]}]}})
+        self._migrate()
+        commands = self._commands(self._read(CLAUDE_SETTINGS), "SessionStart")
+        self.assertTrue(commands)
+        self.assertNotIn("uninstalled", commands[0])
+
     def test_dispatcher_command_matches_the_installer_exactly(self):
         from cli._hook_utils import hook_command_arg
         cli_dir = Path(hub_server.__file__).resolve().parent

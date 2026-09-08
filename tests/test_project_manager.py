@@ -200,6 +200,35 @@ class TestLivenessSources(unittest.TestCase):
              "timestamp": recent},
         ]), [])
 
+    def test_a_busy_log_no_longer_hides_the_running_session(self):
+        """Traffic since the session started used to make it invisible.
+
+        `get_recent(limit=1, event_type=...)` looks at the last 100 lines only;
+        in C3's own repo the running session's `session_start` sat 319 lines
+        from the end, so the hub called an active project idle. Uses the real
+        ActivityLog — the point is the file scan, not the stub.
+        """
+        log = Path(self.proj_path) / ".c3" / "activity_log.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"type": "session_start", "session_id": "s1",
+                 "timestamp": self._ago(minutes=30), "description": "busy"}]
+        rows += [{"type": "tool_call", "timestamp": self._ago(seconds=30)}
+                 for _ in range(500)]
+        log.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        sessions = self.pm._get_live_sessions(self.proj_path)
+        self.assertEqual([s["session_id"] for s in sessions], ["s1"])
+        self.assertEqual(sessions[0]["source"], "activity_log")
+        self.assertEqual(sessions[0]["description"], "busy")
+
+    def test_stub_without_find_last_still_works(self):
+        """Another checkout on an older C3 keeps serving the same project."""
+        sessions = self._sessions([
+            {"type": "session_start", "session_id": "s1", "timestamp": self._ago(minutes=5)},
+            {"type": "tool_call", "timestamp": self._ago(minutes=1)},
+        ])
+        self.assertFalse(hasattr(_StubActivityLog([]), "find_last"))
+        self.assertEqual([s["session_id"] for s in sessions], ["s1"])
+
     # ── heartbeats outrank inference ──────────────────────────────────────
 
     def test_heartbeat_keeps_a_long_idle_session_live(self):

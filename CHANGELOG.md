@@ -4,6 +4,50 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.128.1] - 2026-09-08
+
+Both of these were found by shipping 2.128.0 and watching the runtime, not
+by a test.
+
+### Fixed — a busy activity log hid the running session
+
+`ProjectManager` looked up the rare rows liveness depends on
+(`session_start`, `session_save`, `session_end`) with
+`ActivityLog.get_recent(limit=1, event_type=...)`, which scans only the last
+`limit * 100` lines. That window is minutes wide on a working project: right
+after 2.128.0 went live, C3's own repo had its **running** session's
+`session_start` sitting **319 lines from the end of a 20,825-line log**, and
+`get_recent` returned `[]` — so the hub called an actively-served project
+idle. The 20-minute idle rule was never even reached. This is the other half
+of "the live light is wrong", and it predates 2.128.0 by a long way.
+
+- **`ActivityLog.find_last(event_type, limit=1)`** — scans the log backwards
+  in 256 KB chunks and stops at the first `limit` matches, stitching lines
+  across chunk boundaries. It finds the row however much traffic is in front
+  of it, and it is *faster* than the old call on the same file (0.9 ms vs
+  6.4 ms on that 4.9 MB log) because it stops instead of reading everything.
+- **`ProjectManager._rare_rows`** routes every rare-event lookup through it,
+  falling back to `get_recent` when the object has no `find_last` — a test
+  stub, or an older C3 in another checkout serving the same project.
+  `_get_last_session_timestamp` now also considers `session_end`.
+
+### Fixed — the hook migration wrote its own install path into a checkout
+
+The hub runs from wherever C3 is installed, so `_migrate_project_hooks` built
+every command from *its* `cli/` directory. For the 59 projects that use the
+installed C3 that is right; for C3's own repo — whose other hooks point at the
+working tree, because that is what a developer edits — it wrote site-packages
+paths, which would have made an edited hook a no-op until the next install.
+Two sources of truth for one hook, the failure mode that is invisible until
+something silently does not run.
+
+- **`detect_project_cli_dir(path)`** reads the project's existing settings,
+  finds the `cli/` directory its current C3 hooks point at (a `hook_*.py`
+  whose directory still holds `hook_dispatch.py`), and builds that project's
+  entries against it. A path that no longer exists is ignored, and a project
+  with no C3 hooks yet falls back to the hub's own location. Each project now
+  gets its own table rather than one shared across all of them.
+
 ## [2.128.0] - 2026-09-08
 
 ### Fixed — starting an IDE session now brings up that project's UI

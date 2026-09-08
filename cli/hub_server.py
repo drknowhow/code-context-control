@@ -4447,6 +4447,52 @@ def c3_hook_migrations(cli_dir: Path | None = None) -> list:
     ]
 
 
+def _command_cli_dir(command: str) -> Path | None:
+    """The C3 ``cli/`` directory a hook command points at, if any."""
+    try:
+        tokens = shlex.split(str(command or ""), posix=False)
+    except ValueError:
+        tokens = str(command or "").split()
+    for token in tokens:
+        token = token.strip("'\"")
+        if not token.endswith(".py"):
+            continue
+        candidate = Path(token)
+        if not candidate.name.startswith("hook_"):
+            continue
+        parent = candidate.parent
+        if (parent / "hook_dispatch.py").is_file():
+            return parent
+    return None
+
+
+def detect_project_cli_dir(path: str) -> Path | None:
+    """The ``cli/`` directory this project's existing C3 hooks already use.
+
+    The hub runs from wherever C3 is installed, so building commands from its
+    own location writes install paths into a project that was installed from a
+    checkout — C3's own repo above all, where the working tree IS the runtime.
+    A hook edited there would then change nothing until the next install. Match
+    what the project already points at; the caller falls back to ours.
+    """
+    for rel_settings in (".claude/settings.local.json", ".gemini/settings.json"):
+        settings_path = Path(path) / rel_settings
+        if not settings_path.exists():
+            continue
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                hooks = (json.load(f).get("hooks") or {})
+        except Exception:
+            continue
+        for entries in hooks.values():
+            for entry in entries or []:
+                for hook in (entry or {}).get("hooks", []):
+                    found = _command_cli_dir((hook or {}).get("command") or "")
+                    if found is not None:
+                        return found
+    return None
+
+
 def migrate_hooks_for_project(path: str, migrations: list | None = None) -> int:
     """Apply the hook table to one project. Returns settings files changed.
 
@@ -4454,7 +4500,8 @@ def migrate_hooks_for_project(path: str, migrations: list | None = None) -> int:
     ``.claude/settings.local.json`` has not been installed for Claude, and the
     hub is not the place to decide that it should be.
     """
-    migrations = migrations if migrations is not None else c3_hook_migrations()
+    if migrations is None:
+        migrations = c3_hook_migrations(detect_project_cli_dir(path))
     by_file: dict = {}
     for migration in migrations:
         by_file.setdefault(migration["settings"], []).append(migration)
@@ -4500,13 +4547,14 @@ def _migrate_project_hooks():
     except Exception:
         return
 
-    migrations = c3_hook_migrations()
     updated = 0
     for p in projects:
         path = p.get("path", "")
         if not path:
             continue
-        updated += migrate_hooks_for_project(path, migrations)
+        # No shared table: each project's entries are built against the cli_dir
+        # that project's existing C3 hooks already point at.
+        updated += migrate_hooks_for_project(path)
 
     if updated:
         logging.getLogger(__name__).info(
