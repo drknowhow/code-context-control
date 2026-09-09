@@ -87,12 +87,44 @@ def _line_count(path: Path) -> int:
         return 0
 
 
-def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOKENS) -> tuple:
-    """Return (text, detail) for the directory `rel_dir` (project-relative, posix)."""
-    root = Path(svc.project_path).resolve()
-    rel_dir = str(rel_dir).replace("\\", "/").strip("/")
-    target = (root / rel_dir).resolve() if rel_dir else root
-    label = (rel_dir + "/") if rel_dir else "./"
+def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOKENS,
+                         external: bool = False) -> tuple:
+    """Return (text, detail) for the directory `rel_dir` (project-relative, posix).
+
+    `external=True` maps a directory OUTSIDE the project root: `rel_dir` is an
+    absolute path and names are relative to it. Symbols are still extracted,
+    under the same file/deadline/byte bounds — but through transient records
+    that are never persisted or looked up, because an outside file has no
+    project-relative key and indexing it would poison a store the rest of C3
+    addresses by that key. The edit ledger, which supplies the recency
+    ranking, likewise has nothing to say about a file outside the project.
+    """
+    store = getattr(svc, "file_memory", None)
+    if external:
+        root = Path(rel_dir).resolve()
+        target = root
+        name_base = ""
+        label = root.as_posix().rstrip("/") + "/"
+        recent = {}
+
+        def _cached(rel):
+            return None  # nothing outside the root is ever in the store
+
+        def _extract(rel):
+            return store.build_transient_record(root / rel, key=rel)
+    else:
+        root = Path(svc.project_path).resolve()
+        rel_dir = str(rel_dir).replace("\\", "/").strip("/")
+        target = (root / rel_dir).resolve() if rel_dir else root
+        name_base = rel_dir
+        label = (rel_dir + "/") if rel_dir else "./"
+        recent = _recent_edit_ranks(svc)
+
+        def _cached(rel):
+            return store.get(rel)
+
+        def _extract(rel):
+            return store.update(rel)
 
     files = []
     capped = False
@@ -104,9 +136,6 @@ def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOK
             files.append(fp.resolve().relative_to(root).as_posix())
         except ValueError:
             continue
-
-    store = getattr(svc, "file_memory", None)
-    recent = _recent_edit_ranks(svc)
     started = time.monotonic()
     extracted = 0
     rows = []
@@ -115,7 +144,7 @@ def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOK
         record = None
         if store is not None:
             try:
-                record = store.get(rel)
+                record = _cached(rel)
             except Exception:
                 record = None
             ext = Path(rel).suffix.lower()
@@ -124,7 +153,7 @@ def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOK
                     and time.monotonic() - started < EXTRACT_DEADLINE_S):
                 try:
                     if (root / rel).stat().st_size <= MAX_EXTRACT_BYTES:
-                        record = store.update(rel)
+                        record = _extract(rel)
                         extracted += 1
                 except Exception:
                     record = None
@@ -135,7 +164,7 @@ def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOK
         symbols = _top_symbols(record)
         rows.append({
             "rel": rel,
-            "name": rel[len(rel_dir) + 1:] if rel_dir and rel.startswith(rel_dir + "/") else rel,
+            "name": rel[len(name_base) + 1:] if name_base and rel.startswith(name_base + "/") else rel,
             "lines": lines,
             "lang": lang,
             "symbols": symbols,
@@ -172,5 +201,6 @@ def render_directory_map(svc, rel_dir: str, *, max_tokens: int = DEFAULT_MAX_TOK
         "listed": len(kept),
         "extracted": extracted,
         "capped": capped,
+        "external": bool(external),
     }
     return text, detail

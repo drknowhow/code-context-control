@@ -413,6 +413,17 @@ def _run_job_act(inst, project: Path, run_dir: Path, event: str,
         pass
 
     if result.status in (FAILED, TIMEOUT):
+        # A setup-phase failure has no program output to parse: the container
+        # never started. Parsing it anyway reported `unparsed` with a log
+        # tail, so `c3_ci(action='failures')` answered "0 parsed failures" for
+        # a broken runner (issue #173). Say what actually happened. The status
+        # stays FAILED — a job that could not run is never a green light.
+        setup_reason = ci_act.setup_failure(outcome.get("output") or "")
+        if setup_reason:
+            result.reason = setup_reason
+            result.parser = ci_act.SETUP_PARSER
+            result.failures = []
+            return result
         # Parse what the commands printed, not act's narration around it —
         # otherwise every file path arrives wearing a `[CI/lint] |` prefix.
         parsed = ci_failures.parse(

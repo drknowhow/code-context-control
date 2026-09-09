@@ -385,6 +385,15 @@ def handle_ci(action: str, job: str, run_id: str, allow_foreign: bool,
                 f"            runs Linux jobs in a container "
                 f"({ci_act.DEFAULT_IMAGE}), real `uses:` actions included",
             ]
+            if state.get("warning"):
+                lines.append(f"            WARNING: {state['warning']}")
+            # An image that is present locally is still not proof act can pull
+            # it: act sends the stored registry credential where the CLI sends
+            # none, so an expired token fails a public pull (issue #173). Say
+            # so rather than let `available` read as a guarantee.
+            lines.append("            a runner failure before any step runs is "
+                         "reported as a container-setup failure, not as 0 "
+                         "parsed failures")
         else:
             lines += ["  act       UNAVAILABLE", f"            {state['reason']}"]
         lines += [

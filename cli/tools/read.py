@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from cli.tools import _grants
-from cli.tools._helpers import finalize_with_tokens, maybe_related_facts
+from cli.tools._helpers import external_banner, finalize_with_tokens, maybe_related_facts, project_key
 from cli.tools.compress import map_detail
 from core import count_tokens
 from services import access_guard
+from services.file_map import render_map
 
 
 def _coerce_list(val: Any) -> list[str] | None:
@@ -175,7 +176,21 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     if not full.exists():
         return f"[read:error] File not found: {file_path}"
 
-    rel_path = str(full.resolve().relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
+    # A path outside the project root is READ, not refused (docs/file-map.md
+    # § Outside the root). The root was never the control here: Access Guard
+    # ruled above and its rules match the absolute canonical path as well as
+    # the project-relative one, so the builtin denies still cover an outside
+    # file; and the PreToolUse hook stands down outside the root, so native
+    # Read already went there unimpeded. Refusing only pushed the agent off
+    # the budgeted, guarded tool onto the unbudgeted one.
+    #
+    # What the root DOES decide is indexing. file_memory is keyed by
+    # project-relative path and feeds the text index, the map cache and
+    # prune_stale, so an outside file is served from a transient record and
+    # never written into this project's store.
+    resolved = full.resolve()
+    rel_path, external = project_key(resolved, svc.project_path)
+    banner = external_banner(rel_path) if external else ""
 
     if full.is_dir():
         # A directory maps to one line per file, budgeted
@@ -184,7 +199,9 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         budget = DEFAULT_MAX_TOKENS
         if isinstance(lines, int) and not isinstance(lines, bool) and lines > 0:
             budget = lines
-        text, dir_detail = render_directory_map(svc, rel_path, max_tokens=budget)
+        text, dir_detail = render_directory_map(svc, rel_path, max_tokens=budget,
+                                                external=external)
+        text = banner + text
         tok = count_tokens(text)
         if finalize is None:
             return text
@@ -228,15 +245,56 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
     # Ensure file_memory index is fresh.
     # When the watcher is running, it handles updates in the background —
     # only force-update if file_memory has no record at all (first access).
-    try:
-        watcher_active = (hasattr(svc, "watcher") and svc.watcher._observer.is_alive())
-        if watcher_active:
-            if not svc.file_memory.get(rel_path):
+    # An outside-the-root file is never indexed; it gets a transient record
+    # instead, built lazily below.
+    if not external:
+        try:
+            watcher_active = (hasattr(svc, "watcher") and svc.watcher._observer.is_alive())
+            if watcher_active:
+                if not svc.file_memory.get(rel_path):
+                    svc.file_memory.update(rel_path)
+            elif svc.file_memory.needs_update(rel_path):
                 svc.file_memory.update(rel_path)
-        elif svc.file_memory.needs_update(rel_path):
-            svc.file_memory.update(rel_path)
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+    _ext_cache = []
+
+    def _ext_record():
+        """The transient record for an outside file — same parser and schema
+        as an indexed one, never persisted (docs/file-map.md § Outside the
+        root).
+
+        Built at most once, and only where a map or a symbol lookup actually
+        needs it: a `lines=[a,b]` read must not pay for a full parse of the
+        file it is slicing two lines out of, which is the whole reason the
+        large-file bounds exist.
+        """
+        if not external:
+            return None
+        if not _ext_cache:
+            _ext_cache.append(
+                svc.file_memory.build_transient_record(resolved, key=rel_path))
+        return _ext_cache[0]
+
+    def _file_map(max_tokens=None) -> str:
+        """The map, from the project index or from the transient record."""
+        if not external:
+            return svc.file_memory.get_or_build_map(rel_path, max_tokens=max_tokens)
+        record = _ext_record()
+        if not record:
+            return f"[file_map] Could not build map for {rel_path} — unreadable."
+        return render_map(record, max_tokens=max_tokens)
+
+    def _map_cached() -> bool:
+        return False if external else not svc.file_memory.needs_update(rel_path)
+
+    def _facts() -> str:
+        # Facts are project knowledge keyed by project-relative path; an
+        # outside file has none, and matching one by basename would be a lie.
+        if external:
+            return ""
+        return maybe_related_facts(svc, rel_path, top_k=3, context="read")
 
     raw_text = full.read_text(encoding="utf-8", errors="replace")
     # EOL-normalize exactly the way c3_edit's matcher does (\r\n and \r → \n),
@@ -256,7 +314,9 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         return _full_tok_cache[0]
 
     if symbols:
-        matches = svc.file_memory.get_symbol_ranges(rel_path, symbols, return_matches=True)
+        matches = svc.file_memory.get_symbol_ranges(rel_path, symbols,
+                                                    return_matches=True,
+                                                    record=_ext_record())
 
         # Check for ambiguity
         disambiguation_msgs = []
@@ -292,7 +352,7 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
             ranges.append(m["range"])
 
         if '<main>' in symbols or '<globals>' in symbols:
-            record = svc.file_memory.get(rel_path)
+            record = _ext_record() or svc.file_memory.get(rel_path)
             if record and "sections" in record:
                 covered = set()
 
@@ -318,29 +378,31 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
                 ranges.extend(main_ranges)
 
     if not ranges and symbols:
-        map_cached = not svc.file_memory.needs_update(rel_path)
-        file_map = svc.file_memory.get_or_build_map(rel_path)
-        resp = f"[read:{file_path}] symbols not found: {symbols}. Showing file map:\n{file_map}"
+        map_cached = _map_cached()
+        file_map = _file_map()
+        resp = (banner
+                + f"[read:{file_path}] symbols not found: {symbols}. "
+                  f"Showing file map:\n{file_map}")
         map_tok = count_tokens(file_map)
         return finalize_with_tokens(
             finalize, svc, "c3_read", {"file": file_path, "symbols": symbols},
             resp, f"{full_file_tokens()}->{map_tok}tok",
             raw_tokens=full_file_tokens(), optimized_tokens=map_tok,
             detail=map_detail(svc, rel_path, "read", cache_hit=map_cached,
-                              symbols=len(symbols), fallback="symbols_not_found"))
+                              symbols=len(symbols), fallback="symbols_not_found",
+                              record=_ext_record(), external=external))
 
     if not ranges:
-        map_cached = not svc.file_memory.needs_update(rel_path)
-        file_map = svc.file_memory.get_or_build_map(
-            rel_path, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
+        map_cached = _map_cached()
+        file_map = _file_map(max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
         if count_tokens(file_map) >= full_file_tokens():
             # A map that costs more than the file is worth nothing: serve the
             # file (docs/file-map.md § Small files).
             file_map = (f"[read:{file_path}] whole file — smaller than its map\n"
                         + raw_text)
-        resp = (file_map
+        resp = (banner + file_map
                 + "\n[map only — pass lines=[start,end] or symbols=[...] for exact source]"
-                + maybe_related_facts(svc, rel_path, top_k=3, context="read"))
+                + _facts())
         map_tok = count_tokens(resp)
         if finalize is None:
             return resp
@@ -350,7 +412,8 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
             raw_tokens=full_file_tokens(), optimized_tokens=map_tok,
             response_tokens=map_tok,
             detail=map_detail(svc, rel_path, "read", cache_hit=map_cached,
-                              fallback="map_only"))
+                              fallback="map_only", record=_ext_record(),
+                              external=external))
     else:
         # Sort and merge overlapping ranges
         ranges.sort()
@@ -387,7 +450,7 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         prev_end = end
 
     final_content = "\n".join(parts)
-    resp = final_content + maybe_related_facts(svc, rel_path, top_k=3, context="read")
+    resp = banner + final_content + _facts()
     tokens = count_tokens(resp)
     summary = f"{full_file_tokens()}->{tokens}tok" if tokens < full_file_tokens() else f"{tokens}tok"
     # C0 measurement: what the read asked for and how much source it took.
@@ -398,6 +461,7 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
         "ranges": len(ranges),
         "lines_served": sum(e - s_ + 1 for s_, e in ranges),
         "file_lines": len(content_lines),
+        "external": external,
     }
     return finalize_with_tokens(
         finalize, svc, "c3_read", {"file": file_path, "symbols": symbols}, resp, summary,

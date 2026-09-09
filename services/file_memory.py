@@ -179,12 +179,28 @@ class FileMemoryStore:
             # If we are here, we are forcing a fresh extraction
 
         sections, parser = self._extract_sections_with_parser(full_path, content)
+        record = self._record_dict(rel_path, ext, content_hash, len(lines),
+                                   stat, sections, parser)
 
+        self._save(rel_path, record)
+        self._cache_map(rel_path, record)
+        with self._search_lock:
+            if not self._search_dirty:
+                self._search_index.add_or_update(rel_path, self._search_doc(record))
+        return record
+
+    def _record_dict(self, key: str, ext: str, content_hash: str, line_count: int,
+                     stat, sections: list, parser: str) -> dict:
+        """The record schema, in one place.
+
+        Shared by update() and build_transient_record() so a field added to
+        one can never be missing from the other.
+        """
         record = {
-            "path": rel_path,
+            "path": str(key).replace("\\", "/"),
             "content_hash": content_hash,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "lines": len(lines),
+            "lines": line_count,
             "size_bytes": stat.st_size,
             "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
             "language": LANG_MAP.get(ext, ext.lstrip('.')),
@@ -199,13 +215,30 @@ class FileMemoryStore:
         if shape.get("minified") or shape.get("generated") or shape.get("oversized"):
             record["shape"] = {k: shape[k] for k in ("minified", "generated", "oversized",
                                                       "longest_line", "bytes") if k in shape}
-
-        self._save(rel_path, record)
-        self._cache_map(rel_path, record)
-        with self._search_lock:
-            if not self._search_dirty:
-                self._search_index.add_or_update(rel_path, self._search_doc(record))
         return record
+
+    def build_transient_record(self, full_path, key: str = "") -> Optional[dict]:
+        """Extract a structural record WITHOUT persisting or indexing it.
+
+        For a file outside the project root (docs/file-map.md § Outside the
+        root): this store is keyed by project-relative path, and its records
+        feed the text index, the map cache and prune_stale. An absolute key
+        would poison all three, and prune_stale would churn on a path it can
+        never resolve. Same extractor and same schema as update(), minus the
+        lifecycle: built, used once, thrown away.
+        """
+        full_path = Path(full_path)
+        try:
+            stat = full_path.stat()
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        sections, parser = self._extract_sections_with_parser(full_path, content)
+        return self._record_dict(key or full_path.as_posix(),
+                                 full_path.suffix.lower(),
+                                 hashlib.md5(content.encode()).hexdigest(),
+                                 len(content.splitlines()),
+                                 stat, sections, parser)
 
     def get_map(self, rel_path: str) -> Optional[str]:
         """Return a formatted structural map for Claude consumption.
@@ -274,12 +307,18 @@ class FileMemoryStore:
         except Exception:
             return True
 
-    def get_symbol_ranges(self, rel_path: str, symbol_names: list[str], return_matches: bool = False) -> list:
+    def get_symbol_ranges(self, rel_path: str, symbol_names: list[str],
+                          return_matches: bool = False,
+                          record: Optional[dict] = None) -> list:
         """Resolve symbol names to line ranges (1-indexed).
         Supports exact match and substring/partial match (e.g. 'handle_req' matches 'handle_request_data').
         Supports exact regex if anchored (e.g. '^cmd_benchmark$').
+
+        `record` supplies a transient record for a file that is not in this
+        store and must not be — an outside-the-root read builds one in memory.
         """
-        record = self.get(rel_path)
+        if record is None:
+            record = self.get(rel_path)
         if not record or "sections" not in record:
             return []
 

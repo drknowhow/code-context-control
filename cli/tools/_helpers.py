@@ -147,6 +147,40 @@ _HEREDOC_MARKERS = {
 _GHOST_NAMES = _PYTHON_TYPE_NAMES | _HEREDOC_MARKERS
 
 
+EXTERNAL_TAG = "[c3-read:external]"
+
+
+def external_banner(path: str) -> str:
+    """The one line every outside-the-root response opens with.
+
+    One definition so c3_read and c3_compress cannot drift apart on it.
+    """
+    return (f"{EXTERNAL_TAG} {path} — outside the project root; served but "
+            f"not indexed, and absent from this project's search, map cache "
+            f"and related facts.\n")
+
+
+def project_key(full, project_path) -> tuple[str, bool]:
+    """``(key, external)`` for an already-resolved-or-not path.
+
+    Inside the root the key is the project-relative posix path — how
+    file_memory, the edit ledger and related facts all address a file.
+    Outside it there is no such key, so the absolute posix path stands in and
+    ``external`` tells the caller to serve from a transient record rather than
+    the index (docs/file-map.md § Outside the root).
+
+    This used to be a bare ``relative_to`` whose ValueError escaped as a tool
+    crash. It is not a containment check and must not become one: Access Guard
+    already rules on the absolute canonical path, and it runs before this.
+    """
+    resolved = Path(full).resolve()
+    try:
+        rel = resolved.relative_to(Path(project_path).resolve())
+        return str(rel).replace("\\", "/"), False
+    except ValueError:
+        return resolved.as_posix(), True
+
+
 def validate_file_path(file_path: str) -> str | None:
     """Return an error message if file_path looks like a ghost-file path, else None.
 

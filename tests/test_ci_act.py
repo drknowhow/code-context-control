@@ -455,6 +455,77 @@ jobs:
         self.assertEqual(res.verdict, cr.PARTIAL_PASS)
 
 
+SETUP_FAIL_LOG = (
+    "[CI/lint] \U0001f680  Start image=catthehacker/ubuntu:act-latest\n"
+    "[CI/lint]   \U0001f433  docker pull image=catthehacker/ubuntu:act-latest "
+    "platform= username= forcePull=true\n"
+    "[CI/lint] using DockerAuthConfig authentication for docker pull\n"
+    "[CI/lint] Error response from daemon: authentication required - "
+    "incorrect username or password\n"
+    "[CI/lint]   \u274c  Failure - Set up job\n"
+    "[CI/lint] \U0001f3c1  Job failed\n"
+)
+
+
+class TestSetupFailureClassification(unittest.TestCase):
+    """Issue #173. A failure before any step ran has no program output, so
+    parsing it reported `unparsed` and c3_ci(action='failures') answered
+    "0 parsed failures" for a runner that never started."""
+
+    def test_auth_failure_names_the_cause_and_the_fix(self):
+        reason = ci_act.setup_failure(SETUP_FAIL_LOG)
+        self.assertIn("authentication", reason.lower())
+        self.assertIn("docker logout", reason)
+
+    def test_daemon_error_without_a_known_reason_echoes_the_daemon(self):
+        log = ("[CI/x] Error response from daemon: no such host\n"
+               "[CI/x]   \u274c  Failure - Set up job\n")
+        self.assertIn("no such host", ci_act.setup_failure(log))
+
+    def test_dead_daemon_is_named(self):
+        log = ("[CI/x] Cannot connect to the Docker daemon at "
+               "npipe:////./pipe/docker_engine\n"
+               "[CI/x]   \u274c  Failure - Set up job\n")
+        self.assertIn("daemon is not reachable", ci_act.setup_failure(log))
+
+    def test_a_step_failure_is_not_a_setup_failure(self):
+        """The job reached its steps; its output must still go to the parsers."""
+        log = ("[CI/lint]   \u2705  Success - Set up job\n"
+               "[CI/lint]   | app/thing.py:14:5: F401 unused import\n"
+               "[CI/lint]   \u274c  Failure - Main run\n")
+        self.assertEqual(ci_act.setup_failure(log), "")
+
+    def test_empty_log_is_not_a_setup_failure(self):
+        self.assertEqual(ci_act.setup_failure(""), "")
+
+
+class TestSetupFailureReporting(ActTempProject):
+    def test_the_runner_reports_it_instead_of_unparsed(self):
+        workflow(self.tmp, """
+name: CI
+on: [push]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+""")
+        with mock.patch.object(ci_act, "availability", return_value={"ok": True}), \
+             mock.patch.object(ci_act, "run_job",
+                               return_value={"exit_code": 1,
+                                             "output": SETUP_FAIL_LOG,
+                                             "timed_out": False,
+                                             "duration_ms": 9, "command": "act"}):
+            res = cr.run_ci(self.tmp, engine="act", event="push")
+        job = res.jobs[0]
+        self.assertEqual(job.parser, ci_act.SETUP_PARSER)
+        self.assertEqual(job.failures, [])
+        self.assertIn("authentication", job.reason.lower())
+        # A runner that could not start is never a green light.
+        self.assertEqual(job.status, cr.FAILED)
+        self.assertEqual(res.verdict, cr.FAIL)
+
+
 @unittest.skipUnless(ACT_READY, f"act+Docker unavailable: {ACT_STATE.get('reason')}")
 class TestActIntegration(ActTempProject):
     """The one test that really starts a container."""
@@ -475,6 +546,13 @@ jobs:
                        capture_output=True)
         res = cr.run_ci(self.tmp, engine="act", event="push")
         job = res.jobs[0]
+        if job.parser == ci_act.SETUP_PARSER:
+            # Nothing this test asserts could have been produced: no step ran.
+            # ACT_READY cannot predict this — on the box in issue #173 the
+            # image is present and `docker pull` succeeds, while act's own
+            # pull carries the stored registry credential and fails. Skipping
+            # here is the honest answer; failing on `parser != 'ruff'` was not.
+            self.skipTest(f"act could not start a runner container: {job.reason}")
         self.assertEqual(job.status, cr.FAILED)
         self.assertEqual(job.engine, "act")
         self.assertEqual(job.fidelity, cr.FIDELITY_CONTAINER)

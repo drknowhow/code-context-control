@@ -4,6 +4,78 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.129.0] - 2026-09-09
+
+### Fixed — a broken act runner no longer reports "0 parsed failures" (#173)
+
+`act` can fail *before any workflow step runs*: the runner image cannot be
+pulled, the daemon refuses, the container never starts. `ci_runner` handed
+that log to `ci_failures.parse` like any other failure, so it came back
+`parser: unparsed` with a log tail — and `c3_ci(action='failures')` answered
+"0 parsed failures" for what was really "the runner image could not be
+obtained".
+
+`ci_act.setup_failure()` now recognises it from act's own
+`Failure - Set up job` marker and names the cause: registry auth, missing
+image, dead daemon, or the daemon's own words. The job is reported with
+`parser: container-setup` and that reason. Status stays `FAILED` — a job
+that could not run is never a green light.
+
+`c3_ci(action='doctor')` reports whether the runner image is present locally
+(without pulling ~1 GB to find out) and says what a setup failure looks like.
+Note what a pre-flight probe **cannot** do: in the reported case the image
+was present and `docker pull` succeeded, while act's own pull failed because
+act sends the stored registry credential where the CLI sends none. Only a
+real act run surfaces that, which is why the classification lives in the
+runner. `tests/test_ci_act.py`'s one container test now skips with that
+reason instead of failing on `parser != 'ruff'` when no step ever ran.
+
+### Fixed — `c3_read` reads outside the project root instead of crashing
+
+A path outside the project root did not get a refusal. It got an uncaught
+`ValueError` out of `Path.relative_to` in `handle_read`, surfaced as
+`Error calling tool 'c3_read': '…' is not in the subpath of '…'`. Nothing
+in the tool ever checked containment: `validate_file_path` is a ghost-path
+heuristic (type names, heredoc markers, redirect artifacts) and
+`access_guard.canonicalize` returns `rel=""` with **no denial** for an
+outside path, which `tests/test_access_guard.py` has always asserted.
+
+The accidental boundary was worth nothing as a control:
+
+- Access Guard rules match the **absolute canonical path** as well as the
+  project-relative one (`Rule.matches` tests `canon`), so `**/.env*`,
+  `**/.c3/secrets.enc` and user `deny` globs already bound on outside
+  paths. That is where the protection lives, and it is unchanged.
+- The PreToolUse hook deliberately stands down outside the root, so native
+  `Read` went there unimpeded. Refusing only pushed the agent off the
+  budgeted, guarded, telemetered tool onto the one with none of that.
+
+It also leaked. `full.exists()` was checked *before* the throw, so an
+existing outside file produced the subpath error and a missing one produced
+`File not found` — a distinguishable-response probe over the whole
+filesystem, which is exactly what the R2 rule quoted three lines above that
+code exists to prevent.
+
+Outside paths are now read: source, maps, symbol reads and directory maps.
+Access Guard still runs first, unchanged. What the root still decides is
+**indexing** — `file_memory` is keyed by project-relative path and feeds the
+text index, the map cache and `prune_stale`, so an outside file is served
+from a transient record (`FileMemoryStore.build_transient_record`): same
+parser, same schema, never persisted, never looked up. Directory maps
+outside the root extract symbols the same transient way, under the same
+file/deadline/byte bounds.
+
+Every outside response opens with
+`[c3-read:external] <abs path> — outside the project root; served but not
+indexed, …`. Related facts are suppressed there (they are project knowledge
+keyed by project-relative path), and telemetry carries `external: true`.
+
+A hard root boundary is available as an Access Guard rule; it is not a
+property of the tool. See `docs/file-map.md` § Outside the root.
+
+`c3_edit` already tolerated outside paths (it falls back to `rel = file_path`
+for the ledger) and is unchanged here.
+
 ## [2.128.1] - 2026-09-08
 
 Both of these were found by shipping 2.128.0 and watching the runtime, not
