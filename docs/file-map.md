@@ -159,3 +159,48 @@ symbol's signature, then rendering every symbol.
   lines and ends with `… N more symbols (map budget …)`; ask for the part
   you need with `symbols=[…]` or `lines=[a,b]`. (For a directory map,
   `lines=<int>` sets the budget — a directory has no line numbers.)
+
+## Outside the root (2.129.0)
+
+`c3_read` reads a path outside the project root — a sibling repo, an
+additional working directory, `~/.claude/CLAUDE.md`, installed package
+source. Source, maps, symbol reads and directory maps all work there.
+
+Until 2.129.0 it did not: `relative_to` raised `ValueError` and the tool
+call died with *"is not in the subpath of"*. That was never a control. Two
+things make the boundary fictional as security:
+
+- Access Guard rules match the **absolute canonical path** as well as the
+  project-relative one (`Rule.matches` tests `canon`), so `**/.env*`,
+  `**/.c3/secrets.enc` and any user `deny` glob bind on an outside path
+  exactly as they do inside. The guard runs before path resolution and is
+  unchanged.
+- The PreToolUse hook deliberately stands down outside the root (*"none of
+  this hook's business"*), so native `Read` already went there unimpeded.
+
+So the refusal protected nothing and only pushed the agent off the
+budgeted, guarded, telemetered tool onto the one with none of that. It
+also leaked: an existing outside file produced the subpath error while a
+missing one produced `File not found`, making `c3_read` an existence
+oracle for the whole filesystem — the exact distinguishable-response probe
+Access Guard's R2 exists to prevent.
+
+What the root **does** decide is indexing. `file_memory` is keyed by
+project-relative path and feeds the text index, the map cache and
+`prune_stale`, so an outside file is served from a transient record
+(`FileMemoryStore.build_transient_record`) — same parser, same schema,
+never persisted, never looked up. A directory outside the root extracts
+symbols the same transient way, under the same file/deadline/byte bounds.
+
+Every outside response opens with a banner:
+
+```
+[c3-read:external] C:/Users/me/other-repo/lib.py — outside the project root; served but not indexed, and absent from this project's search, map cache and related facts.
+```
+
+Related facts are suppressed there (they are project knowledge keyed by
+project-relative path; matching one by basename would be a lie), and
+telemetry carries `external: true`.
+
+Want a hard boundary anyway? That is an Access Guard rule, not a property
+of the tool — the rest of the policy surface already lives there.

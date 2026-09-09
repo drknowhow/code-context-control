@@ -11,9 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from cli.tools import _grants
-from cli.tools._helpers import finalize_with_tokens, show_token_ratios
+from cli.tools._helpers import external_banner, finalize_with_tokens, project_key, show_token_ratios
 from core import count_tokens
 from services import access_guard
+from services.file_map import render_map
 
 #: Every mode name c3_compress ever accepted, and what to say about it now.
 RETIRED_MODES = {
@@ -35,7 +36,8 @@ def deprecation_line(requested: str) -> str:
 
 
 def map_detail(svc, rel: str, requested_mode: str, *, cache_hit: bool,
-               symbols: int = 0, fallback: str = "") -> dict:
+               symbols: int = 0, fallback: str = "", record: dict = None,
+               external: bool = False) -> dict:
     """Telemetry `detail` for a map served from file_memory (C0, 2.120.0).
 
     backend names the code path, parser the extractor that built the record
@@ -43,13 +45,15 @@ def map_detail(svc, rel: str, requested_mode: str, *, cache_hit: bool,
     whether the record was already fresh. `symbols` is how many the caller
     asked for and `fallback` why a read served a map instead of source.
     `deprecated_mode` (2.122.0) is set when a retired mode name was asked for.
+    `record` is a caller-supplied transient record (an outside-the-root read,
+    which is deliberately absent from file_memory) and `external` flags it.
     Flat so telemetry.aggregate_tool_telemetry can fold it without a schema.
     """
-    record = None
-    try:
-        record = svc.file_memory.get(rel)
-    except Exception:
-        record = None
+    if record is None:
+        try:
+            record = svc.file_memory.get(rel)
+        except Exception:
+            record = None
     if not isinstance(record, dict):
         record = None
     detail = {
@@ -65,6 +69,9 @@ def map_detail(svc, rel: str, requested_mode: str, *, cache_hit: bool,
         detail["fallback"] = fallback
     if requested_mode not in ("map", "read"):
         detail["deprecated_mode"] = requested_mode
+    if external:
+        detail["backend"] = "transient"
+        detail["external"] = True
     return detail
 
 
@@ -136,20 +143,37 @@ def _compress_single(file_path: str, requested: str, note: str, svc, finalize) -
     if not full.exists():
         return ("[file_map:error] not found. To create a new file use "
                 "c3_edit(file_path=..., old_string='', new_string=<content>).")
-    rel = str(full.resolve().relative_to(Path(svc.project_path).resolve())).replace("\\", "/")
-    # C0 measurement: was the record already fresh before this call?
-    cache_hit = not svc.file_memory.needs_update(rel)
-    res = _build_map(svc, rel)
+    resolved = full.resolve()
+    rel, external = project_key(resolved, svc.project_path)
+    # Outside the root the map comes from a transient record — same parser,
+    # never written to an index keyed by project-relative path
+    # (docs/file-map.md § Outside the root). c3_read does the same thing; the
+    # two map surfaces must not disagree about where a file may live.
+    banner = external_banner(rel) if external else ""
+    if external:
+        ext_record = svc.file_memory.build_transient_record(resolved, key=rel)
+        cache_hit = False
+        body = (render_map(ext_record, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
+                if ext_record
+                else f"[file_map] Could not build map for {rel} — unreadable.")
+    else:
+        ext_record = None
+        # C0 measurement: was the record already fresh before this call?
+        cache_hit = not svc.file_memory.needs_update(rel)
+        body = _build_map(svc, rel)
+    res = banner + body
     raw_tokens = None
     map_tokens = 0
     try:
         raw_text = full.read_text(encoding="utf-8", errors="replace")
         raw_tokens = count_tokens(raw_text)
         map_tokens = count_tokens(res)
-        if map_tokens >= raw_tokens and not res.startswith("[file_map]"):
+        if map_tokens >= raw_tokens and not body.startswith("[file_map]"):
             # A map that costs more than the file is worth nothing
             # (docs/file-map.md § Small files).
-            res = f"[compress:{file_path}] whole file — smaller than its map\n" + raw_text
+            res = (banner
+                   + f"[compress:{file_path}] whole file — smaller than its map\n"
+                   + raw_text)
             map_tokens = count_tokens(res)
         summary = "map"
     except Exception:
@@ -162,7 +186,8 @@ def _compress_single(file_path: str, requested: str, note: str, svc, finalize) -
         res, summary,
         raw_tokens=raw_tokens, optimized_tokens=map_tokens or None,
         response_tokens=map_tokens,
-        detail=map_detail(svc, rel, requested, cache_hit=cache_hit))
+        detail=map_detail(svc, rel, requested, cache_hit=cache_hit,
+                          record=ext_record, external=external))
 
 
 def _compress_batch(paths: list, requested: str, note: str, svc, finalize) -> str:
@@ -195,10 +220,17 @@ def _compress_batch(paths: list, requested: str, note: str, svc, finalize) -> st
                 full = Path(fp)
             if not full.exists():
                 return fp, None, None, None, "not found"
-            rel = str(full.resolve().relative_to(
-                Path(svc.project_path).resolve())).replace("\\", "/")
-            res = svc.file_memory.get_or_build_map(
-                rel, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
+            resolved = full.resolve()
+            rel, external = project_key(resolved, svc.project_path)
+            if external:
+                record = svc.file_memory.build_transient_record(resolved, key=rel)
+                res = external_banner(rel) + (
+                    render_map(record, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
+                    if record
+                    else f"[file_map] Could not build map for {rel} — unreadable.")
+            else:
+                res = svc.file_memory.get_or_build_map(
+                    rel, max_tokens=svc.file_memory.MAP_TOKEN_BUDGET)
             try:
                 raw_tok = count_tokens(full.read_text(encoding="utf-8", errors="replace"))
                 map_tok = count_tokens(res)

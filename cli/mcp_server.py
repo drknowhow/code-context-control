@@ -734,7 +734,10 @@ async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
     """READ source, or MAP a file when called with only file_path (read-only, plan-mode safe).
     file_path: single or comma-separated. symbols: names as the map prints them (Class.method ok).
     lines: int, [start,end], or list of ranges. No symbols/lines = one line per symbol with
-    signature and [La-Lb] range at ~10% of the file's tokens; then read the symbols you need."""
+    signature and [La-Lb] range at ~10% of the file's tokens; then read the symbols you need.
+    Paths OUTSIDE the project root are read too (sibling repo, extra working dir, installed
+    package source): tagged [c3-read:external], served from a transient record, never added
+    to this project's index or related facts. Access Guard rules still apply there."""
     path_err = validate_file_path(file_path)
     if path_err:
         return f"[c3_read:error] {path_err}"
