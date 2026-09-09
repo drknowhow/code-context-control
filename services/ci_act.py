@@ -116,6 +116,19 @@ def availability() -> dict:
     info["docker"] = True
     info["docker_version"] = out.strip().splitlines()[-1] if out.strip() else ""
     info["ok"] = True
+
+    # Is the default runner image already local? Absent, the first act run
+    # pulls ~1 GB, which is worth warning about but is not unreadiness. This
+    # probe deliberately does NOT pull: it cannot, in any case, predict the
+    # failure in issue #173 — there the image is present and `docker pull`
+    # succeeds, while act's own pull fails because act sends the stored
+    # registry credential and the CLI does not. Only a real act run shows
+    # that, which is why the runner classifies it (see setup_failure).
+    rc, _ = _probe(["docker", "image", "inspect", DEFAULT_IMAGE], timeout=20)
+    info["image_present"] = rc == 0
+    if rc != 0:
+        info["warning"] = (f"runner image {DEFAULT_IMAGE} is not present "
+                           "locally; the first act run pulls ~1 GB.")
     return info
 
 
@@ -241,6 +254,53 @@ def build_command(inst, project, act_path: str, event: str = "",
 # filename — `file=[CI/lint] ⭐ Run Main echo "app/x.py` — which makes the
 # structured failure useless. Parse the gutter lines only.
 _ACT_OUTPUT_LINE = re.compile(r"^\[[^\]]*\]\s{0,3}\|\s?(.*)$")
+
+
+# ── Setup-phase failures ────────────────────────────────────────────────────
+# act can fail BEFORE any workflow step runs: the runner image cannot be
+# pulled, the daemon refuses, the container never starts. Nothing the failure
+# parsers look for was ever printed, so parsing that log yields `unparsed` and
+# `c3_ci(action='failures')` answers "0 parsed failures" — for what is really
+# "the runner image could not be obtained" (issue #173). Classify it instead.
+SETUP_PARSER = "container-setup"
+
+_SETUP_FAILED = re.compile(r"(?:❌\s*)?Failure\s+-\s+Set up job", re.I)
+_DAEMON_ERROR = re.compile(r"Error response from daemon:\s*(.+)", re.I)
+_SETUP_REASONS = (
+    (re.compile(r"authentication required|incorrect username or password", re.I),
+     "the Docker registry rejected the runner image pull with an "
+     "authentication error. act sends the stored Docker credential where the "
+     "CLI sends none for a public image, so an expired token turns a public "
+     "pull into an auth failure — `docker logout` clears it."),
+    (re.compile(r"pull access denied|repository does not exist|manifest unknown", re.I),
+     "the runner image could not be found in the registry."),
+    (re.compile(r"Cannot connect to the Docker daemon|daemon is not running|"
+                r"docker daemon is not running", re.I),
+     "the Docker daemon is not reachable — start Docker and retry."),
+    (re.compile(r"no space left on device", re.I),
+     "the Docker host ran out of disk space pulling the runner image."),
+)
+
+
+def setup_failure(text: str) -> str:
+    """Why act failed before any workflow step ran, or '' if it got that far.
+
+    The verdict marker is act's own `Failure - Set up job`; the patterns after
+    it only supply a reason a human can act on. A job that reached its steps
+    and failed there is NOT a setup failure and must still go to the parsers.
+    """
+    text = text or ""
+    if not _SETUP_FAILED.search(text):
+        return ""
+    for pattern, reason in _SETUP_REASONS:
+        if pattern.search(text):
+            return f"act could not start the runner container: {reason}"
+    daemon = _DAEMON_ERROR.search(text)
+    if daemon:
+        return ("act could not start the runner container — the Docker daemon "
+                f"said: {daemon.group(1).strip()[:200]}")
+    return ("act failed during 'Set up job': the runner container never "
+            "started, so no workflow step ran.")
 
 
 def program_output(text: str) -> str:
