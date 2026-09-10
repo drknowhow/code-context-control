@@ -530,6 +530,153 @@ def resolve_for_path(path) -> OverridePolicy:
     return resolve(str(root)) if root else DISABLED
 
 
+class PolicyEditError(ValueError):
+    """A rejected policy edit. `widens` is set when the reason is a widening.
+
+    Carries the same fields the mobile route already returned so a caller can
+    render them without re-deriving anything: `payload` is the JSON body, and
+    `status` the HTTP code the route should use.
+    """
+
+    def __init__(self, message: str, *, status: int = 400,
+                 payload: dict | None = None, widens: list | None = None):
+        super().__init__(message)
+        self.status = status
+        self.payload = dict(payload or {"error": message})
+        self.widens = list(widens or [])
+
+
+def widenings(current: "OverridePolicy", section: dict) -> list:
+    """Which requested changes LOOSEN the policy. Names, for the challenge.
+
+    Extracted from ``oracle.services.mobile_api`` in 2.129.2 so the hub's own
+    Security screen and the phone answer to ONE implementation. Two copies of
+    "what counts as widening" is two chances for a surface to quietly allow
+    something the other refuses, and this is the check that decides whether a
+    tap needs a typed confirmation.
+    """
+    out: list = []
+    if section.get("enabled") and not current.enabled:
+        out.append("enabled")
+    for key, want in (section.get("layers") or {}).items():
+        if want and not current.layers.get(key, False):
+            out.append(f"layers.{key}")
+    for key in ("max_ttl_s", "default_uses", "request_ttl_s",
+                "max_pending_per_session", "max_requests_per_hour",
+                # A longer TTL or a longer idle window both mean a rule grant
+                # outlives more of the conversation, which is a loosening even
+                # though nothing about it looks like a permission.
+                "rule_grant_ttl_s", "rule_grant_idle_s"):
+        if key in section:
+            try:
+                if int(section[key]) > int(getattr(current, key)):
+                    out.append(key)
+            except (TypeError, ValueError):
+                pass
+    if section.get("allow_session_grants") and not current.allow_session_grants:
+        out.append("allow_session_grants")
+    if section.get("allow_rule_grants") and not current.allow_rule_grants:
+        out.append("allow_rule_grants")
+    return out
+
+
+def write_section(project, section: dict) -> dict:
+    """Merge *section* into the project's `.c3/config.json` `override` block.
+
+    Project scope only. A global override policy governs every project on the
+    machine, and no remote surface has an affordance for reviewing that blast
+    radius.
+    """
+    from services.atomic_json import write_json_atomic  # noqa: PLC0415
+
+    cfg_file = Path(project) / ".c3" / "config.json"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {}
+    if cfg_file.is_file():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8")) or {}
+        except ValueError as exc:
+            raise ValueError(f"project config is not valid JSON: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise ValueError("project config is not a JSON object")
+    block = dict(cfg.get("override") or {})
+    for key, value in section.items():
+        if key == "layers":
+            merged = dict(block.get("layers") or {})
+            merged.update({k: bool(v) for k, v in (value or {}).items()})
+            block["layers"] = merged
+        else:
+            block[key] = value
+    cfg["override"] = block
+    # Shared with the CLI and the hub, and served from a threaded API, so the
+    # publish goes through the one race-safe writer rather than a temp name
+    # every writer of this file would pick.
+    write_json_atomic(cfg_file, cfg, ensure_ascii=False, trailing_newline=False)
+    return block
+
+
+#: The one `override` key no REMOTE surface may write: it is an argv this
+#: machine will execute. The hub is a desktop surface on localhost, so it is
+#: allowed to; the phone is not. Callers pass ``allow_wake``.
+WAKE_KEY = "wake"
+
+
+def apply_section(project_path, section: dict, *, confirmed: bool = False,
+                  allow_wake: bool = False) -> tuple[dict, list]:
+    """Validate, widening-check and write one `override` edit.
+
+    Returns ``(written_block, widens)``. Raises :class:`PolicyEditError` with
+    the status and body the caller should surface.
+
+    Widening — enabling the feature, turning a layer on, raising a ceiling, or
+    allowing session grants — needs ``confirmed=True``. Tightening never does:
+    making the guard stricter is always allowed to be one tap.
+    """
+    if not isinstance(section, dict):
+        raise PolicyEditError("body needs an 'override' object")
+
+    if WAKE_KEY in section and not allow_wake:
+        raise PolicyEditError(
+            "'wake' cannot be set from this surface — it names a command this "
+            "machine runs. Edit .c3/config.json on the desktop.",
+            status=403, payload={"error": (
+                "'wake' cannot be set from this surface — it names a command "
+                "this machine runs. Edit .c3/config.json on the desktop."),
+                "key": WAKE_KEY})
+
+    unknown = sorted(set(section) - set(DEFAULTS))
+    if unknown:
+        # Unknown keys are a hard error, never a silent no-op.
+        raise PolicyEditError(
+            f"unknown override key(s): {', '.join(unknown)}",
+            payload={"error": f"unknown override key(s): {', '.join(unknown)}",
+                     "valid": sorted(DEFAULTS)})
+
+    layers = section.get("layers")
+    if layers is not None:
+        if not isinstance(layers, dict):
+            raise PolicyEditError("'layers' must be an object")
+        bad = sorted(set(layers) - set(LAYER_KEYS))
+        if bad:
+            raise PolicyEditError(
+                f"unknown layer(s): {', '.join(bad)}",
+                payload={"error": f"unknown layer(s): {', '.join(bad)}",
+                         "valid": list(LAYER_KEYS)})
+
+    current = resolve(str(project_path))
+    widens = widenings(current, section)
+    if widens and not confirmed:
+        raise PolicyEditError(
+            "this widens what an approval can allow: " + ", ".join(widens),
+            payload={"error": ("this widens what an approval can allow: "
+                               + ", ".join(widens)),
+                     "widens": widens,
+                     "needs_confirmation": True, "confirm_with": "widen"},
+            widens=widens)
+
+    return write_section(project_path, section), widens
+
+
 def offer_line(layer_key: str, path, tool: str, op: str) -> str:
     """The single line appended to a refusal when a layer IS escalatable.
 

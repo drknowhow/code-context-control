@@ -3259,6 +3259,85 @@ def api_hub_override_costs():
                     "project": project_path})
 
 
+@app.route("/api/hub/overrides/policy", methods=["GET"])
+def api_hub_override_policy_get():
+    """The effective `override` section for one project.
+
+    WHY THE HUB NEEDS THIS. The hub could already LIST override requests and
+    DECIDE them, but not say whether requests may exist at all — that lives in
+    `override.enabled`, which was reachable only from the phone API or by hand-
+    editing `.c3/config.json`. So the hub could answer a question the agent was
+    never allowed to ask, and the only way to change that was a text editor.
+
+    Registered BEFORE the POST-only ``<request_id>`` route for the same reason
+    ``costs`` is: a GET on ``policy`` must never fall through to a 405 there.
+    """
+    from services import override_policy as opol
+    raw = (request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        project_path = str(_resolve_project_path(raw))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    policy = opol.resolve(project_path)
+    return jsonify({
+        "path": project_path,
+        "project_name": Path(project_path).name,
+        "policy": policy.as_dict(),
+        "layers": list(opol.LAYER_KEYS),
+        "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
+        "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
+        # Verbatim from the spec, and the one thing a toggle screen must not
+        # let the reader forget: policy is a floor, not a promise.
+        "coverage_note": (
+            "Project and global policy merge by tightening only: a layer is "
+            "escalatable iff both scopes allow it, and the numeric limits take "
+            "the smaller value."
+        ),
+    })
+
+
+@app.route("/api/hub/overrides/policy", methods=["POST"])
+def api_hub_override_policy_set():
+    """Edit one project's `override` section from the hub.
+
+    Widening — enabling the feature or turning a layer on — needs
+    ``confirm: "widen"``. Tightening never does: making the guard stricter is
+    always allowed to be one click.
+
+    Validation, widening detection and the write are
+    ``services.override_policy``'s, shared verbatim with the phone route. Two
+    implementations of "what counts as widening" would be two chances for one
+    surface to allow what the other refuses, and this is the check that decides
+    whether an action needs a typed confirmation.
+
+    ``wake`` is accepted here and refused on the phone: it names a command this
+    machine runs, and the hub is a desktop surface on this box.
+    """
+    from services import override_policy as opol
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        project_path = str(_resolve_project_path(raw))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        written, widens = opol.apply_section(
+            project_path, data.get("override"),
+            confirmed=(data.get("confirm") == "widen"),
+            allow_wake=True)
+    except opol.PolicyEditError as exc:
+        return jsonify(exc.payload), exc.status
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+    return jsonify({"path": project_path, "written": written,
+                    "policy": opol.resolve(project_path).as_dict(),
+                    "widened": widens})
+
+
 @app.route("/api/hub/overrides/<request_id>", methods=["POST"])
 def api_hub_override_decide(request_id):
     """Approve (minting a grant) or deny one request. decided_by='desktop'.

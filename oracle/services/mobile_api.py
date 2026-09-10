@@ -2332,7 +2332,7 @@ def mobile_overrides_policy_set():
     section = data.get("override")
     if not isinstance(section, dict):
         return jsonify({"error": "body needs an 'override' object"}), 400
-    if _WAKE_KEY in section:
+    if _WAKE_KEY in section:  # noqa: SIM102 — kept for the phone-specific copy
         # `wake` is an argv this machine will execute. Everything else on this
         # route widens what a tap can approve; this one would decide what runs
         # when it does. A bearer token from a phone is authentication, not
@@ -2387,7 +2387,23 @@ def mobile_overrides_policy_set():
 
 
 def _override_widenings(current, section: dict) -> list:
-    """Which requested changes LOOSEN the policy. Names, for the challenge."""
+    """Which requested changes LOOSEN the policy. Names, for the challenge.
+
+    DELEGATES to ``services.override_policy.widenings`` since 2.129.2, when the
+    hub gained its own Security screen. Two copies of "what counts as widening"
+    is two chances for one surface to quietly allow something the other
+    refuses — and this is the check that decides whether a tap needs a typed
+    confirmation. The name is kept because the mobile route tests call it.
+    """
+    from services import override_policy as _opol  # noqa: PLC0415
+
+    return _opol.widenings(current, section)
+
+
+def _override_widenings_legacy(current, section: dict) -> list:
+    """Retired inline copy, kept only as the reference the extraction came
+    from; ``tests/test_override_policy_shared.py`` asserts it agrees with the
+    service so the move can be shown to have preserved behaviour."""
     out = []
     if section.get("enabled") and not current.enabled:
         out.append("enabled")
@@ -2416,10 +2432,18 @@ def _override_widenings(current, section: dict) -> list:
 def _write_override_section(project: Path, section: dict) -> dict:
     """Merge *section* into the project's `.c3/config.json` `override` block.
 
-    Project scope only. A global override policy governs every project on the
-    machine, and the phone has no affordance for reviewing that blast radius —
-    same call `mobile_enforcement_set` makes about machine-wide discipline.
+    DELEGATES to ``services.override_policy.write_section`` since 2.129.2 so
+    the hub's Security screen and the phone write the file the same way — same
+    merge semantics for `layers`, same atomic publish. The name is kept because
+    the mobile route tests patch it.
     """
+    from services import override_policy as _opol  # noqa: PLC0415
+
+    return _opol.write_section(project, section)
+
+
+def _write_override_section_legacy(project: Path, section: dict) -> dict:
+    """Retired inline copy; see ``_override_widenings_legacy``."""
     cfg_file = Path(project) / ".c3" / "config.json"
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
     cfg = {}
