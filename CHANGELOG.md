@@ -4,6 +4,30 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.129.1] - 2026-09-10
+
+### Fixed
+- **A corrupt embedding store no longer kills the MCP server.** A damaged HNSW
+  segment does not surface when the store is opened: chromadb hands back a
+  client and a collection handle, then faults on the first real read. That read
+  lands on the background `c3-embed-index` thread
+  (`build` → `_remove_file_chunks` → `Collection.get`), and the fault is a
+  native access violation, so the whole process dies. The host sees only a
+  server that connected, listed its tools and vanished — Claude Code logged
+  `Successfully connected (transport: stdio) in 2830ms` and then nothing, and
+  reported `c3` as failed to connect with no error to chase. Twice now
+  (2026-07-17, 2026-09-06). `EmbeddingIndex._open_chroma` now probes the store
+  with `count()` on the init path, where the failure is still a catchable
+  Python exception, and treats a failed probe as corruption: close the client
+  (Windows will not release `chroma.sqlite3` otherwise), move the store and its
+  hash file to `.c3/embeddings/quarantine_corrupt_<timestamp>/`, and reopen
+  empty. The hash file goes with it — it claims vectors the fresh store does
+  not have, so leaving it behind would suppress the very rebuild the quarantine
+  exists to force. One retry, never a loop; if the replacement store also fails
+  its probe the index degrades to unavailable instead of taking the server with
+  it. The store is a rebuildable cache, so recovery costs one re-embed and no
+  data. Verified against the real corrupt store from 2026-09-06.
+
 ## [2.129.0] - 2026-09-09
 
 ### Fixed — a broken act runner no longer reports "0 parsed failures" (#173)
@@ -222,7 +246,6 @@ project's settings at hub startup, but for exactly one hardcoded entry
   double-quoted forward-slash path ever since; that logic now lives in
   `cli/_hook_utils.hook_command_arg` and both writers call it. A test pins
   the migration's command string against the installer's, byte for byte.
-
 ## [2.127.0] - 2026-09-06
 
 ### Added — override cost data: "this rule is costing you" (C3 Desk, D3a)
