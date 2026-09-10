@@ -4,6 +4,44 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.129.2] - 2026-09-10
+
+### Added — the hub could decide override requests but not allow them
+
+The Access screen already listed override requests and approved or denied
+them. Nothing exposed `override.enabled`, which decides whether a request
+may *exist* — so the hub answered a question the agent was never permitted
+to ask, and the only ways to change that were the mobile API or hand-editing
+`.c3/config.json`.
+
+`GET`/`POST /api/hub/overrides/policy`, plus a **"May agents ask?"** panel
+between the costing strip and the request list: project picker, the enable
+toggle, the seven escalatable layers, and the two caveats a toggle screen
+must not let a reader forget — policy merges by *tightening only*, and the
+credential vault, `.c3/secrets.enc`, `.c3/cred_state.json`, the dispatcher
+fail-closed deny and the catastrophic shell blocks are never escalatable at
+any setting.
+
+Widening — enabling the feature or turning a layer on — needs a typed
+confirmation; tightening never does, because making the guard stricter
+should always be one click. The panel asks in plain words before sending
+rather than surfacing a 400 afterwards, and the server refuses anyway if it
+does not.
+
+### Changed — one implementation of "what counts as widening", not two
+
+Validation, widening detection and the config write moved into
+`services/override_policy` (`apply_section`, `widenings`, `write_section`);
+`oracle/services/mobile_api` now delegates to them. Two copies would be two
+chances for one surface to quietly allow what the other refuses, and this is
+the check that decides whether an approval needs a challenge. The retired
+inline copy is kept as `_override_widenings_legacy` solely so a test can
+prove the move preserved behaviour rather than assert it.
+
+`wake` stays asymmetric on purpose: refused from the phone, accepted from
+the hub. It names an argv this machine runs, and a bearer token is
+authentication, not physical presence.
+
 ## [2.129.1] - 2026-09-10
 
 ### Fixed — the file watcher counted gitignored churn as source changes, and the MCP server's memory never came back
