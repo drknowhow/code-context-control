@@ -7,12 +7,15 @@ Watches project files for changes and tracks modifications:
 - Accumulates changes for session logging
 - Triggers index rebuild when enough changes accumulate
 """
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+
+from services.scanner import SKIP_DIRS, is_nested_checkout, make_dir_pruner
 
 # Extensions to watch
 CODE_EXTENSIONS = {
@@ -21,32 +24,93 @@ CODE_EXTENSIONS = {
     '.sh', '.sql', '.go', '.rs', '.java', '.cpp', '.c', '.h',
 }
 
-# Directories to skip
-SKIP_DIRS = {
-    'node_modules', '.git', '__pycache__', '.c3', 'venv',
-    'env', '.venv', 'dist', 'build', '.next', '.cache',
-    'coverage', '.pytest_cache',
-}
+# SKIP_DIRS is re-exported from services.scanner: the watcher and the index
+# walker must agree on what is not part of the project (see _ChangeHandler).
+__all__ = ['CODE_EXTENSIONS', 'SKIP_DIRS', 'CodeWatcher']
 
 
 class _ChangeHandler(FileSystemEventHandler):
-    """Collects file change events."""
+    """Collects file change events.
 
-    def __init__(self, excluder=None):
+    The filter is the index scanner's, not a private one. A change only
+    counts when the file could be IN the index: the same directory pruning
+    as ``scanner.iter_files`` (SKIP_DIRS, the root .gitignore's directory
+    entries, nested checkouts such as linked worktrees), then the
+    sub-project excluder, then the extension allowlist.
+
+    Before 2.129.1 the watcher kept its own shorter skip list and ignored
+    .gitignore and worktrees, so state files a daemon rewrites every few
+    seconds under a gitignored ``logs/`` counted as source changes. On one
+    project that tripped IndexStalenessAgent's rebuild threshold (15) every
+    single minute — the "Index auto-rebuilt" notification reached a count of
+    75,968 — and each refresh burst left the MCP server's process heap with
+    more pinned 16 MB segments it never gave back: 28 GB of commit charge
+    per server with under 1 GB touched, three servers on the project, and
+    the C3 Hub dying of MemoryError when the box ran out of commit.
+    """
+
+    def __init__(self, excluder=None, root=None):
         super().__init__()
         self._lock = threading.Lock()
         self._changes = []
         self._excluder = excluder  # sub-project folders tracked by their own .c3
+        self._root = Path(root) if root else None
+        self._pruned = make_dir_pruner(root) if root else (lambda d: d in SKIP_DIRS)
+        # dir path -> is another checkout; one stat per directory, not per event
+        self._checkout_cache: dict = {}
+
+    def _reload_pruner(self):
+        """Re-read the root .gitignore (called when it changes)."""
+        if self._root is not None:
+            self._pruned = make_dir_pruner(self._root)
+
+    def _rel_parts(self, p: Path) -> tuple:
+        if self._root is None:
+            return p.parts
+        try:
+            return p.relative_to(self._root).parts
+        except ValueError:
+            try:
+                return p.resolve().relative_to(self._root).parts
+            except (ValueError, OSError):
+                return p.parts
+
+    def _under_nested_checkout(self, rel_dirs: tuple) -> bool:
+        if self._root is None:
+            return False
+        cur = str(self._root)
+        for d in rel_dirs:
+            cur = os.path.join(cur, d)
+            hit = self._checkout_cache.get(cur)
+            if hit is None:
+                if len(self._checkout_cache) > 4096:
+                    self._checkout_cache.clear()
+                hit = self._checkout_cache[cur] = is_nested_checkout(cur)
+            if hit:
+                return True
+        return False
 
     def _should_track(self, path: str) -> bool:
         p = Path(path)
-        if any(skip in p.parts for skip in SKIP_DIRS):
+        if p.suffix.lower() not in CODE_EXTENSIONS:
+            return False
+        parts = self._rel_parts(p)
+        rel_dirs = parts[:-1]
+        if any(self._pruned(d) for d in rel_dirs):
+            return False
+        if self._under_nested_checkout(rel_dirs):
             return False
         if self._excluder is not None and self._excluder(path):
             return False
-        return p.suffix.lower() in CODE_EXTENSIONS
+        return True
 
     def _record(self, event_type: str, path: str):
+        if self._root is not None and Path(path).name == '.gitignore':
+            try:
+                if Path(path).parent.samefile(self._root):
+                    self._reload_pruner()
+            except OSError:
+                pass
         if not self._should_track(path):
             return
         with self._lock:
@@ -94,7 +158,7 @@ class CodeWatcher:
             excluder = make_excluder(self.project_path)
         except Exception:
             excluder = None
-        self._handler = _ChangeHandler(excluder)
+        self._handler = _ChangeHandler(excluder, root=self.project_path)
         self._observer = Observer()
         self._observer.daemon = True
         self._file_memory = None
