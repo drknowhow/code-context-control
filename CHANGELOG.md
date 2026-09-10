@@ -4,7 +4,40 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.129.0] - 2026-09-09
+## [2.129.1] - 2026-09-10
+
+### Fixed — the file watcher counted gitignored churn as source changes, and the MCP server's memory never came back
+
+`services/watcher.py` kept its own thirteen-entry skip list and tracked
+every `.json`/`.md`/`.yaml` under the project — ignoring the root
+`.gitignore` and linked worktrees that `scanner.iter_files` already
+prunes. On a project whose daemons rewrite four state files under a
+gitignored `logs/` every few seconds, that pushed the change counter past
+`IndexStalenessAgent`'s rebuild threshold (15) every minute: the
+"Index auto-rebuilt" notification on that project reached a count of
+**75,968**, and the FileMemory / BranchWatch / IndexStaleness /
+EditLedgerEnricher threads burned ~5 CPU hours in 17 hours on an idle
+session.
+
+The memory cost is the part that reached the user. Each refresh burst
+leaves the process heap with more 16 MB segments that a few surviving
+small blocks pin forever: one MCP server was at 28 GB of commit charge
+with under 1 GB of working set (one heap, ~1,770 segments, 99.9 % zero),
+and the box had three of them on the same project. Commit ran out, and
+the C3 Hub — an innocent bystander — started answering requests with
+`MemoryError` from inside werkzeug, which looked exactly like "the hub
+fails to start".
+
+`_ChangeHandler` now filters with the scanner's own pruning: the shared
+`SKIP_DIRS` superset, the root `.gitignore`'s directory entries (literal
+and single-segment globs), and nested checkouts, before the sub-project
+excluder and the extension allowlist. A change counts only when the file
+could be *in* the index. Editing the root `.gitignore` reloads the
+pruner. Nested-checkout probes are cached per directory, so the filter
+costs one stat per directory, not per event. `tests/test_watcher_pruning.py`
+covers gitignored dirs, globs, the reload, worktrees, scanner-only skip
+names, and the rootless legacy constructor.
+
 
 ### Fixed — a broken act runner no longer reports "0 parsed failures" (#173)
 
