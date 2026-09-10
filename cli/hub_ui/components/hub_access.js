@@ -482,6 +482,187 @@ function AccGrantsPanel({ projects }) {
 }
 
 // ── The tab ────────────────────────────────────────────────────────────────
+// ─── Override policy (the switch, not the requests) ───────────────────────
+//
+// WHY THIS PANEL EXISTS. This screen could already LIST override requests and
+// DECIDE them — but not say whether requests may exist at all. That lives in
+// `override.enabled`, and it was reachable only from the phone API or by hand-
+// editing .c3/config.json. So the hub answered a question the agent was never
+// allowed to ask, and the way to change that was a text editor.
+//
+// THE ONE RULE HERE: widening is never silent. Enabling the feature, or
+// turning a layer on, loosens what a single approval can allow. The server
+// refuses those without confirm:"widen"; this panel asks in plain words BEFORE
+// sending, rather than surfacing a 400 afterwards. Tightening goes straight
+// through — making the guard stricter should always be one click.
+
+// Plain-language layer names. The raw keys are accurate and mean nothing to
+// someone deciding whether to tick a box.
+const ACC_LAYER_NAMES = {
+  discipline: 'Discipline holds (native-tool nudges)',
+  access_readonly: 'Read-only paths — e.g. .git/**, .c3/**',
+  access_deny: 'Denied paths',
+  access_builtin: 'Built-in guards',
+  access_confirm: 'Confirm holds — agent-config files',
+  mask: 'Masked paths',
+  shell_warn: 'Shell warnings',
+};
+
+function accLayerName(key) { return ACC_LAYER_NAMES[key] || key; }
+
+function AccPolicyPanel({ projects }) {
+  const [path, setPath] = useState('');
+  const [data, setData] = useState(null);
+  const [draft, setDraft] = useState(null);   // {enabled, layers}
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async (p) => {
+    if (!p) { setData(null); setDraft(null); setErr(''); setMsg(''); return; }
+    try {
+      const d = await api.get(`/api/hub/overrides/policy?path=${encodeURIComponent(p)}`);
+      setData(d);
+      setDraft({
+        enabled: !!(d.policy || {}).enabled,
+        layers: { ...((d.policy || {}).layers || {}) },
+      });
+      setErr(''); setMsg('');
+    } catch (e) { setData(null); setDraft(null); setErr(apiErr(e)); }
+  }, []);
+
+  // Mirrors the server's own rule so the question is asked before the request,
+  // not after the refusal.
+  const widenings = () => {
+    if (!data || !draft) return [];
+    const cur = data.policy || {};
+    const out = [];
+    if (draft.enabled && !cur.enabled) out.push('enable override requests');
+    Object.entries(draft.layers || {}).forEach(([k, want]) => {
+      if (want && !(cur.layers || {})[k]) out.push(`allow asking about: ${accLayerName(k)}`);
+    });
+    return out;
+  };
+
+  const save = async () => {
+    if (!draft || !path) return;
+    const widens = widenings();
+    if (widens.length) {
+      const ok = window.confirm(
+        `This LOOSENS the guard:\n\n  • ${widens.join('\n  • ')}\n\n` +
+        'A yes still only lets the agent ASK — every request needs your ' +
+        'approval, and a grant is single-use and path-exact.\n\nApply?');
+      if (!ok) { setMsg('Unchanged.'); return; }
+    }
+    setBusy(true);
+    try {
+      const d = await api.post('/api/hub/overrides/policy', {
+        path,
+        override: { enabled: draft.enabled, layers: draft.layers },
+        confirm: widens.length ? 'widen' : undefined,
+      });
+      setData(d);
+      setDraft({
+        enabled: !!(d.policy || {}).enabled,
+        layers: { ...((d.policy || {}).layers || {}) },
+      });
+      setErr('');
+      setMsg((d.widened && d.widened.length)
+        ? `Saved — widened: ${d.widened.join(', ')}`
+        : 'Saved.');
+    } catch (e) { setErr(apiErr(e)); }
+    setBusy(false);
+  };
+
+  const typed = new Set((data && data.typed_confirm_layers) || []);
+  const dirty = !!(data && draft) && (
+    draft.enabled !== !!(data.policy || {}).enabled ||
+    Object.entries(draft.layers || {}).some(
+      ([k, v]) => !!v !== !!((data.policy || {}).layers || {})[k]));
+
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
+      padding: '12px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>May agents ask?</div>
+        <select value={path}
+          onChange={e => { setPath(e.target.value); load(e.target.value); }}
+          style={{
+            background: T.surfaceAlt, color: T.text, border: `1px solid ${T.border}`,
+            borderRadius: 6, fontSize: 12, padding: '4px 8px', maxWidth: 340,
+          }}>
+          <option value="">— pick a project —</option>
+          {(projects || []).map(p => (
+            <option key={p.path} value={p.path}>{p.name || p.path}</option>
+          ))}
+        </select>
+        <span style={{ fontSize: 10.5, color: T.textDim }}>
+          off by default, per project
+        </span>
+      </div>
+
+      {err && <div style={{ marginTop: 8, fontSize: 11.5, color: T.error }}>{err}</div>}
+
+      {data && draft && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+            <input type="checkbox" checked={draft.enabled}
+              onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />
+            <span style={{ color: T.text, fontWeight: 600 }}>
+              Allow override requests for this project
+            </span>
+          </label>
+
+          <div>
+            <div style={{
+              fontSize: 10.5, fontWeight: 700, letterSpacing: 1,
+              textTransform: 'uppercase', color: T.textDim, marginBottom: 4,
+            }}>Escalatable layers</div>
+            {(data.layers || []).map(k => (
+              <label key={k} style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 11.5, color: T.textMuted, padding: '2px 0',
+              }}>
+                <input type="checkbox" checked={!!draft.layers[k]}
+                  onChange={e => setDraft({
+                    ...draft, layers: { ...draft.layers, [k]: e.target.checked },
+                  })} />
+                <span>{accLayerName(k)}</span>
+                {typed.has(k) && (
+                  <span style={{ fontSize: 10, color: T.textDim }}>
+                    — approving one makes you retype the rule
+                  </span>
+                )}
+              </label>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 10.5, color: T.textDim, lineHeight: 1.5 }}>
+            {data.coverage_note}
+            <br />
+            Never escalatable at any setting: the credential vault,
+            {' '}<span className="mono">.c3/secrets.enc</span>,
+            {' '}<span className="mono">.c3/cred_state.json</span>, the dispatcher
+            fail-closed deny, and the catastrophic shell blocks.
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button onClick={save} disabled={busy || !dirty} style={{
+              borderRadius: 6, fontSize: 12, padding: '5px 12px', cursor: dirty ? 'pointer' : 'default',
+              border: `1px solid ${dirty ? T.accent : T.border}`,
+              background: dirty ? T.accentDim : 'transparent',
+              color: dirty ? T.accent : T.textDim, fontWeight: dirty ? 700 : 400,
+            }}>{busy ? 'Saving…' : 'Save'}</button>
+            {msg && <span style={{ fontSize: 11.5, color: T.textMuted }}>{msg}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HubAccess({ projects }) {
   const [rows, setRows] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -558,6 +739,8 @@ function HubAccess({ projects }) {
       </div>
 
       <AccCostStrip onOpenRule={openRule} />
+
+      <AccPolicyPanel projects={projects} />
 
       {!loaded ? (
         <div style={{ fontSize: 12, color: T.textDim }}>Loading…</div>
