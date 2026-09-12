@@ -4,6 +4,71 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.130.0] - 2026-09-12
+
+### Added — AgentCI owns the DAG: job outputs, run-time `needs.*`, one job per act
+
+A workflow shaped like most real ones — a `changes` job that decides whether
+the suite must run, shards gated on `if: needs.changes.outputs.code == 'true'`,
+and a trailing aggregator whose `run:` reads `${{ needs.<job>.result }}` —
+could not run under `c3_ci` at all. Every job came back `UNSUP` with
+"unresolved expression(s): github.event.before, needs.changes.result".
+
+Three things were missing, each measured with a two-job probe before the
+fix:
+
+- **Job outputs.** The runner recorded each job's `result` for `if:` and
+  nothing else. Now every native step gets its own `GITHUB_OUTPUT` file
+  (`k=v` and `k<<EOF` forms), a job's `outputs:` mapping is resolved from
+  `steps.<id>.outputs.<k>`, and dependents read `needs.<job>.outputs.<name>`
+  in `if:` and in `run:`. Under act the same values come from the
+  `::set-output:: k=v` lines act logs. An output that was declared but never
+  written is refused, not blanked — CI would hand a dependent the real
+  value, and a blank standing in for it is the exact bug this engine exists
+  to catch. Jobs that publish outputs are never served from the verdict
+  cache, because a cache hit replays a verdict, not the values.
+- **`needs.*` in `run:` text.** Deferred at DAG-build time instead of
+  blocking, then filled in just before each step executes. `steps.*` the
+  same. A leftover at run time still refuses the step.
+- **`github.event.*`.** There is no payload locally. With a declared event
+  the field is `""` — what GitHub yields for a field a sparse payload lacks
+  and what act does — so a workflow written to handle an empty value runs.
+  Without a declared event it stays a blocker for the native engine (act
+  resolves it itself). `secrets.*` and `vars.*` block both engines as before.
+
+And one thing that was silently wrong: **`act -j <job>` runs the job's
+`needs` first**. C3 orders the DAG and runs each job with `-j`, so every
+dependency executed twice — once by C3, again inside the dependent's
+container — and an aggregator job replayed the whole workflow. act now
+receives a derived copy of the workflow (temp file, `-W` outside the tree,
+repository untouched) holding that one job with `needs` and `if:` removed
+and `needs.*` spelled out from C3's own results and outputs. A `needs.*`
+reference C3 never recorded is reported before act starts.
+
+### Fixed — two ways an act run died before its first step
+
+- **A cached image was still "pulled".** Every run passed `--pull=true`,
+  and act sends the stored Docker Hub credential on a pull where the CLI
+  sends none — so an expired login turned a public image already on disk
+  into "authentication required" (issue #173, now reproduced). The runner
+  checks `docker image inspect` first and pulls only what is missing.
+- **Two runs on one box collided on port 34567.** `--artifact-server-path`
+  makes act bind its artifact server to one fixed port, so a second act run
+  — another session, another project, the test suite beside a real run —
+  died with "bind: Only one usage of each socket address" and reported
+  `unparsed`. Each run now gets a free port.
+- **`--job X` dropped X's own dependencies.** Selecting `smokes` alone
+  deselected `changes`, and then `if: needs.changes.outputs.code == 'true'`
+  was unjudgeable — the selection had removed the job whose output it
+  reads. A selected job (and a `rerun`) now brings its transitive `needs`
+  along; everything else stays DESELECTED and the verdict stays PARTIAL.
+
+Measured on the workflow above (drknowhow/Yep, 10,683 tests): 6 of 6 jobs
+ran — `changes` alone in its container and its `code=true` captured, three
+shards gated on it and green, the aggregator handed real results. Verdict
+FAIL, honestly: one smoke module needs `java`, which GitHub's runner has and
+the act image does not. Before this release every job was `UNSUP`.
+
 ## [2.129.2] - 2026-09-10
 
 ### Added — the hub could decide override requests but not allow them
