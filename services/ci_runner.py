@@ -467,6 +467,23 @@ def _run_job_act(inst, project: Path, run_dir: Path, event: str,
     return result
 
 
+def _with_dependencies(chosen: set, ordered: list) -> set:
+    """*chosen* plus every job it transitively `needs` (all matrix cells)."""
+    by_job: dict = {}
+    for inst in ordered:
+        by_job.setdefault((inst.workflow, inst.job_id), []).append(inst)
+    out = set(chosen)
+    frontier = [i for i in ordered if i.key in chosen]
+    while frontier:
+        inst = frontier.pop()
+        for dep in inst.needs:
+            for dep_inst in by_job.get((inst.workflow, dep), []):
+                if dep_inst.key not in out:
+                    out.add(dep_inst.key)
+                    frontier.append(dep_inst)
+    return out
+
+
 def _eval_values(inst, needs_results: dict, github: dict) -> dict:
     """The contexts an `if:` may read, built from facts we actually have."""
     return {
@@ -822,6 +839,14 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
             return result
     else:
         chosen = {i.key for i in ordered}
+
+    # A selected job runs WITH its `needs`. Selecting `smokes` alone used to
+    # deselect `changes`, and then `if: needs.changes.outputs.code == 'true'`
+    # was unjudgeable — the selection had removed the very job whose output
+    # it reads (hit 2026-09-12 on the first `--job` run of a gated workflow).
+    # GitHub has no "one job" run; the closure is the smallest honest one.
+    if selector or only:
+        chosen = _with_dependencies(chosen, ordered)
 
     failed_jobs: set = set()        # job_ids whose failure blocks dependents
     results: list = []

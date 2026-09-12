@@ -57,6 +57,11 @@ reference C3 never recorded is reported before act starts.
   — another session, another project, the test suite beside a real run —
   died with "bind: Only one usage of each socket address" and reported
   `unparsed`. Each run now gets a free port.
+- **`--job X` dropped X's own dependencies.** Selecting `smokes` alone
+  deselected `changes`, and then `if: needs.changes.outputs.code == 'true'`
+  was unjudgeable — the selection had removed the job whose output it
+  reads. A selected job (and a `rerun`) now brings its transitive `needs`
+  along; everything else stays DESELECTED and the verdict stays PARTIAL.
 
 Measured on the workflow above (drknowhow/Yep, 10,683 tests): 6 of 6 jobs
 ran — `changes` alone in its container and its `code=true` captured, three

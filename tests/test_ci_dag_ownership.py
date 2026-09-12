@@ -343,6 +343,37 @@ jobs:
         log = Path(declared.jobs[0].log_path).read_text(encoding="utf-8")
         self.assertIn("before=[]", log)
 
+    def test_selecting_a_dependent_job_runs_what_it_needs(self):
+        # `--job smokes` used to deselect `changes`, and then the `if:` that
+        # reads changes' output was unjudgeable.
+        workflow(self.tmp, f"""
+name: CI
+on: [push]
+jobs:
+  changes:
+    runs-on: {LOCAL_RUNNER}
+    outputs:
+      code: ${{{{ steps.d.outputs.code }}}}
+    steps:
+      - id: d
+        run: echo "code=true" >> "$GITHUB_OUTPUT"
+  smokes:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: {LOCAL_RUNNER}
+    steps:
+      - run: echo smoked
+  unrelated:
+    runs-on: {LOCAL_RUNNER}
+    steps:
+      - run: echo not me
+""")
+        res = cr.run_ci(self.tmp, engine="native", selector="smokes")
+        jobs = {j.job_id: j for j in res.jobs}
+        self.assertEqual(jobs["changes"].status, cr.PASSED, jobs["changes"].reason)
+        self.assertEqual(jobs["smokes"].status, cr.PASSED, jobs["smokes"].reason)
+        self.assertEqual(jobs["unrelated"].status, cr.DESELECTED)
+
     def test_jobs_that_publish_outputs_are_never_served_from_cache(self):
         workflow(self.tmp, f"""
 name: CI
