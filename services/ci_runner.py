@@ -30,7 +30,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -127,6 +127,9 @@ class JobResult:
     failures: list = field(default_factory=list)
     parser: str = ""
     log_path: str = ""
+    # The job's declared `outputs:`, resolved from what its steps wrote to
+    # GITHUB_OUTPUT. Dependents read them as `needs.<job>.outputs.<name>`.
+    outputs: dict = field(default_factory=dict)
 
     @property
     def ran(self) -> bool:
@@ -142,7 +145,7 @@ class JobResult:
             "cross_os": self.cross_os, "duration_ms": self.duration_ms,
             "steps": [s.to_dict() for s in self.steps],
             "failures": self.failures, "parser": self.parser,
-            "log_path": self.log_path,
+            "log_path": self.log_path, "outputs": dict(self.outputs),
         }
 
 
@@ -367,8 +370,16 @@ def _pick_engine(inst, engine: str, act_state: dict, allow_foreign: bool):
 
 
 def _run_job_act(inst, project: Path, run_dir: Path, event: str,
-                 network: str, fidelity: str) -> JobResult:
-    """Delegate one job to act, then read its result the same way as any other."""
+                 network: str, fidelity: str, needs_ctx: dict = None) -> JobResult:
+    """Delegate one job to act, then read its result the same way as any other.
+
+    C3 owns the DAG. act, handed `-j <job>`, would run the job's `needs`
+    first — every dependency again, inside the container, on top of the run
+    C3 already made of them (an aggregator job would replay the whole
+    workflow). So act receives a derived copy of the workflow holding this
+    one job with `needs` removed and `needs.*` spelled out from C3's own
+    results (ci_act.derive_workflow), and runs exactly that job.
+    """
     result = JobResult(key=inst.key, job_id=inst.job_id, name=inst.name,
                        workflow=inst.workflow, runs_on=inst.runs_on,
                        status=PASSED, engine="act", fidelity=fidelity,
@@ -377,19 +388,42 @@ def _run_job_act(inst, project: Path, run_dir: Path, event: str,
     artifacts.mkdir(parents=True, exist_ok=True)
 
     outcome = ci_act.run_job(inst, project, event=event, network=network,
-                             artifact_dir=str(artifacts))
+                             artifact_dir=str(artifacts),
+                             needs_ctx=needs_ctx or {})
     header = (f"[c3:ci] job {inst.key} via act "
               f"(image {ci_act.image_for(inst.runs_on)}, host {host_os()})\n"
               f"[c3:ci] $ {outcome.get('command', '')}\n\n")
     log = header + (outcome.get("output") or "")
 
     result.duration_ms = outcome.get("duration_ms", 0)
-    if outcome.get("timed_out"):
+    if outcome.get("unresolved"):
+        result.status = UNSUPPORTED
+        result.reason = ("`needs.*` this job reads was never produced: "
+                         + ", ".join(outcome["unresolved"]))
+    elif outcome.get("timed_out"):
         result.status = TIMEOUT
         result.reason = "act exceeded its timeout; the container tree was killed"
     elif outcome.get("exit_code"):
         result.status = FAILED
         result.reason = f"act exited {outcome['exit_code']}"
+    elif inst.outputs:
+        # act logs every GITHUB_OUTPUT write as `::set-output:: k=v` but not
+        # which step wrote it; the derived workflow holds only this job, so
+        # every such line is this job's, and each declared output resolves
+        # against the union. Two steps writing the same key is the one shape
+        # this cannot tell apart (last wins, as it would on GitHub).
+        written = ci_act.job_outputs_from_log(outcome.get("output") or "")
+        steps_ctx = {(s.id or f"__step{s.index}"): {"outputs": dict(written)}
+                     for s in inst.steps}
+        result.outputs, missing = resolve_job_outputs(inst, steps_ctx)
+        if missing:
+            result.status = UNSUPPORTED
+            result.reason = ("job `outputs:` could not be resolved from act's "
+                             "log: " + "; ".join(missing))
+        else:
+            log += ("\n[c3:ci] job outputs: "
+                    + ", ".join(f"{k}={v}" for k, v in result.outputs.items())
+                    + "\n")
 
     # act reports per-step results in its own log format rather than as data,
     # so the job is recorded as one unit. The failure parsers read the log the
@@ -447,8 +481,59 @@ def _eval_values(inst, needs_results: dict, github: dict) -> dict:
     }
 
 
+def _read_github_output(path: Path) -> dict:
+    """Parse one step's GITHUB_OUTPUT file: `k=v` lines and `k<<EOF` blocks."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    out: dict = {}
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if "<<" in line and "=" not in line.split("<<", 1)[0]:
+            key, delim = line.split("<<", 1)
+            key, delim = key.strip(), delim.strip()
+            block: list = []
+            i += 1
+            while i < len(lines) and lines[i].strip() != delim:
+                block.append(lines[i])
+                i += 1
+            out[key] = "\n".join(block)
+        elif "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip():
+                out[key.strip()] = value
+        i += 1
+    return out
+
+
+def resolve_job_outputs(inst, steps_ctx: dict) -> tuple:
+    """(outputs, unresolved) for a job's `outputs:` mapping.
+
+    Each declared output is an expression, almost always
+    `${{ steps.<id>.outputs.<k> }}`. An output whose step never wrote the key
+    is reported, not blanked: a dependent that reads it would otherwise be
+    told "" where CI would tell it the real value.
+    """
+    from services.ci_workflow import substitute
+
+    outputs: dict = {}
+    unresolved: list = []
+    for name, expr in (inst.outputs or {}).items():
+        res = substitute(str(expr), {"steps": steps_ctx})
+        if res.unresolved:
+            unresolved.append(f"{name} <- {expr}")
+            continue
+        outputs[name] = res.text
+    return outputs, unresolved
+
+
 def _run_job(inst, project: Path, run_dir: Path, timeout: int,
-             eval_values: dict = None) -> JobResult:
+             eval_values: dict = None, event_declared: bool = False) -> JobResult:
+    from services.ci_workflow import late_substitute
+
     eval_values = eval_values or _eval_values(inst, {}, {})
     result = JobResult(key=inst.key, job_id=inst.job_id, name=inst.name,
                        workflow=inst.workflow, runs_on=inst.runs_on,
@@ -463,6 +548,13 @@ def _run_job(inst, project: Path, run_dir: Path, timeout: int,
 
     started = time.time()
     env = _job_env(inst, project)
+
+    # Run-time contexts. `needs` arrived from the runner (what earlier jobs
+    # produced); `steps` fills in here as each step writes GITHUB_OUTPUT.
+    steps_ctx: dict = dict(eval_values.get("steps") or {})
+    runtime = {"needs": dict(eval_values.get("needs") or {}), "steps": steps_ctx}
+    eval_values["steps"] = steps_ctx
+    output_dir = run_dir / "outputs" / _safe(inst.key)
 
     # A failed step no longer ends the job outright: `if: always()` exists
     # precisely so cleanup and reporting steps run afterwards. The first
@@ -501,13 +593,61 @@ def _run_job(inst, project: Path, run_dir: Path, timeout: int,
                     f"\n[c3:ci] step {step.index} skipped by `if: {step.if_}`\n")
                 continue
 
-        sres, output = _run_step(step, project, env, timeout)
+        # Second substitution pass: `needs.*` / `steps.*` exist now, and
+        # `github.event.*` is "" under a declared event. A leftover here is a
+        # value CI would have and we do not — refuse, never run a literal.
+        run_step = step
+        if step.run and "${{" in step.run:
+            late = late_substitute(step.run, runtime, event_declared)
+            if late.unresolved:
+                result.status = UNSUPPORTED
+                result.reason = (f"step {step.index} still has unresolved "
+                                 f"expression(s) at run time: "
+                                 + ", ".join(sorted(set(late.unresolved))))
+                chunks.append(f"\n[c3:ci] {result.reason}\n")
+                break
+            run_step = replace(step, run=late.text)
+        step_env = dict(env)
+        for key, value in (step.env or {}).items():
+            late = late_substitute(str(value), runtime, event_declared)
+            step_env[str(key)] = late.text
+        output_file = output_dir / f"step-{step.index}.txt"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("", encoding="utf-8")
+            step_env["GITHUB_OUTPUT"] = str(output_file)
+        except OSError:
+            output_file = None
+
+        sres, output = _run_step(run_step, project, step_env, timeout)
         result.steps.append(sres)
         chunks.append(output)
+        if output_file is not None:
+            written = _read_github_output(output_file)
+            if written:
+                sid = step.id or f"__step{step.index}"
+                steps_ctx.setdefault(sid, {}).setdefault("outputs", {}).update(written)
+                chunks.append(f"[c3:ci] step {step.index} outputs: "
+                              + ", ".join(f"{k}={v}" for k, v in written.items())
+                              + "\n")
         if sres.status in (FAILED, TIMEOUT) and not job_failed:
             job_failed = True
             result.status = sres.status
             result.reason = f"step {sres.index} ({sres.name}) exited {sres.exit_code}"
+
+    if result.status == PASSED and inst.outputs:
+        result.outputs, missing = resolve_job_outputs(inst, steps_ctx)
+        if missing:
+            # Declared, never produced. CI would hand dependents "" here; we
+            # say so instead of letting a blank masquerade as a value.
+            result.status = UNSUPPORTED
+            result.reason = ("job `outputs:` could not be resolved: "
+                             + "; ".join(missing))
+            chunks.append(f"\n[c3:ci] {result.reason}\n")
+        else:
+            chunks.append("[c3:ci] job outputs: "
+                          + ", ".join(f"{k}={v}" for k, v in result.outputs.items())
+                          + "\n")
 
     result.duration_ms = round((time.time() - started) * 1000)
     log = "".join(chunks)
@@ -691,14 +831,15 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
 
     def _needs_ctx(inst) -> dict:
         return {jid: needs_results.get((inst.workflow, jid),
-                                       {"result": "skipped"})
+                                       {"result": "skipped", "outputs": {}})
                 for jid in inst.needs}
 
-    def _record(inst, status: str) -> None:
+    def _record(inst, status: str, outputs: dict = None) -> None:
         outcome = {PASSED: "success", SKIPPED_IF: "skipped"}.get(
             status, "failure" if status in (FAILED, TIMEOUT, UNSUPPORTED)
             else "skipped")
-        needs_results[(inst.workflow, inst.job_id)] = {"result": outcome}
+        needs_results[(inst.workflow, inst.job_id)] = {
+            "result": outcome, "outputs": dict(outputs or {})}
 
     for inst in ordered:
         if inst.key not in chosen:
@@ -839,6 +980,11 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
                 scope=ci_cache.scope_for(inst, cache_rules))
         except Exception:
             job_fp = ""             # never let caching break a run
+        if inst.outputs:
+            # A cache hit replays a verdict, not the job's `outputs:` — and a
+            # dependent reading `needs.<job>.outputs.<k>` would then find
+            # nothing and be refused. Jobs that publish outputs always run.
+            job_fp = ""
 
         if job_fp and not no_cache:
             hit = ci_cache.lookup(project, job_fp)
@@ -855,10 +1001,11 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
 
         if chosen_engine == "act":
             job_result = _run_job_act(inst, project, run_dir, event, network,
-                                      fidelity)
+                                      fidelity, needs_ctx=_needs_ctx(inst))
         else:
             job_result = _run_job(inst, project, run_dir, timeout,
-                                  eval_values=eval_values)
+                                  eval_values=eval_values,
+                                  event_declared=bool(event))
             job_result.fidelity = fidelity
         job_result.fingerprint = job_fp
         if job_fp and job_result.status == PASSED:
@@ -867,7 +1014,7 @@ def run_ci(project_path, selector: str = "", allow_foreign: bool = False,
         results.append(job_result)
         if job_result.status in (FAILED, TIMEOUT, UNSUPPORTED):
             failed_jobs.add((inst.workflow, inst.job_id))
-        _record(inst, job_result.status)
+        _record(inst, job_result.status, job_result.outputs)
 
     result.jobs = results
     result.finished_at = _now()

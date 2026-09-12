@@ -133,6 +133,65 @@ def substitute(text: str, contexts: dict) -> ExprResult:
     return ExprResult(_EXPR_RE.sub(_one, text), unresolved)
 
 
+# Contexts that do not exist until the run is under way. `needs.*` is what the
+# jobs before this one produced; `steps.*` is what the steps before this one
+# produced. Neither is a blocker at DAG-build time: the native runner fills
+# them in just before each step executes, and the act engine receives a copy
+# of the workflow in which `needs.*` is already spelled out (see
+# ci_act.derive_workflow), so act evaluates `steps.*` itself.
+DEFERRED_ROOTS = ("needs", "steps")
+
+
+def classify_unresolved(unresolved: list) -> tuple:
+    """Split substitute()'s leftovers into (hard, deferred, event).
+
+    hard      — nothing local will ever supply it (`secrets.*`, `vars.*`, an
+                operator expression). Blocks the job on every engine.
+    deferred  — `needs.*` / `steps.*`: resolved at run time.
+    event     — `github.event.*`: the payload. There is none locally; with a
+                declared event both GitHub (sparse payload) and act resolve a
+                missing field to "", so the runner does the same — but only
+                when the caller declared the event, never by guessing one.
+    """
+    hard: list = []
+    deferred: list = []
+    event: list = []
+    for expr in unresolved:
+        root = expr.split(".", 1)[0]
+        if root in DEFERRED_ROOTS:
+            deferred.append(expr)
+        elif expr.startswith("github.event."):
+            event.append(expr)
+        else:
+            hard.append(expr)
+    return hard, deferred, event
+
+
+def late_substitute(text: str, runtime: dict, event_declared: bool) -> ExprResult:
+    """Second pass, at run time, over what instantiate() left in place.
+
+    *runtime* carries the contexts that now exist (`needs`, `steps`). With a
+    declared event, `github.event.*` becomes "" — the value a sparse payload
+    yields on GitHub and the value act uses. Anything still unresolved after
+    this is a genuine gap and the caller must refuse the step.
+    """
+    if not text or "${{" not in text:
+        return ExprResult(text or "", [])
+    first = substitute(text, runtime)
+    if not event_declared:
+        return first
+    leftover: list = []
+
+    def _blank_event(match: re.Match) -> str:
+        expr = match.group(1).strip()
+        if expr.startswith("github.event."):
+            return ""
+        leftover.append(expr)
+        return match.group(0)
+
+    return ExprResult(_EXPR_RE.sub(_blank_event, first.text), leftover)
+
+
 # ── Normalized IR ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -148,6 +207,9 @@ class Step:
     with_: dict = field(default_factory=dict)
     # Set during instantiation when the step is a `uses:` we stand in for.
     shim: str = ""
+    # The YAML `id:` — what `steps.<id>.outputs.<k>` and a job's `outputs:`
+    # mapping refer to. Empty for steps that declared none.
+    id: str = ""
 
     @property
     def is_run(self) -> bool:
@@ -182,6 +244,11 @@ class JobInstance:
     act_blockers: list = field(default_factory=list)  # why ACT cannot either
     workflow: str = ""
     workflow_path: str = ""      # act needs -W to disambiguate job names
+    # The raw `outputs:` mapping (name -> expression, usually
+    # `${{ steps.<id>.outputs.<k> }}`). Resolved after the job runs, from the
+    # GITHUB_OUTPUT lines its steps wrote, and handed to dependents as
+    # `needs.<job>.outputs.<name>`.
+    outputs: dict = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -489,6 +556,9 @@ def instantiate(workflow: Workflow, event: str = "", git: dict = None) -> list:
                 act_blockers=act_blockers,
                 workflow=workflow.name,
                 workflow_path=workflow.path,
+                outputs={str(k): str(v) for k, v in
+                         (raw.get("outputs") or {}).items()}
+                if isinstance(raw.get("outputs"), dict) else {},
             )
             instances.append(inst)
     return instances
@@ -531,23 +601,35 @@ def _build_step(index: int, raw: dict, ctx: dict,
         blockers.append(f"step {index} has neither `run` nor `uses`")
         act_blockers.append(f"step {index} has neither `run` nor `uses`")
 
-    if run_res.unresolved:
-        # Executing a command with a literal ${{ }} in it would run something
-        # other than what CI runs. Refuse the job instead. act substitutes the
-        # same expressions, but a missing secret is missing on either engine.
-        msg = (f"step {index} has unresolved expression(s): "
-               + ", ".join(sorted(set(run_res.unresolved))))
-        blockers.append(msg)
-        act_blockers.append(msg)
+    # Executing a command with a literal ${{ }} in it would run something
+    # other than what CI runs. What cannot be resolved now falls into three
+    # classes (classify_unresolved): a genuine gap blocks the job on every
+    # engine — act substitutes the same expressions, and a missing secret is
+    # missing on either; `needs.*`/`steps.*` are filled in at run time; and
+    # `github.event.*` is "" once the caller has declared the event (act
+    # does the same), and a blocker for the native engine until they do.
+    event_declared = "event_name" in (github_fields or set())
+
+    def _unresolved(label: str, unresolved: list) -> None:
+        hard, _deferred, event = classify_unresolved(unresolved)
+        if hard:
+            msg = (f"step {index}{label} has unresolved expression(s): "
+                   + ", ".join(sorted(set(hard))))
+            blockers.append(msg)
+            act_blockers.append(msg)
+        if event and not event_declared:
+            blockers.append(
+                f"step {index}{label} reads {', '.join(sorted(set(event)))} — "
+                "there is no event payload locally; pass the event you are "
+                "simulating and it resolves to \"\" as it would on a sparse "
+                "payload (the act engine already does this)")
+
+    _unresolved("", run_res.unresolved)
 
     env_res = {}
     for key, value in (raw.get("env") or {}).items():
         sub = substitute(str(value), ctx)
-        if sub.unresolved:
-            msg = (f"step {index} env {key} has unresolved expression(s): "
-                   + ", ".join(sorted(set(sub.unresolved))))
-            blockers.append(msg)
-            act_blockers.append(msg)
+        _unresolved(f" env {key}", sub.unresolved)
         env_res[str(key)] = sub.text
 
     step = Step(
@@ -561,6 +643,7 @@ def _build_step(index: int, raw: dict, ctx: dict,
         if_=str(raw.get("if") or ""),
         with_=dict(raw.get("with") or {}),
         shim=shim,
+        id=str(raw.get("id") or ""),
     )
     return step, blockers, act_blockers
 
