@@ -807,8 +807,9 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
                 allow_write_delegation: bool = False,
                 ctx: Context = None) -> str:
     """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
-    backend: ollama|codex|gemini|claude|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, codex_resume.
-    allow_write_delegation: explicit user opt-in for write-capable backends (gemini/claude/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
+    backend: ollama|codex|gemini|claude|grok|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, grok_check, codex_resume.
+    grok runs read-only in a temp dir unless delegate.grok_allow_write=true (then --yolo in the project, loading its trusted .grok MCP servers and hooks).
+    allow_write_delegation: explicit user opt-in for write-capable backends (gemini/claude/grok write mode/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):

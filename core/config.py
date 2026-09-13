@@ -277,6 +277,15 @@ DELEGATE_DEFAULTS = {
     "gemini_max_context_tokens": 8000,    # Context truncation limit (Gemini has large context windows)
     "gemini_task_types": ["review", "diagnose", "improve", "test"],  # Tasks auto-routed to Gemini
     "gemini_memory_bridge": True,         # Auto-extract findings from Gemini into c3_memory
+    # Grok Build CLI integration (xAI cloud delegate backend; uses the CLI's own login)
+    "grok_enabled": True,                 # Master switch — enable Grok as delegate backend
+    "grok_model": "",                     # Empty = the Grok CLI's own default (omit -m)
+    "grok_timeout": 120,                  # Subprocess timeout in seconds (no idle kill: JSON arrives at the end)
+    "grok_max_turns": 8,                  # --max-turns for headless runs
+    "grok_max_context_tokens": 8000,      # Context truncation limit for Grok calls
+    "grok_allow_write": False,            # True = --yolo with the PROJECT as cwd (loads its trusted .grok
+                                          # MCP servers + hooks); False = read-only tools in a temp dir
+    "grok_task_types": ["review", "diagnose", "improve", "test"],  # Tasks auto-routed to Grok
 }
 
 

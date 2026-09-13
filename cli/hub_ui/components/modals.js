@@ -796,6 +796,7 @@ const _SUB_IDE_OPTIONS = [
   { id: 'vscode', label: 'VS Code' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'codex', label: 'Codex' },
+  { id: 'grok', label: 'Grok Build' },
   { id: 'antigravity', label: 'Antigravity' },
 ];
 

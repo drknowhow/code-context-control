@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -639,9 +640,16 @@ def _codex_cmd(prompt: str, model: str, sandbox: str, reasoning: str) -> list:
     return cmd
 
 
+_CHILD_IDENTITY_VARS = (
+    "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "CLAUDE_CODE_SESSION_ID",
+    # A delegate launched from inside a Grok session/hook must not inherit it.
+    "GROK_SESSION_ID", "GROK_HOOK_EVENT", "GROK_HOOK_NAME", "GROK_WORKSPACE_ROOT",
+)
+
+
 def _child_host_env(provider: str) -> dict:
     env = os.environ.copy()
-    for name in ("CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "CLAUDE_CODE_SESSION_ID"):
+    for name in _CHILD_IDENTITY_VARS:
         env.pop(name, None)
     env["C3_HOST"] = provider
     return env
@@ -731,6 +739,197 @@ def _run_codex_resume(follow_up: str, timeout: int = 120,
     cmd = [_which("codex") or "codex", "exec", "resume", "--skip-git-repo-check",
            "--config", 'approval_policy="never"', "--json", thread_id, "-"]
     return _execute_codex(cmd, follow_up, timeout, 0, cwd, origin_id, resume_id=thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Grok Build CLI backend (xAI)
+# ---------------------------------------------------------------------------
+
+# Read-only tools are auto-approved without --yolo, so headless runs with this
+# allowlist never stop for an approval.
+GROK_READONLY_TOOLS = "read_file,grep,list_dir"
+
+# Grok also imports Claude Code / Cursor agent config (agents, hooks, MCP
+# servers, rules, skills). A delegate must not pick any of that up.
+_GROK_COMPAT_OFF = {
+    f"GROK_{vendor}_{kind}_ENABLED": "0"
+    for vendor in ("CLAUDE", "CURSOR")
+    for kind in ("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS")
+}
+
+_grok_available: bool | None = None  # cached after first check
+
+
+def _is_grok_on_path() -> bool:
+    """Check if grok CLI binary is on PATH."""
+    return _which("grok") is not None
+
+
+def check_grok() -> dict:
+    """Zero-cost health check for Grok Build CLI. Returns status dict."""
+    global _grok_available
+    exe = _which("grok")
+    if not exe:
+        _grok_available = False
+        return {"status": "not_installed", "detail": "grok CLI not found on PATH"}
+    try:
+        probed = _probe_cli_version(exe, timeout=10)
+        if probed is None:
+            _grok_available = False
+            return {"status": "timeout", "detail": "grok --version timed out (10s)"}
+        out, err, code = probed
+        if code == 0:
+            _grok_available = True
+            return {"status": "ok", "version": out}
+        _grok_available = False
+        return {"status": "error", "detail": err or f"exit code {code}"}
+    except Exception as e:
+        _grok_available = False
+        return {"status": "error", "detail": str(e)}
+
+
+def _grok_cmd(prompt_file: str, model: str, max_turns: int, cwd: str,
+              allow_write: bool = False) -> list:
+    """Build the headless grok argv.
+
+    An empty model omits ``-m`` so the account's own Grok default applies —
+    never pin a model name here. Read-only (the default) passes an explicit
+    ``--tools`` allowlist; ``allow_write`` drops it and adds ``--yolo``, which
+    auto-approves every tool call.
+    """
+    cmd = [_which("grok") or "grok", "--prompt-file", prompt_file,
+           "--output-format", "json"]
+    if allow_write:
+        cmd.append("--yolo")
+    else:
+        cmd += ["--tools", GROK_READONLY_TOOLS]
+    cmd += ["--max-turns", str(max(1, int(max_turns or 1)))]
+    if model:
+        cmd += ["-m", model]
+    cmd += ["--cwd", cwd]
+    return cmd
+
+
+def _grok_env() -> dict:
+    """Child env for grok: no inherited session identity, no auto-update,
+    no Claude Code / Cursor config imports."""
+    env = _child_host_env("grok")
+    env["GROK_DISABLE_AUTOUPDATER"] = "1"
+    env.update(_GROK_COMPAT_OFF)
+    return env
+
+
+def _grok_json(stdout: str):
+    """Return the first JSON object in grok's stdout, tolerating leading
+    non-JSON lines (update notices, warnings). None when there is none."""
+    raw = (stdout or "").strip()
+    if not raw:
+        return None
+    decoder = json.JSONDecoder()
+    starts = [0] if raw.startswith("{") else []
+    offset = 0
+    for line in raw.splitlines(keepends=True):
+        if line.lstrip().startswith("{"):
+            starts.append(offset + (len(line) - len(line.lstrip())))
+        offset += len(line)
+    for start in starts:
+        try:
+            data, _end = decoder.raw_decode(raw[start:])
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _grok_token_stats(data) -> dict:
+    stats = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+    if not isinstance(data, dict):
+        return stats
+    usage = data.get("usage") or {}
+    if isinstance(usage, dict):
+        stats["input_tokens"] = int(usage.get("input_tokens") or 0)
+        stats["output_tokens"] = int(usage.get("output_tokens") or 0)
+        stats["cached_tokens"] = int(usage.get("cache_read_input_tokens") or 0)
+        if usage.get("reasoning_tokens") is not None:
+            stats["reasoning_tokens"] = int(usage.get("reasoning_tokens") or 0)
+    if data.get("total_cost_usd") is not None:
+        try:
+            stats["cost_usd"] = float(data["total_cost_usd"])
+        except (TypeError, ValueError):
+            pass
+    return stats
+
+
+def _run_grok(task: str, context: str, model: str = "", timeout: int = 120,
+              idle_timeout: int = 0, max_turns: int = 8,
+              allow_write: bool = False,
+              cwd: str | None = None) -> tuple[str, bool, dict]:
+    """Run ``grok --prompt-file`` headless. Returns (output, success, token_stats).
+
+    Read-only (default): cwd is a fresh temp directory, removed afterwards.
+    ``--tools`` does NOT stop a trusted project's ``.grok/config.toml`` MCP
+    servers or ``.grok/hooks`` from loading, so a read-only delegate must not
+    run inside the project; file context is inlined into the prompt instead.
+
+    Write mode (``allow_write=True``): cwd is ``cwd`` (the project), ``--tools``
+    is dropped and ``--yolo`` added. That run DOES load the project's trusted
+    ``.grok`` MCP servers and hooks — writing into the project is the point of
+    the mode, and handle_delegate gates it behind Access Guard.
+
+    ``idle_timeout`` defaults to 0 (off): ``--output-format json`` prints one
+    object at the very end, so a healthy multi-turn run is silent throughout.
+    The total ``timeout`` still applies.
+    """
+    empty_stats = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+    if not _which("grok"):
+        return "[grok:error] grok CLI not found on PATH", False, empty_stats
+    if allow_write and not cwd:
+        return "[grok:error] write mode needs the project directory as cwd", False, empty_stats
+    prompt = f"Context:\n{context}\n\nTask:\n{task}" if context else task
+    workdir = tempfile.mkdtemp(prefix="c3-grok-")
+    try:
+        prompt_file = os.path.join(workdir, "prompt.md")
+        with open(prompt_file, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        run_cwd = str(cwd) if allow_write else workdir
+        cmd = _grok_cmd(prompt_file, model, max_turns, run_cwd, allow_write)
+        proc = subprocess.Popen(
+            harden_win_argv(cmd),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            cwd=run_cwd, env=_grok_env(),
+            **_popen_kwargs(),
+        )
+        stdout, stderr, status = _communicate_with_heartbeat(
+            proc, timeout=timeout, idle_timeout=idle_timeout,
+        )
+        if status == "idle_timeout":
+            return f"[grok:idle_timeout] No output for {idle_timeout}s", False, empty_stats
+        if status == "timeout":
+            return f"[grok:timeout] No response after {timeout}s", False, empty_stats
+        data = _grok_json(stdout)
+        if proc.returncode != 0:
+            detail = (stderr or "").strip()[-4000:]
+            if not detail and isinstance(data, dict):
+                detail = str(data.get("error") or data.get("text") or "").strip()
+            return (f"[grok:error] {detail or f'exit code {proc.returncode}'}",
+                    False, empty_stats)
+        if data is None:
+            raw = (stdout or "").strip()
+            if raw:
+                return raw, True, empty_stats
+            return "[grok:error] no output", False, empty_stats
+        text = str(data.get("text") or "").strip()
+        if not text:
+            reason = data.get("error") or data.get("stopReason") or "no text"
+            return f"[grok:error] empty response ({reason})", False, _grok_token_stats(data)
+        return text, True, _grok_token_stats(data)
+    except Exception as e:
+        return f"[grok:error] {e}", False, empty_stats
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # Delegate task definitions
@@ -839,21 +1038,31 @@ def _cascade_order(task_type: str, dcfg: dict) -> list[str]:
     """Ordered backend preference for backend='auto' routing.
 
     Heavy tasks (review/diagnose/improve/test by default) prefer the cloud
-    CLIs and degrade gracefully: codex -> gemini -> ollama. Light tasks stay
-    local-first and only fall over to a cloud CLI when Ollama itself is down:
-    ollama -> codex -> gemini.
+    CLIs and degrade gracefully: codex -> gemini -> grok -> ollama. Light
+    tasks stay local-first and only fall over to a cloud CLI when Ollama
+    itself is down: ollama -> codex -> gemini -> grok.
     """
-    heavy_codex = set(dcfg.get("codex_task_types", ["review", "diagnose", "improve", "test"]))
-    heavy_gemini = set(dcfg.get("gemini_task_types", ["review", "diagnose", "improve", "test"]))
+    heavy_default = ["review", "diagnose", "improve", "test"]
     order: list[str] = []
-    if task_type in heavy_codex:
-        order.append("codex")
-    if task_type in heavy_gemini:
-        order.append("gemini")
+    for name in ("codex", "gemini", "grok"):
+        if task_type in set(dcfg.get(f"{name}_task_types", heavy_default)):
+            order.append(name)
     if order:
         order.append("ollama")
         return order
-    return ["ollama", "codex", "gemini"]
+    return ["ollama", "codex", "gemini", "grok"]
+
+
+def _write_capable(name: str, dcfg: dict) -> bool:
+    """Backends that may write outside C3's control (Access Guard gate).
+
+    gemini (--approval-mode yolo) and claude (-p with the project allowlist)
+    always; grok only in write mode — read-only grok runs a read-only tool
+    allowlist in a throwaway temp directory.
+    """
+    if name in ("gemini", "claude"):
+        return True
+    return name == "grok" and bool(dcfg.get("grok_allow_write", False))
 
 
 def _cascade_skip_reason(name: str, dcfg: dict, svc) -> str | None:
@@ -876,14 +1085,16 @@ def _cascade_skip_reason(name: str, dcfg: dict, svc) -> str | None:
         except Exception:
             return "unreachable"
         return None
-    if name in ("codex", "gemini"):
+    if name in ("codex", "gemini", "grok"):
         if not dcfg.get(f"{name}_enabled", False):
             return "disabled"
-        known = _codex_available if name == "codex" else _gemini_available
+        known = {"codex": _codex_available, "gemini": _gemini_available,
+                 "grok": _grok_available}[name]
         if known is False:
             return "unavailable"
         if known is None:
-            on_path = _is_codex_on_path() if name == "codex" else _is_gemini_on_path()
+            on_path = {"codex": _is_codex_on_path, "gemini": _is_gemini_on_path,
+                       "grok": _is_grok_on_path}[name]()
             if not on_path:
                 return "not on PATH"
         return None
@@ -1222,6 +1433,91 @@ def _gemini_memory_bridge(output: str, task_type: str, task: str, svc):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Grok delegate handler
+# ---------------------------------------------------------------------------
+
+def _handle_grok_delegate(task: str, task_type: str, context: str,
+                          file_path: str, svc, dcfg: dict, finalize) -> str:
+    """Handle delegation via xAI's Grok Build CLI.
+
+    Read-only by default (temp cwd, read-only tool allowlist, file context
+    inlined). ``grok_allow_write`` runs --yolo in the project instead, which
+    loads the project's trusted .grok MCP servers and hooks.
+    """
+    base = {"task_type": task_type, "backend": "grok"}
+    if not dcfg.get("grok_enabled", False):
+        return finalize("c3_delegate", base,
+                        "[delegate:error] Grok not enabled. Set delegate.grok_enabled=true in .c3/config.json",
+                        "disabled")
+
+    global _grok_available
+    if _grok_available is None:
+        check_grok()
+    if not _grok_available:
+        return finalize("c3_delegate", base,
+                        "[delegate:error] Grok CLI not available. Run 'grok --version' to diagnose.",
+                        "unavailable")
+
+    breaker = _backend_breaker("grok", dcfg)
+    if not breaker.allow():
+        return finalize("c3_delegate", base,
+                        "[delegate:degraded] Grok skipped after repeated failures; retrying in "
+                        f"~{breaker.cooldown_remaining()}s. Run 'grok --version' to diagnose.",
+                        "degraded")
+
+    model = str(dcfg.get("grok_model") or "")
+    timeout = int(dcfg.get("grok_timeout", 120) or 120)
+    max_turns = int(dcfg.get("grok_max_turns", 8) or 8)
+    allow_write = bool(dcfg.get("grok_allow_write", False))
+
+    enriched = context
+    if file_path and dcfg.get("auto_compress", True):
+        for p in [p.strip() for p in file_path.split(",") if p.strip()]:
+            try:
+                res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
+                if isinstance(res, dict) and res.get("compressed"):
+                    enriched += f"\n--- file: {p} ---\n{res['compressed']}"
+            except access_guard.AccessDenied:
+                raise  # policy refusal must surface, never be swallowed (spec §3)
+            except Exception:
+                continue
+
+    max_ctx = max(200, int(dcfg.get("grok_max_context_tokens", 8000) or 8000))
+    if count_tokens(enriched) > max_ctx:
+        enriched = enriched[:max_ctx * 4]
+
+    # Only read-only answers are cacheable; a write run has side effects.
+    ckey = hashlib.md5(
+        f"grok|{svc.project_path}|{task_type}|{model}|{max_turns}|{enriched}|{task}".encode()
+    ).hexdigest()
+    if not allow_write and ckey in _delegate_cache:
+        cached_resp, _ = _delegate_cache[ckey]
+        return finalize("c3_delegate", {**base, "cached": True}, cached_resp, "cached")
+
+    mode = "write" if allow_write else "read-only"
+    _log_progress(svc, f"[delegate] Grok {model or 'cli-default'} ({mode}, max_turns={max_turns})...")
+    t0 = time.monotonic()
+    output, ok, token_stats = _run_grok(
+        task=task, context=enriched, model=model, timeout=timeout,
+        max_turns=max_turns, allow_write=allow_write,
+        cwd=str(svc.project_path) if allow_write else None,
+    )
+    elapsed = round(time.monotonic() - t0, 1)
+    meta = {**base, "model": model or "cli-default", "mode": mode, "elapsed": f"{elapsed}s"}
+
+    if not ok:
+        if breaker.record_failure():
+            _notify_backend_degraded(svc, "grok", breaker)
+        return finalize("c3_delegate", meta, output, "error")
+
+    breaker.record_success()
+    _delegate_metrics["total_calls"] += 1
+    if not allow_write:
+        _delegate_cache[ckey] = (output, count_tokens(output))
+    return finalize("c3_delegate", {**meta, **token_stats}, output, "ok")
+
+
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
                     allow_write_delegation: bool = False) -> str:
@@ -1234,7 +1530,8 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     # inert — behavior is byte-identical to the pre-guard tool. When rules
     # exist: codex is pinned to --sandbox read-only; backends that run
     # autonomously with potential write access (gemini --approval-mode yolo,
-    # claude -p inheriting the project's permission allowlist, codex_resume
+    # claude -p inheriting the project's permission allowlist, grok with
+    # grok_allow_write running --yolo in the project, codex_resume
     # reusing an unpinnable prior-session sandbox) require the explicit
     # allow_write_delegation=true user opt-in. Evaluator errors fail closed.
     try:
@@ -1274,14 +1571,25 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
             d = info.get("version") or info.get("detail", "")
             return "claude", s, d, []
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futs = [pool.submit(fn) for fn in [_check_ollama, _check_codex, _check_gemini, _check_claude]]
+        def _check_grok():
+            info = check_grok()
+            s = info.get("status", "unknown")
+            d = info.get("version") or info.get("detail", "")
+            return "grok", s, d, []
+
+        checkers = [("ollama", _check_ollama), ("codex", _check_codex),
+                    ("gemini", _check_gemini), ("claude", _check_claude),
+                    ("grok", _check_grok)]
+        names = [name for name, _fn in checkers]
+        total = len(checkers)
+        with ThreadPoolExecutor(max_workers=total) as pool:
+            futs = [pool.submit(fn) for _name, fn in checkers]
             for fut in as_completed(futs):
                 name, status, detail, models = fut.result()
                 results[name] = (status, detail, models)
 
         lines = []
-        for name in ("ollama", "codex", "gemini", "claude"):
+        for name in names:
             status, detail, models = results.get(name, ("unknown", "", []))
             line = f"  {name}={status}"
             if detail:
@@ -1290,11 +1598,11 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                 line += f" models={len(models)} [{', '.join(models[:5])}]"
             lines.append(line)
 
-        summary_statuses = [results.get(n, ("unknown",))[0] for n in ("ollama", "codex", "gemini", "claude")]
+        summary_statuses = [results.get(n, ("unknown",))[0] for n in names]
         up_count = sum(1 for s in summary_statuses if s in ("up", "ok"))
         return finalize("c3_delegate", {"task_type": "available"},
-                        f"[delegate:available] {up_count}/4 backends up\n" + "\n".join(lines),
-                        f"{up_count}/4 up")
+                        f"[delegate:available] {up_count}/{total} backends up\n" + "\n".join(lines),
+                        f"{up_count}/{total} up")
 
     if task_type == "codex_check":
         info = check_codex()
@@ -1332,17 +1640,25 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                         f"[delegate:gemini_check] status={status} {detail}".strip(),
                         status)
 
+    if task_type == "grok_check":
+        info = check_grok()
+        status = info.get("status", "unknown")
+        detail = info.get("version") or info.get("detail", "")
+        return finalize("c3_delegate", {"task_type": "grok_check"},
+                        f"[delegate:grok_check] status={status} {detail}".strip(),
+                        status)
+
     # --- Backend routing ---------------------------------------------------
     if backend == "auto":
         # Cascade: walk the ordered preference list for this task type and use
         # the first backend that is enabled, installed, and whose breaker is
-        # closed. Heavy tasks: codex -> gemini -> ollama. Light tasks: ollama
-        # first, cloud CLIs only when Ollama itself is down.
+        # closed. Heavy tasks: codex -> gemini -> grok -> ollama. Light tasks:
+        # ollama first, cloud CLIs only when Ollama itself is down.
         skips: list[str] = []
         chosen = ""
         for cand in _cascade_order(task_type, dcfg):
             if (_guard_active and not allow_write_delegation
-                    and cand in ("gemini", "claude")):
+                    and _write_capable(cand, dcfg)):
                 skips.append(f"{cand} blocked by Access Guard (write-capable; "
                              "allow_write_delegation=false)")
                 continue
@@ -1364,10 +1680,13 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
             _log_progress(svc, cascade_note)
             finalize = _with_cascade_note(finalize, cascade_note)
 
-    if backend in ("gemini", "claude") and _guard_active and not allow_write_delegation:
-        detail = ("--approval-mode yolo auto-approves writes"
-                  if backend == "gemini"
-                  else "claude -p inherits the project's tool permission allowlist")
+    if _write_capable(backend, dcfg) and _guard_active and not allow_write_delegation:
+        detail = {
+            "gemini": "--approval-mode yolo auto-approves writes",
+            "claude": "claude -p inherits the project's tool permission allowlist",
+            "grok": ("grok_allow_write runs --yolo in the project and loads its "
+                     "trusted .grok MCP servers and hooks"),
+        }[backend]
         return finalize(
             "c3_delegate", {"task_type": task_type, "backend": backend},
             f"[delegate:blocked] Access Guard rules are active and the "
@@ -1387,6 +1706,10 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
     if backend == "claude":
         return _handle_claude_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
+
+    if backend == "grok":
+        _log_progress(svc, f"[delegate] Routing {task_type} → Grok...")
+        return _handle_grok_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
 
     # --- Original Ollama path (backend="ollama") ---------------------------
 

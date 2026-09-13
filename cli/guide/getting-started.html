@@ -174,7 +174,11 @@ c3 init</code></pre>
           </tr>
           <tr>
             <td><code>AGENTS.md</code></td>
-            <td>Instructions for Codex sessions</td>
+            <td>Instructions for Codex, Grok Build and Antigravity sessions</td>
+          </tr>
+          <tr>
+            <td><code>.grok/config.toml</code>, <code>.grok/hooks/c3.json</code></td>
+            <td>Grok Build only: project MCP entry and C3's hooks (written by <code>--ide grok</code>)</td>
           </tr>
         </tbody>
       </table>
@@ -230,6 +234,12 @@ c3 init</code></pre>
       <h3>Antigravity</h3>
       <pre><code>c3 install-mcp antigravity</code></pre>
       <p>Updates the user-global <code>~/.gemini/antigravity/mcp_config.json</code> and <code>AGENTS.md</code>.</p>
+
+      <h3>Grok Build</h3>
+      <pre><code>c3 install-mcp grok
+grok --trust
+c3 doctor --ide grok</code></pre>
+      <p>Updates <code>.grok/config.toml</code> (<code>[mcp_servers.c3]</code>), writes C3's hooks to <code>.grok/hooks/c3.json</code>, and refreshes the C3 block in <code>AGENTS.md</code>. Grok loads none of them until the folder is trusted, so launch <code>grok --trust</code> once in the project (or run <code>/hooks-trust</code> inside Grok). C3 never writes Grok's trust store or <code>~/.grok/config.toml</code>. In Grok, C3's tools are reached through <code>search_tool</code> / <code>use_tool</code> as <code>c3__c3_search</code> and so on. Details and limitations: <code>docs/grok-native.md</code>.</p>
 
       <p><em>The Gemini CLI profile was removed in v2.52 — use Antigravity instead. <code>c3 uninstall</code> still cleans up legacy <code>.gemini/settings.json</code> and <code>GEMINI.md</code> files.</em></p>
 

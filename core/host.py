@@ -32,6 +32,10 @@ def resolve_host(project_path: str = "", explicit_host: str | None = None,
         else:
             provider = load_ide_config(project_path)
     provider = normalize_ide_name(provider)
-    session_env = {"claude-code": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+    # Grok is never inferred from GROK_SESSION_ID: a grok launched from a Claude
+    # Code terminal also inherits CLAUDE_CODE_SESSION_ID, so its MCP entry and
+    # hooks name the host explicitly (--host grok) instead.
+    session_env = {"claude-code": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID",
+                   "grok": "GROK_SESSION_ID"}
     session = str(env.get(session_env.get(provider, ""), "") or "").strip()
     return HostContext(provider, session)

@@ -57,6 +57,7 @@ from cli._hook_utils import (  # noqa: E402
     HOST_CLAUDE,
     HOST_CODEX,
     HOST_GEMINI,
+    HOST_GROK,
     detect_host,
     log_hook_error,
     normalize_tool_name,
@@ -142,7 +143,10 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
         # is also pointless — its schema has no tool_result, so the filtered
         # text could never replace the output anyway. Skip it entirely rather
         # than risk an allocation failure for a result we must discard.
-        if norm_tool == "Bash" and host != HOST_CODEX:
+        # Grok is excluded for the same reason: it validates a built-in tool's
+        # replacement output against Grok's own tagged shape, so a filtered
+        # string could not replace the result there either.
+        if norm_tool == "Bash" and host not in (HOST_CODEX, HOST_GROK):
             yield "hook_filter"
         if norm_tool == "Read":
             yield "hook_read"
@@ -164,7 +168,10 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
     elif event == "stop":
         yield "hook_session_stats"
         yield "hook_codex_lifecycle" if host == HOST_CODEX else "hook_auto_snapshot"
-        yield "hook_terse_advisor"
+        # Advice needs a channel to the model; Grok's Stop has none that does
+        # not also keep the agent working, and its transcript is not Claude's.
+        if host != HOST_GROK:
+            yield "hook_terse_advisor"
     elif event == "prompt":
         yield "hook_prompt_recall"
     elif event in ("start", "compact", "end"):
@@ -345,6 +352,34 @@ def _codex_output(event: str, deny_hso, contexts: list, tool_result,
     return result or None
 
 
+# Grok Build delivers hookSpecificOutput.additionalContext for tool events.
+# Everything else is passive (SessionStart/End, PreCompact) or harmful: Stop
+# context "keeps the agent working" for up to 8 continuations, and an allowing
+# UserPromptSubmit hook's stdout is discarded. Those events print nothing.
+_GROK_EVENT_NAMES = {"pretool": "PreToolUse", "posttool": "PostToolUse"}
+
+
+def _grok_output(event: str, deny_hso, contexts: list, tool_result,
+                 texts: list) -> dict | None:
+    """Serialize merged sub-hook results into Grok Build's hook contract."""
+    event_name = _GROK_EVENT_NAMES.get(event)
+    if event_name is None:
+        return None
+    if deny_hso is not None and event == "pretool":
+        # A deny drops any context on Grok's side anyway; send only the verdict.
+        return {"hookSpecificOutput": {
+            "hookEventName": event_name,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": str(deny_hso.get("permissionDecisionReason") or "Blocked by C3"),
+        }}
+    if tool_result is not None:
+        contexts.insert(0, str(tool_result))
+    joined = "\n".join(c for c in [*contexts, *texts] if c)
+    if not joined:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": joined}}
+
+
 def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
                   event: str = "", host: str | None = None) -> dict | None:
     """Compose sub-hook outputs into ONE host-appropriate hook response.
@@ -393,6 +428,8 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
 
     if host == HOST_CODEX:
         return _codex_output(event, deny_hso, contexts, tool_result, texts)
+    if host == HOST_GROK:
+        return _grok_output(event, deny_hso, contexts, tool_result, texts)
 
     is_gemini = host == HOST_GEMINI
     result: dict = {}
@@ -477,6 +514,9 @@ def _collect(event: str, payload: dict, project_path: Path | None = None):
 
 def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dict | None:
     host = detect_host(payload)
+    if host == HOST_GROK:
+        from core.grok_payload import translate
+        payload = translate(payload)
     payload = {**payload, "hook_event_name": payload.get("hook_event_name") or _CODEX_EVENT_NAMES.get(event, event)}
     if payload.get("tool_name") == "apply_patch" and event in ("pretool", "posttool"):
         from core.codex_patch import patch_targets
@@ -517,7 +557,7 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("event", nargs="?", default="")
-    parser.add_argument("--host", choices=["codex", "claude", "claude-code", "gemini"])
+    parser.add_argument("--host", choices=["codex", "claude", "claude-code", "gemini", "grok"])
     parser.add_argument("--project")
     args = parser.parse_args()
     event = args.event.strip().lower()

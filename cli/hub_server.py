@@ -716,6 +716,7 @@ def api_launch_ide():
         "claude-code":  ("claude",      False),
         "claude-app":   ("claude-app",  True),
         "codex":        ("codex",       False),
+        "grok":         ("grok",        False),
         "gemini":       ("gemini",      False),
         "antigravity":  ("antigravity", False),
         "vscode":       ("code",        True),
@@ -954,7 +955,7 @@ def api_projects_mcp_server_add():
 
         if profile.config_format == "toml":
             entries = {"command": command, "args": args}
-            if profile.name == "codex":
+            if profile.name in ("codex", "grok"):
                 entries["enabled"] = enabled
             _upsert_toml_section(mcp_file, f"{profile.config_key}.{name}", entries)
         else:
@@ -964,7 +965,7 @@ def api_projects_mcp_server_add():
                 server_config["env"] = env
             if profile.needs_type_field:
                 server_config["type"] = "stdio"
-            if profile.name == "codex":
+            if profile.name in ("codex", "grok"):
                 server_config["enabled"] = enabled
 
             servers[name] = server_config

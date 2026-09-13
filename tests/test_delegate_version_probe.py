@@ -171,7 +171,8 @@ def test_probe_does_not_leak_reader_threads_on_timeout(timing_out_popen):
 
 @pytest.mark.parametrize(
     "check_name,cli_name",
-    [("check_gemini", "gemini"), ("check_codex", "codex"), ("check_claude", "claude")],
+    [("check_gemini", "gemini"), ("check_codex", "codex"), ("check_claude", "claude"),
+     ("check_grok", "grok")],
 )
 def test_health_checks_report_timeout_without_hanging(
     check_name, cli_name, timing_out_popen, monkeypatch
@@ -190,6 +191,7 @@ def test_health_checks_report_timeout_without_hanging(
         ("check_gemini", "_gemini_available"),
         ("check_codex", "_codex_available"),
         ("check_claude", "_claude_available"),
+        ("check_grok", "_grok_available"),
     ],
 )
 def test_health_checks_report_ok_and_set_availability(
@@ -207,7 +209,7 @@ def test_health_checks_report_ok_and_set_availability(
 
 
 @pytest.mark.parametrize(
-    "check_name", ["check_gemini", "check_codex", "check_claude"]
+    "check_name", ["check_gemini", "check_codex", "check_claude", "check_grok"]
 )
 def test_health_checks_report_nonzero_exit_as_error(check_name, monkeypatch):
     monkeypatch.setattr(delegate, "_which", lambda name: f"/usr/bin/{name}")
@@ -222,7 +224,7 @@ def test_health_checks_report_nonzero_exit_as_error(check_name, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "check_name", ["check_gemini", "check_codex", "check_claude"]
+    "check_name", ["check_gemini", "check_codex", "check_claude", "check_grok"]
 )
 def test_health_checks_report_not_installed(check_name, monkeypatch):
     monkeypatch.setattr(delegate, "_which", lambda name: None)
@@ -236,7 +238,7 @@ def test_no_health_check_uses_subprocess_run():
     """subprocess.run(timeout=) is the footgun; keep it out of these paths."""
     import inspect
 
-    for name in ("check_gemini", "check_codex", "check_claude"):
+    for name in ("check_gemini", "check_codex", "check_claude", "check_grok"):
         src = inspect.getsource(getattr(delegate, name))
         assert "subprocess.run" not in src, (
             f"{name} went back to subprocess.run -- see _probe_cli_version"

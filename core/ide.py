@@ -99,12 +99,27 @@ PROFILES = {
         settings_path=None,
         config_path_global=True,  # ~/.gemini/antigravity/mcp_config.json
     ),
+    "grok": IDEProfile(
+        name="grok",
+        display_name="Grok Build",
+        config_path=".grok/config.toml",   # project-scoped; loads once the folder is trusted
+        config_key="mcp_servers",           # TOML: [mcp_servers.<name>], same table as Codex
+        needs_type_field=False,
+        instructions_file="AGENTS.md",      # Grok also reads CLAUDE.md; there is no GROK.md
+        instructions_line_limit=None,
+        supports_hooks=True,
+        supports_transcripts=False,         # usage rows only; no conversation sync yet
+        supports_clear=True,
+        settings_path=".grok/hooks/c3.json",  # C3 owns this whole file
+        config_format="toml",
+    ),
 }
 
 
 IDE_ALIASES = {
     "claude": "claude-code",
     "claude-code": "claude-code",
+    "grok-build": "grok",
 }
 
 
@@ -134,6 +149,8 @@ def detect_ide(project_path: str) -> str:
         return "cursor"
     if (p / ".codex" / "config.toml").exists():
         return "codex"
+    if (p / ".grok" / "config.toml").exists():
+        return "grok"
     if (p / ".gemini" / "settings.json").exists():
         # Legacy Gemini CLI marker (profile removed) — treat as Antigravity.
         return "antigravity"
@@ -141,6 +158,8 @@ def detect_ide(project_path: str) -> str:
     # 2. IDE directory markers (even without config yet)
     if (p / ".codex").is_dir():
         return "codex"
+    if (p / ".grok").is_dir():
+        return "grok"
     if (p / ".gemini").is_dir():
         return "antigravity"
     if (p / ".vscode").is_dir():
