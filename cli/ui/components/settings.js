@@ -66,6 +66,7 @@ const SettingsPanel = ({ stats }) => {
     memoryLlm: false,
     codex: false,
     gemini: false,
+    grok: false,
     workflows: false,
     proxy: false,
     mcp: false,
@@ -1084,6 +1085,83 @@ const SettingsPanel = ({ stats }) => {
       </Section>
 
       {/* ══════════════════════════════════════════
+          5d. GROK BUILD INTEGRATION
+      ══════════════════════════════════════════ */}
+      <Section
+        label="Grok Build Integration"
+        icon="wrench"
+        color={T.text}
+        open={sections.grok}
+        onToggle={() => toggleSection("grok")}
+        badge={delegateCfg && <Badge color={delegateCfg.grok_enabled ? T.accent : T.textMuted}>{delegateCfg.grok_enabled ? "Active" : "Inactive"}</Badge>}
+      >
+        {delegateCfg ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 4 }}>
+              Cloud delegate backend via the xAI Grok Build CLI (backend='grok'). Read-only by default: Grok runs from a throwaway temp directory with only read_file, grep and list_dir.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+              <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+                {renderBoolToggle("Grok Enabled", !!delegateCfg.grok_enabled, () => updateDelegateField("grok_enabled", !delegateCfg.grok_enabled), "Master switch for Grok Build as a delegate backend.")}
+                {renderBoolToggle("Allow Writes", !!delegateCfg.grok_allow_write, () => updateDelegateField("grok_allow_write", !delegateCfg.grok_allow_write), "Run Grok in the project directory with write tools (--yolo). Loads the project's trusted .grok MCP servers and hooks; gated by Access Guard.")}
+              </div>
+              <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+                <div>
+                  <div style={labelStyle}>Model</div>
+                  <input type="text" value={delegateCfg.grok_model || ""} onChange={e => updateDelegateField("grok_model", e.target.value.trim())} style={inputStyle} placeholder="CLI default" />
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+                  Leave empty to use the Grok CLI's own default model.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              <div>
+                <div style={labelStyle}>Timeout (seconds)</div>
+                <input type="number" min="30" max="600" value={delegateCfg.grok_timeout ?? 120} onChange={e => updateDelegateField("grok_timeout", parseInt(e.target.value || "120", 10) || 120)} style={inputStyle} />
+              </div>
+              <div>
+                <div style={labelStyle}>Max Turns</div>
+                <input type="number" min="1" max="50" value={delegateCfg.grok_max_turns ?? 8} onChange={e => updateDelegateField("grok_max_turns", parseInt(e.target.value || "8", 10) || 8)} style={inputStyle} />
+              </div>
+            </div>
+
+            <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
+              <div style={labelStyle}>Auto-Routed Task Types</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6 }}>
+                Tasks auto-routed to Grok when backend='auto'. Click to toggle.
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {["review", "diagnose", "improve", "test", "explain", "summarize", "ask", "docstring"].map(tt => {
+                  const active = (delegateCfg.grok_task_types || ["review", "diagnose", "improve", "test"]).includes(tt);
+                  return <button key={tt} onClick={() => {
+                    const current = delegateCfg.grok_task_types || ["review", "diagnose", "improve", "test"];
+                    const next = active ? current.filter(t => t !== tt) : [...current, tt];
+                    updateDelegateField("grok_task_types", next);
+                  }} style={{
+                    padding: "3px 10px", borderRadius: 12, border: `1px solid ${active ? T.accent : T.border}`,
+                    background: active ? T.accent + "22" : "transparent",
+                    color: active ? T.accent : T.textMuted,
+                    cursor: "pointer", fontSize: 11, fontWeight: active ? 600 : 400,
+                  }}>{tt}</button>;
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Btn color={T.accent} onClick={saveDelegate} disabled={busy.delegate}>
+                <I name="save" size={13} /> {busy.delegate ? "Saving..." : "Save Grok Settings"}
+              </Btn>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: T.textDim, fontSize: 12 }}>Loading delegate settings...</div>
+        )}
+      </Section>
+
+      {/* ══════════════════════════════════════════
           6. AGENT WORKFLOWS
       ══════════════════════════════════════════ */}
       <Section
@@ -1247,6 +1325,7 @@ const SettingsPanel = ({ stats }) => {
               <option value="vscode">VS Code Copilot</option>
               <option value="cursor">Cursor</option>
               <option value="codex">OpenAI Codex</option>
+              <option value="grok">Grok Build</option>
               <option value="antigravity">Google Antigravity</option>
             </select>
           </div>
@@ -1327,6 +1406,7 @@ const SettingsPanel = ({ stats }) => {
               <option value="vscode">VS Code Copilot</option>
               <option value="cursor">Cursor</option>
               <option value="codex">OpenAI Codex</option>
+              <option value="grok">Grok Build</option>
             </select>
             <select value={installMcpMode} onChange={e => setInstallMcpMode(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
               <option value="direct">Direct</option>

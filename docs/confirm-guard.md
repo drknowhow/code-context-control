@@ -294,6 +294,16 @@ the Hub (§7.1). Residual risks are access-guard §6's, unchanged.
    or `mcp` class artifact must resolve to a confirm) so the two cannot drift
    apart the next time a profile lands.
 
+   The Grok Build profile adds `**/.grok/config.toml` (project MCP servers),
+   `**/.grok/skills/**`, `**/.grok/agents/**` and `**/.grok/rules/**` (Grok
+   loads `.grok/rules/*.md` as instructions). Its instruction doc is
+   `AGENTS.md`, already covered. `**/.grok/hooks/**` is NOT in this tier: a
+   Grok hook file is hook REGISTRATION (the command lines Grok runs, trusted
+   per folder rather than per file), so it joins `.claude/settings*.json` in
+   the hard write-deny below.
+   Separately from the tier, C3's installer never writes Grok's user config
+   `~/.grok/config.toml` or its trust store `~/.grok/trusted_folders.toml`.
+
    The `settings*.json` write-deny is deliberately NOT in this tier — hook
    REGISTRATION stays hard while hook BODIES pause, because registration
    decides code execution.

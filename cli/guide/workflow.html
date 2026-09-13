@@ -997,7 +997,7 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
       <p>Everything the CLI does — plus the operations that need multi-step safety — is available in the Hub:</p>
       <ul>
         <li><strong>"Link project by path…"</strong> (v2.96.0) — kebab menu on any card, at any depth. Browse anywhere or paste a path; C3 inspects it before anything happens and shows you what you are about to claim — the project's name and version, whether the hub already knows it, how much is in it, who already claims it, and what sub-projects it would bring with it. One confirm registers and links an unregistered project. Unlinked nested projects it finds are offered as suggestions, never applied.</li>
-        <li><strong>Designate</strong> — kebab menu → "Designate sub-project…" on any project card, or from the drill-in <strong>Sub-projects</strong> tab. A folder picker fenced to the parent's subtree validates the choice, shows adopt-vs-initialize expectations up front, and offers an instruction-docs/IDE picker (<code>auto | claude | vscode | cursor | codex | antigravity</code>).</li>
+        <li><strong>Designate</strong> — kebab menu → "Designate sub-project…" on any project card, or from the drill-in <strong>Sub-projects</strong> tab. A folder picker fenced to the parent's subtree validates the choice, shows adopt-vs-initialize expectations up front, and offers an instruction-docs/IDE picker (<code>auto | claude | vscode | cursor | codex | grok | antigravity</code>).</li>
         <li><strong>"Make sub-project of…"</strong> — the reverse move: pick any registered project to sit under. The only projects excluded are this one and its own descendants.</li>
         <li><strong>Sub-projects drill tab</strong> — per-child rows with inline <em>Validate</em> and <em>Promote</em>; inline <em>Reconcile</em> with per-issue detail and planned repair actions; a <em>Cascade</em> launcher with operation picker, include-parent toggle, affected-children preview, live progress, and Cancel.</li>
         <li><strong>Link health, passively</strong> — parents show a red "N link issues" badge and children a status badge (<code>ok · backlink_broken · unregistered · missing_folder · missing_c3 · orphan</code>), computed from config + filesystem on every listing — no manual reconcile needed to spot trouble.</li>
@@ -1022,7 +1022,7 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
     <section class="section" id="repo-map">
       <div class="section-title"><span class="icon">🗺️</span> Live Repo Map (v2.60.0)</div>
 
-      <p>Instruction docs (CLAUDE.md / AGENTS.md) no longer embed a frozen project tree. They carry a stable pointer to <code>.c3/MAP.md</code> — a machine-owned map C3 keeps fresh automatically. One map serves every consumer: Claude Code, Codex, Antigravity.</p>
+      <p>Instruction docs (CLAUDE.md / AGENTS.md) no longer embed a frozen project tree. They carry a stable pointer to <code>.c3/MAP.md</code> — a machine-owned map C3 keeps fresh automatically. One map serves every consumer: Claude Code, Codex, Grok Build, Antigravity.</p>
 
       <p>The map contains, in priority order: build/test commands, entry points, module one-liners, the depth-2 tree, and key files — under a token budget (default 1000). Sub-projects appear as boundaries and are never expanded into the parent map.</p>
 

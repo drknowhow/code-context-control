@@ -104,14 +104,16 @@ def _fake_handler(name: str, calls: list):
 def test_cascade_order_table():
     # Heavy tasks: cloud CLIs first, local last.
     for heavy in ("review", "diagnose", "improve", "test"):
-        assert delegate._cascade_order(heavy, {}) == ["codex", "gemini", "ollama"]
+        assert delegate._cascade_order(heavy, {}) == ["codex", "gemini", "grok", "ollama"]
     # Light tasks: local first, cloud only as fallback.
     for light in ("ask", "explain", "summarize", "docstring"):
-        assert delegate._cascade_order(light, {}) == ["ollama", "codex", "gemini"]
+        assert delegate._cascade_order(light, {}) == ["ollama", "codex", "gemini", "grok"]
     # Config-driven heavy sets are respected per backend.
-    dcfg = {"codex_task_types": ["review"], "gemini_task_types": ["review", "summarize"]}
+    dcfg = {"codex_task_types": ["review"], "gemini_task_types": ["review", "summarize"],
+            "grok_task_types": ["diagnose"]}
     assert delegate._cascade_order("summarize", dcfg) == ["gemini", "ollama"]
     assert delegate._cascade_order("review", dcfg) == ["codex", "gemini", "ollama"]
+    assert delegate._cascade_order("diagnose", dcfg) == ["grok", "ollama"]
 
 
 # ---------------------------------------------------------------------------

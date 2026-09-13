@@ -1,0 +1,27 @@
+{
+  "text": "I'll run the plumbing checks in order, starting by reading `README.md`.I'll call `c3_status` with no arguments next.PINEAPPLE\n1. read_file \u2014 succeeded\n2. grep \u2014 succeeded\n3. list_dir \u2014 succeeded\n4. write \u2014 succeeded\n5. search_replace \u2014 succeeded\n6. write \u2014 blocked (\"CAPTURE-DENY: denied.txt is blocked by the capture hook\")\n7. run_terminal_command \u2014 succeeded\n8. search_tool then use_tool (c3__c3_status) \u2014 succeeded",
+  "stopReason": "end_turn",
+  "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+  "requestId": "e84c9ae1-4718-4135-b4ae-8e1b9ea75119",
+  "usage": {
+    "input_tokens": 23526,
+    "cache_read_input_tokens": 196352,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 1673,
+    "reasoning_tokens": 1484,
+    "total_tokens": 221551
+  },
+  "num_turns": 10,
+  "total_cost_usd": 0.05279044,
+  "total_cost_usd_ticks": 527904400,
+  "modelUsage": {
+    "grok-4.6-build": {
+      "inputTokens": 23526,
+      "outputTokens": 1673,
+      "cacheReadInputTokens": 196352,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 10,
+      "costUSD": 0.05279044
+    }
+  }
+}

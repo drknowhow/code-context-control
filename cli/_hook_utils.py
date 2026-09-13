@@ -392,20 +392,28 @@ def record_unlocked_files(
 #            hookSpecificOutput.hookEventName is REQUIRED. Unknown keys are a
 #            hard deserialization error, not a warning, so emitting the Claude
 #            shape makes Codex discard the whole hook response.
+#   grok   — Grok Build: native tool names and tagged results on the way in
+#            (core/grok_payload.translate); context only under
+#            hookSpecificOutput, and Stop context would keep the agent working.
 HOST_CLAUDE = "claude"
 HOST_GEMINI = "gemini"
 HOST_CODEX = "codex"
+HOST_GROK = "grok"
 
 
 def detect_host(data: dict, explicit_host: str | None = None) -> str:
     """Use the hook's explicit host or wire identity, never its parent's env."""
     named = explicit_host or (data.get("_c3_host") if isinstance(data, dict) else None)
     aliases = {"claude-code": HOST_CLAUDE, "claude": HOST_CLAUDE,
-               "codex": HOST_CODEX, "gemini": HOST_GEMINI, "antigravity": HOST_GEMINI}
+               "codex": HOST_CODEX, "gemini": HOST_GEMINI, "antigravity": HOST_GEMINI,
+               "grok": HOST_GROK, "grok-build": HOST_GROK}
     if named in aliases:
         return aliases[named]
     if not isinstance(data, dict):
         return HOST_CLAUDE
+    from core.grok_payload import is_grok_payload
+    if is_grok_payload(data):
+        return HOST_GROK
     if data.get("turn_id"):
         return HOST_CODEX
     response = data.get("tool_response")

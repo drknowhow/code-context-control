@@ -1,0 +1,1083 @@
+{
+  "grok_version": "1.0.30 (04b7ffed98c6)",
+  "captured": "2026-09-13",
+  "note": "Raw hook stdin payloads from a headless grok run with a project .grok/hooks capture hook. Paths are a scratch project.",
+  "payloads": {
+    "SessionStart": {
+      "hookEventName": "session_start",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:26.123585700+00:00",
+      "permissionMode": "bypassPermissions",
+      "source": "new",
+      "hook_event_name": "SessionStart",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "permission_mode": "bypassPermissions"
+    },
+    "UserPromptSubmit": {
+      "hookEventName": "user_prompt_submit",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:26.809992600+00:00",
+      "promptId": "e84c9ae1-4718-4135-b4ae-8e1b9ea75119",
+      "permissionMode": "bypassPermissions",
+      "prompt": "You are testing tool plumbing. Do these steps in order, one tool call per step, and do not skip any step even if one fails:\n1. Read the file README.md with your file-reading tool.\n2. Search the project for the text \"alpha\" with your grep/search tool.\n3. List the project root directory with your directory-listing tool.\n4. Create a new file named new.txt containing exactly: created by grok\n5. Edit the existing file a.txt, replacing \"alpha\" with \"gamma\".\n6. Write a file named denied.txt containing: should be blocked\n7. Run the terminal command: echo terminal-ok\n8. Use the MCP integration from the server named c3: find its tool named c3_status (use search_tool to discover it if needed) and call it with no arguments.\nFinally, reply with one line per step listing the exact tool name you called and whether it succeeded or was blocked (quote any block reason). Also include any extra words a hook asked you to include.",
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "permission_mode": "bypassPermissions"
+    },
+    "PreToolUse:read_file": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:32.496784400+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "read_file",
+      "toolUseId": "call-55ea8719-4f98-4d34-806f-0e14c45f982b-0",
+      "toolInput": {
+        "target_file": "README.md"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "read_file",
+      "tool_input": {
+        "target_file": "README.md"
+      },
+      "tool_use_id": "call-55ea8719-4f98-4d34-806f-0e14c45f982b-0"
+    },
+    "PostToolUse:read_file": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:33.261852800+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "read_file",
+      "toolUseId": "call-55ea8719-4f98-4d34-806f-0e14c45f982b-0",
+      "toolInput": {
+        "target_file": "README.md"
+      },
+      "toolResult": {
+        "type": "ReadFile",
+        "FileContent": {
+          "content": "1\u2192hello world\nThis is the capture project.\n",
+          "content_concise": "1\u2192hello world\nThis is the capture project.\n",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\README.md",
+          "offset": null,
+          "raw_output": "hello world\nThis is the capture project.\n",
+          "total_lines": 3
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 0,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "read_file",
+      "tool_input": {
+        "target_file": "README.md"
+      },
+      "tool_response": {
+        "type": "ReadFile",
+        "FileContent": {
+          "content": "1\u2192hello world\nThis is the capture project.\n",
+          "content_concise": "1\u2192hello world\nThis is the capture project.\n",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\README.md",
+          "offset": null,
+          "raw_output": "hello world\nThis is the capture project.\n",
+          "total_lines": 3
+        }
+      },
+      "tool_use_id": "call-55ea8719-4f98-4d34-806f-0e14c45f982b-0",
+      "duration_ms": 0
+    },
+    "PreToolUse:grep": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:35.008678+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "grep",
+      "toolUseId": "call-9f52289a-5996-4605-bc16-10cc49162b36-1",
+      "toolInput": {
+        "pattern": "alpha"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "grep",
+      "tool_input": {
+        "pattern": "alpha"
+      },
+      "tool_use_id": "call-9f52289a-5996-4605-bc16-10cc49162b36-1"
+    },
+    "PostToolUse:grep": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:36.120011700+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "grep",
+      "toolUseId": "call-9f52289a-5996-4605-bc16-10cc49162b36-1",
+      "toolInput": {
+        "pattern": "alpha"
+      },
+      "toolResult": {
+        "type": "GrepSearch",
+        "stdout": [
+          60,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          114,
+          101,
+          115,
+          117,
+          108,
+          116,
+          32,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          112,
+          97,
+          116,
+          104,
+          61,
+          34,
+          85,
+          58,
+          92,
+          116,
+          109,
+          112,
+          92,
+          103,
+          114,
+          111,
+          107,
+          95,
+          99,
+          51,
+          95,
+          99,
+          97,
+          112,
+          116,
+          117,
+          114,
+          101,
+          92,
+          112,
+          114,
+          111,
+          106,
+          34,
+          62,
+          10,
+          70,
+          111,
+          117,
+          110,
+          100,
+          32,
+          49,
+          32,
+          109,
+          97,
+          116,
+          99,
+          104,
+          105,
+          110,
+          103,
+          32,
+          108,
+          105,
+          110,
+          101,
+          115,
+          10,
+          85,
+          58,
+          92,
+          116,
+          109,
+          112,
+          92,
+          103,
+          114,
+          111,
+          107,
+          95,
+          99,
+          51,
+          95,
+          99,
+          97,
+          112,
+          116,
+          117,
+          114,
+          101,
+          92,
+          112,
+          114,
+          111,
+          106,
+          92,
+          97,
+          46,
+          116,
+          120,
+          116,
+          10,
+          49,
+          58,
+          97,
+          108,
+          112,
+          104,
+          97,
+          32,
+          98,
+          101,
+          116,
+          97,
+          10,
+          60,
+          47,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          114,
+          101,
+          115,
+          117,
+          108,
+          116,
+          62
+        ],
+        "stderr": [],
+        "exit_code": 0,
+        "match_count": 1,
+        "file_matches": [
+          {
+            "path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+            "matches": [
+              {
+                "line_number": 1,
+                "content": "alpha beta"
+              }
+            ]
+          }
+        ]
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 316,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "grep",
+      "tool_input": {
+        "pattern": "alpha"
+      },
+      "tool_response": {
+        "type": "GrepSearch",
+        "stdout": [
+          60,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          114,
+          101,
+          115,
+          117,
+          108,
+          116,
+          32,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          112,
+          97,
+          116,
+          104,
+          61,
+          34,
+          85,
+          58,
+          92,
+          116,
+          109,
+          112,
+          92,
+          103,
+          114,
+          111,
+          107,
+          95,
+          99,
+          51,
+          95,
+          99,
+          97,
+          112,
+          116,
+          117,
+          114,
+          101,
+          92,
+          112,
+          114,
+          111,
+          106,
+          34,
+          62,
+          10,
+          70,
+          111,
+          117,
+          110,
+          100,
+          32,
+          49,
+          32,
+          109,
+          97,
+          116,
+          99,
+          104,
+          105,
+          110,
+          103,
+          32,
+          108,
+          105,
+          110,
+          101,
+          115,
+          10,
+          85,
+          58,
+          92,
+          116,
+          109,
+          112,
+          92,
+          103,
+          114,
+          111,
+          107,
+          95,
+          99,
+          51,
+          95,
+          99,
+          97,
+          112,
+          116,
+          117,
+          114,
+          101,
+          92,
+          112,
+          114,
+          111,
+          106,
+          92,
+          97,
+          46,
+          116,
+          120,
+          116,
+          10,
+          49,
+          58,
+          97,
+          108,
+          112,
+          104,
+          97,
+          32,
+          98,
+          101,
+          116,
+          97,
+          10,
+          60,
+          47,
+          119,
+          111,
+          114,
+          107,
+          115,
+          112,
+          97,
+          99,
+          101,
+          95,
+          114,
+          101,
+          115,
+          117,
+          108,
+          116,
+          62
+        ],
+        "stderr": [],
+        "exit_code": 0,
+        "match_count": 1,
+        "file_matches": [
+          {
+            "path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+            "matches": [
+              {
+                "line_number": 1,
+                "content": "alpha beta"
+              }
+            ]
+          }
+        ]
+      },
+      "tool_use_id": "call-9f52289a-5996-4605-bc16-10cc49162b36-1",
+      "duration_ms": 316
+    },
+    "PreToolUse:list_dir": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:38.033648300+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "list_dir",
+      "toolUseId": "call-f80c405b-7800-4899-84e2-db5a932ddb6f-2",
+      "toolInput": {
+        "target_directory": "."
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "list_dir",
+      "tool_input": {
+        "target_directory": "."
+      },
+      "tool_use_id": "call-f80c405b-7800-4899-84e2-db5a932ddb6f-2"
+    },
+    "PostToolUse:list_dir": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:38.825024900+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "list_dir",
+      "toolUseId": "call-f80c405b-7800-4899-84e2-db5a932ddb6f-2",
+      "toolInput": {
+        "target_directory": "."
+      },
+      "toolResult": {
+        "type": "ListDir",
+        "Content": {
+          "content": "- U:\\tmp\\grok_c3_capture\\proj/\n  - a.txt\n  - README.md",
+          "absolute_root_path": "U:\\tmp\\grok_c3_capture\\proj\\."
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 3,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "list_dir",
+      "tool_input": {
+        "target_directory": "."
+      },
+      "tool_response": {
+        "type": "ListDir",
+        "Content": {
+          "content": "- U:\\tmp\\grok_c3_capture\\proj/\n  - a.txt\n  - README.md",
+          "absolute_root_path": "U:\\tmp\\grok_c3_capture\\proj\\."
+        }
+      },
+      "tool_use_id": "call-f80c405b-7800-4899-84e2-db5a932ddb6f-2",
+      "duration_ms": 3
+    },
+    "PreToolUse:write": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:41.930637+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "write",
+      "toolUseId": "call-1022181f-37a6-4d94-9f99-dfba9962fb50-3",
+      "toolInput": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+        "content": "created by grok\n"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "write",
+      "tool_input": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+        "content": "created by grok\n"
+      },
+      "tool_use_id": "call-1022181f-37a6-4d94-9f99-dfba9962fb50-3"
+    },
+    "PostToolUse:write": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:42.685184600+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "write",
+      "toolUseId": "call-1022181f-37a6-4d94-9f99-dfba9962fb50-3",
+      "toolInput": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+        "content": "created by grok\n"
+      },
+      "toolResult": {
+        "type": "SearchReplace",
+        "EditsApplied": {
+          "old_string": "",
+          "new_string": "created by grok\n",
+          "tool_output_for_prompt": "The file U:\\tmp\\grok_c3_capture\\proj\\new.txt has been created.",
+          "tool_output_for_prompt_concise": "The file U:\\tmp\\grok_c3_capture\\proj\\new.txt has been created.",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+          "edits": {
+            "details": [
+              {
+                "old_string": "",
+                "old_line": 1,
+                "new_string": "created by grok\n",
+                "new_line": 1,
+                "context_before": "",
+                "context_after": "",
+                "line_prefix": ""
+              }
+            ]
+          }
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 1,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "write",
+      "tool_input": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+        "content": "created by grok\n"
+      },
+      "tool_response": {
+        "type": "SearchReplace",
+        "EditsApplied": {
+          "old_string": "",
+          "new_string": "created by grok\n",
+          "tool_output_for_prompt": "The file U:\\tmp\\grok_c3_capture\\proj\\new.txt has been created.",
+          "tool_output_for_prompt_concise": "The file U:\\tmp\\grok_c3_capture\\proj\\new.txt has been created.",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\new.txt",
+          "edits": {
+            "details": [
+              {
+                "old_string": "",
+                "old_line": 1,
+                "new_string": "created by grok\n",
+                "new_line": 1,
+                "context_before": "",
+                "context_after": "",
+                "line_prefix": ""
+              }
+            ]
+          }
+        }
+      },
+      "tool_use_id": "call-1022181f-37a6-4d94-9f99-dfba9962fb50-3",
+      "duration_ms": 1
+    },
+    "PreToolUse:search_replace": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:47.063721200+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "search_replace",
+      "toolUseId": "call-8c23c661-fd8f-4946-a6a8-939a6772f0ea-4",
+      "toolInput": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+        "old_string": "alpha",
+        "new_string": "gamma"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "search_replace",
+      "tool_input": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+        "old_string": "alpha",
+        "new_string": "gamma"
+      },
+      "tool_use_id": "call-8c23c661-fd8f-4946-a6a8-939a6772f0ea-4"
+    },
+    "PostToolUse:search_replace": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:47.857976+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "search_replace",
+      "toolUseId": "call-8c23c661-fd8f-4946-a6a8-939a6772f0ea-4",
+      "toolInput": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+        "old_string": "alpha",
+        "new_string": "gamma"
+      },
+      "toolResult": {
+        "type": "SearchReplace",
+        "EditsApplied": {
+          "old_string": "alpha",
+          "new_string": "gamma",
+          "tool_output_for_prompt": "The file U:\\tmp\\grok_c3_capture\\proj\\a.txt has been updated successfully.",
+          "tool_output_for_prompt_concise": "The file U:\\tmp\\grok_c3_capture\\proj\\a.txt has been updated.",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+          "edits": {
+            "details": [
+              {
+                "old_string": "alpha",
+                "old_line": 1,
+                "new_string": "gamma",
+                "new_line": 1,
+                "context_before": "",
+                "context_after": "",
+                "line_prefix": ""
+              }
+            ]
+          }
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 2,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "search_replace",
+      "tool_input": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+        "old_string": "alpha",
+        "new_string": "gamma"
+      },
+      "tool_response": {
+        "type": "SearchReplace",
+        "EditsApplied": {
+          "old_string": "alpha",
+          "new_string": "gamma",
+          "tool_output_for_prompt": "The file U:\\tmp\\grok_c3_capture\\proj\\a.txt has been updated successfully.",
+          "tool_output_for_prompt_concise": "The file U:\\tmp\\grok_c3_capture\\proj\\a.txt has been updated.",
+          "absolute_path": "U:\\tmp\\grok_c3_capture\\proj\\a.txt",
+          "edits": {
+            "details": [
+              {
+                "old_string": "alpha",
+                "old_line": 1,
+                "new_string": "gamma",
+                "new_line": 1,
+                "context_before": "",
+                "context_after": "",
+                "line_prefix": ""
+              }
+            ]
+          }
+        }
+      },
+      "tool_use_id": "call-8c23c661-fd8f-4946-a6a8-939a6772f0ea-4",
+      "duration_ms": 2
+    },
+    "PreToolUse:write:denied": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:54.939762600+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "write",
+      "toolUseId": "call-d949151e-2384-432b-9457-0bc1874fd2d6-5",
+      "toolInput": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\denied.txt",
+        "content": "should be blocked\n"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "write",
+      "tool_input": {
+        "file_path": "U:\\tmp\\grok_c3_capture\\proj\\denied.txt",
+        "content": "should be blocked\n"
+      },
+      "tool_use_id": "call-d949151e-2384-432b-9457-0bc1874fd2d6-5"
+    },
+    "PreToolUse:run_terminal_command": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:57.297253700+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "run_terminal_command",
+      "toolUseId": "call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6",
+      "toolInput": {
+        "command": "echo terminal-ok",
+        "description": "Echo terminal-ok to test plumbing"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "run_terminal_command",
+      "tool_input": {
+        "command": "echo terminal-ok",
+        "description": "Echo terminal-ok to test plumbing"
+      },
+      "tool_use_id": "call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6"
+    },
+    "PostToolUse:run_terminal_command": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:48:58.385959400+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "run_terminal_command",
+      "toolUseId": "call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6",
+      "toolInput": {
+        "command": "echo terminal-ok",
+        "description": "Echo terminal-ok to test plumbing"
+      },
+      "toolResult": {
+        "type": "Bash",
+        "output": [
+          116,
+          101,
+          114,
+          109,
+          105,
+          110,
+          97,
+          108,
+          45,
+          111,
+          107,
+          13,
+          10
+        ],
+        "output_for_prompt": "exit: 0\nterminal-ok\n",
+        "exit_code": 0,
+        "command": "echo terminal-ok",
+        "truncated": false,
+        "signal": null,
+        "timed_out": false,
+        "description": "Echo terminal-ok to test plumbing",
+        "current_dir": "U:\\tmp\\grok_c3_capture\\proj",
+        "output_file": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\terminal\\call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6.log",
+        "total_bytes": 13,
+        "was_bare_echo": true
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 287,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "run_terminal_command",
+      "tool_input": {
+        "command": "echo terminal-ok",
+        "description": "Echo terminal-ok to test plumbing"
+      },
+      "tool_response": {
+        "type": "Bash",
+        "output": [
+          116,
+          101,
+          114,
+          109,
+          105,
+          110,
+          97,
+          108,
+          45,
+          111,
+          107,
+          13,
+          10
+        ],
+        "output_for_prompt": "exit: 0\nterminal-ok\n",
+        "exit_code": 0,
+        "command": "echo terminal-ok",
+        "truncated": false,
+        "signal": null,
+        "timed_out": false,
+        "description": "Echo terminal-ok to test plumbing",
+        "current_dir": "U:\\tmp\\grok_c3_capture\\proj",
+        "output_file": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\terminal\\call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6.log",
+        "total_bytes": 13,
+        "was_bare_echo": true
+      },
+      "tool_use_id": "call-34604321-0267-4a7c-ad0f-2a2f5709d20c-6",
+      "duration_ms": 287
+    },
+    "PreToolUse:search_tool": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:05.065471600+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "search_tool",
+      "toolUseId": "call-9859f81f-6fd6-43bd-b58e-4daa19e4a7db-7",
+      "toolInput": {
+        "query": "c3_status"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "search_tool",
+      "tool_input": {
+        "query": "c3_status"
+      },
+      "tool_use_id": "call-9859f81f-6fd6-43bd-b58e-4daa19e4a7db-7"
+    },
+    "PostToolUse:search_tool": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:05.864650+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "search_tool",
+      "toolUseId": "call-9859f81f-6fd6-43bd-b58e-4daa19e4a7db-7",
+      "toolInput": {
+        "query": "c3_status"
+      },
+      "toolResult": {
+        "type": "SearchTool",
+        "result_count": 1,
+        "content": "{\n  \"results\": [\n    {\n      \"server\": \"c3\",\n      \"tools\": [\n        {\n          \"tool_name\": \"c3__c3_status\",\n          \"description\": \"PROJECT health and budget \u2014 run at session start or when context feels stale (read-only, plan-mode safe).\\nviews: budget (tokens/ratio), health (memory/index/notifications), notifications (actionable only), sessions, ghost_files, access (Access Guard rules \u2014 read-only).\",\n          \"score\": 1.0,\n          \"input_schema\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"view\": {\n                \"default\": \"budget\",\n                \"type\": \"string\"\n              },\n              \"detailed\": {\n                \"default\": false,\n                \"type\": \"boolean\"\n              }\n            },\n            \"type\": \"object\"\n          }\n        }\n      ]\n    }\n  ],\n  \"total_hidden_tools\": 23,\n  \"status\": \"ready\",\n  \"note\": null\n}"
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 0,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "search_tool",
+      "tool_input": {
+        "query": "c3_status"
+      },
+      "tool_response": {
+        "type": "SearchTool",
+        "result_count": 1,
+        "content": "{\n  \"results\": [\n    {\n      \"server\": \"c3\",\n      \"tools\": [\n        {\n          \"tool_name\": \"c3__c3_status\",\n          \"description\": \"PROJECT health and budget \u2014 run at session start or when context feels stale (read-only, plan-mode safe).\\nviews: budget (tokens/ratio), health (memory/index/notifications), notifications (actionable only), sessions, ghost_files, access (Access Guard rules \u2014 read-only).\",\n          \"score\": 1.0,\n          \"input_schema\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"view\": {\n                \"default\": \"budget\",\n                \"type\": \"string\"\n              },\n              \"detailed\": {\n                \"default\": false,\n                \"type\": \"boolean\"\n              }\n            },\n            \"type\": \"object\"\n          }\n        }\n      ]\n    }\n  ],\n  \"total_hidden_tools\": 23,\n  \"status\": \"ready\",\n  \"note\": null\n}"
+      },
+      "tool_use_id": "call-9859f81f-6fd6-43bd-b58e-4daa19e4a7db-7",
+      "duration_ms": 0
+    },
+    "PreToolUse:c3__c3_status": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:09.675153700+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "c3__c3_status",
+      "toolUseId": "call-102fa99d-45f1-4781-8e70-fd266f391269-8",
+      "toolInput": {
+        "tool_name": "c3__c3_status",
+        "tool_input": {}
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "c3__c3_status",
+      "tool_input": {
+        "tool_name": "c3__c3_status",
+        "tool_input": {}
+      },
+      "tool_use_id": "call-102fa99d-45f1-4781-8e70-fd266f391269-8"
+    },
+    "PostToolUse:c3__c3_status": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:10.500101200+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "c3__c3_status",
+      "toolUseId": "call-102fa99d-45f1-4781-8e70-fd266f391269-8",
+      "toolInput": {
+        "tool_name": "c3__c3_status",
+        "tool_input": {}
+      },
+      "toolResult": {
+        "type": "MCP",
+        "tool_name": "c3_status",
+        "server_name": "c3",
+        "output": {
+          "OkayOutput": "[ctx_status] 0tok/0calls avg:0 (0% of 35000tok threshold)\n[file_memory] 0/3 files indexed"
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "durationMs": 19,
+      "isBackgrounded": false,
+      "hook_event_name": "PostToolUse",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "c3__c3_status",
+      "tool_input": {
+        "tool_name": "c3__c3_status",
+        "tool_input": {}
+      },
+      "tool_response": {
+        "type": "MCP",
+        "tool_name": "c3_status",
+        "server_name": "c3",
+        "output": {
+          "OkayOutput": "[ctx_status] 0tok/0calls avg:0 (0% of 35000tok threshold)\n[file_memory] 0/3 files indexed"
+        }
+      },
+      "tool_use_id": "call-102fa99d-45f1-4781-8e70-fd266f391269-8",
+      "duration_ms": 19
+    },
+    "Stop": {
+      "hookEventName": "stop",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:22.527260900+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "promptId": "e84c9ae1-4718-4135-b4ae-8e1b9ea75119",
+      "permissionMode": "bypassPermissions",
+      "reason": "end_turn",
+      "stopHookActive": false,
+      "lastAssistantMessage": "PINEAPPLE\n1. read_file \u2014 succeeded\n2. grep \u2014 succeeded\n3. list_dir \u2014 succeeded\n4. write \u2014 succeeded\n5. search_replace \u2014 succeeded\n6. write \u2014 blocked (\"CAPTURE-DENY: denied.txt is blocked by the capture hook\")\n7. run_terminal_command \u2014 succeeded\n8. search_tool then use_tool (c3__c3_status) \u2014 succeeded",
+      "backgroundTasks": [],
+      "sessionCrons": [],
+      "hook_event_name": "Stop",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions"
+    },
+    "SessionEnd": {
+      "hookEventName": "session_end",
+      "sessionId": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "cwd": "U:\\tmp\\grok_c3_capture\\proj",
+      "workspaceRoot": "U:/tmp/grok_c3_capture/proj/",
+      "timestamp": "2026-09-13T08:49:23.432105800+00:00",
+      "transcriptPath": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "reason": "shutdown",
+      "hook_event_name": "SessionEnd",
+      "session_id": "01a099f4-14fb-7f62-b696-e34080c32a74",
+      "transcript_path": "C:\\Users\\user\\.grok\\sessions\\U%3A%5Ctmp%5Cgrok_c3_capture%5Cproj\\01a099f4-14fb-7f62-b696-e34080c32a74\\updates.jsonl",
+      "permission_mode": "bypassPermissions"
+    }
+  }
+}

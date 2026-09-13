@@ -5,6 +5,7 @@ const IDE_LABELS = {
   'vscode': 'VS Code',
   'cursor': 'Cursor',
   'codex': 'Codex CLI',
+  'grok': 'Grok Build',
   'gemini': 'Gemini CLI',
   'antigravity': 'Antigravity',
 };
@@ -13,6 +14,7 @@ const IDE_OPTIONS = [
   { id: 'claude-code', name: 'Claude Code CLI', icon: '\u{1F916}', cmd: 'claude' },
   { id: 'claude-app', name: 'Claude Code App', icon: '\u{1F4D0}', cmd: 'claude-app' },
   { id: 'codex', name: 'Codex CLI', icon: '\u{1F9E0}', cmd: 'codex' },
+  { id: 'grok', name: 'Grok Build', icon: '\u{1F6E0}', cmd: 'grok' },
   { id: 'gemini', name: 'Gemini CLI', icon: '\u{1F48E}', cmd: 'gemini' },
   { id: 'antigravity', name: 'Antigravity', icon: '\u{1F680}', cmd: 'antigravity' },
   { id: 'vscode', name: 'VS Code', icon: '\u{1F4BB}', cmd: 'code' },

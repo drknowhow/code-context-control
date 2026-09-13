@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-CODEX_WORKFLOW = """# C3 — Codex workflow
+CODEX_WORKFLOW = """# C3 — agent workflow
 
 Use C3 for repository intelligence and audited changes:
 1. Recall relevant project facts with c3_memory; inspect .c3/MAP.md.
@@ -21,6 +21,9 @@ use a targeted native fallback. Never bypass an access denial or masked path.
 A [c3-access:confirm] response is a hold: follow its S8 instructions, wait on
 the existing request with c3_override, and retry only after approval. A pending
 request is not a denial. Agent-config writes must go through c3_edit.
+Detailed C3 actions are documented in MCP tool descriptions and `c3 --help`.
+
+## Codex
 
 Codex lifecycle hooks require a supported client, installed .codex/hooks.json,
 and user trust in Codex. Installation does not establish that hooks are active.
@@ -30,7 +33,6 @@ C3's server-side guards remain authoritative for C3 calls.
 MCP configuration uses [mcp_servers.c3] in project-scoped .codex/config.toml. Project configuration
 and hooks must be trusted by Codex. Use `c3 install-mcp --ide codex` to update;
 add `--global-fallback` only when a machine-wide fallback is wanted.
-Detailed C3 actions are documented in MCP tool descriptions and `c3 --help`.
 """
 
 
@@ -120,13 +122,10 @@ def install_hooks(target: Path, interpreter: str, dispatcher: Path) -> dict:
                 groups.append({**group, "hooks": kept})
         # Encode a PowerShell invocation so cmd.exe cannot expand metacharacters
         # or %variables% in project/interpreter paths. stdin remains the payload.
+        from core.hook_command import posix_command, powershell_encoded_command
         argv = [interpreter, str(dispatcher), route, "--host", "codex", "--project", str(target)]
-        import base64
-        import shlex
-        command = shlex.join(argv)
-        script = "& " + " ".join("'" + str(arg).replace("'", "''") + "'" for arg in argv) + "; exit $LASTEXITCODE"
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        command_windows = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
+        command = posix_command(argv)
+        command_windows = powershell_encoded_command(argv)
         groups.append({"matcher": ".*", "hooks": [{
             "type": "command", "command": command,
             "commandWindows": command_windows, "timeout": 3 if event == "SessionEnd" else 30,

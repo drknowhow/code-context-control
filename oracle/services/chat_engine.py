@@ -1039,7 +1039,7 @@ class ChatEngine:
             return {"error": f"Agent '{agent_id}' is not active or does not exist."}
 
         backend = (agent.get("backend") or "ollama").strip().lower()
-        if backend not in ("ollama", "codex", "gemini", "claude", "auto"):
+        if backend not in ("ollama", "codex", "gemini", "claude", "grok", "auto"):
             _emit("agent_done", agent_id=agent_id, error="bad_backend")
             return {"error": f"Agent '{agent_id}' has unknown backend '{backend}'."}
         if backend != "ollama":

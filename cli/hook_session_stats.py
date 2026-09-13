@@ -100,8 +100,29 @@ def read_transcript_usage(transcript_path) -> dict:
 
 def run(payload: dict, project_path: Path | None = None):
     """Core logic — importable by the dispatcher and tests. Returns None."""
-    from cli._hook_utils import HOST_CODEX, detect_host
-    if detect_host(payload) == HOST_CODEX:
+    from cli._hook_utils import HOST_CODEX, HOST_GROK, detect_host
+    host = detect_host(payload)
+    if host == HOST_GROK:
+        from services.grok_transcript import read_usage
+        base = Path(project_path or payload.get("cwd") or Path.cwd()).resolve()
+        usage = read_usage(payload.get("transcript_path"), str(payload.get("session_id") or ""))
+        row = {"ts": datetime.now(timezone.utc).isoformat(), "session_id": payload.get("session_id"),
+               "provider": "grok", "source": "transcript" if usage is not None else "none",
+               "stop_reason": payload.get("reason"),
+               "input_tokens": usage["input_tokens"] if usage else None,
+               "input_tokens_including_cache": usage["input_tokens_including_cache"] if usage else None,
+               "output_tokens": usage["output_tokens"] if usage else None,
+               "cache_read_tokens": usage["cache_read_tokens"] if usage else None,
+               "cache_creation_tokens": usage["cache_creation_tokens"] if usage else None,
+               "reasoning_tokens": usage["reasoning_tokens"] if usage else None,
+               # Grok measures and reports its own cost, so it is recorded as given.
+               "cost_usd": usage["cost_usd"] if usage else None,
+               "model": usage["model"] if usage else ""}
+        if (base / ".c3").is_dir():
+            with (base / ".c3" / "session_stats.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(row) + "\n")
+        return None
+    if host == HOST_CODEX:
         from services.codex_transcript import read_rollout
         base = Path(project_path or payload.get("cwd") or Path.cwd()).resolve()
         transcript = payload.get("transcript_path")

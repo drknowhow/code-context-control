@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.130.0"
+__version__ = "2.131.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -316,7 +316,7 @@ _BASH_STANDARD = _BASH_READONLY + [
     "Bash(pip:*)", "Bash(pip3:*)", "Bash(npm:*)", "Bash(node:*)",
     "Bash(cargo:*)", "Bash(go:*)",
     # AI CLIs
-    "Bash(claude:*)", "Bash(codex:*)", "Bash(gemini:*)",
+    "Bash(claude:*)", "Bash(codex:*)", "Bash(gemini:*)", "Bash(grok:*)",
     # Utilities
     "Bash(timeout:*)", "Bash(time:*)", "Bash(curl:*)", "Bash(gh:*)",
     "Bash(for:*)", "Bash(do:*)", "Bash(done:*)",
@@ -755,6 +755,7 @@ def _select_init_ide(default_ide: str) -> str:
         "Cursor       — .cursor/mcp.json",
         "Codex        — .codex/config.toml + AGENTS.md",
         "Antigravity  — ~/.gemini/antigravity/mcp_config.json + AGENTS.md",
+        "Grok Build   — .grok/config.toml + .grok/hooks + AGENTS.md",
     ]
     selected = _prompt_choice("Step 1/3 — Choose IDE profile", choices)
     mapping = {
@@ -764,6 +765,7 @@ def _select_init_ide(default_ide: str) -> str:
         choices[3]: "cursor",
         choices[4]: "codex",
         choices[5]: "antigravity",
+        choices[6]: "grok",
     }
     chosen = mapping.get(selected or "", normalize_ide_name(default_ide) if default_ide != "auto" else "auto")
     print(f"  IDE profile: {chosen}")
@@ -1034,7 +1036,7 @@ def _parse_cli_ide_arg(value: str) -> str:
     normalized = normalize_ide_name(raw)
     if normalized not in PROFILES:
         raise argparse.ArgumentTypeError(
-            "Unsupported IDE. Use one of: auto, claude, vscode, cursor, codex, antigravity."
+            "Unsupported IDE. Use one of: auto, claude, vscode, cursor, codex, antigravity, grok."
         )
     return normalized
 
@@ -4333,9 +4335,9 @@ _C3_HOOKLESS_WORKFLOW = _adapt_workflow_for_ide(
 
 _COPILOT_INSTRUCTIONS_CONTENT = _VSCODE_SESSION_INIT + "\n\n" + _C3_HOOKLESS_WORKFLOW
 
-from services.codex_integration import CODEX_WORKFLOW
+from services.agents_workflow import AGENTS_MD_WORKFLOW
 
-_AGENTS_MD_CONTENT = CODEX_WORKFLOW
+_AGENTS_MD_CONTENT = AGENTS_MD_WORKFLOW
 
 _TERSE_SKILL_CONTENT = """\
 # /terse — Terse Output Mode
@@ -4544,7 +4546,7 @@ def _ensure_instruction_workflow(instructions_path: Path, template: str,
 
 def _ensure_codex_agents_workflow(agents_md_path: Path,
                                   project_path: str = "") -> str:
-    """Ensure AGENTS.md contains the mandatory C3 workflow for Codex sessions."""
+    """Ensure AGENTS.md contains the mandatory C3 workflow (Codex and Grok Build read it)."""
     from services.claude_md import write_c3_instruction_doc
     existing = agents_md_path.read_text(encoding="utf-8") if agents_md_path.exists() else None
     rendered = write_c3_instruction_doc(agents_md_path, _AGENTS_MD_CONTENT, project_path or None)
@@ -4888,8 +4890,15 @@ def _uninstall_mcp_all(project_path: str, include_global: bool = True):
                 except Exception as e:
                     print(f"  Warning: Could not update {mcp_config_path}: {e}")
 
+        # Grok Build: C3 owns the whole .grok/hooks/c3.json, so it is deleted
+        # rather than stripped (its Windows commands are encoded and would not
+        # match the settings scanner anyway).
+        if ide_name == "grok":
+            from services.grok_integration import remove_hooks as remove_grok_hooks
+            if remove_grok_hooks(target):
+                print(f"  Deleted {target / profile.settings_path}")
         # Per-host hooks and settings; remove only C3-owned handlers.
-        if profile.supports_hooks and profile.settings_path:
+        elif profile.supports_hooks and profile.settings_path:
             settings_path = target / profile.settings_path
             if settings_path.exists():
                 try:
@@ -4970,7 +4979,7 @@ def _uninstall_mcp_all(project_path: str, include_global: bool = True):
             print(f"  Warning: Could not update {legacy_cfg}: {e}")
 
     # Final pass: clean up empty IDE directories (.claude, .codex, .gemini, .vscode, .github)
-    dirs_to_check = [".claude", ".codex", ".gemini", ".vscode", ".github"]
+    dirs_to_check = [".claude", ".codex", ".grok", ".gemini", ".vscode", ".github"]
     for dname in dirs_to_check:
         dpath = target / dname
         if dpath.exists() and dpath.is_dir():
@@ -5011,7 +5020,7 @@ back to native tools as the task progresses.
 - **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
-- **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|auto')` — offload to other models
+- **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|grok|auto')` — offload to other models
 - **Local CI** (v2.79.0+): `c3_ci(action='inspect|run|rerun|failures')` — run THIS repo's real `.github/workflows` here instead of pushing for feedback. `run` executes in `needs` order; `failures` gives {file,line,message}; `rerun` retries only what failed. Only `FULL_CI_PASS` means safe to push — `PARTIAL_PASS` means something did not run (other OS, unsupported action, or your selection).
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
@@ -5466,6 +5475,12 @@ def cmd_install_mcp(args):
                 toml_entries["startup_timeout_sec"] = 30
                 toml_entries["tool_timeout_sec"] = 60
                 toml_entries["args"] += ["--host", "codex"]
+            elif profile.name == "grok":
+                # Grok's default startup timeout is 30s; a cold C3 index build can
+                # exceed it. Its tool timeout already defaults to 6000s.
+                toml_entries["enabled"] = True
+                toml_entries["startup_timeout_sec"] = 60
+                toml_entries["args"] += ["--host", "grok"]
             _upsert_toml_section(
                 mcp_config_path,
                 f"{profile.config_key}.c3",
@@ -5517,6 +5532,13 @@ def cmd_install_mcp(args):
         from services.codex_integration import install_hooks
         hook_state = install_hooks(target, sys.executable, cli_dir / "hook_dispatch.py")
         print(f"Codex hooks installed; active: {hook_state['active']}. {hook_state['activation']}")
+    if profile.name == "grok":
+        from services.grok_integration import install_hooks as install_grok_hooks
+        grok_hooks = install_grok_hooks(target, sys.executable, cli_dir / "hook_dispatch.py")
+        from services.artifact_defs import note_pending_write
+        note_pending_write(target, profile.settings_path, "install_mcp")
+        print(f"Wrote {target / profile.settings_path}")
+        print(f"Grok Build: {grok_hooks['activation']}")
     if profile.name == "claude-code" and profile.supports_hooks and profile.settings_path:
         settings_dir = target / Path(profile.settings_path).parent
         settings_dir.mkdir(parents=True, exist_ok=True)
@@ -5812,8 +5834,8 @@ def cmd_install_mcp(args):
         print(f"Wrote {vscode_settings_path}")
         print("  Copilot: C3 instructions linked for code gen, review, and test generation")
 
-    # â”€â”€ Codex AGENTS.md enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if profile.name == "codex":
+    # â”€â”€ Codex / Grok Build AGENTS.md enforcement file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if profile.name in ("codex", "grok"):
         agents_md_path = target / "AGENTS.md"
         agents_state = _ensure_codex_agents_workflow(agents_md_path,
                                                      str(target))
@@ -5824,6 +5846,7 @@ def cmd_install_mcp(args):
         else:
             print(f"Kept  {agents_md_path}  (C3 workflow present)")
 
+    if profile.name == "codex":
         # Warn about a common conflict: global Codex config disables c3.
         global_codex_cfg = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
         global_enabled = _toml_section_bool_value(global_codex_cfg, "mcp_servers.c3", "enabled")
@@ -9303,7 +9326,10 @@ def _launch_tui() -> None:
 
 
 def cmd_doctor(args):
-    from services.codex_integration import diagnose
+    if getattr(args, "ide", "codex") == "grok":
+        from services.grok_integration import diagnose
+    else:
+        from services.codex_integration import diagnose
     print(json.dumps(diagnose(Path(args.project_path).resolve()), indent=2))
 
 

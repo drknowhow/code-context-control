@@ -42,7 +42,7 @@ _SUFFIX = ".link.json"
 def _provider_dir(provider: str) -> str:
     name = str(provider or "").strip().lower()
     aliases = {"claude-code": "claude", "claude": "claude", "codex": "codex",
-               "gemini": "gemini", "antigravity": "gemini"}
+               "gemini": "gemini", "antigravity": "gemini", "grok": "grok", "grok-build": "grok"}
     return aliases.get(name, name or "unknown")
 
 

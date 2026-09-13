@@ -3714,10 +3714,10 @@ def api_mcp_add_server():
         mcp_file.parent.mkdir(parents=True, exist_ok=True)
 
         if profile.config_format == "toml":
-            # Codex TOML path
+            # TOML hosts (Codex, Grok Build)
             section = f"{profile.config_key}.{name}"
             entries = {"command": command, "args": args}
-            if profile.name == "codex":
+            if profile.name in ("codex", "grok"):
                 entries["enabled"] = bool(enabled)
             _upsert_toml_section(mcp_file, section, entries)
         else:
@@ -3725,7 +3725,7 @@ def api_mcp_add_server():
             server_config = {"command": command, "args": args}
             if env:
                 server_config["env"] = env
-            if profile.name == "codex":
+            if profile.name in ("codex", "grok"):
                 server_config["enabled"] = bool(enabled)
             servers[name] = server_config
 

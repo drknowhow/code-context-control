@@ -3,7 +3,7 @@
 <p align="center">
   <strong>The local code-intelligence layer for AI coding tools.</strong><br>
   Retrieve less, read less, edit safer — and control what an agent may read, write, or see.<br>
-  Works with Claude Code, Codex, Copilot, Cursor, and Antigravity.
+  Works with Claude Code, Codex, Grok Build, Copilot, Cursor, and Antigravity.
 </p>
 
 <p align="center">
@@ -57,7 +57,7 @@ c3 init /path/to/your/project
 
 Or `pip install "code-context-control[tui]"` for the optional Textual UI.
 
-`c3 init` walks you through IDE selection (Claude Code, Codex CLI, VS Code, Cursor, Antigravity, or Custom), optional `git init`, MCP registration, and — for Claude Code — a permission tier. Headless:
+`c3 init` walks you through IDE selection (Claude Code, Codex CLI, VS Code, Cursor, Antigravity, Grok Build, or Custom), optional `git init`, MCP registration, and — for Claude Code — a permission tier. Headless:
 
 ```bash
 c3 init /path/to/project --force --ide claude --mcp-mode direct --permissions standard
@@ -71,6 +71,11 @@ Claude Code, see the [Codex integration guide](docs/codex-native.md). Run
 `c3 install-mcp --ide codex`, review hook trust in Codex, then check
 `c3 doctor --ide codex`. Existing installations need this reinstall to receive
 the new host arguments and hooks.
+
+For xAI's Grok Build CLI, see the [Grok integration guide](docs/grok-native.md).
+Run `c3 install-mcp --ide grok`, launch `grok --trust` once in the project (Grok
+loads no project MCP servers, hooks or `AGENTS.md` until the folder is trusted),
+then check `c3 doctor --ide grok`.
 
 > **Upgrading from before v2.60.1 on Windows:** existing projects are *not* repaired by upgrading — re-run `c3 init` once per project to fix hook registration.
 
@@ -125,7 +130,7 @@ Since v2.128.0 you rarely start it by hand: opening an IDE session in a register
 
 **Tasks** (v2.45.0, extended v2.53.0) is a durable per-project tracker — dependencies and subtasks, milestones, decision notes, full event history, health reports, and both automatic and manual time tracking. It rolls up into the Hub's cross-project board. Shipped milestones can be **completed** (v2.86.0) — they leave the board while their tasks keep the milestone link, unlike archiving, which detaches them.
 
-**Instructions** keeps your agent-facing docs in sync. C3-generated content sits inside a `<!-- C3:BEGIN … -->` block; anything you write outside it is preserved. Since v2.60.0 generated docs point at `.c3/MAP.md` — a machine-owned, byte-stable repo map C3 refreshes automatically — instead of embedding a tree that goes stale. `AGENTS.md` serves both Codex and Antigravity; `GEMINI.md` is read if present but no longer generated (the Gemini CLI profile was removed in v2.52).
+**Instructions** keeps your agent-facing docs in sync. C3-generated content sits inside a `<!-- C3:BEGIN … -->` block; anything you write outside it is preserved. Since v2.60.0 generated docs point at `.c3/MAP.md` — a machine-owned, byte-stable repo map C3 refreshes automatically — instead of embedding a tree that goes stale. `AGENTS.md` serves Codex, Grok Build and Antigravity; `GEMINI.md` is read if present but no longer generated (the Gemini CLI profile was removed in v2.52).
 
 ---
 
@@ -148,7 +153,7 @@ C3 exposes **21 tools** as a native MCP server. Your IDE calls them directly:
 | `c3_impact` | Blast-radius analysis before editing shared symbols |
 | `c3_locks` | Agent leases — who is working on which file, so two agents don't collide (v2.65.0) |
 | `c3_ci` | Run this repo's real `.github/workflows` locally — in containers via `act` — with structured failures, before pushing (v2.79.0) |
-| `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini |
+| `c3_delegate` | Offload heavy work to local Ollama / Codex / Gemini / Grok |
 | `c3_agent` | Workflows: `review_changes`, `investigate`, `preflight`, `prepare_context`, `validate_compress` |
 | `c3_edits` | Edit-ledger queries, version diffs, restore points, per-branch filter, `verify` (did a failed `c3_edit` still land?) |
 | `c3_task` | Per-project PM — tasks, dependencies, milestones, time tracking (v2.53.0) |

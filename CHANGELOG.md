@@ -4,6 +4,61 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.131.0] - 2026-09-13
+
+### Added — Grok Build as a C3 host, and a `grok` delegate backend
+
+xAI's Grok Build CLI (`grok`) can now use C3 the way Claude Code and Codex do:
+`c3 install-mcp --ide grok` (alias `grok-build`, also `c3 init --ide grok`).
+
+- **What install writes, all project-local.** `[mcp_servers.c3]` in
+  `.grok/config.toml` (`--host grok`, `startup_timeout_sec = 60`), a C3-owned
+  `.grok/hooks/c3.json`, and the shared `AGENTS.md` block. Grok loads project
+  MCP servers, hooks and `AGENTS.md` only after the folder is trusted, so
+  install prints the step (`grok --trust`, or `/hooks-trust` in Grok) and
+  `c3 doctor --ide grok` reports CLI version, hook install, MCP entry and trust.
+  C3 never writes `~/.grok/config.toml` (including its `[compat.*]` switches)
+  or `~/.grok/trusted_folders.toml`.
+- **Hooks, pinned to real payloads.** The contract was captured from a live
+  grok 1.0.30 run (`tests/fixtures/grok/`). Grok sends snake_case keys with
+  Grok-native values: `read_file`/`target_file`, `search_replace`, `write`,
+  `run_terminal_command`, `grep`, `list_dir`, tagged result objects, and MCP
+  calls as `c3__<tool>` with the arguments wrapped inside `tool_input`.
+  `core/grok_payload.translate` maps all of that onto the names C3's sub-hooks
+  already enforce, so native-edit enforcement, sticky unlocks, the edit ledger
+  and Access Guard work unchanged. A non-`OkayOutput` MCP result reads as a
+  failure and earns no signal.
+- **Output only where Grok delivers it.** Tool events get
+  `hookSpecificOutput` (deny or `additionalContext`). Stop, SessionStart/End,
+  PreCompact and prompt events print nothing: Stop context makes Grok keep
+  working for up to eight continuations, and an allowing prompt hook's output
+  is discarded, so no UserPromptSubmit hook is installed. `hook_filter` and the
+  terse advisor are skipped on Grok.
+- **Windows.** Hook commands use the encoded `powershell.exe -EncodedCommand`
+  form (now shared with Codex in `core/hook_command.py`), which survives
+  whichever shell Grok picks; verified end to end against grok 1.0.30.
+- **Usage rows.** The Stop hook reads the session's `usage.json` (confined to
+  `~/.grok/sessions`, session id verified) and records tokens and Grok's own
+  reported cost in `.c3/session_stats.jsonl`.
+- **Access Guard.** `.grok/config.toml`, `.grok/skills/**`, `.grok/agents/**`
+  and `.grok/rules/**` join the agent-config confirm tier; `.grok/hooks/**` is
+  hook registration and joins the hard write-deny with `.claude/settings*.json`.
+- **`c3_delegate(backend='grok')`.** Headless `grok --prompt-file …
+  --output-format json` on the CLI's own login. Read-only by default: runs in a
+  throwaway temp directory with `--tools read_file,grep,list_dir`, because a
+  tool allowlist does not stop a trusted project's `.grok` MCP servers and
+  hooks from loading. `delegate.grok_allow_write` runs `--yolo` in the project
+  instead and is gated by Access Guard like the gemini and claude backends.
+  Joins `available`, `grok_check` and the auto cascade (after gemini).
+- **Hub, TUI, docs.** Grok Build in every IDE picker, launch command, the MCP
+  manager's enable toggle and delegate settings; new `docs/grok-native.md`.
+
+### Changed
+
+- The `AGENTS.md` block is now titled "C3 — agent workflow", with Codex and
+  Grok Build notes under their own headings (Codex, Grok Build and Antigravity
+  all read it).
+
 ## [2.130.0] - 2026-09-12
 
 ### Added — AgentCI owns the DAG: job outputs, run-time `needs.*`, one job per act

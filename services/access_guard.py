@@ -83,7 +83,11 @@ BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json")
 # Tier 1 — a human may switch these off, but only through the two-key opt-out
 # below: a config entry AND a keyring attestation. Default is all enforced.
 BUILTIN_DENY = ("**/.env*",)
-BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**")
+# .grok/hooks/*.json is Grok Build's hook REGISTRATION (the command lines it
+# runs), the same role .claude/settings*.json plays for Claude Code, and Grok's
+# folder trust is granted per folder, not per hook file.
+BUILTIN_WRITE_DENY = ("**/.c3/**", "**/.claude/settings*.json", "**/.git/**",
+                      "**/.grok/hooks/**")
 
 # Tier 1, confirm-by-default (docs/confirm-guard.md §7): the agent-config
 # surfaces that were previously UNGUARDED — an agent could add an MCP server
@@ -116,6 +120,9 @@ BUILTIN_CONFIRM_WRITE = (
     "**/.codex/hooks.json", "**/AGENTS.override.md",
     "**/.gemini/settings.json",
     "**/.claude/plugins/**",
+    # Grok Build (2.131.0): MCP servers, skills, rules and agent definitions.
+    "**/.grok/config.toml", "**/.grok/skills/**", "**/.grok/rules/**",
+    "**/.grok/agents/**",
 )
 
 #: Globs `c3 access builtin {disable,mode}` accepts. Order is display order.

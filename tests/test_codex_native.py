@@ -320,7 +320,8 @@ def test_workflow_refresh_preserves_user_sections(tmp_path):
     _ensure_codex_agents_workflow(path)
     text = path.read_text(encoding="utf-8")
     assert text.count("<!-- C3:BEGIN") == 1
-    assert text.count("# C3 — Codex workflow") == 1
+    assert text.count("# C3 — agent workflow") == 1
+    assert text.count("## Codex") == 1 and text.count("## Grok Build") == 1
     assert "User instructions before." in text and "User instructions after." in text
 
 

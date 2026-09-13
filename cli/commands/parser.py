@@ -17,15 +17,15 @@ def build_parser(version: str, parse_cli_ide_arg):
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    p_doctor = subparsers.add_parser("doctor", help="Inspect native Codex integration without a model call")
+    p_doctor = subparsers.add_parser("doctor", help="Inspect native Codex or Grok Build integration without a model call")
     p_doctor.add_argument("project_path", nargs="?", default=".")
-    p_doctor.add_argument("--ide", choices=["codex"], default="codex")
+    p_doctor.add_argument("--ide", choices=["codex", "grok"], default="codex")
 
     p_init = subparsers.add_parser("init", help="Initialize C3 for a project")
     p_init.add_argument("project_path", nargs="?", default=".")
     p_init.add_argument("--force", action="store_true", help="Skip prompts and apply update non-interactively")
     p_init.add_argument("--clear", action="store_true", help="Remove all C3 files and exit without rebuilding")
-    p_init.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity}", help="Target IDE for MCP config (default: auto-detect)")
+    p_init.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity,grok}", help="Target IDE for MCP config (default: auto-detect)")
     p_init.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="Default MCP mode if install is selected during init (default: direct)")
     p_init.add_argument("--git", action="store_true", help="Initialize a local Git repository during init/update")
     p_init.add_argument("--no-embed", action="store_true", help="Skip building the semantic embedding index during init")
@@ -153,7 +153,7 @@ def build_parser(version: str, parse_cli_ide_arg):
 
     p_install_mcp = subparsers.add_parser("install-mcp", help="Generate MCP config for your IDE")
     p_install_mcp.add_argument("targets", nargs="*", help="Optional project path and/or IDE shorthand (for example: `claude` or `. codex`)")
-    p_install_mcp.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity}", help="Target IDE (default: auto-detect)")
+    p_install_mcp.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity,grok}", help="Target IDE (default: auto-detect)")
     p_install_mcp.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="MCP entrypoint mode (default: direct)")
     p_install_mcp.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_install_mcp.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")
@@ -161,7 +161,7 @@ def build_parser(version: str, parse_cli_ide_arg):
 
     p_mcp_install = subparsers.add_parser("mcp-install", help="Alias for install-mcp")
     p_mcp_install.add_argument("targets", nargs="*", help="Optional project path and/or IDE shorthand")
-    p_mcp_install.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity}", help="Target IDE (default: auto-detect)")
+    p_mcp_install.add_argument("--ide", default="auto", type=parse_cli_ide_arg, metavar="{auto,claude,vscode,cursor,codex,antigravity,grok}", help="Target IDE (default: auto-detect)")
     p_mcp_install.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="MCP entrypoint mode (default: direct)")
     p_mcp_install.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_mcp_install.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")

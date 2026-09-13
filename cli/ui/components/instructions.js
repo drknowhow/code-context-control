@@ -5,6 +5,7 @@ const Instructions = () => {
   const IDE_DOCS = [
     { key: 'claude',   label: 'Claude',  file: 'CLAUDE.md' },
     { key: 'codex',    label: 'Codex',   file: 'AGENTS.md' },
+    { key: 'grok',     label: 'Grok',    file: 'AGENTS.md' },
     { key: 'gemini',   label: 'Gemini',  file: 'GEMINI.md' },
     { key: 'copilot',  label: 'Copilot', file: '.github/copilot-instructions.md' },
   ];

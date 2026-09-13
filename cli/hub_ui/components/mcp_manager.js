@@ -297,10 +297,10 @@ function McpManager({ project, onChanged }) {
                   value={form.env}
                   onChange={e => setForm(f => Object.assign({}, f, { env: e.target.value }))}
                   className="mono" style={drillFieldStyle({ fontSize: 11, resize: 'vertical', fontFamily: "'JetBrains Mono', monospace" })} />
-                {effIde === 'codex' &&
+                {(effIde === 'codex' || effIde === 'grok') &&
                   renderBoolToggle('Enabled', form.enabled,
                     () => setForm(f => Object.assign({}, f, { enabled: !f.enabled })),
-                    'Codex profiles support disabling a server without removing it.')}
+                    `${ideLabel(effIde)} profiles support disabling a server without removing it.`)}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                 <Btn onClick={saveServer} disabled={busy === 'save'}>

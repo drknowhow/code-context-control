@@ -789,7 +789,7 @@
       <h1 id="overview">Code <span>Companion</span></h1>
       <div class="subtitle">
         A local code intelligence system that reduces AI coding assistant token usage through compression,
-        indexing, and persistent memory. Works with <strong>Claude Code</strong>, <strong>Google Antigravity</strong>,
+        indexing, and persistent memory. Works with <strong>Claude Code</strong>, <strong>OpenAI Codex</strong>, <strong>Grok Build</strong>, <strong>Google Antigravity</strong>,
         <strong>VS Code Copilot</strong>, and <strong>Cursor</strong> via MCP. Available as an <strong>MCP
           server</strong>,
         <strong>CLI</strong>, and <strong>web dashboard</strong>.
@@ -958,7 +958,9 @@ c3 init /path/to/your/project</code></pre>
               <code>.github/copilot-instructions.md</code> (hard enforcement language) and
               <code>.vscode/settings.json</code> (Copilot instruction links). For Codex, generates
               <code>AGENTS.md</code> with the C3 session protocol. Use <code>--ide vscode</code>,
-              <code>--ide cursor</code>, or <code>--ide codex</code> to override IDE detection.
+              <code>--ide cursor</code>, <code>--ide codex</code>, or <code>--ide grok</code> to override IDE detection.
+              For Grok Build, writes <code>.grok/config.toml</code>, <code>.grok/hooks/c3.json</code> and
+              <code>AGENTS.md</code>.
             </div>
           </div>
         </div>
@@ -968,7 +970,9 @@ c3 init /path/to/your/project</code></pre>
             <div class="step-desc">Open your IDE in the project. For Claude Code, run <code>/mcp</code> to verify C3
               tools appear. For Google Antigravity, the MCP tools will be loaded based on your config.
               For VS Code, check MCP tools in the Copilot agent panel. For Codex, the <code>.codex/config.toml</code> is
-              picked up automatically on next session start.</div>
+              picked up automatically on next session start. For Grok Build, launch <code>grok --trust</code> once in
+              the project (Grok ignores project MCP servers, hooks and <code>AGENTS.md</code> in an untrusted folder),
+              then run <code>c3 doctor --ide grok</code>.</div>
           </div>
         </div>
       </div>
@@ -1016,8 +1020,16 @@ c3 init /path/to/your/project</code></pre>
           <td><strong>OpenAI Codex</strong></td>
           <td><code>.codex/config.toml</code></td>
           <td><code>AGENTS.md</code></td>
-          <td>â€”</td>
-          <td>No</td>
+          <td><code>.codex/hooks.json</code></td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td><strong>Grok Build</strong></td>
+          <td><code>.grok/config.toml</code></td>
+          <td><code>AGENTS.md</code></td>
+          <td><code>.grok/hooks/c3.json</code></td>
+          <td>Yes (after <code>grok --trust</code>)</td>
           <td>No</td>
         </tr>
         <tr>
@@ -1050,11 +1062,13 @@ python cli/c3.py install-mcp /path/to/project --ide vscode
 python cli/c3.py install-mcp /path/to/project --ide cursor
 python cli/c3.py install-mcp /path/to/project --ide claude
 python cli/c3.py install-mcp /path/to/project --ide codex
+python cli/c3.py install-mcp /path/to/project --ide grok
 python cli/c3.py install-mcp /path/to/project --ide antigravity
 
 # IDE shorthand when already inside the project directory
 python cli/c3.py install-mcp claude
 python cli/c3.py install-mcp codex
+python cli/c3.py install-mcp grok
 python cli/c3.py install-mcp . antigravity</code></pre>
 
       <p><code>--git</code> runs a local-only <code>git init</code>. It does not create remotes or connect to GitHub,
@@ -1111,6 +1125,32 @@ python cli/c3.py install-mcp . antigravity</code></pre>
         </li>
       </ul>
 
+      <p><strong>Grok Build</strong> &mdash; <code>install-mcp --ide grok</code> (and <code>c3 init --ide grok</code>)
+        configure xAI's <code>grok</code> CLI. Everything is project-local:</p>
+      <ul>
+        <li><code>.grok/config.toml</code> &mdash; a <code>[mcp_servers.c3]</code> table (the same TOML shape as Codex)
+          with <code>--host grok</code> and <code>startup_timeout_sec = 60</code>. Other servers and keys are kept.
+          Auto-detected when <code>.grok/config.toml</code> or a <code>.grok/</code> directory exists.
+        </li>
+        <li><code>.grok/hooks/c3.json</code> &mdash; C3's handlers for PreToolUse, PostToolUse, SessionStart,
+          PreCompact, Stop and SessionEnd. C3 owns the whole file. On Windows each command is a
+          <code>powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand</code> line so it runs under
+          whichever shell Grok picks.
+        </li>
+        <li><code>AGENTS.md</code> &mdash; shared with Codex and Antigravity; only the C3 block is refreshed.</li>
+        <li><strong>Folder trust</strong> &mdash; Grok loads none of these until the folder is trusted. Launch
+          <code>grok --trust</code> once in the project (or run <code>/hooks-trust</code> inside Grok). C3 never
+          writes <code>~/.grok/trusted_folders.toml</code> or <code>~/.grok/config.toml</code>;
+          <code>c3 doctor --ide grok</code> reports the CLI version, hook install and trust state.
+        </li>
+        <li><strong>Limitations</strong> &mdash; C3 tools are reached through Grok's <code>search_tool</code> /
+          <code>use_tool</code> and appear as <code>c3__c3_search</code> and so on; PreToolUse hints reach the model
+          after the call runs (denies still block before it); there is no prompt-time memory recall; Stop-hook output
+          is never emitted; with both <code>AGENTS.md</code> and <code>CLAUDE.md</code> present, Grok loads the C3
+          block twice. Full guide: <code>docs/grok-native.md</code>.
+        </li>
+      </ul>
+
       <h3>Graceful Degradation</h3>
       <p>All core C3 tools (search, compress, file_map, memory, sessions) work identically in every IDE. Claude-specific
         features degrade gracefully:</p>
@@ -1118,7 +1158,7 @@ python cli/c3.py install-mcp . antigravity</code></pre>
         <li><strong>Transcript search</strong> â€” returns a helpful message suggesting <code>c3_memory(action='recall')</code> or
           <code>c3_memory(action='query')</code> as alternatives
         </li>
-        <li><strong>Hooks</strong> â€” only installed for Claude Code; VS Code, Cursor, and Codex use hard-language
+        <li><strong>Hooks</strong> â€” installed for Claude Code, Codex and Grok Build; VS Code and Cursor use hard-language
           workflow instructions in their instructions file instead</li>
         <li><strong>Instructions file</strong> â€” <code>c3_claudemd_generate</code> writes to the IDE-appropriate file
           (CLAUDE.md, copilot-instructions.md, .cursorrules, AGENTS.md, or GEMINI.md). All IDEs use MANDATORY/NEVER
@@ -2053,10 +2093,12 @@ c3 ui /path/to/your/project --silent         # Hide API request logs in terminal
           <div class="tab-name"><span class="badge badge-green">11</span> Settings</div>
           <div class="tab-desc">Project info (editable name, tech stack, description), quick actions (rebuild index,
             save instructions file), project data management (view sizes and item counts per .c3/ category, clear
-            actions), instructions file management, and MCP management: target IDE selector (Claude/Gemini/VS
-            Code/Cursor/Codex/Antigravity), custom MCP add form, installed MCP cards, and per-card trash removal.
+            actions), instructions file management, and MCP management: target IDE selector (Claude/VS
+            Code/Cursor/Codex/Grok Build/Antigravity), custom MCP add form, installed MCP cards, and per-card trash removal.
             Removing <code>c3</code> can also clean related IDE files/hooks. Includes IDE selector for C3 MCP
-            installation and optimization suggestions.</div>
+            installation and optimization suggestions. Delegate backend sections (Codex, Gemini, Grok Build) hold each
+            backend's enable switch, model, timeouts and auto-routed task types; the Grok Build section adds max turns
+            and the write-mode switch (<code>grok_allow_write</code>).</div>
         </div>
       </div>
 
@@ -2595,13 +2637,13 @@ c3 ui /path/to/your/project --silent         # Hide API request logs in terminal
       </p>
 
       <h3>Project Setup</h3>
-          <pre><code>c3 init &lt;project_path&gt; [--ide auto|claude|vscode|cursor|codex|gemini] [--force]
+          <pre><code>c3 init &lt;project_path&gt; [--ide auto|claude|vscode|cursor|codex|grok|antigravity] [--force]
                                            # Initialize C3: builds index, creates config, generates instructions file,
                                            # and automatically installs the MCP config for your IDE.
                                            # Re-running on an existing project now migrates config defaults and
                                            # refreshes instruction workflow files (Update / Clear / Reset options).
 c3 index [--max-files 500]                 # Rebuild the code index
-c3 install-mcp [project_path] [ide] [--ide auto|claude|vscode|cursor|codex|gemini]  # (Re-)generate MCP config manually
+c3 install-mcp [project_path] [ide] [--ide auto|claude|vscode|cursor|codex|grok|antigravity]  # (Re-)generate MCP config manually
 c3 ui [project_path] [--port 3333] [--nano] [--silent]   # Launch web dashboard (full or nano)</code></pre>
 
       <h3>Compression &amp; Search</h3>
@@ -2652,7 +2694,7 @@ c3 session load | claude --resume</code></pre>
 
       <div class="arch">
         <pre>
-  <strong>IDE</strong> (Claude Code / VS Code Copilot / Cursor / Codex / Gemini CLI)
+  <strong>IDE</strong> (Claude Code / VS Code Copilot / Cursor / Codex / Grok Build / Antigravity)
        | MCP Protocol (IDE-specific config file)
        v
   <strong>MCP Proxy</strong> â”€â”€â”€â”€ Dynamic tool filtering + context injection (optional, opt-in via MCP config)
@@ -2872,7 +2914,7 @@ c3 session load | claude --resume</code></pre>
     protocol.py          # Compression protocol encoder/decoder
   core/
     __init__.py          # Token counting utilities
-    ide.py               # IDE profile registry (Claude Code, VS Code, Cursor, Codex) + auto-detection
+    ide.py               # IDE profile registry (Claude Code, VS Code, Cursor, Codex, Antigravity, Grok Build) + auto-detection
     config.py            # Hybrid, proxy, delegate, and agent configuration loaders
   install.bat            # Windows installer
   install.sh             # Linux/macOS installer
@@ -3023,8 +3065,11 @@ c3 session load | claude --resume</code></pre>
         <ul>
           <li>Make sure the MCP config file exists (<code>.mcp.json</code> for Claude Code,
             <code>.vscode/mcp.json</code> for VS Code, <code>.cursor/mcp.json</code> for Cursor,
-            <code>.codex/config.toml</code> for Codex)
+            <code>.codex/config.toml</code> for Codex, <code>.grok/config.toml</code> for Grok Build)
           </li>
+          <li>For Grok Build, trust the folder first (<code>grok --trust</code> or <code>/hooks-trust</code>), then
+            check <code>c3 doctor --ide grok</code>, <code>grok mcp doctor c3 --json</code> and <code>grok inspect</code>.
+            Run <code>/hooks</code> inside Grok to see whether C3's hooks loaded.</li>
           <li>Check that the Python path in the config is correct (<code>"command"</code> field for JSON configs;
             <code>command</code> key for Codex TOML)
           </li>

@@ -42,6 +42,7 @@ class SessionManager:
         "codex": "codex",
         "gemini": "gemini",
         "antigravity": "antigravity",
+        "grok": "grok",
     }
     _IDE_BY_SOURCE = {
         "claude": "claude-code",
@@ -50,6 +51,7 @@ class SessionManager:
         "codex": "codex",
         "gemini": "gemini",
         "antigravity": "antigravity",
+        "grok": "grok",
     }
 
     # The host IDE's own session id, when the host exposes one. Claude Code
@@ -112,6 +114,8 @@ class SessionManager:
             "openai-codex": "codex",
             "gemini": "gemini",
             "antigravity": "antigravity",
+            "grok": "grok",
+            "grok-build": "grok",
         }
         return aliases.get(raw, raw)
 
