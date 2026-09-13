@@ -98,8 +98,12 @@ class TestDetectAndTranslate(unittest.TestCase):
             self.assertIn(input_key, out["tool_input"], key)
             self.assertEqual(out["_c3_host"], "grok")
             self.assertEqual(out["_c3_original_tool"], PAYLOADS[key]["tool_name"])
-        read = translate(PAYLOADS["PreToolUse:read_file"])["tool_input"]["file_path"]
+        # The fixture's cwd is the Windows capture folder; re-root it on a
+        # host-native directory so "absolute" means the same on every OS.
+        native = fixture("PreToolUse:read_file", cwd=tempfile.gettempdir())
+        read = translate(native)["tool_input"]["file_path"]
         self.assertTrue(Path(read).is_absolute(), read)  # relative target_file joined to cwd
+        self.assertEqual(Path(read), Path(tempfile.gettempdir()) / "README.md")
         self.assertEqual(PAYLOADS["PreToolUse:read_file"]["tool_input"], {"target_file": "README.md"})
 
     def test_empty_old_string_is_a_create(self):
