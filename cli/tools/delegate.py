@@ -353,6 +353,83 @@ _CLAUDE_DELEGATE_RULES = (
     "to answer, say exactly what is missing instead of guessing."
 )
 
+_CLAUDE_SCOUT_RULES = (
+    "You are a read-only scout answering one bounded request for another agent. "
+    "You can use Read, Grep and Glob inside this repository and nothing else: no "
+    "edits, no commands, no network. Look up only what the request needs, then "
+    "answer concisely with file:line references. A file you are refused is off "
+    "limits; do not try to reach it another way. If you cannot find the answer, "
+    "say so instead of guessing."
+)
+
+SCOUT_TOOLS = "Read,Grep,Glob"
+
+
+def _permission_pattern(glob: str, root: str) -> str:
+    """An Access Guard glob as a Claude Code ``Read()`` permission pattern.
+
+    Measured on Claude Code 2.1.270 (Windows): ``Read(**/x)`` and
+    ``Read(./x)`` deny Grep hits too, an absolute ``Read(//C:/...)`` does
+    not. So an absolute glob inside the project becomes project-relative, and
+    one outside it is dropped — ``--restricted`` confines the file tools to
+    the project anyway. ``root`` is the casefolded POSIX project path.
+    """
+    g = str(glob or "").strip()
+    if not g:
+        return ""
+    if re.match(r"^[a-z]:/", g, re.IGNORECASE) or g.startswith("/"):
+        prefix = root.rstrip("/") + "/"
+        if g.casefold().startswith(prefix):
+            return "./" + g[len(prefix):]
+        return ""
+    if "/" not in g:
+        return "**/" + g
+    if g.startswith("**/"):
+        return g
+    return "./" + (g[2:] if g.startswith("./") else g)
+
+
+def scout_read_denies(project_path) -> list[str]:
+    """``Read()`` deny patterns for every path a scout must not read.
+
+    A deny rule, a confirm rule that holds reads, and every mask rule (a
+    scout cannot be served a masked view). A PreToolUse hook sees a Grep's
+    arguments, never its hits, so only these rules keep a repository-wide
+    Grep out of a denied file: measured, a hook alone leaked a .env value.
+    Raises ValueError when a rule scope is corrupt (fail closed).
+    """
+    rules, mask_rules, corrupt = access_guard.load_all(str(project_path))
+    if corrupt:
+        raise ValueError(f"Access Guard config is unreadable in scope(s) {', '.join(corrupt)}")
+    globs = [r.glob for r in rules
+             if r.kind == "deny" or (r.kind == "confirm" and getattr(r, "confirm_ops", "") == "all")]
+    globs += [m.glob for m in mask_rules]
+    root = Path(project_path).resolve().as_posix().casefold()
+    patterns = []
+    for glob in dict.fromkeys(globs):
+        pattern = _permission_pattern(glob, root)
+        if pattern:
+            patterns.append(f"Read({pattern})")
+    return patterns
+
+
+def scout_settings(project_path) -> dict:
+    """``--settings`` for a scout: guard-derived read denies plus C3's access
+    guard as the PreToolUse hook (canonicalization, 8.3 names, symlinks on
+    explicit paths). ``--restricted`` ignores every settings file, so these
+    are the only hooks and permissions that run."""
+    from cli._hook_utils import hook_command_arg
+
+    hook = Path(__file__).resolve().parents[1] / "hook_access_guard.py"
+    project = str(Path(project_path).resolve())
+    command = (f"{hook_command_arg(sys.executable)} {hook_command_arg(str(hook))} "
+               f"--project {hook_command_arg(project)}")
+    return {
+        "permissions": {"deny": scout_read_denies(project)},
+        "hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob",
+                                  "hooks": [{"type": "command", "command": command}]}]},
+    }
+
 
 def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, str]:
     """(tier, model_arg, error). An explicit ``model`` wins over the tier.
@@ -376,7 +453,7 @@ def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, st
 
 
 def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
-                max_budget_usd: float = 0.0) -> list:
+                max_budget_usd: float = 0.0, settings: dict | None = None) -> list:
     """The locked-down headless argv. The prompt goes on stdin.
 
     --safe-mode: no CLAUDE.md, skills, plugins, hooks or MCP servers — but
@@ -384,10 +461,19 @@ def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
     (--bare would read ANTHROPIC_API_KEY only). --strict-mcp-config with no
     --mcp-config: no MCP servers even from managed config. --tools "": no
     built-in tools, so the delegate cannot read, write or run anything.
+
+    With ``settings`` (a scout) the run is --restricted instead: Read, Grep
+    and Glob only, confined to the project, no user/project/local settings
+    files, no CLAUDE.md, and the given --settings as the only permissions and
+    hooks. --permission-mode dontAsk refuses anything not already allowed.
     """
-    cmd = [exe, "-p", "--output-format", "json", "--no-session-persistence",
-           "--safe-mode", "--strict-mcp-config", "--tools", "",
-           "--system-prompt", system_prompt]
+    cmd = [exe, "-p", "--output-format", "json", "--no-session-persistence"]
+    if settings is None:
+        cmd += ["--safe-mode", "--strict-mcp-config", "--tools", ""]
+    else:
+        cmd += ["--restricted", "--strict-mcp-config", "--tools", SCOUT_TOOLS,
+                "--permission-mode", "dontAsk", "--settings", json.dumps(settings)]
+    cmd += ["--system-prompt", system_prompt]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -472,19 +558,24 @@ def parse_claude_json(stdout: str, requested_model: str = "") -> tuple[str, bool
 
 def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
                 timeout: int = 120, effort: str = "",
-                max_budget_usd: float = 0.0) -> tuple[str, bool, dict]:
-    """Run the locked-down ``claude -p`` in a throwaway directory.
+                max_budget_usd: float = 0.0, scout_project: str | None = None,
+                settings: dict | None = None) -> tuple[str, bool, dict]:
+    """Run the locked-down ``claude -p``.
 
+    Tool-less (default): in a throwaway directory. Scout (``scout_project``
+    and ``settings`` given): in the project, read-only, guarded.
     Returns (text, ok, stats). No idle watchdog: JSON output arrives in one
     piece at the end, so a healthy long answer is silent until it is done.
     """
     exe = _which("claude")
     if not exe:
         return "[claude:error] claude CLI not found on PATH", False, {}
-    workdir = tempfile.mkdtemp(prefix="c3-claude-")
+    scout = scout_project is not None
+    workdir = str(scout_project) if scout else tempfile.mkdtemp(prefix="c3-claude-")
     try:
         cmd = _claude_cmd(exe, model, system_prompt, effort=effort,
-                          max_budget_usd=max_budget_usd)
+                          max_budget_usd=max_budget_usd,
+                          settings=settings if scout else None)
         proc = subprocess.Popen(
             harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
@@ -505,7 +596,8 @@ def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
     except Exception as e:
         return f"[claude:error] {e}", False, {}
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        if not scout:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _pack_file_context(file_path: str, svc, *, file_max_tokens: int) -> str:
@@ -560,15 +652,21 @@ def _pack_file_context(file_path: str, svc, *, file_max_tokens: int) -> str:
 
 def _handle_claude_delegate(task: str, task_type: str, context: str,
                             file_path: str, svc, dcfg: dict, finalize,
-                            tier: str = "", model: str = "") -> str:
+                            tier: str = "", model: str = "", scout: bool = False) -> str:
     """Delegate to a Claude model tier through a locked-down ``claude -p``.
 
     No tools, no project directory, no MCP servers, no hooks: C3 packs the
     context (guarded file reads) and the delegate answers from that text
     alone. That is what keeps a one-line answer at a few thousand tokens
     instead of a full 46k-token project session.
+
+    ``scout``: the delegate may also Read/Grep/Glob the project itself, under
+    permission denies derived from Access Guard and the guard as its hook.
+    Scout answers are never cached — they depend on the files as they are.
     """
     base = {"task_type": task_type, "backend": "claude"}
+    if scout:
+        base["mode"] = "scout"
     if not dcfg.get("claude_enabled", True):
         return finalize("c3_delegate", base,
                         "[delegate:error] Claude not enabled. Set delegate.claude_enabled=true "
@@ -600,7 +698,16 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     if count_tokens(enriched) > max_ctx:
         enriched = enriched[:max_ctx * 4] + f"\n[context truncated at ~{max_ctx} tokens]"
 
-    system_prompt = f"{tdef['system']} {_CLAUDE_DELEGATE_RULES}"
+    settings = None
+    if scout:
+        try:
+            settings = scout_settings(svc.project_path)
+        except ValueError as exc:
+            return finalize("c3_delegate", base,
+                            f"[delegate:blocked] scout refused: {exc}. Fix the config "
+                            "(c3 access list) or delegate without scout.", "blocked")
+    rules = _CLAUDE_SCOUT_RULES if scout else _CLAUDE_DELEGATE_RULES
+    system_prompt = f"{tdef['system']} {rules}"
     prompt = tdef["prompt_template"].format(context=enriched or "(none)", task=task)
     effort = str(dcfg.get("claude_effort") or "")
     try:
@@ -611,16 +718,22 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     ckey = hashlib.md5(
         f"claude|{resolved_tier}|{model_arg}|{effort}|{system_prompt}|{prompt}".encode()
     ).hexdigest()
-    if ckey in _delegate_cache:
+    if not scout and ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
         return finalize("c3_delegate", {**base, "model": model_arg or "cli-default", "cached": True},
                         cached_resp, "cached")
 
-    timeout = int(dcfg.get("claude_timeout", 120) or 120)
-    _log_progress(svc, f"[delegate] Claude {resolved_tier} ({model_arg or 'cli-default'})...")
+    if scout:
+        timeout = int(dcfg.get("claude_scout_timeout", 240) or 240)
+    else:
+        timeout = int(dcfg.get("claude_timeout", 120) or 120)
+    _log_progress(svc, f"[delegate] Claude {resolved_tier} ({model_arg or 'cli-default'})"
+                       f"{' scout' if scout else ''}...")
     t0 = time.monotonic()
     output, ok, stats = _run_claude(prompt, system_prompt, model_arg, timeout=timeout,
-                                    effort=effort, max_budget_usd=budget)
+                                    effort=effort, max_budget_usd=budget,
+                                    scout_project=str(svc.project_path) if scout else None,
+                                    settings=settings)
     elapsed = round(time.monotonic() - t0, 1)
     meta = {**base, "model": stats.pop("model", "") or model_arg or "cli-default",
             "elapsed": f"{elapsed}s", **stats}
@@ -630,7 +743,8 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
         return finalize("c3_delegate", meta, output, "error")
     breaker.record_success()
     _delegate_metrics["total_calls"] += 1
-    _delegate_cache[ckey] = (output, count_tokens(output))
+    if not scout:
+        _delegate_cache[ckey] = (output, count_tokens(output))
     return finalize("c3_delegate", meta, output, "ok")
 
 
@@ -2042,10 +2156,15 @@ def _ping_finalize(finalize):
     return wrapped
 
 
+# Backends that can look things up in the project: claude as a guarded scout,
+# codex because its read-only sandbox already runs in the project.
+_SCOUT_BACKENDS = ("claude", "codex")
+
+
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
                     allow_write_delegation: bool = False,
-                    tier: str = "", model: str = "") -> str:
+                    tier: str = "", model: str = "", scout: bool = False) -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
     if task_type == "ping":
@@ -2196,6 +2315,11 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         provider, mapped = host_backend(svc)
         blocked = bool(mapped) and (_guard_active and not allow_write_delegation
                                     and _write_capable(mapped, dcfg))
+        if scout and mapped and mapped not in _SCOUT_BACKENDS:
+            return finalize("c3_delegate", {"task_type": task_type, "backend": mapped},
+                            f"[delegate:error] scout needs a backend that can read the project "
+                            f"({' or '.join(_SCOUT_BACKENDS)}); host {provider} maps to {mapped}. "
+                            "Pass backend='claude' or backend='codex'.", "error")
         if mapped and not blocked:
             backend = mapped
             if not tier and not model:
@@ -2216,6 +2340,8 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         skips: list[str] = []
         chosen = ""
         for cand in _cascade_order(task_type, dcfg, host=host_backend(svc)[1]):
+            if scout and cand not in _SCOUT_BACKENDS:
+                continue
             if (_guard_active and not allow_write_delegation
                     and _write_capable(cand, dcfg)):
                 skips.append(f"{cand} blocked by Access Guard (write-capable; "
@@ -2258,6 +2384,11 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     # so an explicit backend with neither keeps its configured behaviour.
     tier_kw = {k: v for k, v in (("tier", route_tier), ("model", model)) if v}
 
+    if scout and backend not in _SCOUT_BACKENDS:
+        return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
+                        f"[delegate:error] scout is not available on backend '{backend}' "
+                        f"(use {' or '.join(_SCOUT_BACKENDS)}).", "error")
+
     if backend == "codex":
         _log_progress(svc, f"[delegate] Routing {task_type} → Codex...")
         return _handle_codex_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
@@ -2270,7 +2401,7 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
     if backend == "claude":
         return _handle_claude_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
-                                       tier=route_tier, model=model)
+                                       tier=route_tier, model=model, scout=scout)
 
     if backend == "grok":
         _log_progress(svc, f"[delegate] Routing {task_type} → Grok...")

@@ -36,8 +36,8 @@ def test_gold_suite_loads():
     header, cases = de.load_suite(de.BUNDLED_SUITES["gold"])
     assert header["suite"] == "gold"
     ids = [c.id for c in cases]
-    assert len(ids) == len(set(ids)) == 25
-    assert sum(1 for c in cases if c.gate == "lookup") == 3
+    assert len(ids) == len(set(ids)) == 26
+    assert sum(1 for c in cases if c.gate == "lookup") == 4
     core_types = {c.task_type for c in cases if c.gate == "core"}
     assert {"summarize", "explain", "docstring", "review", "ask", "test", "diagnose"} <= core_types
     for c in cases:

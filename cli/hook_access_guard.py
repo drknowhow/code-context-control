@@ -501,3 +501,38 @@ def run(payload: dict, project_path: Path | None = None,
         return _scan_shell_writes(cmd, base, session_id, defer_consume)
 
     return None
+
+
+def main() -> None:
+    """Standalone PreToolUse entry for a ``c3_delegate`` scout run.
+
+    A scout is ``claude -p --restricted`` with Read/Grep/Glob and no C3 MCP
+    server, so the dispatcher's discipline hook (hook_pretool_enforce) would
+    refuse every native read. Only the access guard runs here. It prints a
+    deny and nothing else: grants and search footers are for an agent that
+    can act on them. Any failure denies (fail closed).
+    """
+    import argparse
+    import json
+
+    from _hook_utils import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project", required=True)
+    args = parser.parse_args()
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            raise ValueError("hook payload must be a JSON object")
+        out = run(payload, Path(args.project).resolve())
+    except Exception as exc:
+        out = _deny(f"[c3-access:error] scout guard failed ({type(exc).__name__}: {exc}); "
+                    "refusing the call")
+    if isinstance(out, dict) and isinstance(out.get("hookSpecificOutput"), dict):
+        print(json.dumps({"hookSpecificOutput": out["hookSpecificOutput"]}))
+
+
+if __name__ == "__main__":
+    main()
