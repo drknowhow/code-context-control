@@ -304,6 +304,10 @@ DELEGATE_DEFAULTS = {
     "claude_max_context_tokens": 24000,   # Context cap after file packing
     "claude_file_max_tokens": 8000,       # A file_path entry over this is sent as its file map
     "claude_effort": "",                  # --effort for every tier (overrides claude_tier_effort); empty = per tier
+    "claude_thinking_tokens": None,       # MAX_THINKING_TOKENS for every tier (overrides the table); 0 = off
+    "claude_tier_thinking_tokens": {"small": 1024},  # MAX_THINKING_TOKENS per tier; unlisted = no cap.
+                                          # Haiku at 1024: real-file reviews ~55% cheaper, 2.6x faster, no
+                                          # accuracy loss seen. Sonnet 5 ignored nonzero caps, and 0 cost it depth.
     "claude_tier_effort": {},             # --effort per tier, e.g. {"medium": "low"}; unlisted = CLI default
                                           # (2026-09-14: --effort low changed nothing on Haiku 4.5 — same
                                           # cost and output tokens over 22 eval cases — so no default)

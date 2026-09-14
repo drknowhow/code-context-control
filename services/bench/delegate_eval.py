@@ -154,7 +154,8 @@ def resolve_suite(name_or_path: str) -> Path:
 
 
 def parse_target(spec: str) -> tuple[str, str]:
-    """``backend``, ``backend:tier`` or either with ``+scout`` -> (backend, tier)."""
+    """``backend`` or ``backend:tier``, optionally with ``+scout`` / ``+think=N``
+    / ``+effort=X`` flags -> (backend, tier)."""
     head = str(spec).strip().split("+", 1)[0]
     backend, _, tier = head.partition(":")
     if not backend:
@@ -165,10 +166,18 @@ def parse_target(spec: str) -> tuple[str, str]:
 # ── Checks ──────────────────────────────────────────────────────────────────
 
 
+_EMPHASIS_RE = re.compile(r"\*\*|__")
+
+
 def grade(case: DelegateCase, answer: str) -> list[str]:
-    """Failed checks for ``answer`` (empty list = pass)."""
+    """Failed checks for ``answer`` (empty list = pass).
+
+    Bold markers are removed before matching: "does **not** match" is the
+    same answer as "does not match" (a correct Haiku answer failed on
+    exactly that). Backticks stay — some checks are about code spans.
+    """
     failures: list[str] = []
-    text = answer or ""
+    text = _EMPHASIS_RE.sub("", answer or "")
     flags = re.IGNORECASE | re.MULTILINE
     for pattern in case.checks.get("must_match", []):
         if not re.search(pattern, text, flags):
@@ -280,12 +289,34 @@ def build_eval_svc(project_path: str | Path, delegate_overrides: dict | None = N
     )
 
 
+_TARGET_OVERRIDES = {"think": "claude_thinking_tokens", "effort": "claude_effort"}
+
+
+def target_overrides(target: str) -> dict:
+    """Delegate-config overrides named in a target: ``+think=N`` sets
+    ``claude_thinking_tokens``, ``+effort=low`` sets ``claude_effort``. So one
+    run can compare ``claude:small``, ``claude:small+think=1024`` and
+    ``claude:small+think=0`` side by side."""
+    out: dict = {}
+    for flag in str(target).split("+")[1:]:
+        key, sep, value = flag.partition("=")
+        key = key.strip().lower()
+        if not sep or key not in _TARGET_OVERRIDES:
+            continue
+        value = value.strip()
+        out[_TARGET_OVERRIDES[key]] = int(value) if key == "think" and value.isdigit() else value
+    return out
+
+
 def run_live_case(case: DelegateCase, target: str, svc, *,
                   allow_write_delegation: bool = False) -> tuple[CaseResult, dict]:
     """Send one case through handle_delegate. Returns (result, recording)."""
     from cli.tools.delegate import handle_delegate
 
     backend, tier = parse_target(target)
+    overrides = target_overrides(target)
+    if overrides:
+        svc = types.SimpleNamespace(**{**vars(svc), "delegate_config": {**svc.delegate_config, **overrides}})
     captured: dict = {}
 
     def finalize(tool, meta, output, status, **kw):

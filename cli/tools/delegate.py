@@ -445,6 +445,29 @@ def claude_effort_for(tier: str, dcfg: dict) -> str:
     return value if value in _EFFORT_LEVELS else ""
 
 
+def claude_thinking_cap_for(tier: str, dcfg: dict) -> int | None:
+    """``MAX_THINKING_TOKENS`` for a resolved tier, or None (no cap).
+
+    ``claude_thinking_tokens`` overrides every tier, else
+    ``claude_tier_thinking_tokens[tier]``. 0 turns thinking off. Unlike
+    ``--effort`` (no measurable effect on Haiku 4.5), this is what moves a
+    delegate's cost: one Haiku review went from 4,831 output tokens and 54 s
+    uncapped to 1,186 and 12 s at 1024. A negative or non-integer value is
+    ignored.
+    """
+    value = dcfg.get("claude_thinking_tokens")
+    if value is None or value == "":
+        table = dcfg.get("claude_tier_thinking_tokens") or {}
+        value = table.get(tier) if isinstance(table, dict) else None
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return None
+    return cap if cap >= 0 else None
+
+
 def claude_default_tier_key(scout: bool) -> str:
     """Which config key names the default Claude tier.
 
@@ -509,10 +532,15 @@ def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
     return cmd
 
 
-def _claude_env() -> dict:
+def _claude_env(thinking_cap: int | None = None) -> dict:
     env = _child_host_env("claude-code")
     for name in _CLAUDE_NESTING_VARS:
         env.pop(name, None)
+    # The caller's own MAX_THINKING_TOKENS must not leak into a delegate: the
+    # cap is decided per tier here, or not set at all.
+    env.pop("MAX_THINKING_TOKENS", None)
+    if thinking_cap is not None:
+        env["MAX_THINKING_TOKENS"] = str(int(thinking_cap))
     return env
 
 
@@ -585,7 +613,8 @@ def parse_claude_json(stdout: str, requested_model: str = "") -> tuple[str, bool
 def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
                 timeout: int = 120, effort: str = "",
                 max_budget_usd: float = 0.0, scout_project: str | None = None,
-                settings: dict | None = None) -> tuple[str, bool, dict]:
+                settings: dict | None = None,
+                thinking_cap: int | None = None) -> tuple[str, bool, dict]:
     """Run the locked-down ``claude -p``.
 
     Tool-less (default): in a throwaway directory. Scout (``scout_project``
@@ -606,7 +635,7 @@ def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
             harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", cwd=workdir,
-            env=_claude_env(), **_popen_kwargs(),
+            env=_claude_env(thinking_cap), **_popen_kwargs(),
         )
         stdout, stderr, status = _communicate_with_heartbeat(
             proc, timeout=timeout, idle_timeout=0, stdin_text=prompt)
@@ -738,13 +767,16 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     effort = claude_effort_for(resolved_tier, dcfg)
     if effort:
         base["effort"] = effort
+    thinking_cap = claude_thinking_cap_for(resolved_tier, dcfg)
+    if thinking_cap is not None:
+        base["thinking_cap"] = thinking_cap
     try:
         budget = float(dcfg.get("claude_max_budget_usd") or 0.0)
     except (TypeError, ValueError):
         budget = 0.0
 
     ckey = hashlib.md5(
-        f"claude|{resolved_tier}|{model_arg}|{effort}|{system_prompt}|{prompt}".encode()
+        f"claude|{resolved_tier}|{model_arg}|{effort}|{thinking_cap}|{system_prompt}|{prompt}".encode()
     ).hexdigest()
     if not scout and ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
@@ -761,7 +793,7 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     output, ok, stats = _run_claude(prompt, system_prompt, model_arg, timeout=timeout,
                                     effort=effort, max_budget_usd=budget,
                                     scout_project=str(svc.project_path) if scout else None,
-                                    settings=settings)
+                                    settings=settings, thinking_cap=thinking_cap)
     elapsed = round(time.monotonic() - t0, 1)
     meta = {**base, "model": stats.pop("model", "") or model_arg or "cli-default",
             "elapsed": f"{elapsed}s", **stats}
@@ -2124,6 +2156,11 @@ def delegate_telemetry_detail(meta: dict | None, status, *, requested_backend: s
     for key in ("tier", "model", "mode", "effort"):
         if meta.get(key):
             detail[key] = str(meta[key])
+    if meta.get("thinking_cap") is not None and not isinstance(meta.get("thinking_cap"), bool):
+        try:
+            detail["thinking_cap"] = int(meta["thinking_cap"])
+        except (TypeError, ValueError):
+            pass
     if raw_status in _CONFIDENCE:
         detail["confidence"] = raw_status
     if meta.get("cached"):

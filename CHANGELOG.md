@@ -4,6 +4,55 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.138.0] - 2026-09-14
+
+### Changed — Haiku delegations cap thinking at 1024 tokens
+
+`--effort` did nothing on Haiku 4.5 (2.137.0), but Claude Code's
+`MAX_THINKING_TOKENS` does cut its cost.
+
+- **`delegate.claude_tier_thinking_tokens`** sets `MAX_THINKING_TOKENS` for
+  the delegate per tier, and `delegate.claude_thinking_tokens` overrides every
+  tier (0 turns thinking off). A delegate never inherits the caller's own
+  `MAX_THINKING_TOKENS`. The cap is part of the cache key and shows up in the
+  response meta and telemetry as `thinking_cap`.
+- **Default: `{"small": 1024}`.** Only Haiku is capped; Sonnet and Opus are not.
+- **`c3 delegate-eval` targets take `+think=N` and `+effort=X`**, so caps can
+  be compared in one run (`claude:small,claude:small+think=0`).
+- Grading ignores bold markers: a correct "does **not** match" answer used to
+  fail a `does not` check. `lookup-env-secret` also accepts "no context"
+  wording.
+
+**Measured** (22 core eval cases; plus two real-file reviews,
+`services/delegate_agents.py` and `core/host.py`, whose findings were checked
+against the code by hand):
+
+| target | core pass | core cost | p95 wall | real reviews: cost · wall |
+|---|---|---|---|---|
+| Haiku, no cap | 22/22 | $0.1233 | 21.1 s | $0.027 + $0.018 · 49 s + 25 s |
+| Haiku, cap 4096 | 21/22 | $0.1035 | 13.4 s | $0.011 + $0.009 · 16 s + 15 s |
+| Haiku, cap 1024 | 21/22 | $0.0957 | 17.2 s | $0.011 + $0.009 · 16 s + 12 s |
+| Haiku, cap 0 | 22/22 | $0.0634 | 5.6 s | $0.007 + $0.005 · 8 s + 7 s |
+| Sonnet, no cap | 22/22 | $0.2247 | 10.9 s | $0.101 + $0.045 · 84 s + 38 s |
+| Sonnet, cap 1024 | 22/22 | $0.2082 | 12.9 s | $0.108 + $0.051 · 94 s + 46 s |
+| Sonnet, cap 0 | 22/22 | $0.1862 | 7.0 s | $0.021 + $0.015 · 11 s + 11 s |
+
+Why 1024 on Haiku, and no cap elsewhere:
+- **Haiku at 1024** cut the real reviews by about 55% in cost and 2.6× in wall time,
+  with no false finding. The uncapped Haiku review claimed `_note_write` was
+  skipped for updated files, which the code shows it isn't.
+- **Haiku at 0** is cheaper still and passed every core case, but its reviews
+  were shallower, and one said `str(env.get(...) or "")` could produce
+  `"None"`, which it can't. Opt in with `claude_thinking_tokens: 0` for
+  summaries.
+- **The one core case the 1024 and 4096 caps missed** (`explain-cmd-shim`) got
+  a shallower but not wrong answer.
+- **Sonnet 5 ignored nonzero caps** in the real reviews (9.4k output tokens at
+  4096 and 1024). At 0 it was 5× cheaper but missed the `core/host.py` finding
+  the uncapped and 4096 runs both made (a Codex child inheriting
+  `CLAUDE_CODE_SESSION_ID` is taken for Claude Code). Depth
+  is the reason to choose Sonnet, so it stays uncapped.
+
 ## [2.137.0] - 2026-09-14
 
 ### Changed — delegate tuning from the first live run of the downshift
