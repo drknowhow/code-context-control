@@ -449,7 +449,8 @@ class SessionInsightAgent(BackgroundAgent):
         if heavy_ops >= 5 and delegate_calls == 0:
             insights.append(
                 f"{heavy_ops} compress/summarize calls but no c3_delegate — "
-                "use c3_delegate(task_type='summarize'/'review'/'test') to save Claude tokens"
+                "use c3_delegate(task_type='summarize'/'review'/'test') — it runs your own "
+                "provider one tier down by default"
             )
 
         # Many file reads with zero delegation — stronger file-read hint
@@ -458,7 +459,7 @@ class SessionInsightAgent(BackgroundAgent):
             insights.append(
                 f"{total_reads} file reads and 0 c3_delegate calls — "
                 "for large files you only need to understand (not edit), use "
-                "c3_delegate(task_type='explain', file_path='...') to offload to local LLM"
+                "c3_delegate(task_type='explain', file_path='...') to hand it to a smaller model"
             )
 
         # Bash/run_command calls suggest possible errors worth delegating
@@ -467,7 +468,7 @@ class SessionInsightAgent(BackgroundAgent):
             insights.append(
                 f"{bash_calls} terminal commands with no c3_delegate — "
                 "if any produced errors, use c3_delegate(task_type='diagnose', task='<error>') "
-                "to root-cause locally and save Claude tokens"
+                "to root-cause them on a smaller model"
             )
 
         # --- Stuck detection → Codex escalation ---
@@ -1215,10 +1216,10 @@ class AutonomyPlannerAgent(BackgroundAgent):
             add_action(
                 "diagnose",
                 4,
-                "Terminal failures detected. Use `c3_delegate(task_type='diagnose', task='<error output>')` for local root-cause analysis.",
+                "Terminal failures detected. Use `c3_delegate(task_type='diagnose', task='<error output>')` to root-cause them on a smaller model.",
             )
 
-        # Detect heavy analysis done in Claude without local delegation.
+        # Detect heavy analysis done by the parent model without delegation.
         heavy_ops = counts.get("c3_compress", 0) + counts.get("c3_summarize", 0)
         if heavy_ops >= 4 and delegate_calls == 0:
             add_action(
@@ -1258,8 +1259,8 @@ class AutonomyPlannerAgent(BackgroundAgent):
                 "read_thrash",
                 4,
                 f"`c3_read` called {worst[1]}x on '{fname}' without a structural map. "
-                f"Run `c3_compress(file_path='{worst[0]}', mode='map')` first to locate all symbols, "
-                "then target exact sections — or delegate with `c3_delegate(task_type='investigate')`.",
+                f"Run `c3_read(file_path='{worst[0]}')` first for the map of all symbols, "
+                "then target exact sections — or ask `c3_delegate(task_type='explain', scout=True)`.",
             )
 
         # Detect high tool-call volume with no compress/plan — loop risk
@@ -1367,7 +1368,7 @@ class DelegateCoachAgent(BackgroundAgent):
                             file_name = Path(path_str).name
                             self.notify(
                                 "info", "Delegate opportunity",
-                                f"You read {lines} lines from {file_name}. Next time, use `c3_delegate(task_type='explain', file_path='...')` to save Claude tokens."
+                                f"You read {lines} lines from {file_name}. Next time, use `c3_delegate(task_type='explain', file_path='...')` to hand it to a smaller model."
                             )
                             return  # one tip per cycle is enough
                 except Exception:
@@ -1379,7 +1380,7 @@ class DelegateCoachAgent(BackgroundAgent):
                 if "err" in summary.lower() or "fail" in summary.lower() or "exit code" in summary.lower():
                     self.notify(
                         "info", "Delegate opportunity",
-                        "Command failed. Use `c3_delegate(task_type='diagnose', task='<error output>')` to have local AI root-cause the issue."
+                        "Command failed. Use `c3_delegate(task_type='diagnose', task='<error output>')` to root-cause it on a smaller model."
                     )
                     return
 
@@ -1410,8 +1411,8 @@ class DelegateCoachAgent(BackgroundAgent):
                     self.notify(
                         "warning", "Read loop detected",
                         f"`c3_read` called {count}x on '{fname}' — stop and use "
-                        f"`c3_compress(file_path='{file_path}', mode='map')` to see all symbols at once, "
-                        "or delegate with `c3_delegate(task_type='investigate')`."
+                        f"`c3_read(file_path='{file_path}')` to see all symbols at once, "
+                        "or ask `c3_delegate(task_type='explain', scout=True)`."
                     )
                     return
 

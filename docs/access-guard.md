@@ -141,7 +141,7 @@ hooks, unlock map, shell scanner) uses this and nothing else:
 | ArtifactStore.restore | write verdict per member path |
 | scanner.iter_files | index-time exclusion (denied paths never enter TF-IDF/vector index, MAP.md, file_memory) |
 | c3_project | rules = global ∪ caller ∪ containing-realm of RESOLVED path; registration required beyond list/scan/register |
-| c3_delegate | inherits read guard; pins codex `--sandbox read-only` when rules exist; autonomous backends behind user opt-in |
+| c3_delegate | `file_path` packed through the read verdict (denied raises, masked refuses) for every backend; claude runs tool-less, or as `scout=true` with `Read()` denies derived from deny/mask rules plus this guard as its only hook; pins codex `--sandbox read-only` when rules exist; gemini and grok write mode behind user opt-in |
 | PreToolUse hooks | new `hook_access_guard.py` FIRST in pretool routes; `_FAIL_CLOSED` synthesized deny on exception/import failure; verdict before `_PREREQS` early-return and before `_check_c3_used`; Bash + run_shell_command matchers installed same release (advisory scan); native Grep/Glob hard-denied only on explicit path args inside denied subtrees |
 
 Typed `AccessDenied` exception carries (verdict, rule, scope, reason) and

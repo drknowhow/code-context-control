@@ -324,8 +324,12 @@ def test_every_backend_refuses_a_masked_file_path(monkeypatch, tmp_path):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "x.csv").write_text("a\n", encoding="utf-8")
     svc = _svc(tmp_path, ollama=_FakeOllama(["llama3.2:3b"]), auto_compress=True)
-    with pytest.raises(access_guard.AccessDenied):
-        delegate.handle_delegate("t", "ask", "", "data/x.csv", svc, _capture({}), backend="ollama")
+    store = {}
+    delegate.handle_delegate("t", "ask", "", "data/x.csv", svc, _capture(store), backend="ollama")
+    # 2.136.0: the refusal is the response (status blocked), not an exception
+    assert store["status"] == "blocked"
+    assert store["resp"].startswith(access_guard.TAG_MASK_UNSUPPORTED)
+    assert svc.ollama_client.calls == []
     monkeypatch.setattr(delegate, "_run_grok", lambda **kw: pytest.fail("grok must not run"))
     with pytest.raises(access_guard.AccessDenied):
         delegate._handle_grok_delegate("t", "ask", "", "data/x.csv", svc, svc.delegate_config, _capture({}))

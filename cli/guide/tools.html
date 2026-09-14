@@ -898,10 +898,10 @@ c3_status(view=<span class="str">'sessions'</span>)         <span class="com"># 
           <div class="tag-row">
             <span class="badge badge-orange">AI</span>
           </div>
-          <span class="tool-tagline">Offload tasks to Ollama, Codex, Gemini, or Claude CLI</span>
+          <span class="tool-tagline">Hand bounded work to your own provider, one tier down</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Delegates tasks to local or remote AI backends to save Claude tokens on routine work (summarization, routing, simple Q&amp;A). Supports automatic backend selection based on task type.</p>
+          <p class="tool-desc">Sends a bounded task (summarize a diff or log, explain a function, triage a traceback, draft a docstring or test cases) to a smaller model from the provider you already run on. In Claude Code that is Haiku by default, through a tool-less <code>claude -p</code> that answers only from the context C3 packs for it. On C3's delegate eval, Haiku passed all 22 bounded cases at about a fifth of Opus's cost.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -916,34 +916,61 @@ c3_status(view=<span class="str">'sessions'</span>)         <span class="com"># 
                 <td class="param-name">task_type</td>
                 <td class="param-type">string</td>
                 <td class="param-default">"ask"</td>
-                <td class="param-desc"><code>ask</code> general Q&amp;A · <code>summarize</code> summarization · <code>auto</code> let C3 route optimally</td>
+                <td class="param-desc"><code>ask</code> · <code>explain</code> · <code>summarize</code> · <code>review</code> · <code>diagnose</code> · <code>docstring</code> · <code>test</code> · <code>auto</code> · <code>ping</code> (one live call to check auth) · <code>available</code> (CLI versions only)</td>
               </tr>
               <tr>
                 <td class="param-name">context</td>
                 <td class="param-type">string</td>
                 <td class="param-default">""</td>
-                <td class="param-desc">Additional context to include with the task</td>
+                <td class="param-desc">The text the delegate answers from</td>
+              </tr>
+              <tr>
+                <td class="param-name">file_path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated files C3 reads under Access Guard and packs into the prompt (a file over 8k tokens goes as its map; a masked path is refused)</td>
               </tr>
               <tr>
                 <td class="param-name">backend</td>
                 <td class="param-type">string</td>
-                <td class="param-default">"auto"</td>
-                <td class="param-desc"><code>ollama</code> · <code>codex</code> · <code>gemini</code> · <code>claude</code> · <code>auto</code></td>
+                <td class="param-default">"host"</td>
+                <td class="param-desc"><code>host</code> = your own provider (Claude Code → <code>claude</code>, Codex → <code>codex</code>, Grok Build → <code>grok</code>, Antigravity → <code>gemini</code>) · <code>claude</code> · <code>codex</code> · <code>gemini</code> · <code>grok</code> · <code>ollama</code> · <code>auto</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">tier</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"small"</td>
+                <td class="param-desc"><code>small</code> · <code>medium</code> · <code>large</code> · <code>default</code>. Claude: Haiku / Sonnet / Opus. Codex and Grok: reasoning effort low / medium / high on the account's model. Gemini: flash-lite / flash / pro.</td>
+              </tr>
+              <tr>
+                <td class="param-name">model</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">A model alias or id; overrides the tier</td>
+              </tr>
+              <tr>
+                <td class="param-name">scout</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Let the delegate Read/Grep/Glob the project itself, for lookups when you cannot name the files. Claude runs <code>--restricted</code> with Access Guard's read denies; Codex uses its read-only sandbox.</td>
               </tr>
             </tbody>
           </table>
 
           <h4>Examples</h4>
-          <pre><code><span class="com"># Delegate summarization to local Ollama</span>
-c3_delegate(task=<span class="str">'Summarize what this function does'</span>, context=<span class="str">'&lt;function code&gt;'</span>, backend=<span class="str">'ollama'</span>, task_type=<span class="str">'summarize'</span>)
+          <pre><code><span class="com"># Summarize a diff on Haiku (Claude Code host, default tier)</span>
+c3_delegate(task=<span class="str">'Summarize this diff for a changelog in three bullets'</span>, context=<span class="str">'&lt;diff&gt;'</span>, task_type=<span class="str">'summarize'</span>)
 
-<span class="com"># Auto-route based on task type</span>
-c3_delegate(task=<span class="str">'What is the purpose of this config key?'</span>, context=<span class="str">'&lt;config snippet&gt;'</span>, backend=<span class="str">'auto'</span>)</code></pre>
+<span class="com"># Explain a function on Sonnet</span>
+c3_delegate(task=<span class="str">'What does resolve_host return inside a grok child?'</span>, file_path=<span class="str">'core/host.py'</span>, task_type=<span class="str">'explain'</span>, tier=<span class="str">'medium'</span>)
+
+<span class="com"># A lookup the delegate does itself</span>
+c3_delegate(task=<span class="str">'Which functions call charge_card, and where?'</span>, scout=<span class="kw">True</span>)</code></pre>
 
           <div class="callout callout-info">
             <span class="callout-icon">ℹ️</span>
             <div class="callout-body">
-              Requires Ollama running locally for <code>ollama</code> backend. Codex and Gemini backends require their respective CLIs. The <code>claude</code> backend uses the Claude Code CLI in non-interactive print mode (<code>claude -p</code>) — no extra config needed if Claude Code is installed. Use <code>task_type='available'</code> to check which of the 4 backends are reachable.
+              For multi-step work in Claude Code, <code>c3 install-mcp</code> also writes two subagents to <code>.claude/agents</code>: <code>c3-scout</code> (Haiku, read-only) and <code>c3-worker</code> (Sonnet). They run inside your session, so C3's hooks apply to them. Skip them with <code>--no-agents</code>. <code>c3 delegate-eval</code> measures pass rate and cost per backend and tier on your machine.
             </div>
           </div>
         </div>
