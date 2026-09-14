@@ -178,6 +178,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_install_mcp.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_install_mcp.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")
     p_install_mcp.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
+    p_install_mcp.add_argument("--no-agents", action="store_true", help="Do not write the c3-scout/c3-worker subagents to .claude/agents (Claude Code only)")
 
     p_mcp_install = subparsers.add_parser("mcp-install", help="Alias for install-mcp")
     p_mcp_install.add_argument("targets", nargs="*", help="Optional project path and/or IDE shorthand")
@@ -186,6 +187,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_mcp_install.add_argument("--global-fallback", action="store_true", help="Also install the machine-wide Codex fallback")
     p_mcp_install.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only)")
     p_mcp_install.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")
+    p_mcp_install.add_argument("--no-agents", action="store_true", help="Do not write the c3-scout/c3-worker subagents to .claude/agents (Claude Code only)")
 
     p_mcp_remove = subparsers.add_parser("mcp-remove", help="Remove an MCP server from your IDE config")
     p_mcp_remove.add_argument("name", help="Name of the MCP server to remove (e.g. 'c3')")

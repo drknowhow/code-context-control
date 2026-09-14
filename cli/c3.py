@@ -5065,7 +5065,7 @@ back to native tools as the task progresses.
 - **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
-- **Delegate**: `c3_delegate(task, backend='ollama|codex|gemini|claude|grok|auto')` — offload to other models
+- **Delegate**: `c3_delegate(task, task_type, context|file_path)` — your own provider one tier down (default `backend='host'`, `tier='small'`; Claude Code: Haiku) for bounded answers: summarize a diff/log, explain a function, triage a traceback. `scout=true` lets it look files up itself. Multi-step work: the `c3-scout` (haiku) / `c3-worker` (sonnet) subagents
 - **Local CI** (v2.79.0+): `c3_ci(action='inspect|run|rerun|failures')` — run THIS repo's real `.github/workflows` here instead of pushing for feedback. `run` executes in `needs` order; `failures` gives {file,line,message}; `rerun` retries only what failed. Only `FULL_CI_PASS` means safe to push — `PARTIAL_PASS` means something did not run (other OS, unsupported action, or your selection).
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
@@ -5922,6 +5922,20 @@ def cmd_install_mcp(args):
             _ensure_terse_skill(profile.name)
         except Exception as e:
             print(f"Warning: Could not install /terse skill: {e}")
+
+    # ── Downshift subagents (c3-scout on haiku, c3-worker on sonnet) ──
+    if profile.name == "claude-code" and not getattr(args, "no_agents", False):
+        try:
+            from services.delegate_agents import install_delegate_agents
+            for path, action in install_delegate_agents(target):
+                if action == "skipped":
+                    print(f"Kept  {path}  (no C3 marker: yours, left untouched)")
+                elif action == "kept":
+                    print(f"Kept  {path}  (subagent up to date)")
+                else:
+                    print(f"{action.capitalize()} {path}  (subagent)")
+        except Exception as e:
+            print(f"Warning: Could not install c3-scout/c3-worker subagents: {e}")
 
     print(f"IDE: {profile.display_name}")
     print(f"MCP Mode: {mcp_mode}")

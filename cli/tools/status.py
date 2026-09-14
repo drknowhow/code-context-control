@@ -117,6 +117,21 @@ def _budget_view(svc, detailed, finalize):
     except Exception:
         pass
 
+    # Delegation over the last 7 days, from the per-call telemetry details
+    # (2.132.0+): how much work went one tier down, where, and what it cost.
+    try:
+        from services.telemetry import aggregate_tool_telemetry
+        rows = aggregate_tool_telemetry(svc.project_path, days=7).get("delegate_by_backend") or {}
+        used = sorted(((k, r) for k, r in rows.items() if r.get("calls")), key=lambda kv: -kv[1]["calls"])
+        if used:
+            calls = sum(r["calls"] for _k, r in used)
+            ok = sum(r["outcomes"].get("ok", 0) + r["outcomes"].get("cached", 0) for _k, r in used)
+            cost = sum(r.get("cost_usd") or 0.0 for _k, r in used)
+            by = " | ".join(f"{k}:{r['calls']}" for k, r in used[:4])
+            lines.append(f"[delegate:7d] {calls} calls, {ok} answered, ${cost:.4f} reported ({by})")
+    except Exception:
+        pass
+
     if detailed:
         stats = svc.indexer.get_stats()
         lines.append(f"[index] files:{stats['files_indexed']} "
