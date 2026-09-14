@@ -979,7 +979,7 @@ c3_delegate(task=<span class="str">'Rename calc_total to order_total in its defi
           <div class="callout callout-info">
             <span class="callout-icon">ℹ️</span>
             <div class="callout-body">
-              For multi-step work in Claude Code, <code>c3 install-mcp</code> also writes two subagents to <code>.claude/agents</code>: <code>c3-scout</code> (Haiku, read-only) and <code>c3-worker</code> (Sonnet). They run inside your session, so C3's hooks apply to them. Skip them with <code>--no-agents</code>. <code>c3 delegate-eval</code> measures pass rate and cost per backend and tier on your machine.
+              For multi-step work in Claude Code, <code>c3 install-mcp</code> also writes two subagents to <code>.claude/agents</code>: <code>c3-scout</code> (Haiku, read-only) and <code>c3-worker</code> (Sonnet). They run inside your session, so C3's hooks apply to them. Skip them with <code>--no-agents</code>. Any other <code>Agent</code> call that leaves <code>model</code> blank runs one tier below your session (Fable → Opus → Sonnet, never below Sonnet); set <code>delegate.agent_downshift</code> to <code>"off"</code> to keep the parent's model. When your own work looks delegable, a <code>[c3:delegate-hint]</code> line on the tool response names the call to make. <code>c3 delegate-eval</code> measures pass rate and cost per backend and tier on your machine.
             </div>
           </div>
         </div>

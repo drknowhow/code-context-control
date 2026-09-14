@@ -25,6 +25,7 @@ from fastmcp import Context, FastMCP
 
 from core.host import resolve_host
 from core.ide import get_profile
+from services import delegate_hints
 from services.auto_memory import AutoMemory
 from services.context_snapshot import ContextSnapshot
 from services.runtime import C3Runtime, build_runtime, start_runtime, stop_runtime
@@ -515,6 +516,21 @@ _last_badge_count: int = 0  # delta-based: only show badge when count increases
 _finalize_lock = threading.Lock()
 
 
+def _with_hint(resp, make_hint) -> str:
+    """``resp`` plus a delegation hint line (services/delegate_hints), when the
+    call succeeded and a hint is due. A hint is advice: it never fails a call."""
+    if not isinstance(resp, str):
+        return resp
+    try:
+        from cli._hook_utils import response_text_failed
+        if response_text_failed(resp):
+            return resp
+        hint = make_hint()
+    except Exception:
+        return resp
+    return f"{resp}\n{hint}" if hint else resp
+
+
 def _finalize_response(ctx: Context, tool_name: str, args: dict,
                        response: str, summary: str = "",
                        response_tokens: int = 0) -> str:
@@ -668,10 +684,11 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    return await asyncio.to_thread(handle_search, query, action, top_k, max_tokens, svc,
+    resp = await asyncio.to_thread(handle_search, query, action, top_k, max_tokens, svc,
                                    finalize, maybe_related_facts, prefetch=prefetch,
                                    scope=scope, ignore_case=ignore_case,
                                    path=path, lang=lang, kind=kind)
+    return _with_hint(resp, lambda: delegate_hints.after_read(svc, ""))
 
 
 @mcp.tool()
@@ -746,7 +763,10 @@ async def c3_read(file_path: str, symbols: Any = None, lines: Any = None,
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    return await asyncio.to_thread(handle_read, file_path, symbols, lines, include_docstrings, svc, finalize)
+    resp = await asyncio.to_thread(handle_read, file_path, symbols, lines, include_docstrings, svc, finalize)
+    if not (symbols or lines):
+        return resp  # a map is the cheap way to look; it does not count toward the hint
+    return _with_hint(resp, lambda: delegate_hints.after_read(svc, file_path.split(",")[0].strip()))
 
 
 # c3_compress left the MCP surface in 2.124.0: c3_read(file_path) serves the
@@ -828,6 +848,10 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
         loop.call_soon_threadsafe(schedule)
     svc._agent_progress_cb = _progress_cb
     try:
+        delegate_hints.after_delegate(svc, write=bool(str(write_paths or "").strip()), scout=bool(scout))
+    except Exception:
+        pass
+    try:
         return await asyncio.to_thread(handle_delegate, task, task_type, context,
                                        file_path, svc, finalize, backend,
                                        allow_write_delegation, tier, model, scout,
@@ -879,8 +903,10 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
-    return await asyncio.to_thread(handle_edit, file_path, old_string, new_string,
+    resp = await asyncio.to_thread(handle_edit, file_path, old_string, new_string,
                                    summary, tags, replace_all, svc, finalize, edits)
+    return _with_hint(resp, lambda: delegate_hints.after_edit(
+        svc, file_path, delegate_hints.edit_chars(new_string, edits)))
 
 
 @mcp.tool()

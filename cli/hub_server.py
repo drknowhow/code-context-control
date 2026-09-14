@@ -4516,9 +4516,16 @@ def c3_hook_migrations(cli_dir: Path | None = None) -> list:
                                  "command": f"{dispatch} {arg}"}]},
         }
 
+    # v2.140.0: native subagent calls reach the pretool dispatcher, where
+    # hook_agent_model fills a blank model. Same literal as cli.c3.AGENT_MATCHER.
+    agent_entry = {"matcher": "Agent|Task",
+                   "hooks": [{"type": "command", "command": f"{dispatch} pretool"}]}
+
     return [
         {"settings": ".claude/settings.local.json", "event": "PostToolUse",
          "present": c3read_present, "entry": c3read_entry},
+        {"settings": ".claude/settings.local.json", "event": "PreToolUse",
+         "present": _has_matcher("Agent|Task"), "entry": agent_entry},
         {"settings": ".gemini/settings.json", "event": "AfterTool",
          "present": c3read_present, "entry": c3read_entry},
         # Claude only — Gemini has no session-lifecycle event to hang these on.

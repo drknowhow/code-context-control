@@ -316,6 +316,15 @@ DELEGATE_DEFAULTS = {
                                           # (2026-09-14: --effort low changed nothing on Haiku 4.5 — same
                                           # cost and output tokens over 22 eval cases — so no default)
     "claude_max_budget_usd": 0,           # --max-budget-usd per call; 0 = no cap
+    # Native Claude Code subagents (docs/delegate-auto.md). An Agent call with no model runs
+    # on the parent's model; the PreToolUse hook fills one in.
+    "agent_downshift": "one_down",        # one_down | off | a fixed alias (haiku/sonnet/opus)
+    "agent_downshift_floor": "sonnet",    # never below this (Haiku flailed on lookups, missed subtle specs)
+    "agent_downshift_skip": ["fork", "Plan"],  # subagent types left on the parent's model
+    "agent_models": {},                   # {subagent_type: alias} explicit per-type choice
+    # Delegation hints: one line on a c3_* response when the session's own work looks delegable.
+    "hints": True,
+    "hint_cooldown_minutes": 45,          # per hint kind
 }
 
 
