@@ -299,6 +299,7 @@ DELEGATE_DEFAULTS = {
     "claude_default_tier": "",            # Empty = default_tier
     "claude_tier_models": {"small": "haiku", "medium": "sonnet", "large": "opus"},  # CLI aliases, not ids
     "claude_timeout": 120,                # Subprocess timeout in seconds (no idle kill: JSON arrives at the end)
+    "claude_scout_timeout": 240,          # scout=true runs look files up first, so they get longer
     "claude_max_context_tokens": 24000,   # Context cap after file packing
     "claude_file_max_tokens": 8000,       # A file_path entry over this is sent as its file map
     "claude_effort": "",                  # --effort low|medium|high|xhigh|max; empty = CLI default

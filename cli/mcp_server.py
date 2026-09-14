@@ -805,13 +805,14 @@ async def c3_status(view: str = "budget", detailed: bool = False,
 async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
                 file_path: str = "", backend: str = "host",
                 allow_write_delegation: bool = False,
-                tier: str = "", model: str = "",
+                tier: str = "", model: str = "", scout: bool = False,
                 ctx: Context = None) -> str:
     """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
     backend: host (default: your own provider, one tier down — Claude Code->claude, Codex->codex, Grok->grok, Antigravity->gemini) | claude|codex|gemini|grok|ollama|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, ping (live auth check), available, codex_check, gemini_check, grok_check, codex_resume.
     tier: small (default) | medium | large | default. claude: haiku/sonnet/opus; codex/grok: reasoning effort; gemini: flash-lite/flash/pro. model overrides the tier. Context + file_path are packed by C3 under Access Guard.
+    scout=true: the delegate may Read/Grep/Glob the project itself (claude: read-only, guard-denied paths refused; codex: its read-only sandbox) — for lookups when you cannot name the files.
     grok runs read-only in a temp dir unless delegate.grok_allow_write=true (then --yolo in the project, loading its trusted .grok MCP servers and hooks).
-    allow_write_delegation: explicit user opt-in for write-capable backends (gemini/claude/grok write mode/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
+    allow_write_delegation: explicit user opt-in for write-capable backends (gemini/grok write mode/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
@@ -827,7 +828,7 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
     try:
         return await asyncio.to_thread(handle_delegate, task, task_type, context,
                                        file_path, svc, finalize, backend,
-                                       allow_write_delegation, tier, model)
+                                       allow_write_delegation, tier, model, scout)
     finally:
         svc._agent_progress_cb = None
 

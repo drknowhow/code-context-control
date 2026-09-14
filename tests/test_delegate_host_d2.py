@@ -102,7 +102,8 @@ def test_host_routes_to_the_same_provider_at_the_default_tier(monkeypatch, handl
     _host(monkeypatch, provider)
     store = {}
     delegate.handle_delegate("t", "ask", "c", "", _svc(), _capture(store), backend="host")
-    assert handlers == [(backend, {"tier": "small"} if backend != "claude" else {"tier": "small", "model": ""})]
+    assert handlers == [(backend, {"tier": "small"} if backend != "claude"
+                         else {"tier": "small", "model": "", "scout": False})]
     assert store["meta"]["backend"] == backend and "cascade" not in store["meta"]
 
 
@@ -136,7 +137,7 @@ def test_auto_tries_the_host_backend_first(monkeypatch, handlers):
     _host(monkeypatch, "claude-code")
     store = {}
     delegate.handle_delegate("t", "review", "", "", _svc(), _capture(store), backend="auto")
-    assert handlers == [("claude", {"tier": "", "model": ""})]
+    assert handlers == [("claude", {"tier": "", "model": "", "scout": False})]
 
 
 def test_host_comes_from_the_runtime_not_the_project_config(monkeypatch, tmp_path):
@@ -285,7 +286,7 @@ def test_ping_is_a_live_call_reported_as_a_probe(monkeypatch):
     _host(monkeypatch, "claude-code")
     seen = {}
 
-    def claude(task, task_type, context, file_path, svc, dcfg, finalize, tier="", model=""):
+    def claude(task, task_type, context, file_path, svc, dcfg, finalize, tier="", model="", scout=False):
         seen.update(task=task, task_type=task_type, tier=tier)
         return finalize("c3_delegate", {"task_type": task_type, "backend": "claude", "tier": "small",
                                         "model": "claude-haiku-4-5", "elapsed": "2.9s",
