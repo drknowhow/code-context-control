@@ -29,6 +29,26 @@ import tempfile
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_delegate_host(monkeypatch):
+    """c3_delegate must not pick a backend from the shell running the tests.
+
+    Since 2.134.0 backend='host' and the auto cascade put the calling agent's
+    own backend first, resolved from the environment. Run from a Claude Code
+    terminal, that environment says claude-code, and a cascade test that mocks
+    codex and gemini would spawn a real `claude -p`. Observed while building
+    it: 13 cascade tests turned into live, billed calls. Tests that exercise
+    host routing patch host_backend themselves.
+    """
+    try:
+        from cli.tools import delegate
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(delegate, "host_backend", lambda svc: ("", ""))
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_c3_home():
     """Point C3_HOME at an empty directory for the whole session."""

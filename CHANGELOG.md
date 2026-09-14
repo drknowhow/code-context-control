@@ -4,6 +4,59 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.134.0] - 2026-09-14
+
+### Changed — `backend='host'` is the default: your own provider, one tier down (D2 of the delegate remediation)
+
+- **`backend='host'`** (the MCP tool's new default) routes to the provider the
+  calling agent runs on: Claude Code → `claude`, Codex → `codex`, Grok Build →
+  `grok`, Antigravity → `gemini`, at `delegate.default_tier` (`small`). A host
+  without a backend of its own, or one whose backend Access Guard would block,
+  falls back to `auto` with a note in the response. `auto` now tries the host's
+  backend first. The Python `handle_delegate` default stays `ollama` for
+  internal callers.
+- **Tiers on every backend.** `tier=small|medium|large|default` steps Claude's
+  model (haiku/sonnet/opus), Codex's and Grok's reasoning effort (low/medium/high
+  on the account's own model; `codex_tier_models`/`grok_tier_models` can name a
+  model per tier) and Gemini's model (flash-lite/flash/pro). `model=` works on
+  every backend. An explicit backend with no tier and no model behaves exactly
+  as before.
+- **`task_type='ping'`** makes one live call and reports backend, tier, model,
+  wall time and cost — `available` only runs `--version`, which reported
+  backends as up while their logins failed.
+- **Codex.** `codex_default_model` no longer pins `gpt-5.3-codex-spark`, which
+  ChatGPT logins reject (2.132.0's eval: 25 of 25 calls failed); empty means the
+  Codex CLI's own default. A failed run now reports the event stream's reason
+  instead of "exit code 1", and token usage reaches the meta. The hub's Codex
+  model picker is a free-text field, and the stale-pin guard now covers
+  `core/config.py` and the settings UI.
+- **One packing path.** Codex, Gemini, Grok and Ollama pack `file_path` the way
+  the claude backend does: through the Access Guard read verdict (a masked path
+  refuses, as the coverage matrix always said), whole files up to
+  `delegate.file_max_tokens`, maps beyond. The "smart" signature summary used
+  before dropped function bodies, so a bug inside one was invisible.
+- **Ollama never picks an Ollama Cloud tag by accident** (refs #182). Prefix and
+  substring matching and the fallback walks see local tags only; a cloud tag is
+  used only when configured by its exact name. The router half of #182 is
+  unchanged.
+- An unknown backend name is an error instead of a silent fall-through to Ollama.
+- Tests never route by the ambient host: run from a Claude Code terminal, the
+  cascade tests would otherwise have spawned real `claude -p` calls.
+
+**Measured with `c3 delegate-eval` on this box** (22 core cases):
+
+| target | core pass | mean cost | p50 wall |
+|---|---|---|---|
+| claude:small (Haiku 4.5) | 22/22 | $0.0054 | 6.1 s |
+| codex:small (effort low) | 22/22 | — | 11.8 s |
+| codex:large (effort high) | 22/22 | — | 12.5 s |
+| grok:small (effort low) | 22/22 | $0.0098 | 8.4 s |
+| grok:large (effort high) | 20/22 (2 timeouts) | $0.0135 | 14.7 s |
+
+Codex passed every lookup case: its read-only sandbox runs in the project. Two
+suite checks were widened after reading the answers (`review-mutable-default`,
+`review-pagination` rejected correct wording); every wrong fixture answer still fails.
+
 ## [2.133.0] - 2026-09-14
 
 ### Changed — `backend='claude'` is a locked-down tier downshift (D1 of the delegate remediation)

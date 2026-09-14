@@ -282,9 +282,62 @@ def check_claude() -> dict:
 # the current model of that size. "default" omits --model, so the user's own
 # Claude Code default answers. Overridable per project via
 # delegate.claude_tier_models.
-CLAUDE_TIERS = ("small", "medium", "large", "default")
+DELEGATE_TIERS = ("small", "medium", "large", "default")
+CLAUDE_TIERS = DELEGATE_TIERS
 CLAUDE_TIER_MODELS = {"small": "haiku", "medium": "sonnet", "large": "opus", "default": ""}
 _TIER_ALIASES = {"parent": "default", "haiku": "small", "sonnet": "medium", "opus": "large"}
+
+# The same-provider step down on the other hosts. Codex and Grok keep the
+# account's own model (a pinned id goes stale — 2.132.0 measured the old
+# codex default rejected outright by ChatGPT logins) and step reasoning
+# effort instead; a project can still name a model per tier. Gemini steps
+# model size. "default" changes nothing.
+CODEX_TIER_REASONING = {"small": "low", "medium": "medium", "large": "high"}
+GROK_TIER_EFFORT = {"small": "low", "medium": "medium", "large": "high"}
+GEMINI_TIER_MODELS = {"small": "gemini-2.5-flash-lite", "medium": "gemini-2.5-flash",
+                      "large": "gemini-2.5-pro"}
+
+# backend='host': the backend of the provider the calling agent runs on.
+HOST_BACKENDS = {"claude-code": "claude", "codex": "codex", "grok": "grok",
+                 "antigravity": "gemini"}
+
+
+def normalize_tier(tier: str, dcfg: dict, default_key: str = "") -> str:
+    """A tier name (aliases folded), the configured default when empty, or ''
+    when the name is not a tier."""
+    raw = (tier or (dcfg.get(default_key) if default_key else "")
+           or dcfg.get("default_tier") or "small")
+    resolved = _TIER_ALIASES.get(str(raw).strip().lower(), str(raw).strip().lower())
+    return resolved if resolved in DELEGATE_TIERS else ""
+
+
+def host_provider(svc) -> str:
+    """The provider the calling agent runs on.
+
+    The runtime's ``ide_name`` first: the MCP server gets it from its own
+    ``--host`` argument, which is the only reliable answer — a project's
+    ``.c3/config.json`` names whichever IDE last ran ``install-mcp`` (this
+    repository's says codex while Claude Code is connected). The environment
+    and that config are the fallback for callers without a runtime.
+    """
+    provider = str(getattr(svc, "ide_name", "") or "").strip()
+    if provider:
+        try:
+            from core.ide import normalize_ide_name
+            return normalize_ide_name(provider)
+        except Exception:
+            return provider
+    try:
+        from core.host import resolve_host
+        return resolve_host(str(getattr(svc, "project_path", "") or "")).provider
+    except Exception:
+        return ""
+
+
+def host_backend(svc) -> tuple[str, str]:
+    """(host provider, same-provider backend or '')."""
+    provider = host_provider(svc)
+    return provider, HOST_BACKENDS.get(provider, "")
 
 # A model name reaches argv, so it must not look like a flag.
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,99}$")
@@ -311,9 +364,8 @@ def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, st
         if not _MODEL_NAME_RE.match(model):
             return "", "", f"model name {model!r} is not a Claude model alias or id"
         return "custom", model, ""
-    raw = (tier or dcfg.get("claude_default_tier") or "small").strip().lower()
-    resolved = _TIER_ALIASES.get(raw, raw)
-    if resolved not in CLAUDE_TIERS:
+    resolved = normalize_tier(tier, dcfg, "claude_default_tier")
+    if not resolved:
         return "", "", f"unknown tier {tier!r} (use one of {', '.join(CLAUDE_TIERS)})"
     table = {**CLAUDE_TIER_MODELS, **(dcfg.get("claude_tier_models") or {})}
     model_arg = str(table.get(resolved) or "")
@@ -906,6 +958,28 @@ def _delegate_binding(cwd, origin_id=""):
     return Path.home() / ".c3" / "delegate_sessions" / (key + ".json"), project, origin
 
 
+def _codex_usage(stdout: str) -> dict:
+    """Token counts from the last ``turn.completed`` event, when present."""
+    stats: dict = {}
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "turn.completed":
+            continue
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+        for src, dst in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+                         ("cached_input_tokens", "cached_tokens"),
+                         ("reasoning_output_tokens", "reasoning_tokens")):
+            if usage.get(src) is not None:
+                try:
+                    stats[dst] = int(usage[src])
+                except (TypeError, ValueError):
+                    pass
+    return stats
+
+
 def _codex_result(stdout: str) -> tuple[str, str, bool]:
     thread_id, messages, completed, error = "", [], False, ""
     for line in stdout.splitlines():
@@ -929,13 +1003,18 @@ def _codex_result(stdout: str) -> tuple[str, str, bool]:
         elif kind == "turn.completed":
             completed = True
         elif kind in ("turn.failed", "error"):
-            error = str(event.get("error") or event.get("message") or "Codex turn failed")
+            raw = event.get("error") or event.get("message") or "Codex turn failed"
+            if isinstance(raw, dict):
+                raw = raw.get("message") or json.dumps(raw)
+            error = error or str(raw)  # the first failure names the cause
     if error or not completed:
         return "[codex:error] " + (error or "No completed turn in Codex event stream"), thread_id, False
     return "\n\n".join(messages).strip(), thread_id, True
 
 
-def _execute_codex(cmd, prompt, timeout, idle_timeout, cwd, origin_id="", resume_id=""):
+def _execute_codex(cmd, prompt, timeout, idle_timeout, cwd, origin_id="", resume_id="",
+                   stats: dict | None = None):
+    """Run a codex exec argv. ``stats``, when given, receives token usage."""
     try:
         proc = subprocess.Popen(harden_win_argv(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 stdin=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
@@ -944,8 +1023,18 @@ def _execute_codex(cmd, prompt, timeout, idle_timeout, cwd, origin_id="", resume
             proc, timeout=timeout, idle_timeout=idle_timeout, stdin_text=prompt)
         if status != "ok":
             return f"[codex:{status}] Delegation exceeded its execution budget", False
+        if stats is not None:
+            stats.update(_codex_usage(stdout))
         if proc.returncode != 0:
-            return "[codex:error] " + (stderr.strip()[-4000:] or f"exit code {proc.returncode}"), False
+            # The reason is in the JSON event stream (turn.failed / error), not
+            # on stderr: 2.132.0's eval saw 25 of 25 calls come back as a bare
+            # "exit code 1" for a model a ChatGPT login rejects.
+            detail = stderr.strip()[-4000:]
+            if not detail:
+                reason, _tid, _ok = _codex_result(stdout)
+                if reason.startswith("[codex:error] ") and "No completed turn" not in reason:
+                    detail = reason[len("[codex:error] "):][-4000:]
+            return "[codex:error] " + (detail or f"exit code {proc.returncode}"), False
         answer, thread_id, ok = _codex_result(stdout)
         if resume_id and thread_id and resume_id != thread_id:
             return "[codex:error] Resumed thread identity did not match", False
@@ -961,10 +1050,10 @@ def _execute_codex(cmd, prompt, timeout, idle_timeout, cwd, origin_id="", resume
 def _run_codex(task: str, context: str, model: str, sandbox: str,
                reasoning: str = "high", timeout: int = 120,
                idle_timeout: int = 0, cwd: str | None = None,
-               origin_id: str = "") -> tuple[str, bool]:
+               origin_id: str = "", stats: dict | None = None) -> tuple[str, bool]:
     prompt = f"{task}\n\nContext:\n{context}" if context else task
     return _execute_codex(_codex_cmd("-", model, sandbox, reasoning), prompt,
-                          timeout, idle_timeout, cwd, origin_id)
+                          timeout, idle_timeout, cwd, origin_id, stats=stats)
 
 
 def _run_codex_resume(follow_up: str, timeout: int = 120,
@@ -1031,7 +1120,7 @@ def check_grok() -> dict:
 
 
 def _grok_cmd(prompt_file: str, model: str, max_turns: int, cwd: str,
-              allow_write: bool = False) -> list:
+              allow_write: bool = False, reasoning_effort: str = "") -> list:
     """Build the headless grok argv.
 
     An empty model omits ``-m`` so the account's own Grok default applies —
@@ -1048,6 +1137,8 @@ def _grok_cmd(prompt_file: str, model: str, max_turns: int, cwd: str,
     cmd += ["--max-turns", str(max(1, int(max_turns or 1)))]
     if model:
         cmd += ["-m", model]
+    if reasoning_effort:
+        cmd += ["--reasoning-effort", reasoning_effort]
     cmd += ["--cwd", cwd]
     return cmd
 
@@ -1105,7 +1196,7 @@ def _grok_token_stats(data) -> dict:
 
 def _run_grok(task: str, context: str, model: str = "", timeout: int = 120,
               idle_timeout: int = 0, max_turns: int = 8,
-              allow_write: bool = False,
+              allow_write: bool = False, reasoning_effort: str = "",
               cwd: str | None = None) -> tuple[str, bool, dict]:
     """Run ``grok --prompt-file`` headless. Returns (output, success, token_stats).
 
@@ -1135,7 +1226,8 @@ def _run_grok(task: str, context: str, model: str = "", timeout: int = 120,
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt)
         run_cwd = str(cwd) if allow_write else workdir
-        cmd = _grok_cmd(prompt_file, model, max_turns, run_cwd, allow_write)
+        cmd = _grok_cmd(prompt_file, model, max_turns, run_cwd, allow_write,
+                        reasoning_effort=reasoning_effort)
         proc = subprocess.Popen(
             harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1276,13 +1368,14 @@ def _notify_backend_degraded(svc, name: str, breaker: CircuitBreaker) -> None:
         pass
 
 
-def _cascade_order(task_type: str, dcfg: dict) -> list[str]:
+def _cascade_order(task_type: str, dcfg: dict, host: str = "") -> list[str]:
     """Ordered backend preference for backend='auto' routing.
 
-    Heavy tasks (review/diagnose/improve/test by default) prefer the cloud
-    CLIs and degrade gracefully: codex -> gemini -> grok -> ollama. Light
-    tasks stay local-first and only fall over to a cloud CLI when Ollama
-    itself is down: ollama -> codex -> gemini -> grok.
+    The host's own backend (``host``, from HOST_BACKENDS) goes first when
+    known. Then heavy tasks (review/diagnose/improve/test by default) prefer
+    the cloud CLIs and degrade gracefully: codex -> gemini -> grok -> ollama.
+    Light tasks stay local-first and only fall over to a cloud CLI when
+    Ollama itself is down: ollama -> codex -> gemini -> grok.
     """
     heavy_default = ["review", "diagnose", "improve", "test"]
     order: list[str] = []
@@ -1291,8 +1384,11 @@ def _cascade_order(task_type: str, dcfg: dict) -> list[str]:
             order.append(name)
     if order:
         order.append("ollama")
-        return order
-    return ["ollama", "codex", "gemini", "grok"]
+    else:
+        order = ["ollama", "codex", "gemini", "grok"]
+    if host:
+        order = [host] + [name for name in order if name != host]
+    return order
 
 
 def _write_capable(name: str, dcfg: dict) -> bool:
@@ -1327,6 +1423,14 @@ def _cascade_skip_reason(name: str, dcfg: dict, svc) -> str | None:
                 return "unreachable"
         except Exception:
             return "unreachable"
+        return None
+    if name == "claude":
+        if not dcfg.get("claude_enabled", True):
+            return "disabled"
+        if _claude_available is False:
+            return "unavailable"
+        if _claude_available is None and not _is_claude_on_path():
+            return "not on PATH"
         return None
     if name in ("codex", "gemini", "grok"):
         if not dcfg.get(f"{name}_enabled", False):
@@ -1376,6 +1480,15 @@ def infer_task_type(task: str, context: str = "") -> str:
     return "explain"
 
 
+_CLOUD_TAG_RE = re.compile(r"(?:^|[:\-])cloud$", re.IGNORECASE)
+
+
+def is_cloud_tag(name: str) -> bool:
+    """An Ollama Cloud tag (``deepseek-v4-pro:cloud``, ``gpt-oss:20b-cloud``):
+    the local daemon proxies it to a remote service."""
+    return bool(_CLOUD_TAG_RE.search(str(name or "").strip()))
+
+
 def resolve_model_name(candidate: str, available: list[str]) -> str:
     if not candidate:
         return ""
@@ -1422,8 +1535,57 @@ def _estimate_confidence(task_type: str, response: str, response_tokens: int) ->
 # Codex delegate handler
 # ---------------------------------------------------------------------------
 
+def _tier_overrides(backend: str, tier: str, model: str, dcfg: dict) -> tuple[dict, str]:
+    """Per-backend settings for a requested tier/model: ({model, effort, tier}, error).
+
+    Only called when the caller asked for a tier or a model (or routed via
+    backend='host'), so an explicit backend with neither keeps its configured
+    behaviour byte for byte.
+    """
+    out: dict = {}
+    if model:
+        if not _MODEL_NAME_RE.match(model):
+            return {}, f"model name {model!r} is not a valid model id"
+        out["model"] = model
+    if tier or not model:
+        resolved = normalize_tier(tier, dcfg)
+        if not resolved:
+            return {}, f"unknown tier {tier!r} (use one of {', '.join(DELEGATE_TIERS)})"
+        out["tier"] = resolved
+        if resolved != "default":
+            tier_models = dcfg.get(f"{backend}_tier_models") or {}
+            if backend == "gemini":
+                tier_models = {**GEMINI_TIER_MODELS, **tier_models}
+            if "model" not in out and tier_models.get(resolved):
+                out["model"] = str(tier_models[resolved])
+            if backend == "codex":
+                out["effort"] = (dcfg.get("codex_tier_reasoning") or CODEX_TIER_REASONING).get(resolved, "")
+            elif backend == "grok":
+                out["effort"] = (dcfg.get("grok_tier_effort") or GROK_TIER_EFFORT).get(resolved, "")
+    else:
+        out["tier"] = "custom"
+    if out.get("model") and not _MODEL_NAME_RE.match(out["model"]):
+        return {}, f"delegate.{backend}_tier_models = {out['model']!r} is not a valid model id"
+    return out, ""
+
+
+def _pack_for(file_path: str, context: str, svc, dcfg: dict) -> str:
+    """context + guarded file_path packing, shared by the cloud CLIs and Ollama.
+
+    ``auto_compress`` stays the switch (false = file_path is ignored, as before).
+    """
+    enriched = context or ""
+    if file_path and dcfg.get("auto_compress", True):
+        file_max = max(200, int(dcfg.get("file_max_tokens", 8000) or 8000))
+        packed = _pack_file_context(file_path, svc, file_max_tokens=file_max)
+        if packed:
+            enriched = f"{enriched}\n\n{packed}" if enriched else packed
+    return enriched
+
+
 def _handle_codex_delegate(task: str, task_type: str, context: str,
-                           file_path: str, svc, dcfg: dict, finalize) -> str:
+                           file_path: str, svc, dcfg: dict, finalize,
+                           tier: str = "", model: str = "") -> str:
     """Handle delegation via Codex CLI."""
     if not dcfg.get("codex_enabled", False):
         return finalize("c3_delegate", {"task_type": task_type, "backend": "codex"},
@@ -1447,7 +1609,16 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
 
     # Resolve model/sandbox/reasoning from config or defaults
     cdef = CODEX_MODELS.get(task_type, CODEX_MODELS.get("ask", {}))
+    requested_model = model
     model = dcfg.get("codex_default_model") or cdef.get("model", "")
+    tier_meta: dict = {}
+    if tier or requested_model:
+        over, problem = _tier_overrides("codex", tier, requested_model, dcfg)
+        if problem:
+            return finalize("c3_delegate", {"task_type": task_type, "backend": "codex"},
+                            f"[delegate:error] {problem}", "error")
+        model = over.get("model") or model
+        tier_meta = {"tier": over["tier"]}
     sandbox = dcfg.get("codex_default_sandbox") or cdef.get("sandbox", "read-only")
     try:
         _pin = access_guard.has_active_rules(str(svc.project_path))
@@ -1461,20 +1632,11 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
         # ZERO user rules this branch never fires (byte-identical behavior).
         sandbox = "read-only"
     reasoning = dcfg.get("codex_reasoning_effort") or cdef.get("reasoning", "high")
+    if tier_meta and tier_meta["tier"] not in ("default", "custom"):
+        reasoning = over.get("effort") or reasoning
     timeout = int(dcfg.get("codex_timeout", 120))
 
-    # Context enrichment (reuse existing pattern)
-    enriched = context
-    if file_path and dcfg.get("auto_compress", True):
-        for p in [p.strip() for p in file_path.split(",") if p.strip()]:
-            try:
-                res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
-                if isinstance(res, dict) and res.get("compressed"):
-                    enriched += f"\n--- file: {p} ---\n{res['compressed']}"
-            except access_guard.AccessDenied:
-                raise  # policy refusal must surface, never be swallowed (spec §3)
-            except Exception:
-                continue
+    enriched = _pack_for(file_path, context, svc, dcfg)
 
     # Truncate context to avoid blowing Codex's input
     max_ctx = max(200, int(dcfg.get("codex_max_context_tokens", 4000) or 4000))
@@ -1484,29 +1646,33 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
     # Cache check
     from cli.tools._grants import session_id
     origin = session_id(svc)
-    ckey = hashlib.md5(f"codex|{svc.project_path}|{origin}|{task_type}|{model}|{enriched}|{task}".encode()).hexdigest()
+    ckey = hashlib.md5(
+        f"codex|{svc.project_path}|{origin}|{task_type}|{model}|{reasoning}|{enriched}|{task}".encode()
+    ).hexdigest()
     if ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
-        return finalize("c3_delegate", {"task_type": task_type, "backend": "codex", "cached": True},
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "codex", **tier_meta,
+                                        "cached": True},
                         cached_resp, "cached")
 
     # Run Codex
     _log_progress(svc, f"[delegate] Codex {model or 'cli-default'} ({sandbox}, reasoning={reasoning})...")
     t0 = time.monotonic()
+    usage: dict = {}
     output, ok = _run_codex(
         task=task, context=enriched,
         model=model, sandbox=sandbox,
         reasoning=reasoning, timeout=timeout,
-        cwd=str(svc.project_path), origin_id=origin,
+        cwd=str(svc.project_path), origin_id=origin, stats=usage,
     )
     elapsed = round(time.monotonic() - t0, 1)
+    meta = {"task_type": task_type, "backend": "codex", **tier_meta,
+            "model": model or "cli-default", "effort": reasoning, "elapsed": f"{elapsed}s", **usage}
 
     if not ok:
         if breaker.record_failure():
             _notify_backend_degraded(svc, "codex", breaker)
-        return finalize("c3_delegate",
-                        {"task_type": task_type, "backend": "codex", "model": model, "elapsed": f"{elapsed}s"},
-                        output, "error")
+        return finalize("c3_delegate", meta, output, "error")
 
     breaker.record_success()
     _delegate_metrics["total_calls"] += 1
@@ -1515,9 +1681,7 @@ def _handle_codex_delegate(task: str, task_type: str, context: str,
     # Memory bridge — auto-extract key findings from substantial Codex responses
     _codex_memory_bridge(output, task_type, task, svc)
 
-    return finalize("c3_delegate",
-                    {"task_type": task_type, "backend": "codex", "model": model, "elapsed": f"{elapsed}s"},
-                    output, "ok")
+    return finalize("c3_delegate", meta, output, "ok")
 
 
 def _codex_memory_bridge(output: str, task_type: str, task: str, svc):
@@ -1563,7 +1727,8 @@ def _codex_memory_bridge(output: str, task_type: str, task: str, svc):
 # ---------------------------------------------------------------------------
 
 def _handle_gemini_delegate(task: str, task_type: str, context: str,
-                            file_path: str, svc, dcfg: dict, finalize) -> str:
+                            file_path: str, svc, dcfg: dict, finalize,
+                            tier: str = "", model: str = "") -> str:
     """Handle delegation via Gemini CLI."""
     if not dcfg.get("gemini_enabled", False):
         return finalize("c3_delegate", {"task_type": task_type, "backend": "gemini"},
@@ -1587,21 +1752,19 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
 
     # Resolve model from config or defaults
     gdef = GEMINI_MODELS.get(task_type, GEMINI_MODELS.get("ask", {}))
+    requested_model = model
     model = dcfg.get("gemini_default_model") or gdef.get("model", "gemini-2.5-flash")
+    tier_meta: dict = {}
+    if tier or requested_model:
+        over, problem = _tier_overrides("gemini", tier, requested_model, dcfg)
+        if problem:
+            return finalize("c3_delegate", {"task_type": task_type, "backend": "gemini"},
+                            f"[delegate:error] {problem}", "error")
+        model = over.get("model") or model
+        tier_meta = {"tier": over["tier"]}
     timeout = int(dcfg.get("gemini_timeout", 120))
 
-    # Context enrichment (reuse existing pattern)
-    enriched = context
-    if file_path and dcfg.get("auto_compress", True):
-        for p in [p.strip() for p in file_path.split(",") if p.strip()]:
-            try:
-                res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
-                if isinstance(res, dict) and res.get("compressed"):
-                    enriched += f"\n--- file: {p} ---\n{res['compressed']}"
-            except access_guard.AccessDenied:
-                raise  # policy refusal must surface, never be swallowed (spec §3)
-            except Exception:
-                continue
+    enriched = _pack_for(file_path, context, svc, dcfg)
 
     # Truncate context
     max_ctx = max(200, int(dcfg.get("gemini_max_context_tokens", 8000) or 8000))
@@ -1612,7 +1775,8 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
     ckey = hashlib.md5(f"gemini|{task_type}|{model}|{enriched}|{task}".encode()).hexdigest()
     if ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
-        return finalize("c3_delegate", {"task_type": task_type, "backend": "gemini", "cached": True},
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "gemini", **tier_meta,
+                                        "model": model, "cached": True},
                         cached_resp, "cached")
 
     # Run Gemini
@@ -1629,7 +1793,8 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
         if breaker.record_failure():
             _notify_backend_degraded(svc, "gemini", breaker)
         return finalize("c3_delegate",
-                        {"task_type": task_type, "backend": "gemini", "model": model, "elapsed": f"{elapsed}s"},
+                        {"task_type": task_type, "backend": "gemini", **tier_meta, "model": model,
+                         "elapsed": f"{elapsed}s"},
                         output, "error")
 
     breaker.record_success()
@@ -1640,7 +1805,7 @@ def _handle_gemini_delegate(task: str, task_type: str, context: str,
     _gemini_memory_bridge(output, task_type, task, svc)
 
     return finalize("c3_delegate",
-                    {"task_type": task_type, "backend": "gemini", "model": model,
+                    {"task_type": task_type, "backend": "gemini", **tier_meta, "model": model,
                      "elapsed": f"{elapsed}s", **token_stats},
                     output, "ok")
 
@@ -1681,7 +1846,8 @@ def _gemini_memory_bridge(output: str, task_type: str, task: str, svc):
 # ---------------------------------------------------------------------------
 
 def _handle_grok_delegate(task: str, task_type: str, context: str,
-                          file_path: str, svc, dcfg: dict, finalize) -> str:
+                          file_path: str, svc, dcfg: dict, finalize,
+                          tier: str = "", model: str = "") -> str:
     """Handle delegation via xAI's Grok Build CLI.
 
     Read-only by default (temp cwd, read-only tool allowlist, file context
@@ -1709,22 +1875,21 @@ def _handle_grok_delegate(task: str, task_type: str, context: str,
                         f"~{breaker.cooldown_remaining()}s. Run 'grok --version' to diagnose.",
                         "degraded")
 
+    requested_model = model
     model = str(dcfg.get("grok_model") or "")
+    effort = ""
+    if tier or requested_model:
+        over, problem = _tier_overrides("grok", tier, requested_model, dcfg)
+        if problem:
+            return finalize("c3_delegate", base, f"[delegate:error] {problem}", "error")
+        model = over.get("model") or model
+        effort = over.get("effort", "")
+        base = {**base, "tier": over["tier"]}
     timeout = int(dcfg.get("grok_timeout", 120) or 120)
     max_turns = int(dcfg.get("grok_max_turns", 8) or 8)
     allow_write = bool(dcfg.get("grok_allow_write", False))
 
-    enriched = context
-    if file_path and dcfg.get("auto_compress", True):
-        for p in [p.strip() for p in file_path.split(",") if p.strip()]:
-            try:
-                res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
-                if isinstance(res, dict) and res.get("compressed"):
-                    enriched += f"\n--- file: {p} ---\n{res['compressed']}"
-            except access_guard.AccessDenied:
-                raise  # policy refusal must surface, never be swallowed (spec §3)
-            except Exception:
-                continue
+    enriched = _pack_for(file_path, context, svc, dcfg)
 
     max_ctx = max(200, int(dcfg.get("grok_max_context_tokens", 8000) or 8000))
     if count_tokens(enriched) > max_ctx:
@@ -1732,7 +1897,7 @@ def _handle_grok_delegate(task: str, task_type: str, context: str,
 
     # Only read-only answers are cacheable; a write run has side effects.
     ckey = hashlib.md5(
-        f"grok|{svc.project_path}|{task_type}|{model}|{max_turns}|{enriched}|{task}".encode()
+        f"grok|{svc.project_path}|{task_type}|{model}|{effort}|{max_turns}|{enriched}|{task}".encode()
     ).hexdigest()
     if not allow_write and ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
@@ -1743,11 +1908,13 @@ def _handle_grok_delegate(task: str, task_type: str, context: str,
     t0 = time.monotonic()
     output, ok, token_stats = _run_grok(
         task=task, context=enriched, model=model, timeout=timeout,
-        max_turns=max_turns, allow_write=allow_write,
+        max_turns=max_turns, allow_write=allow_write, reasoning_effort=effort,
         cwd=str(svc.project_path) if allow_write else None,
     )
     elapsed = round(time.monotonic() - t0, 1)
     meta = {**base, "model": model or "cli-default", "mode": mode, "elapsed": f"{elapsed}s"}
+    if effort:
+        meta["effort"] = effort
 
     if not ok:
         if breaker.record_failure():
@@ -1770,7 +1937,7 @@ def _handle_grok_delegate(task: str, task_type: str, context: str,
 # — the args sat in the activity log, the cost nowhere. Every response now
 # lands one flat `detail` on its .c3/tool_telemetry.jsonl record.
 
-_PROBE_TASK_TYPES = frozenset({"available", "codex_check", "gemini_check", "grok_check"})
+_PROBE_TASK_TYPES = frozenset({"available", "codex_check", "gemini_check", "grok_check", "ping"})
 _OUTCOMES = frozenset({"ok", "cached", "error", "timeout", "blocked", "disabled",
                        "unavailable", "degraded"})
 _CONFIDENCE = frozenset({"high", "medium", "low"})
@@ -1812,7 +1979,7 @@ def delegate_telemetry_detail(meta: dict | None, status, *, requested_backend: s
     }
     if resolved_type in _PROBE_TASK_TYPES:
         detail["probe"] = True
-    for key in ("tier", "model", "mode"):
+    for key in ("tier", "model", "mode", "effort"):
         if meta.get(key):
             detail[key] = str(meta[key])
     if raw_status in _CONFIDENCE:
@@ -1840,11 +2007,7 @@ def _telemetry_finalize(finalize, svc, *, requested_backend: str, task_type: str
     never changes or breaks the response.
     """
     t0 = time.monotonic()
-    try:
-        from core.host import resolve_host
-        host = resolve_host(str(getattr(svc, "project_path", "") or "")).provider
-    except Exception:
-        host = ""
+    host = host_provider(svc)
 
     def wrapped(tool, meta, output, status, **kw):
         try:
@@ -1862,12 +2025,32 @@ def _telemetry_finalize(finalize, svc, *, requested_backend: str, task_type: str
     return wrapped
 
 
+PING_TASK = "Reply with exactly: OK"
+
+
+def _ping_finalize(finalize):
+    """task_type='ping': a one-line live call that proves auth, not just --version."""
+    def wrapped(tool, meta, output, status, **kw):
+        meta = {**(meta or {}), "task_type": "ping"}
+        facts = [f"{k}={meta[k]}" for k in ("backend", "tier", "model", "elapsed") if meta.get(k)]
+        if meta.get("cost_usd") is not None:
+            facts.append(f"cost=${float(meta['cost_usd']):.4f}")
+        outcome = "ok" if _delegate_outcome(status) in ("ok", "cached") else _delegate_outcome(status)
+        first = (output or "").strip().splitlines()[0][:300] if (output or "").strip() else ""
+        text = f"[delegate:ping] {outcome} {' '.join(facts)}\n{first}".rstrip()
+        return finalize(tool, meta, text, status, **kw)
+    return wrapped
+
+
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
                     allow_write_delegation: bool = False,
                     tier: str = "", model: str = "") -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
+    if task_type == "ping":
+        finalize = _ping_finalize(finalize)
+        task, context, file_path, task_type = PING_TASK, "", "", "ask"
     dcfg = svc.delegate_config or {}
     if not dcfg.get("enabled", True):
         return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
@@ -1945,10 +2128,19 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                 line += f" models={len(models)} [{', '.join(models[:5])}]"
             lines.append(line)
 
+        provider, mapped = host_backend(svc)
+        if mapped:
+            host_tier = normalize_tier("", dcfg, "claude_default_tier" if mapped == "claude" else "")
+            lines.append(f"  host={provider} -> {mapped} (default tier {host_tier}); "
+                         "task_type='ping' makes a live call")
+        else:
+            lines.append(f"  host={provider or 'unknown'} -> no same-provider backend (auto)")
+
         summary_statuses = [results.get(n, ("unknown",))[0] for n in names]
         up_count = sum(1 for s in summary_statuses if s in ("up", "ok"))
         return finalize("c3_delegate", {"task_type": "available"},
-                        f"[delegate:available] {up_count}/{total} backends up\n" + "\n".join(lines),
+                        f"[delegate:available] {up_count}/{total} backends up (--version only)\n"
+                        + "\n".join(lines),
                         f"{up_count}/{total} up")
 
     if task_type == "codex_check":
@@ -1996,6 +2188,26 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                         status)
 
     # --- Backend routing ---------------------------------------------------
+    route_tier = tier
+    if backend == "host":
+        # The same provider the calling agent runs on, one tier down by
+        # default (delegate.default_tier). A host with no backend of its own,
+        # or whose backend the guard would block, falls back to auto.
+        provider, mapped = host_backend(svc)
+        blocked = bool(mapped) and (_guard_active and not allow_write_delegation
+                                    and _write_capable(mapped, dcfg))
+        if mapped and not blocked:
+            backend = mapped
+            if not tier and not model:
+                route_tier = normalize_tier("", dcfg, "claude_default_tier" if mapped == "claude" else "")
+        else:
+            why = (f"host {provider} -> {mapped} blocked by Access Guard (write-capable)" if blocked
+                   else f"host {provider or 'unknown'} has no same-provider backend")
+            note = f"[delegate] {why} -> auto"
+            _log_progress(svc, note)
+            finalize = _with_cascade_note(finalize, note)
+            backend = "auto"
+
     if backend == "auto":
         # Cascade: walk the ordered preference list for this task type and use
         # the first backend that is enabled, installed, and whose breaker is
@@ -2003,7 +2215,7 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         # ollama first, cloud CLIs only when Ollama itself is down.
         skips: list[str] = []
         chosen = ""
-        for cand in _cascade_order(task_type, dcfg):
+        for cand in _cascade_order(task_type, dcfg, host=host_backend(svc)[1]):
             if (_guard_active and not allow_write_delegation
                     and _write_capable(cand, dcfg)):
                 skips.append(f"{cand} blocked by Access Guard (write-capable; "
@@ -2042,21 +2254,33 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
             f"or run {backend} directly.",
             "blocked")
 
+    # Tier/model reach a handler only when asked for (or set by host routing),
+    # so an explicit backend with neither keeps its configured behaviour.
+    tier_kw = {k: v for k, v in (("tier", route_tier), ("model", model)) if v}
+
     if backend == "codex":
         _log_progress(svc, f"[delegate] Routing {task_type} → Codex...")
-        return _handle_codex_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
+        return _handle_codex_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
+                                      **tier_kw)
 
     if backend == "gemini":
         _log_progress(svc, f"[delegate] Routing {task_type} → Gemini...")
-        return _handle_gemini_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
+        return _handle_gemini_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
+                                       **tier_kw)
 
     if backend == "claude":
         return _handle_claude_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
-                                       tier=tier, model=model)
+                                       tier=route_tier, model=model)
 
     if backend == "grok":
         _log_progress(svc, f"[delegate] Routing {task_type} → Grok...")
-        return _handle_grok_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
+        return _handle_grok_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
+                                     **tier_kw)
+
+    if backend != "ollama":
+        return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
+                        f"[delegate:error] Unknown backend: {backend} "
+                        "(use host, claude, codex, gemini, grok, ollama or auto)", "error")
 
     # --- Original Ollama path (backend="ollama") ---------------------------
 
@@ -2074,17 +2298,7 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                         "unavailable")
 
     # Context enrichment
-    enriched = context
-    if file_path and dcfg.get("auto_compress", True):
-        for p in [p.strip() for p in file_path.split(",") if p.strip()]:
-            try:
-                res = svc.compressor.compress_file(str(Path(svc.project_path) / p), "smart")
-                if isinstance(res, dict) and res.get("compressed"):
-                    enriched += f"\n--- file: {p} ---\n{res['compressed']}"
-            except access_guard.AccessDenied:
-                raise  # policy refusal must surface, never be swallowed (spec §3)
-            except Exception:
-                continue
+    enriched = _pack_for(file_path, context, svc, dcfg)
 
     if task_type == "diagnose" and dcfg.get("auto_activity_log", True):
         recent = svc.activity_log.get_recent(limit=8)
@@ -2097,13 +2311,19 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     if count_tokens(enriched) > max_context_tokens:
         enriched = enriched[:max_context_tokens * 4]
 
-    # Model resolution
-    req_model = dcfg.get(f"{task_type}_model") or dcfg.get("preferred_model") or tdef["default_model"]
+    # Model resolution. Only an exact configured name may select an Ollama
+    # Cloud tag: prefix/substring matching and the fallback walk see local
+    # tags only, so a prompt never leaves the machine by accident (#182).
+    req_model = (model or dcfg.get(f"{task_type}_model") or dcfg.get("preferred_model")
+                 or tdef["default_model"])
     avail = ollama.list_models() or []
-    model = resolve_model_name(req_model, avail)
+    local = [m for m in avail if not is_cloud_tag(m)]
+    model = next((m for m in avail if m.lower() == req_model.strip().lower()), "")
     if not model:
-        for cand in _fallback_model_order(task_type) + avail:
-            model = resolve_model_name(cand, avail)
+        model = resolve_model_name(req_model, local)
+    if not model:
+        for cand in _fallback_model_order(task_type) + local:
+            model = resolve_model_name(cand, local)
             if model:
                 break
     if not model:
@@ -2138,8 +2358,8 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     conf = _estimate_confidence(task_type, resp, count_tokens(resp))
     if conf == "low" and dcfg.get("allow_model_fallback", True):
         tried = {model}
-        for fallback_cand in _fallback_model_order(task_type) + avail:
-            fallback = resolve_model_name(fallback_cand, avail)
+        for fallback_cand in _fallback_model_order(task_type) + local:
+            fallback = resolve_model_name(fallback_cand, local)
             if not fallback or fallback in tried:
                 continue
             tried.add(fallback)

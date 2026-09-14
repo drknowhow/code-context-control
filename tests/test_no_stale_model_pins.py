@@ -21,6 +21,11 @@ PRODUCTION_FILES = [
     "cli/tools/delegate.py",
     "cli/tools/agent.py",
     "services/agents.py",
+    # 2.134.0: DELEGATE_DEFAULTS still pinned "gpt-5.3-codex-spark" after the
+    # table above was cleaned, and the hub settings select fell back to it —
+    # the delegate eval measured 25 of 25 Codex calls rejected by a ChatGPT login.
+    "core/config.py",
+    "cli/ui/components/settings.js",
 ]
 
 # Any OpenAI-style model literal: gpt-4o, gpt-5.x[-suffix], o3/o4-mini, etc.
