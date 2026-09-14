@@ -136,6 +136,10 @@ def _routes(event: str, raw_tool: str, norm_tool: str, host: str = HOST_CLAUDE):
         yield "hook_access_guard"
         # hook_pretool_enforce self-filters via its _PREREQS table.
         yield "hook_pretool_enforce"
+        # A native subagent with no model inherits the parent's; this fills
+        # one in (services/agent_downshift.py). Claude Code only.
+        if raw_tool in ("Agent", "Task") and host == HOST_CLAUDE:
+            yield "hook_agent_model"
     elif event == "posttool":
         # hook_filter is the ONE sub-hook that reads the whole tool payload:
         # it tiktoken-encodes the entire Bash output to measure savings, a
@@ -402,6 +406,7 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
         host = HOST_GEMINI if is_gemini else HOST_CLAUDE
 
     deny_hso = None
+    updated_input = None
     contexts: list = []
     texts: list = []
     tool_result = None
@@ -413,6 +418,8 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
         if isinstance(hso, dict):
             if deny_hso is None and hso.get("permissionDecision") == "deny":
                 deny_hso = hso
+            if updated_input is None and isinstance(hso.get("updatedInput"), dict):
+                updated_input = hso["updatedInput"]
             nested_ctx = hso.get("additionalContext")
             if nested_ctx and hso.get("permissionDecision") != "deny":
                 contexts.append(str(nested_ctx))
@@ -435,6 +442,10 @@ def merge_outputs(outputs: list, warnings: list, is_gemini: bool = False,
     result: dict = {}
     if deny_hso is not None:
         result["hookSpecificOutput"] = deny_hso
+    elif updated_input is not None and host == HOST_CLAUDE and event == "pretool":
+        # A rewritten tool input (hook_agent_model) — never alongside a deny.
+        result["hookSpecificOutput"] = {"hookEventName": "PreToolUse",
+                                        "updatedInput": updated_input}
     if tool_result is not None:
         if is_gemini:
             # Gemini has no tool_result replacement — degrade to context,

@@ -4,6 +4,42 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.140.0] - 2026-09-14
+
+### Added — delegation that happens without the agent deciding
+
+Nothing gets cheaper unless an agent calls `c3_delegate`, and agents rarely
+do. docs/delegate-auto.md has the details.
+
+- **Subagent downshift.** An `Agent` call with no `model` ran on the parent's
+  model: 963 of 991 calls since July had none, and a probe confirmed that
+  `Explore` inherits too.
+  - A PreToolUse hook (`hook_agent_model`) fills `model` one tier below the
+    parent through `updatedInput`: Fable → Opus → Sonnet, never below Sonnet.
+    It skips `fork` and `Plan`, and never touches an explicit `model`, an
+    agent definition that sets one, or a plugin agent.
+  - The parent's model comes from the transcript, else the last model the
+    project saw, else Claude settings. If none is known, nothing changes.
+  - Verified live: an Opus parent's model-less Explore call ran on Sonnet.
+  - Config: `delegate.agent_downshift` (`one_down` / `off` / an alias),
+    `agent_downshift_floor`, `agent_downshift_skip`, `agent_models`.
+    `C3_AGENT_DOWNSHIFT=0` turns it off for one shell.
+  - `c3 install-mcp` registers the `Agent|Task` matcher, and the hub adds it
+    to installed projects at startup.
+- **Delegation hints.** One `[c3:delegate-hint]` line on a successful c3_*
+  response when the session's own work looks delegable:
+  - `write`: lots of edit text written by the session itself suggests
+    `write_paths`;
+  - `explore`: many reads with no edit suggests `scout=True`.
+  - Each kind has a 45-minute cooldown, and no hint fires while the session
+    is already delegating that kind. `delegate.hints` turns them off.
+- **Measured, not assumed.** Telemetry rows `agent_downshift`,
+  `agent_downshift_skip`, `delegate_hint` and `delegate_hint_followed` feed a
+  new `c3_status` line: `[delegate-auto:7d] N of M model-less subagent
+  call(s) moved to a lower model, H hint(s) shown, F followed`.
+- **Instructions:** the CLAUDE.md delegate line and the global template say
+  what an `Agent` call without `model` does and what a hint means.
+
 ## [2.139.0] - 2026-09-14
 
 ### Added — `c3_delegate(write_paths=...)`: a Claude delegate that makes the change you specified

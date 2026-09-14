@@ -121,7 +121,18 @@ def _budget_view(svc, detailed, finalize):
     # (2.132.0+): how much work went one tier down, where, and what it cost.
     try:
         from services.telemetry import aggregate_tool_telemetry
-        rows = aggregate_tool_telemetry(svc.project_path, days=7).get("delegate_by_backend") or {}
+        agg7 = aggregate_tool_telemetry(svc.project_path, days=7)
+        by_tool = agg7.get("by_tool") or {}
+
+        def _n(tool: str) -> int:
+            return int((by_tool.get(tool) or {}).get("calls") or 0)
+
+        moved, blank = _n("agent_downshift"), _n("agent_downshift") + _n("agent_downshift_skip")
+        hints, followed = _n("delegate_hint"), _n("delegate_hint_followed")
+        if blank or hints:
+            lines.append(f"[delegate-auto:7d] {moved} of {blank} model-less subagent call(s) moved to a "
+                         f"lower model, {hints} delegation hint(s) shown, {followed} followed")
+        rows = agg7.get("delegate_by_backend") or {}
         used = sorted(((k, r) for k, r in rows.items() if r.get("calls")), key=lambda kv: -kv[1]["calls"])
         if used:
             calls = sum(r["calls"] for _k, r in used)
