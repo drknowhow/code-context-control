@@ -4,6 +4,36 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.136.0] - 2026-09-14
+
+### Added — downshift subagents and the surfaces that point at them (D4 of the delegate remediation)
+
+Measured over Claude Code transcripts since 2026-07-01: 963 of 991 `Agent`
+calls left `model` unset, so 92% of subagent turns ran on the parent's
+Opus/Fable-class model. A subagent definition with `model:` set is where
+Claude Code downshifts by itself.
+
+- **`c3 install-mcp` (Claude Code) writes two subagents** to `.claude/agents`:
+  `c3-scout` (`model: haiku`; Read, Grep, Glob and C3's read tools; never edits)
+  for bounded lookups, and `c3-worker` (`model: sonnet`; the session's tools) for
+  well-specified changes. They run inside the session, so Access Guard, the edit
+  ledger and discipline hooks apply to them as to the parent. Install rewrites
+  only files carrying C3's marker; a file without it is the user's and is left
+  alone. `--no-agents` skips both.
+- **Instruction surfaces.** The managed CLAUDE.md block, the global
+  `~/.claude/CLAUDE.md` template, the `c3_delegate` tool description and the
+  guide now say when to delegate (bounded answers: a diff or log summary, a
+  function explained, a traceback triaged, a docstring or test cases), that the
+  default is the host's own provider at the small tier, when to use `scout`,
+  and when to reach for the subagents instead.
+- **`c3_status`** (budget view) adds a `[delegate:7d]` line: calls, answers,
+  reported cost, and the busiest backend:tier rows.
+- **Nudges** say "a smaller model" instead of "local LLM", and no longer
+  suggest `task_type='investigate'` (which never existed) or `c3_compress`
+  (not an MCP tool since 2.124.0).
+- Docs: `docs/access-guard.md` coverage row for `c3_delegate`,
+  `docs/delegate-eval.md` on `+scout` targets and the canary.
+
 ## [2.135.0] - 2026-09-14
 
 ### Added — `scout=true`: a read-only claude delegate that looks things up (D3 of the delegate remediation)
