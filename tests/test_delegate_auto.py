@@ -233,7 +233,8 @@ def test_hub_migration_adds_the_agent_matcher_once(tmp_path):
     assert migrate_hooks_for_project(str(tmp_path), migrations) == 0
     pre = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
     assert [e["matcher"] for e in pre] == ["Read", AGENT_MATCHER]
-    assert pre[1]["hooks"][0]["command"].endswith("hook_dispatch.py\" pretool")
+    command = pre[1]["hooks"][0]["command"]  # quoting differs by OS (hook_command_arg)
+    assert "hook_dispatch.py" in command and command.endswith(" pretool")
 
 
 def test_installer_registers_the_agent_matcher():
