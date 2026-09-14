@@ -502,6 +502,7 @@ class TestOracleDelegateRuntimeShim(unittest.TestCase):
             project_path = "C:/proj"
             delegate_config = {"enabled": True, "codex_timeout": 99}
             notifications = "REAL-STORE"
+            session_mgr = "REAL-SESSIONS"
             ollama_client = "CLIENT"
 
         cb_msgs = []
@@ -509,6 +510,7 @@ class TestOracleDelegateRuntimeShim(unittest.TestCase):
         self.assertEqual(shim.project_path, "C:/proj")       # passthrough
         self.assertEqual(shim.ollama_client, "CLIENT")       # passthrough
         self.assertIsNone(shim.notifications)                # suppressed
+        self.assertIsNone(shim.session_mgr)                  # suppressed (delegate telemetry)
         dcfg = shim.delegate_config
         self.assertIs(dcfg["codex_memory_bridge"], False)
         self.assertIs(dcfg["gemini_memory_bridge"], False)

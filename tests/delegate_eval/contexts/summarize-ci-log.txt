@@ -1,0 +1,25 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.4, pytest-8.3.2
+collected 215 items
+
+tests/test_router.py ........................................            [ 18%]
+tests/test_session_save.py ..F..........................                 [ 32%]
+tests/test_output_filter.py .......F.................................    [ 51%]
+tests/test_memory_distiller.py ....F..................................   [ 70%]
+tests/test_search.py ............................................... [100%]
+
+================================== FAILURES ===================================
+____________________ test_session_save_runs_auto_memory _______________________
+    resp = urllib.request.urlopen("http://127.0.0.1:11434/api/generate", data=body, timeout=30)
+E   urllib.error.URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+____________________ test_pass2_summary_is_used _______________________________
+    resp = urllib.request.urlopen("http://127.0.0.1:11434/api/generate", data=body, timeout=2)
+E   urllib.error.URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+____________________ test_distiller_merges_duplicates _________________________
+    resp = urllib.request.urlopen("http://127.0.0.1:11434/api/generate", data=body, timeout=30)
+E   urllib.error.URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+=========================== short test summary info ===========================
+FAILED tests/test_session_save.py::test_session_save_runs_auto_memory
+FAILED tests/test_output_filter.py::test_pass2_summary_is_used
+FAILED tests/test_memory_distiller.py::test_distiller_merges_duplicates
+======================= 3 failed, 212 passed in 48.31s ========================

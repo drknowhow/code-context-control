@@ -1518,12 +1518,116 @@ def _handle_grok_delegate(task: str, task_type: str, context: str,
     return finalize("c3_delegate", {**meta, **token_stats}, output, "ok")
 
 
+# ---------------------------------------------------------------------------
+# Telemetry (D0 of the delegate remediation, docs/delegate-eval.md)
+# ---------------------------------------------------------------------------
+
+# Measured 2026-09-14 over 65 projects: 19 c3_delegate calls since July, and
+# the telemetry could not say which backend, model or outcome any of them had
+# — the args sat in the activity log, the cost nowhere. Every response now
+# lands one flat `detail` on its .c3/tool_telemetry.jsonl record.
+
+_PROBE_TASK_TYPES = frozenset({"available", "codex_check", "gemini_check", "grok_check"})
+_OUTCOMES = frozenset({"ok", "cached", "error", "timeout", "blocked", "disabled",
+                       "unavailable", "degraded"})
+_CONFIDENCE = frozenset({"high", "medium", "low"})
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cached_tokens", "cache_read_tokens",
+               "cache_write_tokens", "reasoning_tokens", "cost_usd", "turns")
+
+
+def _delegate_outcome(status) -> str:
+    s = str(status or "").strip().lower()
+    if s in _CONFIDENCE:
+        return "ok"
+    if s in _OUTCOMES:
+        return s
+    return s[:40] or "unknown"
+
+
+def delegate_telemetry_detail(meta: dict | None, status, *, requested_backend: str,
+                              task_type: str, host: str, wall_ms: float) -> dict:
+    """The flat ``detail`` one c3_delegate call writes to telemetry.
+
+    Pure: built from the meta dict the handler passed to ``finalize`` plus
+    what handle_delegate knew before routing. Usage keys are copied only when
+    the backend reported them, so an absent count stays absent rather than
+    reading as zero.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    raw_status = str(status or "").strip().lower()
+    resolved_type = str(meta.get("task_type") or meta.get("task") or task_type or "")
+    backend = str(meta.get("backend") or "")
+    if not backend:
+        backend = "probe" if resolved_type in _PROBE_TASK_TYPES else "ollama"
+    detail: dict = {
+        "host": host or "",
+        "backend": backend,
+        "backend_requested": requested_backend or "",
+        "task_type": resolved_type,
+        "outcome": _delegate_outcome(raw_status),
+        "wall_ms": round(float(wall_ms), 1),
+    }
+    if resolved_type in _PROBE_TASK_TYPES:
+        detail["probe"] = True
+    for key in ("tier", "model", "mode"):
+        if meta.get(key):
+            detail[key] = str(meta[key])
+    if raw_status in _CONFIDENCE:
+        detail["confidence"] = raw_status
+    if meta.get("cached"):
+        detail["outcome"] = "cached"
+    if meta.get("cascade"):
+        detail["cascade"] = True
+    for key in _USAGE_KEYS:
+        value = meta.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            detail[key] = float(value) if key == "cost_usd" else int(value)
+        except (TypeError, ValueError):
+            continue
+    return detail
+
+
+def _telemetry_finalize(finalize, svc, *, requested_backend: str, task_type: str):
+    """Wrap ``finalize`` so every exit records a delegate ``detail``.
+
+    The clock starts here, at the top of handle_delegate, so wall_ms covers
+    routing, context packing and the subprocess. Failure-safe: accounting
+    never changes or breaks the response.
+    """
+    t0 = time.monotonic()
+    try:
+        from core.host import resolve_host
+        host = resolve_host(str(getattr(svc, "project_path", "") or "")).provider
+    except Exception:
+        host = ""
+
+    def wrapped(tool, meta, output, status, **kw):
+        try:
+            session_mgr = getattr(svc, "session_mgr", None)
+            if session_mgr is not None:
+                wall_ms = (time.monotonic() - t0) * 1000
+                session_mgr.record_tool_tokens(
+                    "c3_delegate", duration_ms=round(wall_ms, 1),
+                    detail=delegate_telemetry_detail(
+                        meta, status, requested_backend=requested_backend,
+                        task_type=task_type, host=host, wall_ms=wall_ms))
+        except Exception:
+            pass
+        return finalize(tool, meta, output, status, **kw)
+    return wrapped
+
+
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
                     allow_write_delegation: bool = False) -> str:
+    finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
+                                   task_type=task_type)
     dcfg = svc.delegate_config or {}
     if not dcfg.get("enabled", True):
-        return "[delegate:disabled]"
+        return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
+                        "[delegate:disabled]", "disabled")
 
     # ── Access Guard (T2c) delegation posture ──────────────────────────────
     # With ZERO user rules `_guard_active` is False and every branch below is
@@ -1718,10 +1822,13 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
     tdef = DELEGATE_TASKS.get(task_type)
     if not tdef:
-        return f"[delegate:error] Unknown type: {task_type}"
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "ollama"},
+                        f"[delegate:error] Unknown type: {task_type}", "error")
     ollama = svc.ollama_client
     if not ollama or not ollama.is_available():
-        return "[delegate:error] Ollama unavailable. Requires Ollama for local LLM tasks."
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "ollama"},
+                        "[delegate:error] Ollama unavailable. Requires Ollama for local LLM tasks.",
+                        "unavailable")
 
     # Context enrichment
     enriched = context
@@ -1757,13 +1864,15 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
             if model:
                 break
     if not model:
-        return "[delegate:error] No compatible local model found"
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "ollama"},
+                        "[delegate:error] No compatible local model found", "unavailable")
 
     # Cache check
     ckey = hashlib.md5(f"{task_type}|{model}|{enriched}|{task}".encode()).hexdigest()
     if ckey in _delegate_cache:
         cached_resp, _ = _delegate_cache[ckey]
-        return finalize("c3_delegate", {"task_type": task_type, "cached": True},
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "ollama",
+                                        "model": model, "cached": True},
                         cached_resp, "cached")
 
     # Generate
@@ -1778,7 +1887,7 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         timeout=timeout_s)
     _elapsed = round(time.monotonic() - _t0, 1)
     if resp is None:
-        return finalize("c3_delegate", {"task_type": task_type, "model": model},
+        return finalize("c3_delegate", {"task_type": task_type, "backend": "ollama", "model": model},
                         f"[delegate:timeout] No response from {model} after {_elapsed}s "
                         f"(limit {timeout_s}s)", "timeout")
 
@@ -1813,5 +1922,6 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
     _delegate_metrics["total_calls"] += 1
     _delegate_cache[ckey] = (resp, count_tokens(resp))
-    return finalize("c3_delegate", {"task": task_type, "model": model, "elapsed": f"{_elapsed}s"},
+    return finalize("c3_delegate", {"task": task_type, "backend": "ollama", "model": model,
+                                    "elapsed": f"{_elapsed}s"},
                     resp, conf)

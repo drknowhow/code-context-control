@@ -1,0 +1,16 @@
+## [2.131.0] - 2026-09-13
+
+### Added — Grok Build as a C3 host, and a `grok` delegate backend
+
+xAI's Grok Build CLI (`grok`) can now use C3 the way Claude Code and Codex do:
+`c3 install-mcp --ide grok` (alias `grok-build`, also `c3 init --ide grok`)
+writes `.grok/config.toml` with the c3 MCP server, installs PreToolUse and
+PostToolUse hooks under `.grok/hooks/`, and adds the managed block to
+AGENTS.md. Hooks name the host explicitly (`--host grok`) because a grok
+started from a Claude Code terminal inherits CLAUDE_CODE_SESSION_ID.
+
+`c3_delegate(backend='grok')` runs `grok --prompt-file` headless. Read-only
+by default: a throwaway temp directory as cwd, the `read_file,grep,list_dir`
+tool allowlist, file context inlined into the prompt. `delegate.grok_allow_write`
+switches to `--yolo` in the project, gated by Access Guard like gemini and
+claude. Token counts and cost come back from the CLI's JSON output.

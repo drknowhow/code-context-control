@@ -1,0 +1,7 @@
+def add_tag(tag, tags=[]):
+    tags.append(tag)
+    return tags
+
+
+a = add_tag("x")
+b = add_tag("y")

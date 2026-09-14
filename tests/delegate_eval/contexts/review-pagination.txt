@@ -1,0 +1,3 @@
+def pages(items, page_size):
+    for start in range(0, len(items), page_size + 1):
+        yield items[start:start + page_size]

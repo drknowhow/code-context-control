@@ -1,0 +1,4 @@
+def find_user(conn, username):
+    cur = conn.cursor()
+    cur.execute(f"SELECT id, email FROM users WHERE name = '{username}'")
+    return cur.fetchone()

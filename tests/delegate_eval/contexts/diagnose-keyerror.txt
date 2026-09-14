@@ -1,0 +1,21 @@
+worker.py (excerpt):
+
+    import json
+
+    def run():
+        with open("settings.json", encoding="utf-8") as fh:
+            settings = json.load(fh)
+        timeout = settings["timeout"]
+        ...
+
+settings.json:
+
+    {"retries": 3}
+
+Output:
+
+Traceback (most recent call last):
+  File "worker.py", line 41, in run
+    timeout = settings["timeout"]
+              ~~~~~~~~^^^^^^^^^^^
+KeyError: 'timeout'

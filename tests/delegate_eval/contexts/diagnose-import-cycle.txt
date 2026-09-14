@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/srv/main.py", line 1, in <module>
+    from shop.orders import create_order
+  File "/srv/shop/orders.py", line 2, in <module>
+    from shop.customers import Customer
+  File "/srv/shop/customers.py", line 3, in <module>
+    from shop.orders import Order
+ImportError: cannot import name 'Order' from 'shop.orders' (/srv/shop/orders.py)

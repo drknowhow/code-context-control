@@ -1,0 +1,5 @@
+DELEGATE_DEFAULTS = {"timeout": 90, "retries": 2, "model": ""}
+
+
+def load_config(project_config: dict) -> dict:
+    return {**DELEGATE_DEFAULTS, **project_config}

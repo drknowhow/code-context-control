@@ -1,0 +1,4 @@
+def clamp(value, lo, hi):
+    if lo > hi:
+        raise ValueError("lo must not exceed hi")
+    return max(lo, min(value, hi))
