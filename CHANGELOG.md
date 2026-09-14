@@ -4,6 +4,43 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.132.0] - 2026-09-14
+
+### Added — delegate telemetry and `c3 delegate-eval` (D0 of the delegate remediation)
+
+Measured over the 65 registered projects since 2026-07-02: 19 of 44,038 c3
+tool calls were `c3_delegate`, 10 of the 12 with a logged outcome errored, and
+no record said which backend or model had answered or what it cost. Routing
+defaults are about to change (D1–D4), so this release measures first.
+
+- **Telemetry.** Every `c3_delegate` response writes a `detail` to
+  `.c3/tool_telemetry.jsonl`: host, backend (and the one requested), task
+  type, outcome, wall time, and when known tier, model, mode, confidence,
+  cascade, tokens and cost. The Ollama early returns (disabled, unknown type,
+  Ollama down, no model) now go through `finalize` so they are counted.
+  `aggregate_tool_telemetry` folds the details into `delegate_by_backend`
+  (calls, outcomes, ok rate, cost, tokens, models, task types, wall p50/p95;
+  health probes apart). The Oracle's read-only delegate shim hides
+  `session_mgr`, so an Oracle delegation never starts a session in the
+  target project.
+- **`c3 delegate-eval`.** 25 bounded tasks (`tests/delegate_eval/gold_suite.jsonl`:
+  22 core, 3 lookup) sent through `handle_delegate` against `backend[:tier]`
+  targets, graded by regex checks, live or from a recording. Reports pass rate
+  per task type, cost, tokens and wall time per target, and names the cheapest
+  passing tier. A no-answer status (error, blocked, timeout…) grades as an
+  error, never as a wrong answer. `replay_fixture.json` holds a correct and a
+  plausibly wrong answer per case; CI requires every correct one to pass and
+  every wrong one to fail. See `docs/delegate-eval.md`.
+
+**Baseline on this box, default config, live:** Grok Build (CLI default model)
+22/22 core, mean $0.0154, p50 15 s; Ollama `gemma3:12b` 17/22 (explain 0/4),
+p50 4 s; Codex 0/25 — the default `codex_default_model` `gpt-5.3-codex-spark`
+is rejected by ChatGPT logins, and the failure surfaced only as "exit code 1";
+Gemini 0/25, blocked by Access Guard. The claude backend was not in the suite
+(blocked by the guard); probed separately, a one-sentence answer cost $0.46
+and 46k prompt tokens on the user's default model. No lookup case passed on
+any backend: none of them reads the project.
+
 ## [2.131.0] - 2026-09-13
 
 ### Added — Grok Build as a C3 host, and a `grok` delegate backend
