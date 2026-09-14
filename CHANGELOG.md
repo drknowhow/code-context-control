@@ -4,6 +4,30 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.137.0] - 2026-09-14
+
+### Changed — delegate tuning from the first live run of the downshift
+
+Twelve real delegations after 2.136.0 went live (summarize, explain, diagnose,
+review, scout, a refused file) produced three changes:
+
+- **A scout defaults to Sonnet.** `scout=true` without `tier` or `model` now
+  uses `delegate.claude_scout_default_tier` (`medium`). The Haiku scout took
+  28 turns and $0.24 (860k cache-read tokens) to find one function; Sonnet
+  found it in 8 turns for $0.046. The eval's canary case showed the same
+  pattern (15 turns against 2). Plain delegations stay on Haiku, and an
+  explicit `tier` still wins. `task_type='available'` names both defaults.
+- **Per-tier `--effort`, off by default.** `delegate.claude_tier_effort` (for
+  example `{"medium": "low"}`) passes `--effort` for one tier;
+  `delegate.claude_effort` still overrides every tier, and an unknown level is
+  ignored. It ships empty because it did nothing where it was meant to help:
+  over the 22 core eval cases, Haiku with `--effort low` cost $0.1272 against
+  $0.1271 without it, with the same mean output tokens (722 vs 721) and pass
+  rate (22/22).
+- **A refused `file_path` is logged under the backend routing chose.** The
+  `blocked` response and its telemetry row now name `claude` (and the tier)
+  instead of the requested `host`.
+
 ## [2.136.0] - 2026-09-14
 
 ### Added — downshift subagents and the surfaces that point at them (D4 of the delegate remediation)
