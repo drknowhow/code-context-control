@@ -935,11 +935,7 @@ const SettingsPanel = ({ stats }) => {
               <div style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
                 <div>
                   <div style={labelStyle}>Default Model</div>
-                  <select value={delegateCfg.codex_default_model || "gpt-5.3-codex-spark"} onChange={e => updateDelegateField("codex_default_model", e.target.value)} style={inputStyle}>
-                    <option value="gpt-5.4">gpt-5.4</option>
-                    <option value="gpt-5.3-codex-spark">gpt-5.3-codex-spark</option>
-                    <option value="gpt-5.3-codex">gpt-5.3-codex</option>
-                  </select>
+                  <input value={delegateCfg.codex_default_model || ""} placeholder="CLI default (~/.codex/config.toml)" onChange={e => updateDelegateField("codex_default_model", e.target.value.trim())} style={inputStyle} />
                 </div>
                 <div style={{ marginTop: 8 }}>
                   <div style={labelStyle}>Sandbox Mode</div>
