@@ -311,13 +311,32 @@ def normalize_tier(tier: str, dcfg: dict, default_key: str = "") -> str:
     return resolved if resolved in DELEGATE_TIERS else ""
 
 
-def host_backend(svc) -> tuple[str, str]:
-    """(host provider, same-provider backend or '')."""
+def host_provider(svc) -> str:
+    """The provider the calling agent runs on.
+
+    The runtime's ``ide_name`` first: the MCP server gets it from its own
+    ``--host`` argument, which is the only reliable answer — a project's
+    ``.c3/config.json`` names whichever IDE last ran ``install-mcp`` (this
+    repository's says codex while Claude Code is connected). The environment
+    and that config are the fallback for callers without a runtime.
+    """
+    provider = str(getattr(svc, "ide_name", "") or "").strip()
+    if provider:
+        try:
+            from core.ide import normalize_ide_name
+            return normalize_ide_name(provider)
+        except Exception:
+            return provider
     try:
         from core.host import resolve_host
-        provider = resolve_host(str(getattr(svc, "project_path", "") or "")).provider
+        return resolve_host(str(getattr(svc, "project_path", "") or "")).provider
     except Exception:
-        provider = ""
+        return ""
+
+
+def host_backend(svc) -> tuple[str, str]:
+    """(host provider, same-provider backend or '')."""
+    provider = host_provider(svc)
     return provider, HOST_BACKENDS.get(provider, "")
 
 # A model name reaches argv, so it must not look like a flag.
@@ -1988,11 +2007,7 @@ def _telemetry_finalize(finalize, svc, *, requested_backend: str, task_type: str
     never changes or breaks the response.
     """
     t0 = time.monotonic()
-    try:
-        from core.host import resolve_host
-        host = resolve_host(str(getattr(svc, "project_path", "") or "")).provider
-    except Exception:
-        host = ""
+    host = host_provider(svc)
 
     def wrapped(tool, meta, output, status, **kw):
         try:

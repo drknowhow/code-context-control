@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli.tools import delegate
+from cli.tools.delegate import host_backend as REAL_HOST_BACKEND  # before conftest patches it
 from services import access_guard
 
 
@@ -136,6 +137,19 @@ def test_auto_tries_the_host_backend_first(monkeypatch, handlers):
     store = {}
     delegate.handle_delegate("t", "review", "", "", _svc(), _capture(store), backend="auto")
     assert handlers == [("claude", {"tier": "", "model": ""})]
+
+
+def test_host_comes_from_the_runtime_not_the_project_config(monkeypatch, tmp_path):
+    (tmp_path / ".c3").mkdir()
+    (tmp_path / ".c3" / "config.json").write_text('{"ide": "codex"}', encoding="utf-8")
+    for var in ("C3_HOST", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
+        monkeypatch.delenv(var, raising=False)
+    svc = _svc(tmp_path)
+    assert REAL_HOST_BACKEND(svc) == ("codex", "codex")  # no runtime host: config fallback
+    svc.ide_name = "claude-code"
+    assert REAL_HOST_BACKEND(svc) == ("claude-code", "claude")
+    svc.ide_name = "grok-build"
+    assert REAL_HOST_BACKEND(svc) == ("grok", "grok")
 
 
 def test_cascade_order_with_a_host():
