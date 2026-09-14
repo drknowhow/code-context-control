@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -277,67 +278,308 @@ def check_claude() -> dict:
         return {"status": "error", "detail": str(e)}
 
 
-def _run_claude(task: str, context: str, cwd: str | None = None,
-                timeout: int = 90, idle_timeout: int = 30) -> tuple:
-    """Run claude -p in non-interactive print mode. Returns (output, success)."""
+# Tiers, not model ids: a pinned id goes stale, an alias follows the CLI to
+# the current model of that size. "default" omits --model, so the user's own
+# Claude Code default answers. Overridable per project via
+# delegate.claude_tier_models.
+CLAUDE_TIERS = ("small", "medium", "large", "default")
+CLAUDE_TIER_MODELS = {"small": "haiku", "medium": "sonnet", "large": "opus", "default": ""}
+_TIER_ALIASES = {"parent": "default", "haiku": "small", "sonnet": "medium", "opus": "large"}
+
+# A model name reaches argv, so it must not look like a flag.
+_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,99}$")
+
+# Variables Claude Code sets in its own children; a delegate started from a
+# Claude Code session must not look nested.
+_CLAUDE_NESTING_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+_CLAUDE_DELEGATE_RULES = (
+    "You are a delegate answering one bounded request for another agent. You "
+    "have no tools and cannot open files, run commands or browse: everything "
+    "you know about the code is in the text below. If that text is not enough "
+    "to answer, say exactly what is missing instead of guessing."
+)
+
+
+def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, str]:
+    """(tier, model_arg, error). An explicit ``model`` wins over the tier.
+
+    ``model_arg`` empty means omit --model. ``error`` is non-empty when the
+    tier or model name is unusable; nothing is spawned then.
+    """
+    if model:
+        if not _MODEL_NAME_RE.match(model):
+            return "", "", f"model name {model!r} is not a Claude model alias or id"
+        return "custom", model, ""
+    raw = (tier or dcfg.get("claude_default_tier") or "small").strip().lower()
+    resolved = _TIER_ALIASES.get(raw, raw)
+    if resolved not in CLAUDE_TIERS:
+        return "", "", f"unknown tier {tier!r} (use one of {', '.join(CLAUDE_TIERS)})"
+    table = {**CLAUDE_TIER_MODELS, **(dcfg.get("claude_tier_models") or {})}
+    model_arg = str(table.get(resolved) or "")
+    if model_arg and not _MODEL_NAME_RE.match(model_arg):
+        return "", "", (f"delegate.claude_tier_models[{resolved!r}] = {model_arg!r} "
+                         "is not a Claude model alias or id")
+    return resolved, model_arg, ""
+
+
+def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
+                max_budget_usd: float = 0.0) -> list:
+    """The locked-down headless argv. The prompt goes on stdin.
+
+    --safe-mode: no CLAUDE.md, skills, plugins, hooks or MCP servers — but
+    OAuth still works, so delegation stays on the user's subscription
+    (--bare would read ANTHROPIC_API_KEY only). --strict-mcp-config with no
+    --mcp-config: no MCP servers even from managed config. --tools "": no
+    built-in tools, so the delegate cannot read, write or run anything.
+    """
+    cmd = [exe, "-p", "--output-format", "json", "--no-session-persistence",
+           "--safe-mode", "--strict-mcp-config", "--tools", "",
+           "--system-prompt", system_prompt]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    if max_budget_usd and max_budget_usd > 0:
+        cmd += ["--max-budget-usd", f"{float(max_budget_usd):g}"]
+    return cmd
+
+
+def _claude_env() -> dict:
+    env = _child_host_env("claude-code")
+    for name in _CLAUDE_NESTING_VARS:
+        env.pop(name, None)
+    return env
+
+
+def _primary_model(model_usage: dict, requested: str) -> str:
+    """Which modelUsage entry answered. Claude Code also spends a few hundred
+    tokens of Haiku on housekeeping, so the requested alias wins when it
+    appears in a key; otherwise the most expensive entry."""
+    if not isinstance(model_usage, dict) or not model_usage:
+        return ""
+    names = list(model_usage)
+    if requested:
+        hits = [n for n in names if requested.lower() in n.lower()]
+        if hits:
+            return hits[0]
+
+    def cost(name):
+        entry = model_usage.get(name) or {}
+        try:
+            return float(entry.get("costUSD") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return max(names, key=cost)
+
+
+def parse_claude_json(stdout: str, requested_model: str = "") -> tuple[str, bool, dict]:
+    """(text, ok, stats) from ``claude -p --output-format json``."""
+    raw = (stdout or "").strip()
+    start = raw.find("{")
+    try:
+        data = json.loads(raw[start:]) if start >= 0 else None
+    except (ValueError, TypeError):
+        data = None
+    if not isinstance(data, dict):
+        return "[claude:error] no JSON result on stdout", False, {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
+    stats: dict = {}
+    for src, dst in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+                     ("cache_read_input_tokens", "cache_read_tokens"),
+                     ("cache_creation_input_tokens", "cache_write_tokens")):
+        if usage.get(src) is not None:
+            try:
+                stats[dst] = int(usage[src])
+            except (TypeError, ValueError):
+                pass
+    if data.get("total_cost_usd") is not None:
+        try:
+            stats["cost_usd"] = float(data["total_cost_usd"])
+        except (TypeError, ValueError):
+            pass
+    if data.get("num_turns") is not None:
+        try:
+            stats["turns"] = int(data["num_turns"])
+        except (TypeError, ValueError):
+            pass
+    primary = _primary_model(model_usage, requested_model)
+    if primary:
+        stats["model"] = primary
+    if len(model_usage) > 1:
+        stats["models_used"] = sorted(model_usage)
+    text = str(data.get("result") or "").strip()
+    if data.get("is_error") or data.get("subtype") not in (None, "success"):
+        reason = text or str(data.get("terminal_reason") or data.get("subtype") or "error")
+        return f"[claude:error] {reason}", False, stats
+    if not text:
+        return "[claude:error] empty result", False, stats
+    return text, True, stats
+
+
+def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
+                timeout: int = 120, effort: str = "",
+                max_budget_usd: float = 0.0) -> tuple[str, bool, dict]:
+    """Run the locked-down ``claude -p`` in a throwaway directory.
+
+    Returns (text, ok, stats). No idle watchdog: JSON output arrives in one
+    piece at the end, so a healthy long answer is silent until it is done.
+    """
     exe = _which("claude")
     if not exe:
-        return "[claude:error] claude CLI not on PATH", False
-    prompt = f"Context:\n{context}\n\nTask:\n{task}" if context else task
-    cmd = [exe, "-p", prompt, "--output-format", "text"]
+        return "[claude:error] claude CLI not found on PATH", False, {}
+    workdir = tempfile.mkdtemp(prefix="c3-claude-")
     try:
+        cmd = _claude_cmd(exe, model, system_prompt, effort=effort,
+                          max_budget_usd=max_budget_usd)
         proc = subprocess.Popen(
             harden_win_argv(cmd),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors="replace", cwd=cwd,
-            env=_child_host_env("claude-code"),
-            **_popen_kwargs(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", cwd=workdir,
+            env=_claude_env(), **_popen_kwargs(),
         )
-        output, err, status = _communicate_with_heartbeat(
-            proc, timeout=timeout, idle_timeout=idle_timeout,
-        )
-        if status == "idle_timeout":
-            return (f"[claude:idle_timeout] No stderr activity for {idle_timeout}s "
-                    f"(likely MCP startup hang)"), False
+        stdout, stderr, status = _communicate_with_heartbeat(
+            proc, timeout=timeout, idle_timeout=0, stdin_text=prompt)
         if status == "timeout":
-            return f"[claude:timeout] No response after {timeout}s", False
-        if proc.returncode == 0 and output.strip():
-            return output.strip(), True
-        return f"[claude:error] {(err or '').strip() or 'no output'}", False
+            return f"[claude:timeout] No response after {timeout}s", False, {}
+        text, ok, stats = parse_claude_json(stdout, model)
+        if ok and proc.returncode != 0:
+            ok, text = False, f"[claude:error] exit code {proc.returncode}"
+        err = (stderr or "").strip()
+        if not ok and err:
+            text = f"{text} — {err[-500:]}"
+        return text, ok, stats
     except Exception as e:
-        return f"[claude:error] {e}", False
+        return f"[claude:error] {e}", False, {}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _claude_memory_bridge(output: str, task_type: str, task: str, svc) -> None:
-    """Auto-extract key findings from Claude responses into c3_memory."""
-    try:
-        from services.auto_memory import _save_or_merge_standalone
-        _save_or_merge_standalone(output[:400], f"auto:claude:{task_type}", svc)
-    except Exception:
-        pass
+def _pack_file_context(file_path: str, svc, *, file_max_tokens: int) -> str:
+    """Inline ``file_path`` entries for a delegate that cannot read files.
+
+    Each entry passes the Access Guard read verdict first: a denial raises
+    AccessDenied (the policy refusal surfaces, spec §3) and a masked path
+    refuses, because a delegate answer cannot carry the mask's disclosure.
+    A file within ``file_max_tokens`` is inlined whole; a bigger one as its
+    file map, with a note saying so.
+    """
+    parts: list[str] = []
+    project = Path(svc.project_path)
+    for rel in [p.strip() for p in (file_path or "").split(",") if p.strip()]:
+        full = Path(rel) if Path(rel).is_absolute() else project / rel
+        v = access_guard.verdict(str(full), "read", str(project))
+        if v.denial:
+            raise access_guard.AccessDenied(
+                v.denial, access_guard.refusal(v.denial, rel, "read"))
+        if v.masked:
+            raise access_guard.AccessDenied(
+                access_guard.Denial(rule=v.mask_rule.glob, kind="mask",
+                                    scope=v.mask_rule.scope, reason="masked path"),
+                f"{access_guard.TAG_MASK_UNSUPPORTED} {rel} is masked; c3_delegate does not "
+                "send masked content to another model. Read it with c3_read instead.")
+        compressor = getattr(svc, "compressor", None)
+        if compressor is not None and compressor.is_protected_file(full):
+            parts.append(f"--- file: {rel} ---\n[not included: protected file]")
+            continue
+        if not full.is_file():
+            parts.append(f"--- file: {rel} ---\n[not included: file not found]")
+            continue
+        text = full.read_text(encoding="utf-8", errors="replace")
+        n_lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
+        if count_tokens(text) <= file_max_tokens:
+            parts.append(f"--- file: {rel} ({n_lines} lines) ---\n{text.rstrip()}")
+            continue
+        body = ""
+        if compressor is not None:
+            try:
+                res = compressor.compress_file(str(full), "map")
+                body = res.get("compressed", "") if isinstance(res, dict) else ""
+            except access_guard.AccessDenied:
+                raise
+            except Exception:
+                body = ""
+        note = (f"[file map only: the file is over {file_max_tokens} tokens; "
+                "pass a smaller excerpt in context for line-level questions]")
+        parts.append(f"--- file: {rel} ({n_lines} lines) ---\n{note}\n{body.rstrip()}")
+    return "\n\n".join(parts)
 
 
 def _handle_claude_delegate(task: str, task_type: str, context: str,
-                             file_path: str, svc, dcfg: dict, finalize) -> str:
-    """Handle delegation via Claude Code CLI."""
-    timeout = int(dcfg.get("claude_timeout", 90))
+                            file_path: str, svc, dcfg: dict, finalize,
+                            tier: str = "", model: str = "") -> str:
+    """Delegate to a Claude model tier through a locked-down ``claude -p``.
+
+    No tools, no project directory, no MCP servers, no hooks: C3 packs the
+    context (guarded file reads) and the delegate answers from that text
+    alone. That is what keeps a one-line answer at a few thousand tokens
+    instead of a full 46k-token project session.
+    """
+    base = {"task_type": task_type, "backend": "claude"}
+    if not dcfg.get("claude_enabled", True):
+        return finalize("c3_delegate", base,
+                        "[delegate:error] Claude not enabled. Set delegate.claude_enabled=true "
+                        "in .c3/config.json", "disabled")
+    resolved_tier, model_arg, problem = resolve_claude_tier(tier, model, dcfg)
+    if problem:
+        return finalize("c3_delegate", base, f"[delegate:error] {problem}", "error")
+    base["tier"] = resolved_tier
     breaker = _backend_breaker("claude", dcfg)
     if not breaker.allow():
-        return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
+        return finalize("c3_delegate", base,
                         "[delegate:degraded] Claude skipped after repeated failures; retrying in "
                         f"~{breaker.cooldown_remaining()}s. Run 'claude --version' to diagnose.",
                         "degraded")
-    _log_progress(svc, f"[delegate] Routing {task_type} → Claude CLI...")
-    output, ok = _run_claude(task, context, cwd=str(svc.project_path), timeout=timeout)
+
+    if task_type == "auto":
+        task_type = infer_task_type(task, context)
+        base["task_type"] = task_type
+    tdef = DELEGATE_TASKS.get(task_type)
+    if not tdef:
+        return finalize("c3_delegate", base, f"[delegate:error] Unknown type: {task_type}", "error")
+
+    file_max = max(200, int(dcfg.get("claude_file_max_tokens", 8000) or 8000))
+    enriched = context or ""
+    packed = _pack_file_context(file_path, svc, file_max_tokens=file_max) if file_path else ""
+    if packed:
+        enriched = f"{enriched}\n\n{packed}" if enriched else packed
+    max_ctx = max(200, int(dcfg.get("claude_max_context_tokens", 24000) or 24000))
+    if count_tokens(enriched) > max_ctx:
+        enriched = enriched[:max_ctx * 4] + f"\n[context truncated at ~{max_ctx} tokens]"
+
+    system_prompt = f"{tdef['system']} {_CLAUDE_DELEGATE_RULES}"
+    prompt = tdef["prompt_template"].format(context=enriched or "(none)", task=task)
+    effort = str(dcfg.get("claude_effort") or "")
+    try:
+        budget = float(dcfg.get("claude_max_budget_usd") or 0.0)
+    except (TypeError, ValueError):
+        budget = 0.0
+
+    ckey = hashlib.md5(
+        f"claude|{resolved_tier}|{model_arg}|{effort}|{system_prompt}|{prompt}".encode()
+    ).hexdigest()
+    if ckey in _delegate_cache:
+        cached_resp, _ = _delegate_cache[ckey]
+        return finalize("c3_delegate", {**base, "model": model_arg or "cli-default", "cached": True},
+                        cached_resp, "cached")
+
+    timeout = int(dcfg.get("claude_timeout", 120) or 120)
+    _log_progress(svc, f"[delegate] Claude {resolved_tier} ({model_arg or 'cli-default'})...")
+    t0 = time.monotonic()
+    output, ok, stats = _run_claude(prompt, system_prompt, model_arg, timeout=timeout,
+                                    effort=effort, max_budget_usd=budget)
+    elapsed = round(time.monotonic() - t0, 1)
+    meta = {**base, "model": stats.pop("model", "") or model_arg or "cli-default",
+            "elapsed": f"{elapsed}s", **stats}
     if not ok:
         if breaker.record_failure():
             _notify_backend_degraded(svc, "claude", breaker)
-        return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
-                        output, "error")
+        return finalize("c3_delegate", meta, output, "error")
     breaker.record_success()
-    return finalize("c3_delegate", {"task_type": task_type, "backend": "claude"},
-                    output, "ok")
+    _delegate_metrics["total_calls"] += 1
+    _delegate_cache[ckey] = (output, count_tokens(output))
+    return finalize("c3_delegate", meta, output, "ok")
 
 
 def check_gemini() -> dict:
@@ -1056,11 +1298,12 @@ def _cascade_order(task_type: str, dcfg: dict) -> list[str]:
 def _write_capable(name: str, dcfg: dict) -> bool:
     """Backends that may write outside C3's control (Access Guard gate).
 
-    gemini (--approval-mode yolo) and claude (-p with the project allowlist)
-    always; grok only in write mode — read-only grok runs a read-only tool
-    allowlist in a throwaway temp directory.
+    gemini (--approval-mode yolo) always; grok only in write mode — read-only
+    grok runs a read-only tool allowlist in a throwaway temp directory.
+    claude is not: since 2.133.0 it runs with no tools in a temp directory,
+    and C3 packs its context through guarded reads.
     """
-    if name in ("gemini", "claude"):
+    if name == "gemini":
         return True
     return name == "grok" and bool(dcfg.get("grok_allow_write", False))
 
@@ -1621,7 +1864,8 @@ def _telemetry_finalize(finalize, svc, *, requested_backend: str, task_type: str
 
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
-                    allow_write_delegation: bool = False) -> str:
+                    allow_write_delegation: bool = False,
+                    tier: str = "", model: str = "") -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
     dcfg = svc.delegate_config or {}
@@ -1634,8 +1878,7 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     # inert — behavior is byte-identical to the pre-guard tool. When rules
     # exist: codex is pinned to --sandbox read-only; backends that run
     # autonomously with potential write access (gemini --approval-mode yolo,
-    # claude -p inheriting the project's permission allowlist, grok with
-    # grok_allow_write running --yolo in the project, codex_resume
+    # grok with grok_allow_write running --yolo in the project, codex_resume
     # reusing an unpinnable prior-session sandbox) require the explicit
     # allow_write_delegation=true user opt-in. Evaluator errors fail closed.
     try:
@@ -1787,7 +2030,6 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
     if _write_capable(backend, dcfg) and _guard_active and not allow_write_delegation:
         detail = {
             "gemini": "--approval-mode yolo auto-approves writes",
-            "claude": "claude -p inherits the project's tool permission allowlist",
             "grok": ("grok_allow_write runs --yolo in the project and loads its "
                      "trusted .grok MCP servers and hooks"),
         }[backend]
@@ -1809,7 +2051,8 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
         return _handle_gemini_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
 
     if backend == "claude":
-        return _handle_claude_delegate(task, task_type, context, file_path, svc, dcfg, finalize)
+        return _handle_claude_delegate(task, task_type, context, file_path, svc, dcfg, finalize,
+                                       tier=tier, model=model)
 
     if backend == "grok":
         _log_progress(svc, f"[delegate] Routing {task_type} → Grok...")

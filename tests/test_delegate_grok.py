@@ -414,7 +414,8 @@ def test_guard_active_write_mode_grok_is_blocked_without_opt_in(monkeypatch):
 
 
 def test_write_capable_table():
-    assert delegate._write_capable("gemini", {}) and delegate._write_capable("claude", {})
+    assert delegate._write_capable("gemini", {})
+    assert not delegate._write_capable("claude", {})  # tool-less since 2.133.0
     assert not delegate._write_capable("grok", {})
     assert delegate._write_capable("grok", {"grok_allow_write": True})
     assert not delegate._write_capable("codex", {"grok_allow_write": True})

@@ -286,6 +286,15 @@ DELEGATE_DEFAULTS = {
     "grok_allow_write": False,            # True = --yolo with the PROJECT as cwd (loads its trusted .grok
                                           # MCP servers + hooks); False = read-only tools in a temp dir
     "grok_task_types": ["review", "diagnose", "improve", "test"],  # Tasks auto-routed to Grok
+    # Claude Code CLI (same-provider tier downshift; locked-down, tool-less `claude -p`)
+    "claude_enabled": True,               # Master switch — enable Claude as delegate backend
+    "claude_default_tier": "small",       # small | medium | large | default (= the CLI's own model)
+    "claude_tier_models": {"small": "haiku", "medium": "sonnet", "large": "opus"},  # CLI aliases, not ids
+    "claude_timeout": 120,                # Subprocess timeout in seconds (no idle kill: JSON arrives at the end)
+    "claude_max_context_tokens": 24000,   # Context cap after file packing
+    "claude_file_max_tokens": 8000,       # A file_path entry over this is sent as its file map
+    "claude_effort": "",                  # --effort low|medium|high|xhigh|max; empty = CLI default
+    "claude_max_budget_usd": 0,           # --max-budget-usd per call; 0 = no cap
 }
 
 

@@ -109,15 +109,15 @@ def test_detail_leaves_absent_usage_absent():
 # ── handle_delegate records it ──────────────────────────────────────────────
 
 
-def test_blocked_claude_is_recorded(monkeypatch):
+def test_blocked_backend_is_recorded(monkeypatch):
     monkeypatch.setattr(delegate.access_guard, "has_active_rules", lambda _p: True)
     sm = _RecordingSessionMgr()
     store = {}
-    delegate.handle_delegate("t", "ask", "", "", _svc(session_mgr=sm), _finalize(store), backend="claude")
+    delegate.handle_delegate("t", "ask", "", "", _svc(session_mgr=sm), _finalize(store), backend="gemini")
     assert store["status"] == "blocked"
     ((tool, kw),) = sm.calls
     assert tool == "c3_delegate"
-    assert kw["detail"]["backend"] == "claude"
+    assert kw["detail"]["backend"] == "gemini"
     assert kw["detail"]["outcome"] == "blocked"
     assert kw["duration_ms"] >= 0
 

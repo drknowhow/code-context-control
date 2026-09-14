@@ -4,6 +4,48 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.133.0] - 2026-09-14
+
+### Changed — `backend='claude'` is a locked-down tier downshift (D1 of the delegate remediation)
+
+Before this release the claude backend ran `claude -p <prompt> --output-format text`
+inside the project: the user's default model, CLAUDE.md, every hook and MCP
+server, and the project's permission allowlist. Probed on a one-sentence answer:
+46,191 prompt tokens, 9.1 s, $0.4637 — and Access Guard blocked it on any
+machine with rules, because it could write.
+
+- **The invocation.** `claude -p --safe-mode --strict-mcp-config --tools ""
+  --system-prompt … --output-format json --no-session-persistence`, prompt on
+  stdin (no argv length limit), run in a throwaway directory with Claude Code's
+  nesting variables removed. `--safe-mode` rather than `--bare`, which would read
+  `ANTHROPIC_API_KEY` only and move delegation off the subscription.
+- **Tiers.** `tier=small|medium|large|default` maps to the CLI aliases
+  `haiku|sonnet|opus` or the CLI's own model; `model=` overrides with any alias
+  or id (flag-shaped names are refused). `delegate.claude_default_tier` (small)
+  and `delegate.claude_tier_models` are configurable.
+- **Context.** C3 packs `file_path` itself through the Access Guard read verdict:
+  a denied path raises, a masked path refuses (a delegate answer cannot carry the
+  mask's disclosure), a protected file is left out, a file over
+  `claude_file_max_tokens` (8000) travels as its file map. `claude_max_context_tokens`
+  caps the whole prompt (24000).
+- **Usage.** Input, output, cache-read and cache-write tokens, cost, turns and
+  the model that answered land in the response meta and in telemetry.
+- **Access Guard.** Tool-less, so no longer write-capable: an active guard no
+  longer blocks it and `allow_write_delegation` is not needed.
+- `delegate.claude_max_budget_usd` passes `--max-budget-usd`; it defaults to 0
+  (no cap). `delegate.claude_effort` passes `--effort`. The unused
+  `_claude_memory_bridge` is gone.
+
+**Measured with `c3 delegate-eval` on this box** (22 core cases):
+
+| tier | model | core pass | mean cost | p50 wall |
+|---|---|---|---|---|
+| small | Haiku 4.5 | 22/22 | $0.0054 | 6.1 s |
+| medium | Sonnet 5 | 22/22 | $0.0091 | 4.4 s |
+| large | Opus 5 | 21/22 | $0.0281 | 7.9 s |
+
+No tier passed a lookup case: a tool-less delegate cannot read the project (D3).
+
 ## [2.132.0] - 2026-09-14
 
 ### Added — delegate telemetry and `c3 delegate-eval` (D0 of the delegate remediation)

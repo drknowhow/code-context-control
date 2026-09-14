@@ -72,7 +72,7 @@ def _clean_state(monkeypatch):
     Also pins the Access Guard to inactive: handle_delegate consults
     has_active_rules() against the REAL filesystem, and a host with seeded
     global rules (every install since v2.86.0) skips write-capable backends
-    (gemini/claude) unless allow_write_delegation=true — which silently
+    (gemini) unless allow_write_delegation=true — which silently
     rewrote these tests' expected routes on such hosts while CI's clean
     home kept passing. The guard posture is a test INPUT, never ambient
     state; the guard-specific tests below set it explicitly.
