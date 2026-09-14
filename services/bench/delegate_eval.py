@@ -263,7 +263,10 @@ def build_eval_svc(project_path: str | Path, delegate_overrides: dict | None = N
         delegate_config=dcfg,
         hybrid_config=hybrid,
         compressor=CodeCompressor(str(project / ".c3" / "cache"), project_root=str(project)),
-        ollama_client=OllamaClient(hybrid.get("ollama_base_url", "http://localhost:11434")),
+        # The client's response cache defaults to a cwd-relative .c3 — keep it
+        # inside the throwaway project so a rerun is a fresh answer, not a replay.
+        ollama_client=OllamaClient(hybrid.get("ollama_base_url", "http://localhost:11434"),
+                                   cache_dir=str(project / ".c3" / "cache" / "llm")),
         activity_log=activity,
         notifications=None,
         session_mgr=None,
