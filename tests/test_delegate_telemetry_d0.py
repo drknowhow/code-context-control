@@ -233,3 +233,21 @@ def test_aggregate_folds_delegate_details():
         assert rows["probe"]["calls"] == 0 and rows["probe"]["probes"] == 1
         assert rows["codex"]["ok_rate"] == 1.0
         assert agg["by_tool"]["c3_delegate"]["calls"] == 6
+
+
+def test_aggregate_folds_delegate_modes_and_files_changed():
+    with tempfile.TemporaryDirectory() as tmp:
+        def rec(detail, ts="2026-09-14T10:00:00+00:00"):
+            append_telemetry_record(tmp, {"ts": ts, "tool": "c3_delegate", "response_tokens": 10,
+                                          "detail": detail})
+
+        rec({"backend": "claude", "tier": "medium", "mode": "write", "files_changed": 2,
+             "outcome": "ok"})
+        rec({"backend": "claude", "tier": "medium", "mode": "scout", "outcome": "ok"})
+        rec({"backend": "probe", "task_type": "available", "probe": True,
+             "mode": "write", "files_changed": 9})
+
+        agg = aggregate_tool_telemetry(tmp, days=0)
+        rows = agg["delegate_by_backend"]
+        assert rows["claude:medium"]["modes"] == {"write": 1, "scout": 1}
+        assert rows["claude:medium"]["files_changed"] == 2

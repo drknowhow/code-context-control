@@ -92,7 +92,8 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_delegate_eval = subparsers.add_parser(
         "delegate-eval", help="Grade c3_delegate answers per backend/tier (docs/delegate-eval.md)")
     p_delegate_eval.add_argument("--suite", default="gold",
-                                 help="'gold' (bundled) or a .jsonl path")
+                                 help="'gold' (bundled), 'write' (write mode, docs/delegate-write.md) "
+                                      "or a .jsonl path")
     p_delegate_eval.add_argument("--targets", default="",
                                  help="Comma-separated backend[:tier] list, e.g. 'claude:small,claude:medium'")
     p_delegate_eval.add_argument("--cases", default="", help="Comma-separated case ids (default: all)")

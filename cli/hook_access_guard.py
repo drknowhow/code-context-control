@@ -503,14 +503,77 @@ def run(payload: dict, project_path: Path | None = None,
     return None
 
 
+def _worker_refusal(rel: str, why: str) -> dict:
+    return _deny(f"[c3-delegate:refused] {rel}: {why}. Do not write it another way; "
+                 "leave it and say in your report what change it needed.")
+
+
+def worker_run(payload: dict, project_path: Path, state_dir: Path) -> dict | None:
+    """PreToolUse for a ``c3_delegate`` write-mode worker (see services/delegate_write).
+
+    Reads go through ``run`` exactly as for a scout. A write must pass, in
+    order: canonicalization inside the project, never ``.git/`` or ``.c3/``,
+    never the credential vault, Access Guard with NO grants and NO filed
+    requests (a confirm hold is a refusal here — a headless worker cannot
+    wait for a human, and the caller can make that edit itself), the caller's
+    write set, and another agent's lock. Then the pre-image is saved before
+    the write is allowed. Raises on a broken spec; main() turns that into a
+    deny.
+    """
+    from services import delegate_write as dw
+
+    tool = normalize_tool_name(payload.get("tool_name", ""))
+    if tool not in _WRITE_TOOLS:
+        return run(payload, project_path)
+    spec = dw.load_spec(state_dir)
+    fp = _target(payload.get("tool_input", {}) or {})
+    if not fp:
+        return _deny("[c3-delegate:refused] a write with no target path")
+    base = str(project_path)
+    canon, rel, denial = ag.canonicalize(fp, base)
+    if denial:
+        return _worker_refusal(fp, f"path refused ({denial.reason})")
+    if not rel:
+        return _worker_refusal(fp, "outside the project")
+    if dw.forbidden(rel):
+        return _worker_refusal(rel, "under .git/ or .c3/, never delegate-writable")
+    try:
+        from services import credential_store as _cs
+        vault = _cs.vault_guard_reason(fp)
+    except Exception as exc:  # fail closed: an unloadable vault check refuses
+        vault = f"vault check unavailable ({type(exc).__name__})"
+    if vault:
+        return _worker_refusal(rel, "credential vault file")
+    op = "write" if os.path.exists(fp) else "create"
+    denial = ag.check(fp, op, base)
+    if denial:
+        _record(denial, tool, op, fp, base, str(payload.get("session_id") or ""))
+        return _worker_refusal(rel, f"Access Guard {denial.kind} rule '{denial.rule}' "
+                                    f"({denial.scope})")
+    if not dw.in_write_set(rel, spec["write_paths"]):
+        return _worker_refusal(rel, "outside the write set the caller gave ("
+                                    + ", ".join(spec["write_paths"]) + ")")
+    try:
+        from services import agent_locks
+        holder = agent_locks.check(fp, base, str(spec.get("session_id") or ""))
+    except Exception:
+        holder = None
+    if holder:
+        return _worker_refusal(rel, f"locked by {holder.get('agent_id', 'another agent')}")
+    dw.snapshot(state_dir, fp, canon)
+    return None
+
+
 def main() -> None:
-    """Standalone PreToolUse entry for a ``c3_delegate`` scout run.
+    """Standalone PreToolUse entry for a ``c3_delegate`` scout or worker run.
 
     A scout is ``claude -p --restricted`` with Read/Grep/Glob and no C3 MCP
     server, so the dispatcher's discipline hook (hook_pretool_enforce) would
     refuse every native read. Only the access guard runs here. It prints a
     deny and nothing else: grants and search footers are for an agent that
     can act on them. Any failure denies (fail closed).
+
+    ``--worker-state DIR``: a write-mode worker; see ``worker_run``.
     """
     import argparse
     import json
@@ -520,6 +583,7 @@ def main() -> None:
     ensure_utf8_stdio()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True)
+    parser.add_argument("--worker-state", default="")
     args = parser.parse_args()
     try:
         raw = sys.stdin.read()
@@ -527,9 +591,13 @@ def main() -> None:
         if not isinstance(payload, dict):
             raise ValueError("hook payload must be a JSON object")
         # access_guard canonicalizes the base itself (no direct resolve here).
-        out = run(payload, Path(args.project))
+        if args.worker_state:
+            out = worker_run(payload, Path(args.project), Path(args.worker_state))
+        else:
+            out = run(payload, Path(args.project))
     except Exception as exc:
-        out = _deny(f"[c3-access:error] scout guard failed ({type(exc).__name__}: {exc}); "
+        who = "worker" if args.worker_state else "scout"
+        out = _deny(f"[c3-access:error] {who} guard failed ({type(exc).__name__}: {exc}); "
                     "refusing the call")
     if isinstance(out, dict) and isinstance(out.get("hookSpecificOutput"), dict):
         print(json.dumps({"hookSpecificOutput": out["hookSpecificOutput"]}))

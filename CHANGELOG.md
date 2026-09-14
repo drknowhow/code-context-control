@@ -4,6 +4,63 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.139.0] - 2026-09-14
+
+### Added — `c3_delegate(write_paths=...)`: a Claude delegate that makes the change you specified
+
+The stronger model decides a change and names the files. A cheaper Claude
+makes the change and returns a diff for the lead to review and test.
+docs/delegate-write.md has the full design.
+
+- **`write_paths`**: comma-separated project-relative globs the delegate may
+  edit or create.
+  - Claude only, never cascades, and defaults to Sonnet
+    (`delegate.claude_write_default_tier`).
+  - The worker is `claude -p --restricted` with Read/Grep/Glob/Edit/Write.
+    It cannot run commands.
+- **Four fences:**
+  1. Claude Code permission rules: `Edit()` allows for the write set, and
+     `Read()`/`Edit()` denies from every deny, read_only, confirm and mask rule.
+  2. `--restricted`.
+  3. `hook_access_guard.py --worker-state`, which fails closed. On the
+     canonical path it checks: inside the project; never `.git/`, `.c3/` or
+     the vault; Access Guard with no grants and no filed requests; the write
+     set; and other agents' locks.
+  4. The same hook saves a pre-image before each file's first write.
+- **The answer:**
+  - C3 builds the changed-file list and the unified diff from the pre-images,
+    plus the worker's report and the refused tool calls.
+  - Each change is logged to the edit ledger.
+  - A worker stopped at its deadline still reports what it wrote.
+  - The deadline sits inside `MCP_TOOL_TIMEOUT` (105 s under Claude Code),
+    because an abandoned worker would keep writing.
+- **Up-front guard check:** a literal path Access Guard refuses (`.env`,
+  `CLAUDE.md`) is dropped before the worker starts and named in the answer.
+- **Write suite:** `c3 delegate-eval --suite write`, 13 cases on a fixture
+  package, graded by hidden tests copied in after the worker finishes.
+  - Checks cover mutants (tests the worker wrote must catch bugs), rename
+    leftovers, a docstrings-only AST check, and traps outside the write set
+    and on `.env`.
+  - CI runs every case against a reference change (must pass) and the
+    untouched fixture (must fail).
+- **Telemetry:** `delegate_by_backend` counts `modes` and `files_changed`, and
+  the `c3_status` `[delegate:7d]` line adds `N file(s) written`.
+
+**Measured** (66 worker runs; the 5 hardest cases repeated 3–4 times):
+
+| target | pass | cost per run | wall p50 | tokens the lead reads |
+|---|---|---|---|---|
+| Haiku (thinking cap 1024) | 30/33 | $0.032 | 23.2 s | 836 |
+| Sonnet | 33/33 | $0.034 | 15.4 s | 582 |
+| Haiku, uncapped (hard cases) | 8/10 | $0.039 | 42.0 s | 1000 |
+
+- **Haiku missed subtle specs.** It got the CSV line numbers wrong 2 of 4
+  times and parsed `$-0.05` as +5 once. Removing its thinking cap did not help.
+- **Sonnet is the default.** It cost about the same, was faster, and returned
+  smaller diffs.
+- **Dogfood:** the telemetry change above was made by a Sonnet worker from
+  this branch: 3 files, $0.09, 28 s, and the tests passed unedited.
+
 ## [2.138.0] - 2026-09-14
 
 ### Changed — Haiku delegations cap thinking at 1024 tokens

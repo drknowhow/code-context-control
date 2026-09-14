@@ -127,8 +127,10 @@ def _budget_view(svc, detailed, finalize):
             calls = sum(r["calls"] for _k, r in used)
             ok = sum(r["outcomes"].get("ok", 0) + r["outcomes"].get("cached", 0) for _k, r in used)
             cost = sum(r.get("cost_usd") or 0.0 for _k, r in used)
+            files_changed = sum(r.get("files_changed") or 0 for _k, r in used)
             by = " | ".join(f"{k}:{r['calls']}" for k, r in used[:4])
-            lines.append(f"[delegate:7d] {calls} calls, {ok} answered, ${cost:.4f} reported ({by})")
+            written = f", {files_changed} file(s) written" if files_changed > 0 else ""
+            lines.append(f"[delegate:7d] {calls} calls, {ok} answered, ${cost:.4f} reported{written} ({by})")
     except Exception:
         pass
 
