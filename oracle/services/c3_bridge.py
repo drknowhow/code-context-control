@@ -74,7 +74,8 @@ class _OracleDelegateRuntime:
     Overrides exactly the attributes through which ``handle_delegate`` could
     mutate the TARGET project: the codex/gemini memory bridges (write facts
     into its MemoryStore), the degraded-backend notification (writes its
-    NotificationStore), and the codex sandbox (forced read-only regardless of
+    NotificationStore), the delegate telemetry (would start a session in its
+    SessionManager), and the codex sandbox (forced read-only regardless of
     the target's own default). Everything else passes through untouched.
     """
 
@@ -96,6 +97,10 @@ class _OracleDelegateRuntime:
 
     @property
     def notifications(self):
+        return None
+
+    @property
+    def session_mgr(self):
         return None
 
 
