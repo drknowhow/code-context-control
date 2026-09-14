@@ -28,6 +28,12 @@ Claude Code downshifts by itself.
   and when to reach for the subagents instead.
 - **`c3_status`** (budget view) adds a `[delegate:7d]` line: calls, answers,
   reported cost, and the busiest backend:tier rows.
+- **A refused `file_path` is an answer, not an exception.** When Access Guard
+  denies (or masks) a path C3 is packing, `c3_delegate` now returns the refusal
+  as its response with status `blocked`, and telemetry counts it; before, the
+  exception escaped the tool. The tool description also says that a file over
+  8k tokens travels as its map, so a line-level question about a big file
+  needs the excerpt or `scout=true`.
 - **Nudges** say "a smaller model" instead of "local LLM", and no longer
   suggest `task_type='investigate'` (which never existed) or `c3_compress`
   (not an MCP tool since 2.124.0).

@@ -2167,6 +2167,20 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     tier: str = "", model: str = "", scout: bool = False) -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
+    try:
+        return _route_delegate(task, task_type, context, file_path, svc, finalize, backend,
+                               allow_write_delegation, tier, model, scout)
+    except access_guard.AccessDenied as exc:
+        # A guard refusal while packing file_path is the answer, not a crash:
+        # the refusal text goes back as the response (the agent reads the
+        # same S1 line c3_read would give) and telemetry counts it as blocked.
+        return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
+                        exc.message, "blocked")
+
+
+def _route_delegate(task: str, task_type: str, context: str, file_path: str,
+                    svc, finalize, backend: str, allow_write_delegation: bool,
+                    tier: str, model: str, scout: bool) -> str:
     if task_type == "ping":
         finalize = _ping_finalize(finalize)
         task, context, file_path, task_type = PING_TASK, "", "", "ask"

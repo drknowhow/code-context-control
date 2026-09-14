@@ -103,6 +103,28 @@ def test_status_budget_view_reports_delegation(tmp_path):
     assert "[delegate:7d] 3 calls, 2 answered, $0.0040 reported (claude:small:2 | codex:small:1)" in out
 
 
+def test_denied_file_path_is_a_blocked_response_counted_in_telemetry(monkeypatch, tmp_path):
+    from cli.tools import delegate
+    from services import access_guard
+
+    denial = access_guard.Denial(rule="**/.env*", kind="deny", scope="builtin", reason="r")
+    monkeypatch.setattr(delegate.access_guard, "verdict",
+                        lambda p, op, root: access_guard.Verdict("denied", denial=denial))
+    monkeypatch.setattr(delegate, "_run_claude", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    recorded, store = [], {}
+    svc = SimpleNamespace(project_path=str(tmp_path), delegate_config={"enabled": True},
+                          session_mgr=SimpleNamespace(record_tool_tokens=lambda tool, **kw: recorded.append(kw)),
+                          compressor=None, notifications=None, _agent_progress_cb=None)
+
+    def finalize(tool, meta, resp, status, **kw):
+        store.update(resp=resp, status=status)
+        return resp
+
+    out = delegate.handle_delegate("what is in it?", "ask", "", ".env", svc, finalize, backend="claude")
+    assert store["status"] == "blocked" and out.startswith("[c3-access:denied]")
+    assert recorded[-1]["detail"]["outcome"] == "blocked"
+
+
 def test_no_nudge_names_a_task_type_delegate_does_not_have():
     from cli.tools.delegate import DELEGATE_TASKS
 
