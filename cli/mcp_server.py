@@ -805,9 +805,11 @@ async def c3_status(view: str = "budget", detailed: bool = False,
 async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
                 file_path: str = "", backend: str = "ollama",
                 allow_write_delegation: bool = False,
+                tier: str = "", model: str = "",
                 ctx: Context = None) -> str:
     """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
     backend: ollama|codex|gemini|claude|grok|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, available, codex_check, gemini_check, grok_check, codex_resume.
+    claude: a tool-less `claude -p` answers from context + file_path (packed by C3 under Access Guard). tier: small (Haiku, default) | medium (Sonnet) | large (Opus) | default; model overrides the tier.
     grok runs read-only in a temp dir unless delegate.grok_allow_write=true (then --yolo in the project, loading its trusted .grok MCP servers and hooks).
     allow_write_delegation: explicit user opt-in for write-capable backends (gemini/claude/grok write mode/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
     svc = _svc(ctx)
@@ -825,7 +827,7 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
     try:
         return await asyncio.to_thread(handle_delegate, task, task_type, context,
                                        file_path, svc, finalize, backend,
-                                       allow_write_delegation)
+                                       allow_write_delegation, tier, model)
     finally:
         svc._agent_progress_cb = None
 
