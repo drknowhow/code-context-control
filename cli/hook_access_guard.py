@@ -526,7 +526,8 @@ def main() -> None:
         payload = json.loads(raw) if raw.strip() else {}
         if not isinstance(payload, dict):
             raise ValueError("hook payload must be a JSON object")
-        out = run(payload, Path(args.project).resolve())
+        # access_guard canonicalizes the base itself (no direct resolve here).
+        out = run(payload, Path(args.project))
     except Exception as exc:
         out = _deny(f"[c3-access:error] scout guard failed ({type(exc).__name__}: {exc}); "
                     "refusing the call")
