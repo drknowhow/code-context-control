@@ -89,6 +89,26 @@ def build_parser(version: str, parse_cli_ide_arg):
                             help='With --update-baseline: JSON object of metric ceilings, e.g. \'{"tokens_p95": 4000}\'')
     p_map_eval.add_argument("--json", action="store_true", help="Emit the full report as JSON")
 
+    p_delegate_eval = subparsers.add_parser(
+        "delegate-eval", help="Grade c3_delegate answers per backend/tier (docs/delegate-eval.md)")
+    p_delegate_eval.add_argument("--suite", default="gold",
+                                 help="'gold' (bundled) or a .jsonl path")
+    p_delegate_eval.add_argument("--targets", default="",
+                                 help="Comma-separated backend[:tier] list, e.g. 'claude:small,claude:medium'")
+    p_delegate_eval.add_argument("--cases", default="", help="Comma-separated case ids (default: all)")
+    p_delegate_eval.add_argument("--replay", default=None,
+                                 help="Grade a recorded run instead of calling backends")
+    p_delegate_eval.add_argument("--record", default=None, help="Write the live answers to this JSON file")
+    p_delegate_eval.add_argument("--floor", type=float, default=None,
+                                 help="Core pass-rate floor; exit 1 when a target falls under it")
+    p_delegate_eval.add_argument("--allow-write-delegation", action="store_true",
+                                 help="Pass allow_write_delegation=true (needed for write-capable backends "
+                                      "when Access Guard rules exist)")
+    p_delegate_eval.add_argument("--config", default=None,
+                                 help='JSON object merged over the delegate config for this run, '
+                                      'e.g. \'{"allow_model_fallback": false}\'')
+    p_delegate_eval.add_argument("--json", action="store_true", help="Emit the full report as JSON")
+
     p_compress = subparsers.add_parser("compress", help="Compress a file")
     p_compress.add_argument("file", help="File to compress")
     p_compress.add_argument("--mode", choices=["map", "smart", "structure", "outline"], default="map",

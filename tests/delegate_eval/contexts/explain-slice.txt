@@ -1,0 +1,3 @@
+def last_n(xs, n):
+    """Return the last n items."""
+    return xs[len(xs) - n - 1:]

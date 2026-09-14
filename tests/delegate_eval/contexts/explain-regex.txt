@@ -1,0 +1,9 @@
+import re
+
+_CLASS_PREFIX = re.compile(
+    r"""^(?:\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*|\w+=(?:"[^"]*"|'[^']*'|\S*)\s*;?\s*))*""")
+
+
+def command_rest(cmd: str) -> str:
+    rest = _CLASS_PREFIX.sub("", cmd.strip())
+    return rest

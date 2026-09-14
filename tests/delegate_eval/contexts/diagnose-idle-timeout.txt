@@ -1,0 +1,14 @@
+def _communicate_with_heartbeat(proc, timeout=45, idle_timeout=15, stdin_text=None):
+    """Wait for proc. Kill it when `timeout` seconds pass in total, or when
+    `idle_timeout` seconds pass without a new line on STDERR (0 disables the
+    idle check). stdout is collected by a reader thread and does not reset
+    the idle clock."""
+    ...
+
+cmd = [claude_exe, "-p", "--output-format", "json", "--model", "sonnet"]
+output, err, status = _communicate_with_heartbeat(proc, timeout=120, idle_timeout=30,
+                                                  stdin_text=prompt)
+
+Symptom: this delegation returns "[claude:idle_timeout] No stderr activity for 30s"
+for longer prompts. Running the same command by hand in a terminal prints one JSON
+object after about 45 seconds and exits 0. Short prompts work.

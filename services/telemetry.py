@@ -278,6 +278,7 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
     by_target: dict = {}
     shell_classes: dict = {}
     map_backends: dict = {}
+    delegate_slots: dict = {}
     chain = _MapReadChain(window=MAP_CHAIN_WINDOW)
     total_calls = 0
     total_response = 0
@@ -287,6 +288,8 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         tool = str(rec.get("tool") or "unknown")
         if tool == "c3_shell" and isinstance(rec.get("detail"), dict):
             _fold_shell_detail(shell_classes, rec)
+        if tool == "c3_delegate" and isinstance(rec.get("detail"), dict):
+            _fold_delegate_detail(delegate_slots, rec)
         if tool in ("c3_compress", "c3_read"):
             if isinstance(rec.get("detail"), dict):
                 _fold_map_detail(map_backends, rec)
@@ -397,6 +400,12 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
         # by a map? Counted per session within MAP_CHAIN_WINDOW calls; works
         # on any record with a `target` (2.111.0+), detail or not.
         "map_read_chain": chain.result(),
+        # c3_delegate by backend and tier — only records that carry a
+        # `detail` (2.132.0+). The before/after instrument for the delegate
+        # remediation: which backend answered, how often it failed, what it
+        # cost and how long it took. Health probes are counted apart.
+        "delegate_by_backend": {k: _finish_delegate_slot(delegate_slots[k])
+                                for k in sorted(delegate_slots)},
     }
 
 
@@ -404,6 +413,62 @@ def aggregate_tool_telemetry(project_path, days: int = 7, *,
 # (18 KiB default, 22 KiB ceiling). Named here so the measurement of how
 # many calls WOULD exceed it exists before the cap does.
 SHELL_BUDGET_BYTES = 18 * 1024
+
+
+def delegate_slot_key(detail: dict) -> str:
+    """``backend`` or ``backend:tier`` — the row a delegate call counts under."""
+    backend = str(detail.get("backend") or "unknown")
+    tier = str(detail.get("tier") or "")
+    return f"{backend}:{tier}" if tier else backend
+
+
+def _fold_delegate_detail(slots: dict, rec: dict) -> None:
+    """Accumulate one c3_delegate record's `detail` into its backend row."""
+    detail = rec.get("detail") or {}
+    slot = slots.setdefault(delegate_slot_key(detail), {
+        "calls": 0, "probes": 0, "outcomes": {}, "models": {}, "task_types": {},
+        "cost_usd": 0.0, "priced_calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cascaded": 0, "_walls": [],
+    })
+    if detail.get("probe"):
+        slot["probes"] += 1
+        return
+    slot["calls"] += 1
+    outcome = str(detail.get("outcome") or "unknown")
+    slot["outcomes"][outcome] = slot["outcomes"].get(outcome, 0) + 1
+    model = str(detail.get("model") or "")
+    if model:
+        slot["models"][model] = slot["models"].get(model, 0) + 1
+    task_type = str(detail.get("task_type") or "")
+    if task_type:
+        slot["task_types"][task_type] = slot["task_types"].get(task_type, 0) + 1
+    cost = detail.get("cost_usd")
+    if cost is not None and not isinstance(cost, bool):
+        try:
+            slot["cost_usd"] += float(cost)
+            slot["priced_calls"] += 1
+        except (TypeError, ValueError):
+            pass
+    slot["input_tokens"] += _as_int(detail.get("input_tokens")) or 0
+    slot["output_tokens"] += _as_int(detail.get("output_tokens")) or 0
+    if detail.get("cascade"):
+        slot["cascaded"] += 1
+    wall = detail.get("wall_ms")
+    if wall is not None and not isinstance(wall, bool):
+        try:
+            slot["_walls"].append(float(wall))
+        except (TypeError, ValueError):
+            pass
+
+
+def _finish_delegate_slot(slot: dict) -> dict:
+    walls = sorted(slot.pop("_walls"))
+    slot["cost_usd"] = round(slot["cost_usd"], 6)
+    ok = slot["outcomes"].get("ok", 0) + slot["outcomes"].get("cached", 0)
+    slot["ok_rate"] = round(ok / slot["calls"], 4) if slot["calls"] else None
+    slot["wall_ms_p50"] = walls[len(walls) // 2] if walls else None
+    slot["wall_ms_p95"] = walls[min(len(walls) - 1, int(0.95 * len(walls)))] if walls else None
+    return slot
 
 
 def _fold_shell_detail(classes: dict, rec: dict) -> None:

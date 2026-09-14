@@ -1,0 +1,14 @@
+import functools
+
+
+class Report:
+    def __init__(self, rows):
+        self.rows = rows
+
+    @functools.lru_cache(maxsize=None)
+    def total(self):
+        return sum(r.amount for r in self.rows)
+
+
+def handle_request(rows):
+    return Report(rows).total()

@@ -1,0 +1,6 @@
+def split_evenly(total: int, parts: int) -> list[int]:
+    """Split total into `parts` integers that differ by at most one."""
+    if parts <= 0:
+        raise ValueError("parts must be positive")
+    base, extra = divmod(total, parts)
+    return [base + 1] * extra + [base] * (parts - extra)

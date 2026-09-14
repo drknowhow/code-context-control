@@ -1,0 +1,13 @@
+import sys
+
+
+def harden_win_argv(argv):
+    """Return a launch target for subprocess.Popen(shell=False)."""
+    if sys.platform != "win32" or not is_batch_shim(argv[0]):
+        return argv
+    inner = " ".join(_cmd_quote(a) for a in argv)
+    return f'cmd.exe /d /s /c "{inner}"'
+
+
+def is_batch_shim(exe):
+    return str(exe).lower().endswith((".cmd", ".bat"))

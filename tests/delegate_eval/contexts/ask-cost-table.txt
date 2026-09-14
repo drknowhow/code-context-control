@@ -1,0 +1,11 @@
+One question, seven invocations of the same CLI. Every variant answered correctly.
+
+| Variant | Model     | Wall  | Prompt tokens | Cost    |
+|---------|-----------|-------|---------------|---------|
+| A       | Opus 5    | 9.1 s | 46,191        | $0.4637 |
+| G       | Opus 5    | 3.1 s | 2,299         | $0.0246 |
+| H       | Opus 5    | 3.1 s | 977           | $0.0114 |
+| C       | Sonnet 5  | 3.0 s | 5,476         | $0.0107 |
+| I       | Sonnet 5  | 2.8 s | 1,076         | $0.0056 |
+| B       | Haiku 4.5 | 2.9 s | 4,879         | $0.0056 |
+| E       | Haiku 4.5 | 3.1 s | 1,747         | $0.0026 |

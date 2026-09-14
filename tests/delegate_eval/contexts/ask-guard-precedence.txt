@@ -1,0 +1,7 @@
+Access Guard rules
+
+Each rule pairs a path glob with a mode: allow, confirm, read_only or deny.
+When several rules match the same path, the most restrictive mode wins:
+deny > read_only > confirm > allow. Rules come from three scopes (builtin,
+global, project); scope decides who may edit a rule, never which rule wins,
+so a project rule can never loosen a builtin rule.

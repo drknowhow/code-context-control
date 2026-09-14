@@ -1571,6 +1571,51 @@ def cmd_shell_eval(args):
         sys.exit(1)
 
 
+def cmd_delegate_eval(args):
+    """Grade c3_delegate answers per target and name the cheapest passing tier.
+
+    Live by default (every case goes to the real backend and costs what that
+    backend costs); --replay grades a recorded run instead. Exit status 1 when
+    a --floor is given and a target's core pass rate falls under it. See
+    docs/delegate-eval.md.
+    """
+    from services.bench import delegate_eval as de
+
+    targets = [t.strip() for t in (args.targets or "").split(",") if t.strip()]
+    case_ids = [c.strip() for c in (args.cases or "").split(",") if c.strip()]
+    overrides = json.loads(args.config) if getattr(args, "config", None) else None
+    if overrides is not None and not isinstance(overrides, dict):
+        raise RuntimeError("--config must be a JSON object")
+
+    def progress(res):
+        if not args.json:
+            cost = "" if res.cost_usd is None else f" ${res.cost_usd:.4f}"
+            print(f"  {res.target:<16} {res.id:<28} {res.status}{cost} "
+                  f"{res.wall_ms / 1000:.1f}s", flush=True)
+
+    try:
+        report = de.run_suite(
+            args.suite, targets=targets or None, replay=args.replay, record=args.record,
+            case_ids=case_ids or None, floor=args.floor if args.floor is not None else de.DEFAULT_FLOOR,
+            allow_write_delegation=args.allow_write_delegation, delegate_overrides=overrides,
+            progress=progress)
+    except (FileNotFoundError, ValueError) as e:
+        raise RuntimeError(str(e))
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.render())
+        if args.record and report.mode == "live":
+            print(f"recorded: {args.record}")
+    if args.floor is not None:
+        under = [t for t, a in report.aggregates.items()
+                 if a["pass_rate_core"] is None or a["pass_rate_core"] < args.floor]
+        if under:
+            print(f"under floor {args.floor}: {', '.join(under)}", file=sys.stderr)
+            sys.exit(1)
+
+
 def cmd_map_eval(args):
     """Run the file-map gold suite and compare it to its baseline.
 
@@ -9380,6 +9425,7 @@ def main():
         "search-eval": cmd_search_eval,
         "shell-eval": cmd_shell_eval,
         "map-eval": cmd_map_eval,
+        "delegate-eval": cmd_delegate_eval,
         "benchmark": cmd_benchmark,
         "session-benchmark": cmd_session_benchmark,
         "benchmark-e2e": cmd_benchmark_e2e,
