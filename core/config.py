@@ -297,12 +297,16 @@ DELEGATE_DEFAULTS = {
     # Claude Code CLI (same-provider tier downshift; locked-down, tool-less `claude -p`)
     "claude_enabled": True,               # Master switch — enable Claude as delegate backend
     "claude_default_tier": "",            # Empty = default_tier
+    "claude_scout_default_tier": "medium",  # scout=true without tier/model: Sonnet (Haiku scouts flail: 28 turns vs 8)
     "claude_tier_models": {"small": "haiku", "medium": "sonnet", "large": "opus"},  # CLI aliases, not ids
     "claude_timeout": 120,                # Subprocess timeout in seconds (no idle kill: JSON arrives at the end)
     "claude_scout_timeout": 240,          # scout=true runs look files up first, so they get longer
     "claude_max_context_tokens": 24000,   # Context cap after file packing
     "claude_file_max_tokens": 8000,       # A file_path entry over this is sent as its file map
-    "claude_effort": "",                  # --effort low|medium|high|xhigh|max; empty = CLI default
+    "claude_effort": "",                  # --effort for every tier (overrides claude_tier_effort); empty = per tier
+    "claude_tier_effort": {},             # --effort per tier, e.g. {"medium": "low"}; unlisted = CLI default
+                                          # (2026-09-14: --effort low changed nothing on Haiku 4.5 — same
+                                          # cost and output tokens over 22 eval cases — so no default)
     "claude_max_budget_usd": 0,           # --max-budget-usd per call; 0 = no cap
 }
 

@@ -431,7 +431,33 @@ def scout_settings(project_path) -> dict:
     }
 
 
-def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, str]:
+_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def claude_effort_for(tier: str, dcfg: dict) -> str:
+    """``--effort`` for a resolved tier: ``claude_effort`` overrides every
+    tier, else ``claude_tier_effort[tier]``, else none (the CLI's default).
+    An unknown level is ignored rather than passed to argv."""
+    value = str(dcfg.get("claude_effort") or "").strip().lower()
+    if not value:
+        table = dcfg.get("claude_tier_effort") or {}
+        value = str(table.get(tier) or "").strip().lower() if isinstance(table, dict) else ""
+    return value if value in _EFFORT_LEVELS else ""
+
+
+def claude_default_tier_key(scout: bool) -> str:
+    """Which config key names the default Claude tier.
+
+    A scout defaults to its own key (medium): measured 2026-09-14, a Haiku
+    scout took 28 turns and $0.24 to find one function that Sonnet found in
+    8 turns for $0.046; the eval's canary case showed the same (15 turns
+    against 2).
+    """
+    return "claude_scout_default_tier" if scout else "claude_default_tier"
+
+
+def resolve_claude_tier(tier: str, model: str, dcfg: dict,
+                        scout: bool = False) -> tuple[str, str, str]:
     """(tier, model_arg, error). An explicit ``model`` wins over the tier.
 
     ``model_arg`` empty means omit --model. ``error`` is non-empty when the
@@ -441,7 +467,7 @@ def resolve_claude_tier(tier: str, model: str, dcfg: dict) -> tuple[str, str, st
         if not _MODEL_NAME_RE.match(model):
             return "", "", f"model name {model!r} is not a Claude model alias or id"
         return "custom", model, ""
-    resolved = normalize_tier(tier, dcfg, "claude_default_tier")
+    resolved = normalize_tier(tier, dcfg, claude_default_tier_key(scout))
     if not resolved:
         return "", "", f"unknown tier {tier!r} (use one of {', '.join(CLAUDE_TIERS)})"
     table = {**CLAUDE_TIER_MODELS, **(dcfg.get("claude_tier_models") or {})}
@@ -671,7 +697,7 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
         return finalize("c3_delegate", base,
                         "[delegate:error] Claude not enabled. Set delegate.claude_enabled=true "
                         "in .c3/config.json", "disabled")
-    resolved_tier, model_arg, problem = resolve_claude_tier(tier, model, dcfg)
+    resolved_tier, model_arg, problem = resolve_claude_tier(tier, model, dcfg, scout=scout)
     if problem:
         return finalize("c3_delegate", base, f"[delegate:error] {problem}", "error")
     base["tier"] = resolved_tier
@@ -709,7 +735,9 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     rules = _CLAUDE_SCOUT_RULES if scout else _CLAUDE_DELEGATE_RULES
     system_prompt = f"{tdef['system']} {rules}"
     prompt = tdef["prompt_template"].format(context=enriched or "(none)", task=task)
-    effort = str(dcfg.get("claude_effort") or "")
+    effort = claude_effort_for(resolved_tier, dcfg)
+    if effort:
+        base["effort"] = effort
     try:
         budget = float(dcfg.get("claude_max_budget_usd") or 0.0)
     except (TypeError, ValueError):
@@ -2167,20 +2195,25 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     tier: str = "", model: str = "", scout: bool = False) -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
+    route = {"backend": backend}
     try:
         return _route_delegate(task, task_type, context, file_path, svc, finalize, backend,
-                               allow_write_delegation, tier, model, scout)
+                               allow_write_delegation, tier, model, scout, route)
     except access_guard.AccessDenied as exc:
         # A guard refusal while packing file_path is the answer, not a crash:
         # the refusal text goes back as the response (the agent reads the
-        # same S1 line c3_read would give) and telemetry counts it as blocked.
-        return finalize("c3_delegate", {"task_type": task_type, "backend": backend},
-                        exc.message, "blocked")
+        # same S1 line c3_read would give) and telemetry counts it as blocked,
+        # under the backend routing had chosen (not 'host' or 'auto').
+        meta = {"task_type": task_type, "backend": route["backend"]}
+        if route.get("tier"):
+            meta["tier"] = route["tier"]
+        return finalize("c3_delegate", meta, exc.message, "blocked")
 
 
 def _route_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str, allow_write_delegation: bool,
-                    tier: str, model: str, scout: bool) -> str:
+                    tier: str, model: str, scout: bool, route: dict | None = None) -> str:
+    route = route if route is not None else {}
     if task_type == "ping":
         finalize = _ping_finalize(finalize)
         task, context, file_path, task_type = PING_TASK, "", "", "ask"
@@ -2264,6 +2297,8 @@ def _route_delegate(task: str, task_type: str, context: str, file_path: str,
         provider, mapped = host_backend(svc)
         if mapped:
             host_tier = normalize_tier("", dcfg, "claude_default_tier" if mapped == "claude" else "")
+            if mapped == "claude":
+                host_tier += f", scout {normalize_tier('', dcfg, claude_default_tier_key(True))}"
             lines.append(f"  host={provider} -> {mapped} (default tier {host_tier}); "
                          "task_type='ping' makes a live call")
         else:
@@ -2337,7 +2372,8 @@ def _route_delegate(task: str, task_type: str, context: str, file_path: str,
         if mapped and not blocked:
             backend = mapped
             if not tier and not model:
-                route_tier = normalize_tier("", dcfg, "claude_default_tier" if mapped == "claude" else "")
+                route_tier = normalize_tier(
+                    "", dcfg, claude_default_tier_key(scout) if mapped == "claude" else "")
         else:
             why = (f"host {provider} -> {mapped} blocked by Access Guard (write-capable)" if blocked
                    else f"host {provider or 'unknown'} has no same-provider backend")
@@ -2393,6 +2429,12 @@ def _route_delegate(task: str, task_type: str, context: str, file_path: str,
             "Re-run with allow_write_delegation=true (explicit user opt-in) "
             f"or run {backend} directly.",
             "blocked")
+
+    route["backend"] = backend
+    if backend == "claude" and not model:
+        route["tier"] = normalize_tier(route_tier, dcfg, claude_default_tier_key(scout))
+    elif route_tier:
+        route["tier"] = route_tier
 
     # Tier/model reach a handler only when asked for (or set by host routing),
     # so an explicit backend with neither keeps its configured behaviour.

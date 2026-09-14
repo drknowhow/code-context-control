@@ -309,8 +309,10 @@ def test_available_names_the_host(monkeypatch):
     for name in ("codex", "gemini", "claude", "grok"):
         monkeypatch.setattr(delegate, f"check_{name}", lambda n=name: {"status": "ok", "version": n})
     store = {}
-    delegate.handle_delegate("", "available", "", "", _svc(ollama=_FakeOllama(["llama3.2:3b"])), _capture(store))
-    assert "  host=claude-code -> claude (default tier small)" in store["resp"]
+    delegate.handle_delegate("", "available", "", "",
+                             _svc(ollama=_FakeOllama(["llama3.2:3b"]), claude_scout_default_tier="medium"),
+                             _capture(store))
+    assert "  host=claude-code -> claude (default tier small, scout medium)" in store["resp"]
     assert "(--version only)" in store["resp"]
 
 
