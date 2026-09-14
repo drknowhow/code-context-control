@@ -298,9 +298,13 @@ DELEGATE_DEFAULTS = {
     "claude_enabled": True,               # Master switch — enable Claude as delegate backend
     "claude_default_tier": "",            # Empty = default_tier
     "claude_scout_default_tier": "medium",  # scout=true without tier/model: Sonnet (Haiku scouts flail: 28 turns vs 8)
+    "claude_write_default_tier": "medium",  # write_paths without tier/model: Sonnet 33/33 vs Haiku 30/33 on
+                                            # the write suite, same cost, faster (docs/delegate-write.md)
     "claude_tier_models": {"small": "haiku", "medium": "sonnet", "large": "opus"},  # CLI aliases, not ids
     "claude_timeout": 120,                # Subprocess timeout in seconds (no idle kill: JSON arrives at the end)
     "claude_scout_timeout": 240,          # scout=true runs look files up first, so they get longer
+    "claude_write_timeout": 600,          # write_paths runs; capped inside MCP_TOOL_TIMEOUT when that is set
+    "claude_write_diff_max_chars": 24000, # Diff shown back to the caller; the ledger keeps every change
     "claude_max_context_tokens": 24000,   # Context cap after file packing
     "claude_file_max_tokens": 8000,       # A file_path entry over this is sent as its file map
     "claude_effort": "",                  # --effort for every tier (overrides claude_tier_effort); empty = per tier

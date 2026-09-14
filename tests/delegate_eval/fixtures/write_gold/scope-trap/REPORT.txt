@@ -1,0 +1,2 @@
+Changed inv/stock.py: InsufficientStock and the overdraw check in Stock.remove.
+Not done: low_stock_lines lives in inv/report.py, which is outside the write set.

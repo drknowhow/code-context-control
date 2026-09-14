@@ -428,7 +428,7 @@ def _fold_delegate_detail(slots: dict, rec: dict) -> None:
     slot = slots.setdefault(delegate_slot_key(detail), {
         "calls": 0, "probes": 0, "outcomes": {}, "models": {}, "task_types": {},
         "cost_usd": 0.0, "priced_calls": 0, "input_tokens": 0, "output_tokens": 0,
-        "cascaded": 0, "_walls": [],
+        "cascaded": 0, "_walls": [], "modes": {}, "files_changed": 0,
     })
     if detail.get("probe"):
         slot["probes"] += 1
@@ -436,6 +436,10 @@ def _fold_delegate_detail(slots: dict, rec: dict) -> None:
     slot["calls"] += 1
     outcome = str(detail.get("outcome") or "unknown")
     slot["outcomes"][outcome] = slot["outcomes"].get(outcome, 0) + 1
+    mode = detail.get("mode")
+    if isinstance(mode, str) and mode:
+        slot["modes"][mode] = slot["modes"].get(mode, 0) + 1
+    slot["files_changed"] += _as_int(detail.get("files_changed")) or 0
     model = str(detail.get("model") or "")
     if model:
         slot["models"][model] = slot["models"].get(model, 0) + 1

@@ -954,6 +954,12 @@ c3_status(view=<span class="str">'sessions'</span>)         <span class="com"># 
                 <td class="param-default">false</td>
                 <td class="param-desc">Let the delegate Read/Grep/Glob the project itself, for lookups when you cannot name the files. Claude runs <code>--restricted</code> with Access Guard's read denies; Codex uses its read-only sandbox.</td>
               </tr>
+              <tr>
+                <td class="param-name">write_paths</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Write mode (Claude only, defaults to Sonnet). Comma-separated project-relative globs the delegate may edit or create. You decide the change; it makes it with Read/Grep/Glob/Edit/Write, no commands. You get back the diff, and each change is in the edit ledger. Access Guard applies; confirm-held, locked, <code>.git/</code> and <code>.c3/</code> paths are refused. Review the diff and run the tests yourself.</td>
+              </tr>
             </tbody>
           </table>
 
@@ -965,7 +971,10 @@ c3_delegate(task=<span class="str">'Summarize this diff for a changelog in three
 c3_delegate(task=<span class="str">'What does resolve_host return inside a grok child?'</span>, file_path=<span class="str">'core/host.py'</span>, task_type=<span class="str">'explain'</span>, tier=<span class="str">'medium'</span>)
 
 <span class="com"># A lookup the delegate does itself</span>
-c3_delegate(task=<span class="str">'Which functions call charge_card, and where?'</span>, scout=<span class="kw">True</span>)</code></pre>
+c3_delegate(task=<span class="str">'Which functions call charge_card, and where?'</span>, scout=<span class="kw">True</span>)
+
+<span class="com"># A change you have decided, made by Sonnet inside a write set</span>
+c3_delegate(task=<span class="str">'Rename calc_total to order_total in its definition and every use; no alias'</span>, write_paths=<span class="str">'inv/orders.py, inv/report.py, tests/test_orders.py'</span>)</code></pre>
 
           <div class="callout callout-info">
             <span class="callout-icon">ℹ️</span>

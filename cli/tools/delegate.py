@@ -364,6 +364,21 @@ _CLAUDE_SCOUT_RULES = (
 
 SCOUT_TOOLS = "Read,Grep,Glob"
 
+_CLAUDE_WORKER_RULES = (
+    "You are a worker making one code change that a lead agent has already "
+    "decided. You have Read, Grep, Glob, Edit and Write in this repository and "
+    "nothing else: no commands, no tests, no network. Do exactly the change the "
+    "task describes: no refactors, renames, reformatting or extras it did not "
+    "ask for. Edit or create only paths in the write set; a refused path is off "
+    "limits, do not reach it another way. Read a file before editing it and "
+    "match its style. If the task is ambiguous, contradicts the code, or needs a "
+    "file outside the write set, do the part you can do safely and report the "
+    "rest instead of guessing. Make the edits first, then finish with a short "
+    "report: each file changed and what changed, anything left undone and why, "
+    "and any assumption the lead should check. The lead reviews your diff and "
+    "runs the tests."
+)
+
 
 def _permission_pattern(glob: str, root: str) -> str:
     """An Access Guard glob as a Claude Code ``Read()`` permission pattern.
@@ -431,6 +446,53 @@ def scout_settings(project_path) -> dict:
     }
 
 
+def worker_edit_denies(project_path) -> list[str]:
+    """``Edit()`` deny patterns: every deny, read_only, confirm and mask glob.
+
+    A worker never gets a grant or files a request, so a confirm hold is a
+    refusal for it. Deny beats allow in Claude Code, so a broad write set
+    cannot reopen any of these. Raises ValueError on a corrupt rule scope.
+    """
+    rules, mask_rules, corrupt = access_guard.load_all(str(project_path))
+    if corrupt:
+        raise ValueError(f"Access Guard config is unreadable in scope(s) {', '.join(corrupt)}")
+    globs = [r.glob for r in rules if r.kind in ("deny", "read_only", "confirm")]
+    globs += [m.glob for m in mask_rules]
+    root = Path(project_path).resolve().as_posix().casefold()
+    patterns = []
+    for glob in dict.fromkeys(globs):
+        pattern = _permission_pattern(glob, root)
+        if pattern:
+            patterns.append(f"Edit({pattern})")
+    return patterns
+
+
+def worker_settings(project_path, write_globs, state_dir) -> dict:
+    """``--settings`` for a write-mode worker (services/delegate_write).
+
+    Edit() allow rules are the write set, rooted at the project (a bare name
+    is that file at the root, never a basename match anywhere). Read and
+    Edit denies come from Access Guard. The guard hook runs in worker mode on
+    every file tool: it re-checks all of that on the canonical path and saves
+    pre-images into ``state_dir``.
+    """
+    from cli._hook_utils import hook_command_arg
+
+    hook = Path(__file__).resolve().parents[1] / "hook_access_guard.py"
+    project = str(Path(project_path).resolve())
+    command = (f"{hook_command_arg(sys.executable)} {hook_command_arg(str(hook))} "
+               f"--project {hook_command_arg(project)} "
+               f"--worker-state {hook_command_arg(str(state_dir))}")
+    return {
+        "permissions": {
+            "allow": [f"Edit(./{g})" for g in write_globs],
+            "deny": scout_read_denies(project) + worker_edit_denies(project),
+        },
+        "hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit",
+                                  "hooks": [{"type": "command", "command": command}]}]},
+    }
+
+
 _EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
@@ -468,19 +530,22 @@ def claude_thinking_cap_for(tier: str, dcfg: dict) -> int | None:
     return cap if cap >= 0 else None
 
 
-def claude_default_tier_key(scout: bool) -> str:
+def claude_default_tier_key(scout: bool, write: bool = False) -> str:
     """Which config key names the default Claude tier.
 
     A scout defaults to its own key (medium): measured 2026-09-14, a Haiku
     scout took 28 turns and $0.24 to find one function that Sonnet found in
     8 turns for $0.046; the eval's canary case showed the same (15 turns
-    against 2).
+    against 2). A write-mode worker has its own key too (see
+    docs/delegate-write.md for the measurement behind its default).
     """
+    if write:
+        return "claude_write_default_tier"
     return "claude_scout_default_tier" if scout else "claude_default_tier"
 
 
 def resolve_claude_tier(tier: str, model: str, dcfg: dict,
-                        scout: bool = False) -> tuple[str, str, str]:
+                        scout: bool = False, write: bool = False) -> tuple[str, str, str]:
     """(tier, model_arg, error). An explicit ``model`` wins over the tier.
 
     ``model_arg`` empty means omit --model. ``error`` is non-empty when the
@@ -490,7 +555,7 @@ def resolve_claude_tier(tier: str, model: str, dcfg: dict,
         if not _MODEL_NAME_RE.match(model):
             return "", "", f"model name {model!r} is not a Claude model alias or id"
         return "custom", model, ""
-    resolved = normalize_tier(tier, dcfg, claude_default_tier_key(scout))
+    resolved = normalize_tier(tier, dcfg, claude_default_tier_key(scout, write))
     if not resolved:
         return "", "", f"unknown tier {tier!r} (use one of {', '.join(CLAUDE_TIERS)})"
     table = {**CLAUDE_TIER_MODELS, **(dcfg.get("claude_tier_models") or {})}
@@ -502,7 +567,8 @@ def resolve_claude_tier(tier: str, model: str, dcfg: dict,
 
 
 def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
-                max_budget_usd: float = 0.0, settings: dict | None = None) -> list:
+                max_budget_usd: float = 0.0, settings: dict | None = None,
+                tools: str = SCOUT_TOOLS) -> list:
     """The locked-down headless argv. The prompt goes on stdin.
 
     --safe-mode: no CLAUDE.md, skills, plugins, hooks or MCP servers — but
@@ -515,12 +581,14 @@ def _claude_cmd(exe: str, model: str, system_prompt: str, *, effort: str = "",
     and Glob only, confined to the project, no user/project/local settings
     files, no CLAUDE.md, and the given --settings as the only permissions and
     hooks. --permission-mode dontAsk refuses anything not already allowed.
+    A write-mode worker is the same run with ``tools`` adding Edit and Write,
+    allowed only by the settings' Edit() rules.
     """
     cmd = [exe, "-p", "--output-format", "json", "--no-session-persistence"]
     if settings is None:
         cmd += ["--safe-mode", "--strict-mcp-config", "--tools", ""]
     else:
-        cmd += ["--restricted", "--strict-mcp-config", "--tools", SCOUT_TOOLS,
+        cmd += ["--restricted", "--strict-mcp-config", "--tools", tools,
                 "--permission-mode", "dontAsk", "--settings", json.dumps(settings)]
     cmd += ["--system-prompt", system_prompt]
     if model:
@@ -601,6 +669,8 @@ def parse_claude_json(stdout: str, requested_model: str = "") -> tuple[str, bool
         stats["model"] = primary
     if len(model_usage) > 1:
         stats["models_used"] = sorted(model_usage)
+    if isinstance(data.get("permission_denials"), list) and data["permission_denials"]:
+        stats["denials"] = data["permission_denials"]
     text = str(data.get("result") or "").strip()
     if data.get("is_error") or data.get("subtype") not in (None, "success"):
         reason = text or str(data.get("terminal_reason") or data.get("subtype") or "error")
@@ -614,7 +684,8 @@ def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
                 timeout: int = 120, effort: str = "",
                 max_budget_usd: float = 0.0, scout_project: str | None = None,
                 settings: dict | None = None,
-                thinking_cap: int | None = None) -> tuple[str, bool, dict]:
+                thinking_cap: int | None = None,
+                tools: str = SCOUT_TOOLS) -> tuple[str, bool, dict]:
     """Run the locked-down ``claude -p``.
 
     Tool-less (default): in a throwaway directory. Scout (``scout_project``
@@ -630,7 +701,7 @@ def _run_claude(prompt: str, system_prompt: str, model: str = "", *,
     try:
         cmd = _claude_cmd(exe, model, system_prompt, effort=effort,
                           max_budget_usd=max_budget_usd,
-                          settings=settings if scout else None)
+                          settings=settings if scout else None, tools=tools)
         proc = subprocess.Popen(
             harden_win_argv(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
@@ -806,6 +877,165 @@ def _handle_claude_delegate(task: str, task_type: str, context: str,
     if not scout:
         _delegate_cache[ckey] = (output, count_tokens(output))
     return finalize("c3_delegate", meta, output, "ok")
+
+
+def _worker_timeout(dcfg: dict) -> tuple[int, str]:
+    """(seconds, note). Inside the MCP client's own ceiling when it is known:
+    a worker the client abandons keeps writing with nobody to report to, so
+    C3's deadline must fire first and kill it."""
+    want = int(dcfg.get("claude_write_timeout", 600) or 600)
+    try:
+        from cli.tools.shell import _transport_ceiling_s
+        ceiling = _transport_ceiling_s()
+    except Exception:
+        ceiling = None
+    if ceiling and want > ceiling - 15:
+        return max(30, ceiling - 15), f"capped at {max(30, ceiling - 15)}s by the MCP client's {ceiling}s limit"
+    return want, ""
+
+
+def _handle_claude_write(task: str, task_type: str, context: str, file_path: str,
+                         svc, dcfg: dict, finalize, *, tier: str = "", model: str = "",
+                         write_paths="") -> str:
+    """Write mode: a Claude worker makes a change the caller specified.
+
+    The caller names the write set; the worker runs ``claude -p --restricted``
+    with Read/Grep/Glob/Edit/Write under Access Guard (services/delegate_write
+    has the four fences). C3 then diffs every file the worker touched against
+    its pre-image, logs each change to the edit ledger, and returns the diff.
+    Never cached. A worker killed at its deadline still reports what it wrote.
+    """
+    from services import delegate_write as dw
+
+    base = {"task_type": task_type, "backend": "claude", "mode": "write"}
+    if not dcfg.get("claude_enabled", True):
+        return finalize("c3_delegate", base,
+                        "[delegate:error] Claude not enabled. Set delegate.claude_enabled=true "
+                        "in .c3/config.json", "disabled")
+    globs, problem = dw.parse_write_paths(write_paths)
+    if problem:
+        return finalize("c3_delegate", base, f"[delegate:error] {problem}", "error")
+    # A literal path the guard already refuses would only cost the worker
+    # turns and come back as a bare permission error: drop it now and say why.
+    guarded: list[str] = []
+    for g in list(globs):
+        if any(ch in g for ch in "*?["):
+            continue
+        full = Path(svc.project_path) / g
+        denial = access_guard.check(str(full), "write" if full.exists() else "create",
+                                    str(svc.project_path))
+        if denial:
+            globs.remove(g)
+            guarded.append(f"{g} ({denial.kind} rule '{denial.rule}')")
+    if not globs:
+        return finalize("c3_delegate", base,
+                        "[delegate:blocked] Access Guard refuses every write path: "
+                        + "; ".join(guarded) + ". Make those edits yourself.", "blocked")
+    resolved_tier, model_arg, problem = resolve_claude_tier(tier, model, dcfg, write=True)
+    if problem:
+        return finalize("c3_delegate", base, f"[delegate:error] {problem}", "error")
+    base["tier"] = resolved_tier
+    breaker = _backend_breaker("claude", dcfg)
+    if not breaker.allow():
+        return finalize("c3_delegate", base,
+                        "[delegate:degraded] Claude skipped after repeated failures; retrying in "
+                        f"~{breaker.cooldown_remaining()}s. Run 'claude --version' to diagnose.",
+                        "degraded")
+
+    file_max = max(200, int(dcfg.get("claude_file_max_tokens", 8000) or 8000))
+    enriched = context or ""
+    packed = _pack_file_context(file_path, svc, file_max_tokens=file_max) if file_path else ""
+    if packed:
+        enriched = f"{enriched}\n\n{packed}" if enriched else packed
+    max_ctx = max(200, int(dcfg.get("claude_max_context_tokens", 24000) or 24000))
+    if count_tokens(enriched) > max_ctx:
+        enriched = enriched[:max_ctx * 4] + f"\n[context truncated at ~{max_ctx} tokens]"
+
+    try:
+        from cli.tools import _grants
+        session_id = _grants.session_id(svc)
+    except Exception:
+        session_id = ""
+    project = str(svc.project_path)
+    state = dw.new_state_dir(project, globs, session_id)
+    try:
+        try:
+            settings = worker_settings(project, globs, state)
+        except ValueError as exc:
+            return finalize("c3_delegate", base,
+                            f"[delegate:blocked] write mode refused: {exc}. Fix the config "
+                            "(c3 access list) or make the change yourself.", "blocked")
+        timeout, cap_note = _worker_timeout(dcfg)
+        effort = claude_effort_for(resolved_tier, dcfg)
+        if effort:
+            base["effort"] = effort
+        thinking_cap = claude_thinking_cap_for(resolved_tier, dcfg)
+        if thinking_cap is not None:
+            base["thinking_cap"] = thinking_cap
+        try:
+            budget = float(dcfg.get("claude_max_budget_usd") or 0.0)
+        except (TypeError, ValueError):
+            budget = 0.0
+        prompt = ("WRITE SET (the only paths you may edit or create, relative to the "
+                  "repository root):\n" + "\n".join(f"- {g}" for g in globs)
+                  + f"\n\nTIME: you are stopped after {timeout}s."
+                  + f"\n\nTASK FROM THE LEAD AGENT:\n{task}"
+                  + f"\n\nCONTEXT:\n{enriched or '(none)'}")
+        label = f"claude {resolved_tier} ({model_arg or 'cli-default'})"
+        _log_progress(svc, f"[delegate] {label} write mode, {len(globs)} write path(s)...")
+        t0 = time.monotonic()
+        output, ok, stats = _run_claude(prompt, _CLAUDE_WORKER_RULES, model_arg, timeout=timeout,
+                                        effort=effort, max_budget_usd=budget,
+                                        scout_project=project, settings=settings,
+                                        thinking_cap=thinking_cap, tools=dw.WORKER_TOOLS)
+        elapsed = round(time.monotonic() - t0, 1)
+        refused = dw.denial_lines(stats.pop("denials", None), project)
+        changes = dw.collect_changes(state, project)
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
+
+    model_name = stats.pop("model", "") or model_arg or "cli-default"
+    added = sum(c["added"] for c in changes)
+    removed = sum(c["removed"] for c in changes)
+    meta = {**base, "model": model_name, "elapsed": f"{elapsed}s", **stats,
+            "files_changed": len(changes), "lines_added": added, "lines_removed": removed,
+            "denied": len(refused)}
+    if changes and getattr(svc, "edit_ledger", None):
+        from cli.tools.edit import _log_to_ledger
+        first_line = (task.strip().splitlines() or [""])[0][:100]
+        for c in changes:
+            _log_to_ledger(
+                c["rel"], f"c3_delegate write ({model_name}): {first_line}",
+                ["c3_delegate", "claude", resolved_tier], svc,
+                detail={"delegate": {"backend": "claude", "tier": resolved_tier,
+                                     "model": model_name, "added": c["added"],
+                                     "removed": c["removed"]},
+                        "created": c["change"] == "created"})
+
+    n = len(changes)
+    if ok:
+        breaker.record_success()
+        _delegate_metrics["total_calls"] += 1
+        header = (f"[delegate:write] {label} changed {n} file(s) in {elapsed}s. Review the diff "
+                  "and run the tests before relying on it." if n else
+                  f"[delegate:write] {label} changed nothing in {elapsed}s.")
+        status, report = "ok", output
+    else:
+        if breaker.record_failure():
+            _notify_backend_degraded(svc, "claude", breaker)
+        header = f"[delegate:write-failed] {output}"
+        if n:
+            header += f"\n{n} file(s) were changed before it stopped; review them:"
+        status, report = "error", ""
+    if cap_note and not ok:
+        header += f" (deadline {cap_note})"
+    if guarded:
+        header += ("\nNot attempted, Access Guard refuses a delegate: " + "; ".join(guarded)
+                   + ". Make those edits yourself.")
+    max_diff = max(2000, int(dcfg.get("claude_write_diff_max_chars", 24000) or 24000))
+    text = dw.render(changes, header=header, report=report, refused=refused,
+                     max_diff_chars=max_diff)
+    return finalize("c3_delegate", meta, text, status)
 
 
 def check_gemini() -> dict:
@@ -2116,7 +2346,8 @@ _OUTCOMES = frozenset({"ok", "cached", "error", "timeout", "blocked", "disabled"
                        "unavailable", "degraded"})
 _CONFIDENCE = frozenset({"high", "medium", "low"})
 _USAGE_KEYS = ("input_tokens", "output_tokens", "cached_tokens", "cache_read_tokens",
-               "cache_write_tokens", "reasoning_tokens", "cost_usd", "turns")
+               "cache_write_tokens", "reasoning_tokens", "cost_usd", "turns",
+               "files_changed", "lines_added", "lines_removed", "denied")
 
 
 def _delegate_outcome(status) -> str:
@@ -2224,18 +2455,57 @@ def _ping_finalize(finalize):
 # Backends that can look things up in the project: claude as a guarded scout,
 # codex because its read-only sandbox already runs in the project.
 _SCOUT_BACKENDS = ("claude", "codex")
+_NOT_WRITE_TASKS = ("ping", "available", "codex_check", "gemini_check", "grok_check",
+                    "codex_resume")
+
+
+def _route_write(task: str, task_type: str, context: str, file_path: str, svc, finalize,
+                 backend: str, tier: str, model: str, route: dict, write_paths) -> str:
+    """``write_paths`` given: write mode, which only the claude backend has.
+
+    It never cascades — a write lands on the backend the caller chose or
+    nowhere — and it does not need allow_write_delegation: the worker runs
+    under Access Guard in-band, unlike gemini or grok in write mode.
+    """
+    dcfg = svc.delegate_config or {}
+    meta = {"task_type": task_type, "backend": backend, "mode": "write"}
+    if not dcfg.get("enabled", True):
+        return finalize("c3_delegate", meta, "[delegate:disabled]", "disabled")
+    if task_type in _NOT_WRITE_TASKS:
+        return finalize("c3_delegate", meta,
+                        f"[delegate:error] write_paths does not apply to task_type '{task_type}'.",
+                        "error")
+    if backend == "host":
+        provider, mapped = host_backend(svc)
+        if mapped != "claude":
+            return finalize("c3_delegate", meta,
+                            f"[delegate:error] write mode runs on the claude backend only; host "
+                            f"{provider or 'unknown'} maps to {mapped or 'nothing'}. "
+                            "Pass backend='claude' or make the change yourself.", "error")
+        backend = "claude"
+    if backend != "claude":
+        return finalize("c3_delegate", {**meta, "backend": backend},
+                        f"[delegate:error] write mode runs on the claude backend only, not "
+                        f"'{backend}'.", "error")
+    route["backend"] = "claude"
+    if not model:
+        route["tier"] = normalize_tier(tier, dcfg, claude_default_tier_key(False, write=True))
+    return _handle_claude_write(task, task_type, context, file_path, svc, dcfg, finalize,
+                                tier=tier, model=model, write_paths=write_paths)
 
 
 def handle_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str = "ollama",
                     allow_write_delegation: bool = False,
-                    tier: str = "", model: str = "", scout: bool = False) -> str:
+                    tier: str = "", model: str = "", scout: bool = False,
+                    write_paths: str = "") -> str:
     finalize = _telemetry_finalize(finalize, svc, requested_backend=backend,
                                    task_type=task_type)
     route = {"backend": backend}
     try:
         return _route_delegate(task, task_type, context, file_path, svc, finalize, backend,
-                               allow_write_delegation, tier, model, scout, route)
+                               allow_write_delegation, tier, model, scout, route,
+                               write_paths=write_paths)
     except access_guard.AccessDenied as exc:
         # A guard refusal while packing file_path is the answer, not a crash:
         # the refusal text goes back as the response (the agent reads the
@@ -2249,8 +2519,12 @@ def handle_delegate(task: str, task_type: str, context: str, file_path: str,
 
 def _route_delegate(task: str, task_type: str, context: str, file_path: str,
                     svc, finalize, backend: str, allow_write_delegation: bool,
-                    tier: str, model: str, scout: bool, route: dict | None = None) -> str:
+                    tier: str, model: str, scout: bool, route: dict | None = None,
+                    write_paths: str = "") -> str:
     route = route if route is not None else {}
+    if str(write_paths or "").strip():
+        return _route_write(task, task_type, context, file_path, svc, finalize, backend,
+                            tier, model, route, write_paths)
     if task_type == "ping":
         finalize = _ping_finalize(finalize)
         task, context, file_path, task_type = PING_TASK, "", "", "ask"

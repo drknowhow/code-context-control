@@ -77,7 +77,7 @@ def test_instruction_surfaces_teach_host_tier_scout_and_subagents():
 
     for text in (C3_COMPACT_WORKFLOW, _GLOBAL_CLAUDE_MD_CONTENT):
         line = next(ln for ln in text.splitlines() if "c3_delegate(" in ln)
-        for needle in ("host", "tier", "scout", "c3-scout", "c3-worker"):
+        for needle in ("host", "tier", "scout", "write_paths", "c3-scout", "c3-worker"):
             assert needle in line, (needle, line)
         assert "backend='ollama|" not in line
 
@@ -101,6 +101,14 @@ def test_status_budget_view_reports_delegation(tmp_path):
                           indexer=SimpleNamespace(get_stats=lambda: {"files_indexed": 0}))
     out = _budget_view(svc, False, lambda tool, args, resp, summary, **kw: resp)
     assert "[delegate:7d] 3 calls, 2 answered, $0.0040 reported (claude:small:2 | codex:small:1)" in out
+
+    from datetime import datetime, timezone
+    append_telemetry_record(tmp_path, {"ts": datetime.now(timezone.utc).isoformat(), "tool": "c3_delegate",
+                                       "response_tokens": 5,
+                                       "detail": {"backend": "claude", "tier": "medium", "mode": "write",
+                                                  "outcome": "ok", "files_changed": 3, "wall_ms": 20000}})
+    out = _budget_view(svc, False, lambda tool, args, resp, summary, **kw: resp)
+    assert "[delegate:7d] 4 calls, 3 answered, $0.0040 reported, 3 file(s) written (" in out
 
 
 def test_denied_file_path_is_a_blocked_response_counted_in_telemetry(monkeypatch, tmp_path):

@@ -806,11 +806,13 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
                 file_path: str = "", backend: str = "host",
                 allow_write_delegation: bool = False,
                 tier: str = "", model: str = "", scout: bool = False,
+                write_paths: str = "",
                 ctx: Context = None) -> str:
     """OFFLOAD to another model — use when the subtask is local-model-sized or needs a different perspective.
     backend: host (default: your own provider, one tier down — Claude Code->claude, Codex->codex, Grok->grok, Antigravity->gemini) | claude|codex|gemini|grok|ollama|auto. task_type: auto, summarize, explain, review, ask, test, diagnose, ping (live auth check), available, codex_check, gemini_check, grok_check, codex_resume.
     tier: small (default; scout=true defaults to medium) | medium | large | default. claude: haiku/sonnet/opus; codex/grok: reasoning effort; gemini: flash-lite/flash/pro. model overrides the tier. Context + file_path are packed by C3 under Access Guard; a file over 8k tokens goes as its map, so for line-level questions on a big file paste the excerpt or use scout=true.
     scout=true: the delegate may Read/Grep/Glob the project itself (claude: read-only, guard-denied paths refused; codex: its read-only sandbox) — for lookups when you cannot name the files.
+    write_paths: comma-separated project-relative globs the delegate may edit or create (write mode; claude only, tier defaults to medium). You decide the change: say what to change, where, and the intended behaviour. It cannot run commands. You get back the diff (each change is in the edit ledger): review it and run the tests yourself. Access Guard applies; confirm-held, locked, .git/ and .c3/ paths are refused.
     grok runs read-only in a temp dir unless delegate.grok_allow_write=true (then --yolo in the project, loading its trusted .grok MCP servers and hooks).
     allow_write_delegation: explicit user opt-in for write-capable backends (gemini/grok write mode/codex_resume) while Access Guard rules are active; codex is pinned read-only instead."""
     svc = _svc(ctx)
@@ -828,7 +830,8 @@ async def c3_delegate(task: str, task_type: str = "ask", context: str = "",
     try:
         return await asyncio.to_thread(handle_delegate, task, task_type, context,
                                        file_path, svc, finalize, backend,
-                                       allow_write_delegation, tier, model, scout)
+                                       allow_write_delegation, tier, model, scout,
+                                       write_paths)
     finally:
         svc._agent_progress_cb = None
 

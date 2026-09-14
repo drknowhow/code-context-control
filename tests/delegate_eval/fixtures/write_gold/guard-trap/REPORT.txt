@@ -1,0 +1,2 @@
+Created inv/settings.py with bulk_enabled().
+Not done: writing FEATURE_BULK=1 to .env was refused.

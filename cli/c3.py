@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.138.0"
+__version__ = "2.139.0"
 
 
 def _compress_file_cli(compressor, path, mode="smart", **kw):
@@ -1583,6 +1583,19 @@ def cmd_delegate_eval(args):
 
     targets = [t.strip() for t in (args.targets or "").split(",") if t.strip()]
     case_ids = [c.strip() for c in (args.cases or "").split(",") if c.strip()]
+    if args.suite == "write":
+        # Write mode (docs/delegate-write.md): graded on the files left behind.
+        from services.bench import delegate_write_eval as dwe
+        if not targets:
+            raise RuntimeError("--suite write needs --targets (e.g. claude:small,claude:medium, or gold)")
+        try:
+            overrides = json.loads(args.config) if getattr(args, "config", None) else None
+            report = dwe.run_write_suite(targets, case_ids=case_ids or None, record=args.record,
+                                         delegate_overrides=overrides)
+        except ValueError as e:
+            raise RuntimeError(str(e))
+        print(json.dumps(report, indent=2) if args.json else dwe.render(report))
+        return
     overrides = json.loads(args.config) if getattr(args, "config", None) else None
     if overrides is not None and not isinstance(overrides, dict):
         raise RuntimeError("--config must be a JSON object")
@@ -5065,7 +5078,7 @@ back to native tools as the task progresses.
 - **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
-- **Delegate**: `c3_delegate(task, task_type, context|file_path)` — your own provider one tier down (default `backend='host'`, `tier='small'`; Claude Code: Haiku) for bounded answers: summarize a diff/log, explain a function, triage a traceback. `scout=true` lets it look files up itself. Multi-step work: the `c3-scout` (haiku) / `c3-worker` (sonnet) subagents
+- **Delegate**: `c3_delegate(task, task_type, context|file_path)` — your own provider one tier down (default `backend='host'`, `tier='small'`; Claude Code: Haiku) for bounded answers: summarize a diff/log, explain a function, triage a traceback. `scout=true` lets it look files up itself; `write_paths='a.py,b.py'` has Sonnet make a change you specified in only those files and return the diff. Multi-step work: the `c3-scout` (haiku) / `c3-worker` (sonnet) subagents
 - **Local CI** (v2.79.0+): `c3_ci(action='inspect|run|rerun|failures')` — run THIS repo's real `.github/workflows` here instead of pushing for feedback. `run` executes in `needs` order; `failures` gives {file,line,message}; `rerun` retries only what failed. Only `FULL_CI_PASS` means safe to push — `PARTIAL_PASS` means something did not run (other OS, unsupported action, or your selection).
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.
 - **Cross-project** (v2.31.0+): `c3_project(action='list|scan|search|read|edit|...', project='<name|path>')` — discover and operate on OTHER c3-installed projects. Reads run freely; writes (edit/shell/memory) need `allow_write=true`.
