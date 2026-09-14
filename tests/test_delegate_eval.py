@@ -78,6 +78,13 @@ def test_every_reference_answer_passes_and_every_wrong_answer_fails():
     assert report.aggregates["wrong"]["pass_rate_core"] == 0.0
 
 
+def test_grade_ignores_bold_but_not_code_spans():
+    case = _case(checks={"any_match": ["does not"], "must_not_match": ["`FOO"]})
+    assert de.grade(case, "This does **not** match the docstring.") == []
+    assert de.grade(case, "It does __not__ match.") == []
+    assert de.grade(case, "does not; see `FOO=1`") != []
+
+
 def test_grade_checks():
     case = _case(checks={"must_match": [r"\b7\b"], "any_match": ["retr", "attempt"],
                          "must_not_match": ["maybe"], "max_words": 5})
