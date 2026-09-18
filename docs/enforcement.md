@@ -214,6 +214,11 @@ Routes: `GET /api/hub/enforcement/overview`,
 `GET|POST /api/projects/enforcement` (POST body
 `{path?, scope?, mode?, signal_ttl_s?, blocked_tools?}`; `scope: "global"`
 writes `~/.c3` and needs no path),
+`POST /api/projects/enforcement/clear` (v2.141; body `{path?, scope?}` —
+drops the scope's whole `enforcement` section so it inherits again: the
+project falls back to global, global falls back to the built-in `strict`.
+No mode string means "inherit", because `resolve()` stops at the first
+section it finds; nothing to clear answers `cleared: false`),
 `GET /api/projects/enforcement/denials/search`,
 `DELETE /api/projects/enforcement/denials`. Project-scope mutations are
 ledger- and activity-logged on the target project; mode changes are always

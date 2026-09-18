@@ -423,3 +423,41 @@ def set_fields(project_path: str = ".", *, scope: str = "project",
     _write_config(cfg, data)
     result["changed"] = changed
     return result
+
+
+def clear(project_path: str = ".", *, scope: str = "project") -> dict:
+    """Drop a scope's whole ``enforcement`` section so it inherits again.
+
+    ``resolve()`` stops at the first scope whose section exists, so there is
+    no value a surface can WRITE that means "use the global default" — only
+    removing the section does. Every field goes (mode, set_by, signal_ttl_s,
+    blocked_tools): a ttl left behind would be the mode-less partial section
+    ``set_fields`` refuses to create. Clearing the global scope falls back to
+    ``DEFAULT_MODE``.
+
+    Returns ``{"previous", "cleared", "mode", "scope", "path"}`` where
+    ``mode``/``scope`` are the EFFECTIVE policy afterwards (``scope`` is where
+    it now comes from: global | default). No section is a no-op with
+    ``cleared=False``, never an error — the surface asked for "inherit" and
+    that is already the state.
+    """
+    if scope not in ("project", "global"):
+        raise ValueError(f"unknown scope '{scope}' — expected project|global")
+    cfg = _config_path(scope, project_path)
+    if cfg is None:
+        raise ValueError("no home directory available for the global scope")
+
+    data = _load_config_data(cfg)
+    section = data.get(_SECTION)
+    previous = (str(section.get("mode") or "")
+                if isinstance(section, dict) else "")
+    cleared = _SECTION in data
+    if cleared:
+        del data[_SECTION]
+        _write_config(cfg, data)
+
+    after = resolve(project_path) if scope == "project" else resolve_global()
+    return {"previous": previous, "cleared": cleared,
+            "mode": after.mode or DEFAULT_MODE,
+            "scope": after.scope if after.mode else "default",
+            "path": str(cfg)}

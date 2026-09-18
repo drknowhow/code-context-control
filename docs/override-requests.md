@@ -761,6 +761,18 @@ phone is charging.
 - Oracle dashboard: a Requests card on the project view using the same routes.
 - Both are authorised by the existing dashboard session cookie / bootstrap
   flow; neither is reachable from an MCP tool.
+- Hub (loopback) policy routes: `GET|POST /api/hub/overrides/policy` (one
+  project), and since v2.141 `GET /api/hub/overrides/policy/overview` (every
+  registered project in one call — per-row isolation, `project_keys` naming
+  what each project pins, the global scope served read-only) and
+  `POST /api/hub/overrides/policy/clear {path, confirm?}`. Clear drops the
+  project's own opinions so it inherits global again; `wake` survives it.
+  Because the merge only tightens, a project section can only hold policy at
+  or below global, so a clear can LOOSEN — it is widening-checked against the
+  policy as it would resolve afterwards and needs `confirm: "widen"` exactly
+  like a set. A corrupt section is 409, never reset. Every set and clear
+  writes an `access_action` row (`kind: override_policy`, key names and the
+  widening list only) and a ledger entry on the target.
 
 ---
 
