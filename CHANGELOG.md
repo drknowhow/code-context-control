@@ -4,6 +4,49 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.141.0] - 2026-09-18
+
+### Added — inherit again, and every project's approval policy in one read
+
+A project that pinned a discipline mode or an `override` opinion could never
+go back to "whatever global says". Enforcement `resolve()` stops at the first
+section it finds, and override policy only tightens, so no value a surface
+can write means "inherit"; only removing the section does. A cross-project
+editor (C3 Desk's Rules view) also had to make one Hub call per project to
+read override policy.
+
+- **`POST /api/projects/enforcement/clear {path?, scope?}`** calls the new
+  `enforcement_policy.clear()`. It drops the scope's whole `enforcement`
+  section: mode, set_by, signal_ttl_s and blocked_tools. A leftover ttl would
+  be the mode-less partial section `set_fields` refuses to create.
+  - A project clear falls back to global; a global clear falls back to the
+    built-in `strict`.
+  - Nothing to clear is a 200 with `cleared: false`.
+  - Audited on the target the same way a set is.
+- **`GET /api/hub/overrides/policy/overview`**: every registered project's
+  effective override policy in one call.
+  - Per-row isolation, like the enforcement overview.
+  - `project_keys` names what each project pins.
+  - Corrupt and uninitialized rows are reported as such, never as a policy.
+  - The global scope is served read-only, with its keys.
+  - `features: ["clear"]` lets a client hide what an older Hub cannot serve.
+- **`POST /api/hub/overrides/policy/clear {path, confirm?}`** calls the new
+  `override_policy.clear_section()`. It drops the project's own opinions
+  except `wake`.
+  - The merge only tightens, so a project section can only hold policy at or
+    below global, and clearing it can LOOSEN. The widening check runs against
+    the policy as it would resolve afterwards (`override_policy._resolve`
+    with the project section substituted) and needs `confirm: "widen"`,
+    exactly like a set.
+  - A corrupt section is 409: it needs a human, not a reset.
+- **Override-policy edits from the Hub are now audited.** Every set and clear
+  writes an `access_action` row (`kind: override_policy`, with key names and
+  the widening list only, never a `wake` value) and a ledger entry on the
+  target project. Until now, a policy set through the Hub left no trail.
+- `override_policy.resolve()` now splits into `_resolve()` and `_merge()`
+  internally, with no behaviour change. It adds `resolve_global()`,
+  `scope_keys()` and `global_scope_keys()`.
+
 ## [2.140.0] - 2026-09-14
 
 ### Added — delegation that happens without the agent deciding

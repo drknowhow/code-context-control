@@ -2982,6 +2982,65 @@ def api_projects_enforcement_set():
     return jsonify(result)
 
 
+@app.route("/api/projects/enforcement/clear", methods=["POST"])
+def api_projects_enforcement_clear():
+    """Drop a scope's `enforcement` section so it inherits again.
+
+    Body: ``{path?, scope?}`` — same scope rules as the set route. There is
+    no mode a surface can WRITE that means "use the global default" (resolve
+    stops at the first section it finds), so "inherit" is a removal, and it
+    gets its own verb rather than a magic mode string. Nothing to clear is a
+    200 with ``cleared: false``: the caller asked for the state it is in.
+    Audited on the target project like a set.
+    """
+    from services import enforcement_policy as ep
+
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    scope = (data.get("scope") or "project").strip().lower()
+    if scope not in ("project", "global"):
+        return jsonify({"error": "scope must be 'project' or 'global'"}), 400
+    if scope == "project":
+        if not path:
+            return jsonify({"error": "path is required for project scope"}), 400
+        try:
+            resolved = _resolve_project_path(path)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+    else:
+        resolved = "."
+
+    try:
+        result = ep.clear(resolved, scope=scope)
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    if scope == "project" and result.get("cleared"):
+        detail = {"kind": "enforcement", "action": "clear",
+                  "previous": result.get("previous", ""),
+                  "mode": result.get("mode", ""), "scope": result.get("scope", ""),
+                  "via": "hub"}
+        summary = (f"tool discipline {result.get('previous') or 'default'} -> "
+                   f"inherit ({result.get('mode')} from {result.get('scope')}) "
+                   "via the Hub")
+        try:
+            from services.activity_log import ActivityLog
+            ActivityLog(resolved).log("access_action", dict(detail))
+        except Exception:
+            pass
+        try:
+            from services.edit_ledger import EditLedger
+            EditLedger(resolved).log_edit(
+                file="enforcement://project",
+                change_type="enforcement_clear",
+                summary=summary,
+                tags=["enforcement", "access"],
+                detail=detail)
+        except Exception:
+            pass
+    return jsonify(result)
+
+
 @app.route("/api/projects/enforcement/denials/search", methods=["GET"])
 def api_projects_enforcement_denials_search():
     """Search one project's raw denial events. Read-only; newest first.
@@ -3260,6 +3319,43 @@ def api_hub_override_costs():
                     "project": project_path})
 
 
+#: Verbatim from the spec, and the one thing a toggle screen must not let the
+#: reader forget: policy is a floor, not a promise.
+_OVERRIDE_POLICY_NOTE = (
+    "Project and global policy merge by tightening only: a layer is "
+    "escalatable iff both scopes allow it, and the numeric limits take "
+    "the smaller value."
+)
+
+
+def _hub_policy_audit(project_path: str, action: str, detail_extra: dict) -> None:
+    """One activity row + ledger entry per override-POLICY edit on the target.
+
+    Key names and the widening list only — never values of ``wake`` (an argv
+    this machine runs). A policy edit changes what a single tap can allow, so
+    a surface that can make it for many projects at once must leave a trail
+    on every one. Failure-safe.
+    """
+    detail = {"kind": "override_policy", "action": action, "via": "hub"}
+    detail.update(detail_extra or {})
+    widened = detail.get("widened") or []
+    summary = (f"override policy {action} via the Hub"
+               + (f" (widened: {', '.join(widened)})" if widened else ""))
+    try:
+        from services.activity_log import ActivityLog as _AL
+        _AL(str(project_path)).log("access_action", dict(detail))
+    except Exception:
+        pass
+    try:
+        from services.edit_ledger import EditLedger
+        EditLedger(str(project_path)).log_edit(
+            file="override://policy",
+            change_type=f"override_policy_{action}",
+            summary=summary, tags=["override", "policy"], detail=dict(detail))
+    except Exception:
+        pass
+
+
 @app.route("/api/hub/overrides/policy", methods=["GET"])
 def api_hub_override_policy_get():
     """The effective `override` section for one project.
@@ -3289,13 +3385,7 @@ def api_hub_override_policy_get():
         "layers": list(opol.LAYER_KEYS),
         "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
         "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
-        # Verbatim from the spec, and the one thing a toggle screen must not
-        # let the reader forget: policy is a floor, not a promise.
-        "coverage_note": (
-            "Project and global policy merge by tightening only: a layer is "
-            "escalatable iff both scopes allow it, and the numeric limits take "
-            "the smaller value."
-        ),
+        "coverage_note": _OVERRIDE_POLICY_NOTE,
     })
 
 
@@ -3334,7 +3424,103 @@ def api_hub_override_policy_set():
         return jsonify(exc.payload), exc.status
     except (OSError, ValueError) as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+    section = data.get("override") or {}
+    keys = [k for k in section if k != "layers"]
+    keys += [f"layers.{k}" for k in (section.get("layers") or {})]
+    _hub_policy_audit(project_path, "set",
+                      {"keys": sorted(keys), "widened": list(widens)})
     return jsonify({"path": project_path, "written": written,
+                    "policy": opol.resolve(project_path).as_dict(),
+                    "widened": widens})
+
+
+@app.route("/api/hub/overrides/policy/overview", methods=["GET"])
+def api_hub_override_policy_overview():
+    """Every registered project's effective override policy in one call.
+
+    The cross-project read a bulk editor needs (C3 Desk's Rules view), shaped
+    like the enforcement overview: per-row isolation, so one unreadable
+    project reports ``error`` instead of blanking the page, and a corrupt
+    section is reported as corrupt rather than as the disabled policy it
+    resolves to. ``project_keys`` names what the project pins itself, so a
+    screen can tell an inherited value from a chosen one. The global scope is
+    served READ-ONLY: ``write_section`` is project-scope by design.
+    """
+    from services import override_policy as opol
+
+    rows = []
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
+               "initialized": True, "error": None, "policy": None,
+               "configured": False, "corrupt": False, "project_keys": []}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                keys, present, corrupt = opol.scope_keys(ppath)
+                row["project_keys"] = keys
+                row["configured"] = present
+                row["corrupt"] = corrupt
+                row["policy"] = opol.resolve(ppath).as_dict()
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+
+    try:
+        keys, present, corrupt = opol.global_scope_keys()
+        global_policy = {"configured": present, "corrupt": corrupt,
+                         "keys": keys, "error": None,
+                         "policy": opol.resolve_global().as_dict()}
+    except Exception as e:
+        global_policy = {"configured": False, "corrupt": False, "keys": [],
+                         "error": str(e), "policy": None}
+
+    return jsonify({
+        "projects": rows,
+        "global_policy": global_policy,
+        "defaults": {k: v for k, v in opol.DEFAULTS.items()
+                     if k != opol.WAKE_KEY},
+        "layers": list(opol.LAYER_KEYS),
+        "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
+        "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
+        "coverage_note": _OVERRIDE_POLICY_NOTE,
+        # What this Hub can do beyond the per-project GET/POST, so a client
+        # built against a newer C3 can hide what an older one cannot serve.
+        "features": ["clear"],
+    })
+
+
+@app.route("/api/hub/overrides/policy/clear", methods=["POST"])
+def api_hub_override_policy_clear():
+    """Drop one project's own `override` opinions so it inherits global.
+
+    Body: ``{path, confirm?}``. Clearing can LOOSEN (the project may have
+    been tighter than global), so it goes through the same widening check as
+    a set and needs ``confirm: "widen"`` when it does. ``wake`` survives the
+    clear. A corrupt project section is 409: it needs a human, not a reset.
+    """
+    from services import override_policy as opol
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        project_path = str(_resolve_project_path(raw))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        kept, widens = opol.clear_section(
+            project_path, confirmed=(data.get("confirm") == "widen"))
+    except opol.PolicyEditError as exc:
+        return jsonify(exc.payload), exc.status
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+    cleared = kept is not None
+    if cleared:
+        _hub_policy_audit(project_path, "clear",
+                          {"kept": sorted(kept), "widened": list(widens)})
+    return jsonify({"path": project_path, "cleared": cleared,
                     "policy": opol.resolve(project_path).as_dict(),
                     "widened": widens})
 

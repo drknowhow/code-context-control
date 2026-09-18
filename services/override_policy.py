@@ -434,6 +434,10 @@ def _global_base() -> Path | None:
         return None
 
 
+#: Sentinel for :func:`_resolve` — "read the project scope from disk".
+_READ = object()
+
+
 def resolve(project_path: str = ".") -> OverridePolicy:
     """Effective policy for *project_path*: defaults ← global ← project.
 
@@ -441,6 +445,17 @@ def resolve(project_path: str = ".") -> OverridePolicy:
     minimum and are then clamped to the hard ceilings. A corrupt scope
     disables the feature outright — there is no partial-trust reading of a
     config we could not parse.
+    """
+    return _resolve(project_path)
+
+
+def _resolve(project_path, project_section=_READ) -> OverridePolicy:
+    """:func:`resolve`, optionally with the project's section SUBSTITUTED.
+
+    ``project_section`` other than ``_READ`` stands in for what the project's
+    config holds (``None`` = no section), so a caller can ask "what would the
+    effective policy be after this edit" without writing anything first. That
+    is what lets a clear be widening-checked before it lands.
     """
     try:
         proj = Path(project_path).resolve()
@@ -453,7 +468,10 @@ def resolve(project_path: str = ".") -> OverridePolicy:
     for scope, base in (("global", gbase), ("project", proj)):
         if base is None or (scope == "global" and gbase == proj):
             continue
-        section, bad = _read_scope(base)
+        if scope == "project" and project_section is not _READ:
+            section, bad = project_section, False
+        else:
+            section, bad = _read_scope(base)
         if bad:
             corrupt.append(scope)
             warnings.append(
@@ -466,7 +484,55 @@ def resolve(project_path: str = ".") -> OverridePolicy:
     if corrupt:
         return OverridePolicy(warnings=tuple(warnings),
                               corrupt_scopes=tuple(corrupt))
+    return _merge(sections, warnings)
 
+
+def resolve_global() -> OverridePolicy:
+    """The global (``~``) scope over the defaults, with no project opinion.
+
+    What a project that sets nothing inherits — the baseline a cross-project
+    screen shows beside each row. A corrupt global section disables the
+    feature here exactly as it does for every project.
+    """
+    gbase = _global_base()
+    if gbase is None:
+        return _merge([], [])
+    section, bad = _read_scope(gbase)
+    if bad:
+        return OverridePolicy(
+            warnings=("[c3-override] the 'global' scope's `override` section "
+                      "is invalid or unparseable — overrides are DISABLED "
+                      f"(fix {gbase / '.c3' / 'config.json'} by hand)",),
+            corrupt_scopes=("global",))
+    return _merge([section] if section is not None else [], [])
+
+
+def scope_keys(base) -> tuple[list, bool, bool]:
+    """``(keys, present, corrupt)`` for one scope's own ``override`` section.
+
+    ``keys`` names what that scope expresses an opinion on — layers as
+    ``layers.<key>`` — so a screen can say which values a project pins and
+    which it inherits. ``present`` is whether a section exists at all.
+    """
+    if base is None:
+        return [], False, False
+    section, bad = _read_scope(Path(base))
+    if bad:
+        return [], True, True
+    if section is None:
+        return [], False, False
+    keys = [k for k in section if k != "layers"]
+    keys += [f"layers.{k}" for k in (section.get("layers") or {})]
+    return sorted(keys), True, False
+
+
+def global_scope_keys() -> tuple[list, bool, bool]:
+    """:func:`scope_keys` for the global (``~``) scope."""
+    return scope_keys(_global_base())
+
+
+def _merge(sections: list, warnings: list) -> OverridePolicy:
+    """Fold validated sections (global first, project last) over DEFAULTS."""
     values = dict(DEFAULTS)
     values["layers"] = dict(DEFAULTS["layers"])
 
@@ -675,6 +741,66 @@ def apply_section(project_path, section: dict, *, confirmed: bool = False,
             widens=widens)
 
     return write_section(project_path, section), widens
+
+
+def clear_section(project_path, *, confirmed: bool = False) -> tuple[dict, list]:
+    """Drop the project's own `override` opinions so it inherits global again.
+
+    Returns ``(remaining_block, widens)``; ``remaining_block`` is ``{}`` when
+    nothing is left, and ``None`` when there was no section to clear.
+
+    ``wake`` survives: it is not a permission, no remote surface may write it,
+    and "inherit the policy" is not a request to stop telling the agent about
+    decisions. Everything else goes.
+
+    Clearing is NOT automatically a tightening. Merge is tightening-only, so a
+    project section can only ever hold the policy at or below global — which
+    means removing it can loosen. The widening check runs against the policy
+    as it would resolve afterwards, and demands ``confirmed`` exactly as
+    :func:`apply_section` does.
+
+    A corrupt project section is refused rather than cleared: it currently
+    disables overrides outright, so clearing it is a silent widening of
+    whatever global allows, and the file needs a human looking at it anyway.
+    """
+    proj = Path(project_path)
+    section, bad = _read_scope(proj)
+    if bad:
+        msg = ("the project's `override` section is invalid or unparseable "
+               "(overrides are disabled for it) — fix "
+               f"{proj / '.c3' / 'config.json'} by hand rather than clearing it")
+        raise PolicyEditError(msg, status=409,
+                              payload={"error": msg, "corrupt": True})
+    if section is None:
+        return None, []
+
+    kept = {WAKE_KEY: section[WAKE_KEY]} if WAKE_KEY in section else None
+    current = resolve(str(project_path))
+    after = _resolve(str(project_path), kept)
+    widens = widenings(current, after.as_dict())
+    if widens and not confirmed:
+        msg = "clearing this widens what an approval can allow: " + ", ".join(widens)
+        raise PolicyEditError(
+            msg,
+            payload={"error": msg, "widens": widens,
+                     "needs_confirmation": True, "confirm_with": "widen"},
+            widens=widens)
+
+    from services.atomic_json import write_json_atomic  # noqa: PLC0415
+
+    cfg_file = proj / ".c3" / "config.json"
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8")) or {}
+    except ValueError as exc:
+        raise ValueError(f"project config is not valid JSON: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise ValueError("project config is not a JSON object")
+    if kept is None:
+        cfg.pop("override", None)
+    else:
+        cfg["override"] = kept
+    write_json_atomic(cfg_file, cfg, ensure_ascii=False, trailing_newline=False)
+    return dict(kept or {}), widens
 
 
 def offer_line(layer_key: str, path, tool: str, op: str) -> str:
