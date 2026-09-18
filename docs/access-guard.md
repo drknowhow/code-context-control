@@ -218,6 +218,28 @@ and refused.
 > (hooks) · c3_shell (best-effort scan, advisory).
 > NOT enforced: non-Claude agents' raw shell, direct file APIs, editors.
 
+## 5.1 Human surfaces that write rules
+
+`c3 access` (CLI), the per-project server's Access tab, the phone
+(`POST|DELETE /api/mobile/access/rule`: rate-budgeted, project scope unless
+`mobile_access_global_scope`, too-broad globs refused), and since v2.142 the
+Hub, loopback only:
+
+- `GET /api/hub/access/overview`: every registered project's OWN
+  deny / read_only / confirm globs (storage form) plus a mask count, plus
+  the global scope and the builtin rules (global realm). Per-row isolation:
+  an unreadable project reports `error`, never an empty list, and a corrupt
+  scope is flagged `corrupt` (it evaluates deny-all).
+- `POST /api/hub/access/rule {path?, scope?, glob, kind}`: add. Tightening,
+  so no confirmation is needed; a duplicate returns `added: false`.
+- `POST /api/hub/access/rule/remove {path?, scope?, glob, kind, confirm?}`:
+  remove. A `deny` rule, and any GLOBAL rule, needs `confirm` equal to the
+  glob.
+- A project without `.c3/` gets a 409, never a fresh config. Every real
+  write is audited on the target (a global one in `~/.c3`), `via: hub`.
+
+C3 Desk's Locks → Permissions view is built on these three routes.
+
 ## 6. Residual risks (named, documented)
 
 Rename/move via shell; TOCTOU between evaluation and operation; non-Claude
