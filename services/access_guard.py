@@ -1439,6 +1439,28 @@ def list_rules(project_path: str = ".") -> dict:
     return out
 
 
+def scope_rules(scope: str, project_path: str = ".") -> dict:
+    """One scope's OWN list rules, for a cross-project screen.
+
+    ``{"deny": [...], "read_only": [...], "confirm": [...], "mask": <count>,
+    "corrupt": bool}``. Globs come back in the canonical storage form
+    (:func:`_norm_glob`), which is what :func:`set_rule` writes and what
+    :func:`remove_rule` compares against, so a caller can match a row to the
+    rule it would remove without re-deriving the spelling. A missing file is
+    an empty scope; an unreadable one is ``corrupt`` (it evaluates deny-all
+    until repaired by hand). Unlike :func:`list_rules` this touches no
+    keyring and computes no builtin modes, so it is cheap enough to run over
+    every registered project in one request.
+    """
+    cfg = _scope_config_path(scope, project_path)
+    section, corrupt = _raw_scope_section(cfg)
+    out = {k: [_norm_glob(g) for g in _str_list(section.get(k))]
+           for k in _LIST_KINDS}
+    out[_KIND_MASK] = len(_mask_list(section.get(_KIND_MASK)))
+    out["corrupt"] = corrupt
+    return out
+
+
 def _load_config_for_write(cfg: Path) -> tuple:
     """(config_dict, access_section) for read-modify-write of one scope.
 

@@ -4,6 +4,37 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.142.0] - 2026-09-18
+
+### Added — Access Guard rules across projects, from the Hub
+
+C3 Desk wants to set a path permission by file type, such as `**/*.pem`
+deny or `**/*.lock` read-only, for many projects at once. The phone route
+cannot do that: it allows 12 security calls a minute and refuses global
+scope, both on purpose for a device that leaves the building. The
+per-project server only runs while that project's UI is open. So the Hub,
+which is loopback-only and human-only, now has the same two verbs with the
+same asymmetry.
+
+- **`GET /api/hub/access/overview`**: every registered project's own
+  deny / read_only / confirm globs in storage form, plus a mask count, the
+  global scope, and the builtin rules.
+  - Per-row isolation: an unreadable project reports `error`, never "no
+    rules".
+  - A corrupt scope is flagged, because it evaluates deny-all.
+  - Built on the new `access_guard.scope_rules()`, which touches no keyring,
+    so it is cheap to run across 60+ projects.
+- **`POST /api/hub/access/rule {path?, scope?, glob, kind}`** adds a rule.
+  Adding tightens, so no confirmation is needed. A duplicate returns
+  `added: false`.
+- **`POST /api/hub/access/rule/remove {path?, scope?, glob, kind, confirm?}`**
+  removes a rule. A `deny` rule, or ANY global-scope rule, needs the glob
+  retyped as `confirm`. A refusal leaves the file untouched.
+- A folder without `.c3/` gets a 409 instead of a fresh config: a rule C3
+  does not read protects nothing while claiming to.
+- Every real write lands in the target's activity log and edit ledger
+  (`via: hub`); global writes land in `~/.c3`.
+
 ## [2.141.0] - 2026-09-18
 
 ### Added — inherit again, and every project's approval policy in one read

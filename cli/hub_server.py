@@ -3658,8 +3658,10 @@ def api_hub_access():
     """Effective Access Guard rules + override policy for one project.
 
     Read-only companion to the approvals list: the per-project mode matrix
-    the tab renders under the pending cards. Rule MUTATION stays on the
-    per-project server and the CLI — this route never writes.
+    the tab renders under the pending cards. This route never writes; rule
+    mutation from the Hub is ``/api/hub/access/rule`` (add) and
+    ``/api/hub/access/rule/remove`` (v2.142.0), besides the per-project
+    server and the CLI.
     """
     from services import access_guard
     from services import override_policy as opol
@@ -3677,6 +3679,180 @@ def api_hub_access():
         return jsonify({"error": str(exc)}), 500
     return jsonify({"path": str(resolved), "rules": rules,
                     "policy": policy})
+
+
+# ── Access Guard by file type, across projects (v2.142.0) ─────────────────
+# The desktop surface for path rules. The phone's /api/mobile/access/rule
+# cannot carry a bulk edit — 12 security calls a minute and no global scope,
+# both on purpose for a device that leaves the building — and the per-project
+# server only runs while its project's UI is open. So the Hub, loopback and
+# human-only, gains the same two verbs with the same asymmetry: adding a rule
+# tightens and is one call; removing a deny rule, or ANY global-scope rule,
+# needs the glob retyped. Every write is audited on the target (a global
+# write in ~/.c3, since it has no single target project).
+
+def _hub_access_audit(action: str, glob: str, kind: str, scope: str,
+                      project) -> None:
+    """Globs only — never file content. Failure-safe. Mirrors the phone's
+    ``_access_audit`` with ``via='hub'``."""
+    detail = {"kind": "access", "action": action, "glob": glob,
+              "rule_kind": kind, "scope": scope, "via": "hub"}
+    if project is not None:
+        try:
+            from services.activity_log import ActivityLog as _AL
+            _AL(str(project)).log("access_action", dict(detail))
+        except Exception:
+            pass
+        try:
+            from services.edit_ledger import EditLedger
+            EditLedger(str(project)).log_edit(
+                file=f"access://{glob}", change_type=f"access_{action}",
+                summary=f"{action} {kind} rule {glob} ({scope}) via the Hub",
+                tags=["access", action], detail=dict(detail))
+        except Exception:
+            pass
+    if scope == "global":
+        try:
+            from services import credential_store as cred_store
+            from services.activity_log import ActivityLog as _AL
+            home = cred_store.global_base()
+            if home is not None:
+                _AL(str(home)).log("access_action", dict(detail))
+        except Exception:
+            pass
+
+
+def _hub_access_target(data: dict):
+    """``(scope, project_path_or_None, error_response_or_None)``."""
+    scope = str(data.get("scope") or "project").strip().lower()
+    if scope not in ("project", "global"):
+        return scope, None, (jsonify(
+            {"error": "scope must be 'project' or 'global'"}), 400)
+    if scope == "global":
+        return scope, None, None
+    raw = str(data.get("path") or "").strip()
+    if not raw:
+        return scope, None, (jsonify(
+            {"error": "path is required for project scope"}), 400)
+    try:
+        resolved = _resolve_project_path(raw)
+    except ValueError as e:
+        return scope, None, (jsonify({"error": str(e)}), 404)
+    # set_rule would create .c3/config.json in any directory it is handed;
+    # a rule in a folder C3 does not manage protects nothing and says it does.
+    if not (Path(resolved) / ".c3").is_dir():
+        return scope, None, (jsonify(
+            {"error": "not initialized for C3", "needs_init": True}), 409)
+    return scope, str(resolved), None
+
+
+@app.route("/api/hub/access/overview", methods=["GET"])
+def api_hub_access_overview():
+    """Every registered project's own path rules, plus global and builtin.
+
+    Per-row isolation like the enforcement and policy overviews: a project we
+    could not read reports ``error`` rather than an empty rule list — "no
+    rules" is a claim about a repo, and we would be making it blind. A corrupt
+    scope is reported as corrupt: it evaluates deny-all until repaired by
+    hand, which is the opposite of what an empty list would suggest.
+    Builtin rules are read once, from the global realm; a project-scope
+    builtin mode (set with the CLI) is not reflected per row.
+    """
+    empty = {"deny": [], "read_only": [], "confirm": [], "mask": 0,
+             "corrupt": False}
+    rows = []
+    for p in _pm().list_projects():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
+               "initialized": True, "error": None, "rules": dict(empty)}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                row["rules"] = access_guard.scope_rules("project", ppath)
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+
+    try:
+        global_rules = {**access_guard.scope_rules("global"), "error": None}
+    except Exception as e:
+        global_rules = {**empty, "error": str(e)}
+    try:
+        home = access_guard._global_base()
+        b = access_guard.list_rules(str(home) if home else ".")["builtin"]
+        builtin = {"deny": list(b.get("deny") or []),
+                   "read_only": list(b.get("read_only") or []),
+                   "confirm": list(b.get("confirm") or []), "error": None}
+    except Exception as e:
+        builtin = {"deny": [], "read_only": [], "confirm": [], "error": str(e)}
+
+    return jsonify({
+        "projects": rows,
+        "global": global_rules,
+        "builtin": builtin,
+        # Strictest last. "allow" is the absence of a rule, not a kind.
+        "kinds": ["confirm", "read_only", "deny"],
+        "coverage_note": access_guard.COVERAGE_MATRIX,
+    })
+
+
+@app.route("/api/hub/access/rule", methods=["POST"])
+def api_hub_access_rule_add():
+    """Add one deny / read_only / confirm rule. Tightening — no confirmation.
+
+    Body: ``{path?, scope?, glob, kind}``. ``added: false`` when an equivalent
+    glob is already there (a 200, not an error: the caller asked for the
+    state it is in).
+    """
+    data = request.get_json(silent=True) or {}
+    scope, project, err = _hub_access_target(data)
+    if err:
+        return err
+    glob = str(data.get("glob") or "")
+    kind = str(data.get("kind") or "").strip()
+    try:
+        result = access_guard.set_rule(glob, kind, scope, project or ".")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["added"]:
+        _hub_access_audit("add", result["glob"], kind, scope, project)
+    return jsonify({"rule": result})
+
+
+@app.route("/api/hub/access/rule/remove", methods=["POST"])
+def api_hub_access_rule_remove():
+    """Remove one rule. Loosening.
+
+    Body: ``{path?, scope?, glob, kind, confirm?}``. A ``deny`` rule, and any
+    rule in the GLOBAL scope (it governs every project on the machine), needs
+    ``confirm`` equal to the glob — the CLI's "type the glob again". A
+    read_only or confirm rule in one project does not: it downgrades writes
+    to writable-or-ask, not to fully visible. POST rather than DELETE so the
+    body survives every client.
+    """
+    data = request.get_json(silent=True) or {}
+    scope, project, err = _hub_access_target(data)
+    if err:
+        return err
+    glob = str(data.get("glob") or "")
+    kind = str(data.get("kind") or "").strip()
+    canon = access_guard._norm_glob(glob)
+    if kind == "deny" or scope == "global":
+        if access_guard._norm_glob(data.get("confirm")) != canon or not canon:
+            return jsonify({
+                "error": ("removing a deny rule weakens protection"
+                          if kind == "deny" else
+                          "removing a global rule weakens every project"),
+                "needs_confirmation": True, "confirm_with": canon,
+            }), 400
+    try:
+        result = access_guard.remove_rule(glob, kind, scope, project or ".")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["removed"]:
+        _hub_access_audit("remove", result["glob"], kind, scope, project)
+    return jsonify(result)
 
 
 # ── Project management: tasks / milestones / notes (v2.45.0) ──────────────

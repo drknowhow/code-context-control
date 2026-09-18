@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.141.0"
+__version__ = "2.142.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
