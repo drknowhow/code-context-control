@@ -4,6 +4,56 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.143.0] - 2026-09-19
+
+### Added — Sessions: find an old one, see what it was, get back into it
+
+Claude Code keeps every conversation as a transcript and C3 keeps session
+records, snapshots and tasks beside the project, but nothing joined them.
+"Which session was I doing X in, is it worth going back to, how do I get
+back" meant opening JSONL files by hand, and nothing could record that a
+session was a dead end. See `docs/sessions.md`.
+
+- **`services/session_catalog.py`**: one row per conversation, keyed by the
+  Claude Code session id. It joins transcript head and tail (title, first
+  and last prompt, branch, the claude.ai/code bridge), every C3 session the
+  conversation ran, decisions, snapshots, tasks, liveness, `/clear` chains
+  and marks. Transcripts are never fully parsed and are cached per file on
+  size+mtime. The transcript folder is matched exactly and a foreign `cwd`
+  is skipped, so another project's sessions are never listed or resumed.
+- **Stale is a flag, not a guess.** `c3_session(action='stale', target=…,
+  reasoning=…)` (reason required, successor optional), `unstale`, and
+  `note` (what was done, next steps) join the tool, with a new `target`
+  parameter that takes an id, an 8+ char prefix or `current`.
+  `c3_session(action='list')` shows titles and flags, never other sessions'
+  prompts. Marks append to `.c3/session_marks.jsonl` and fold last-wins.
+  Heuristic hints (`idle Nd`, `ended by /clear`, `branch gone`, `short`)
+  never hide anything. The managed instructions ask the agent to leave a
+  note before stopping and to mark sessions it supersedes.
+- **Hub → Sessions tab** and `GET /api/hub/sessions/overview`,
+  `GET /api/hub/sessions`, `GET /api/hub/sessions/detail`,
+  `POST /api/hub/sessions/mark`, `POST /api/hub/sessions/resume`.
+  - Resume opens a terminal running `claude --resume <uuid>`. The argv is
+    fixed and built from a validated id whose transcript exists; the project
+    must be registered; a live session is refused with 409.
+  - Copy puts the command on the clipboard. Remote opens the claude.ai/code
+    page for bridged sessions.
+  - Not on the Oracle gateway: transcript previews stay loopback-only.
+- **`c3_task` link type `session`**, with `ref='current'` for this
+  conversation.
+
+### Changed
+
+- The Hub's terminal spawn moved to `services/terminal_launch.py` and is
+  shared by "Open in Claude Code" and Resume. On Linux, finding no terminal
+  emulator is now an error instead of a silent `launched: true`.
+
+### Fixed
+
+- The Hub refused to persist `main_view` for the CI, Tokens and Access tabs
+  (400), so those tabs never survived a reload. It now accepts every top-bar
+  tab, and a test ties the server list to the top bar.
+
 ## [2.142.0] - 2026-09-18
 
 ### Added — Access Guard rules across projects, from the Hub

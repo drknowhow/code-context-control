@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.142.0"
+__version__ = "2.143.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -5081,6 +5081,7 @@ back to native tools as the task progresses.
 - **Filter**: `c3_filter(text=...)` — for terminal output >10 lines
 - **Shell**: `c3_shell(cmd, timeout=60)` — structured shell exec (tests/git/build). Auto-filters output, logs git mutations to the ledger. Native Bash for interactive/TTY only
 - **Memory**: `c3_memory(action='recall')` — full recall. `index` + `fetch` for token-efficient two-step retrieval
+- **Sessions** (v2.143.0+): `c3_session(action='note', data=<done>, reasoning=<next steps>)` before you stop; `c3_session(action='stale', target=<id>, reasoning=<why>)` when your work supersedes, finishes or abandons an earlier session (`action='list'` shows them). The Hub/Desk Sessions view resumes the rest
 - **Delegate**: `c3_delegate(task, task_type, context|file_path)` — your own provider one tier down (default `backend='host'`, `tier='small'`; Claude Code: Haiku) for bounded answers: summarize a diff/log, explain a function, triage a traceback. `scout=true` lets it look files up itself; `write_paths='a.py,b.py'` has Sonnet make a change you specified in only those files and return the diff. Multi-step work: the `c3-scout` (haiku) / `c3-worker` (sonnet) subagents; an `Agent` call with no `model` runs one tier below you (pass `model=` to choose)
 - **Local CI** (v2.79.0+): `c3_ci(action='inspect|run|rerun|failures')` — run THIS repo's real `.github/workflows` here instead of pushing for feedback. `run` executes in `needs` order; `failures` gives {file,line,message}; `rerun` retries only what failed. Only `FULL_CI_PASS` means safe to push — `PARTIAL_PASS` means something did not run (other OS, unsupported action, or your selection).
 - **Bitbucket** (v2.30.0+, when `c3 bitbucket login` has run): `c3_bitbucket(action='list_prs|get_pr|merge_pr|...')` — self-hosted Bitbucket Data Center / Server. Token in OS keyring; mutating actions auto-log to the edit ledger.

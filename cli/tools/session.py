@@ -19,8 +19,101 @@ def _kick_distiller(svc):
         pass
 
 
+def _current_host_id(svc) -> str:
+    """This conversation's host session id (the Claude Code UUID), or ''.
+
+    Same two sources the MCP server uses: the id the SessionManager captured
+    from the host environment, else the one the PreToolUse hooks last wrote.
+    """
+    try:
+        sid = str(((svc.session_mgr.current_session or {}).get("host_session_id")) or "").strip()
+    except Exception:
+        sid = ""
+    if sid:
+        return sid
+    try:
+        import json
+        from pathlib import Path
+
+        from cli._hook_utils import ENFORCEMENT_STATE_FILE
+        state = json.loads((Path(svc.project_path) / ENFORCEMENT_STATE_FILE)
+                           .read_text(encoding="utf-8"))
+        return str(state.get("session_id") or "").strip() if isinstance(state, dict) else ""
+    except Exception:
+        return ""
+
+
+_CURRENT = ("current", "this", "self")
+_LIST_MODES = {"": "hide", "unmarked": "hide", "hide": "hide", "stale": "only",
+               "only": "only", "likely": "likely", "all": "all"}
+
+
+def _session_row_line(row: dict, current: str) -> str:
+    flags = []
+    if row["live"]:
+        flags.append("LIVE")
+    if row["stale"]:
+        flags.append("STALE: " + (row["stale"].get("reason") or "no reason given"))
+    if row["hints"]:
+        flags.append("hints: " + ", ".join(row["hints"]))
+    me = " (this session)" if current and row["id"] == current else ""
+    tail = f" [{'; '.join(flags)}]" if flags else ""
+    return f"{row['short']} {row['last_active'][:10]} {row['title'][:70]}{me}{tail}"
+
+
+def _handle_catalog(action, data, reasoning, target, svc, finalize) -> str:
+    """list / stale / unstale / note — past sessions (services.session_catalog)."""
+    from services import session_catalog as sc
+    current = _current_host_id(svc)
+
+    def pick(ref: str) -> str:
+        ref = (ref or "").strip()
+        return current if ref.lower() in _CURRENT else ref
+
+    if action == "list":
+        mode = _LIST_MODES.get((target or "").strip().lower())
+        if mode is None:
+            return "[session:error] list: target must be stale, likely or all (default: unmarked)"
+        res = sc.list_sessions(svc.project_path, stale=mode, q=data or "", limit=20)
+        rows = res["sessions"]
+        head = f"[sessions:{mode}] {len(rows)} shown" + (" (more exist)" if res["next_before"] else "")
+        body = "\n".join(_session_row_line(r, current) for r in rows) or "(none)"
+        return finalize("c3_session", {"action": action, "target": target},
+                        f"{head}\n{body}", f"{len(rows)} sessions")
+
+    if action in ("stale", "unstale"):
+        ref = pick(target)
+        if not ref:
+            return (f"[session:error] {action}: target is required (a session id, an 8+ char "
+                    "prefix, or 'current')")
+        if action == "stale" and not (reasoning or "").strip():
+            return "[session:error] stale: reasoning is required — say why the session is stale"
+        res = sc.mark(svc.project_path, ref, action, reason=reasoning or "",
+                      successor=pick(data) if action == "stale" else "",
+                      by="agent", by_session=current)
+    elif action == "note":
+        ref = pick(target or "current")
+        if not ref:
+            return ("[session:error] note: this session's id is not known yet; "
+                    "pass target=<session id>")
+        res = sc.mark(svc.project_path, ref, "note", summary=data or "",
+                      next_steps=reasoning or "", by="agent", by_session=current)
+    else:  # pragma: no cover - dispatcher only routes the four actions here
+        return f"[session:error] Unknown action: {action}"
+    if "error" in res:
+        return f"[session:error] {action}: {res['error']}"
+    row = res["row"]
+    msg = f"[session:{action}] {_session_row_line(row, current)}"
+    if res.get("warning"):
+        msg += f"\n[session:warn] {res['warning']}"
+    return finalize("c3_session", {"action": action, "target": row["short"]}, msg, row["short"])
+
+
 def handle_session(action: str, data: str, reasoning: str, description: str,
-                   summary: str, event_type: str, svc, finalize) -> str:
+                   summary: str, event_type: str, svc, finalize, target: str = "") -> str:
+    if action in ("list", "stale", "unstale", "note"):
+        return _handle_catalog(action, data, reasoning, target, svc, finalize)
+
     if action == "start":
         if svc.session_mgr.current_session:
             svc.session_mgr.save_session()
