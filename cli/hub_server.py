@@ -77,6 +77,10 @@ _HUB_CONFIG_DEFAULTS = {
     "ui_reap_minutes": 30,
 }
 
+# Top-bar tabs a persisted ``main_view`` may name (cli/hub_ui/components/topbar.js).
+_MAIN_VIEWS = {"projects", "board", "ci", "creds", "tokens", "locks", "access",
+               "enforce", "sessions"}
+
 # How often the hub reaps orphaned UI servers and chases autostart projects.
 _UI_SWEEP_INTERVAL_S = 60
 
@@ -348,6 +352,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/hub_locks.js",
     "hub_ui/components/hub_access.js",
     "hub_ui/components/hub_enforcement.js",
+    "hub_ui/components/hub_sessions.js",
     "hub_ui/components/hub_ci.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
@@ -447,9 +452,11 @@ def api_hub_config_set():
         cfg["projects_view"] = projects_view
     if "main_view" in data:
         main_view = str(data["main_view"]).strip().lower()
-        if main_view not in {"projects", "board", "creds", "locks", "enforce"}:
-            return jsonify({"error": "main_view must be 'projects', 'board', "
-                                     "'creds', 'locks' or 'enforce'"}), 400
+        # Every tab the top bar offers. ci, tokens and access were missing, so
+        # choosing one of those tabs 400'd here and never survived a reload.
+        if main_view not in _MAIN_VIEWS:
+            return jsonify({"error": "main_view must be one of: "
+                                     + ", ".join(sorted(_MAIN_VIEWS))}), 400
         cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
@@ -777,45 +784,9 @@ def api_launch_ide():
                 kwargs = {"start_new_session": True}
                 subprocess.Popen([cmd, str(path)], **kwargs)
         else:
-            # Terminal CLIs: open a new terminal window running the command
-            if sys.platform == "win32":
-                # On Windows, use the command directly (globally installed CLIs)
-                win_cmd = cmd
-
-                # Try Windows Terminal first, fall back to cmd
-                try:
-                    # Windows Terminal 'wt' needs a full command to run
-                    # We wrap the command in 'cmd /k' so the terminal stays open
-                    subprocess.Popen(
-                        ["wt", "-d", str(path), "cmd", "/k", win_cmd],
-                        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                    )
-                except FileNotFoundError:
-                    # Fallback to classic cmd.exe
-                    subprocess.Popen(
-                        ["cmd", "/c", "start", "", "cmd", "/k", win_cmd],
-                        cwd=str(path),
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                    )
-            elif sys.platform == "darwin":
-                script = (
-                    f'tell application "Terminal" to do script '
-                    f'"cd {shlex.quote(str(path))} && {cmd}"'
-                )
-                subprocess.Popen(["osascript", "-e", script])
-            else:
-                q = shlex.quote(str(path))
-                for term_args in [
-                    ["gnome-terminal", "--", "bash", "-c", f"cd {q} && {cmd}; exec bash"],
-                    ["xterm", "-e", f"bash -c 'cd {q} && {cmd}; exec bash'"],
-                    ["konsole", "-e", "bash", "-c", f"cd {q} && {cmd}; exec bash"],
-                    ["xfce4-terminal", "--command", f"bash -c 'cd {q} && {cmd}; exec bash'"],
-                ]:
-                    try:
-                        subprocess.Popen(term_args, start_new_session=True)
-                        break
-                    except FileNotFoundError:
-                        continue
+            # Terminal CLIs: open a new terminal window running the command.
+            from services.terminal_launch import spawn_terminal
+            spawn_terminal(path, [cmd])
 
         return jsonify({"launched": True})
     except Exception as e:
@@ -4806,6 +4777,164 @@ def api_sessions():
         return jsonify(_pm().get_active_sessions())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ─── Routes: session history (2.143.0) ──────────────────────────────────────
+# PAST agent sessions: find one, see what it was, resume it, mark it stale.
+# Not to be confused with /api/sessions* above, which manage per-project UI
+# servers. Loopback + the CSRF guard like every Hub route; deliberately NOT
+# mirrored on the Oracle gateway, which can bind to the tailnet — transcript
+# previews stay on this machine. See docs/sessions.md.
+
+_SESSIONS_FEATURES = ["list", "detail", "mark", "note", "resume", "remote"]
+_SESSIONS_STALE = {"hide", "only", "likely", "all"}
+
+
+def _session_project(raw: str):
+    """``{name, path}`` of the REGISTERED project ``raw`` names, or None.
+
+    Every session route resolves its project against the registry first, so a
+    caller can never point the catalog (or a terminal) at an arbitrary folder.
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    want = os.path.normcase(os.path.normpath(raw))
+    for p in _pm().list_projects():
+        path = str(p.get("path") or "")
+        if path and os.path.normcase(os.path.normpath(path)) == want:
+            return {"name": str(p.get("name") or Path(path).name), "path": path}
+    return None
+
+
+def _session_project_or_error(raw: str):
+    proj = _session_project(raw)
+    if proj is None:
+        return None, (jsonify({"error": "not a registered project"}), 404)
+    if not (Path(proj["path"]) / ".c3").is_dir():
+        return None, (jsonify({"error": "C3 is not initialized in this project"}), 409)
+    return proj, None
+
+
+@app.route("/api/hub/sessions/overview", methods=["GET"])
+def api_hub_sessions_overview():
+    """Per-project session counts for the picker. Stats files only."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from services import session_catalog as sc
+
+    def one(p):
+        ppath = str(p.get("path") or "")
+        name = str(p.get("name") or Path(ppath).name)
+        row = {"name": name, "path": ppath, "initialized": True, "error": None,
+               "counts": {"total": 0, "live": 0, "stale": 0, "idle": 0},
+               "last_active": "", "newest": None, "transcripts": False}
+        try:
+            if not (Path(ppath) / ".c3").is_dir():
+                row["initialized"] = False
+            else:
+                row.update(sc.overview(ppath, name=name))
+        except Exception as e:
+            row["error"] = str(e)
+        return row
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(one, _pm().list_projects()))
+    rows.sort(key=lambda r: r.get("last_active") or "", reverse=True)
+    return jsonify({"projects": rows, "features": _SESSIONS_FEATURES})
+
+
+@app.route("/api/hub/sessions", methods=["GET"])
+def api_hub_sessions_list():
+    """Rows for one project (``?path=``) or every project (no path)."""
+    from services import session_catalog as sc
+    stale = (request.args.get("stale") or "hide").strip().lower()
+    if stale not in _SESSIONS_STALE:
+        return jsonify({"error": f"stale must be one of {sorted(_SESSIONS_STALE)}"}), 400
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    q = (request.args.get("q") or "").strip()
+    before = (request.args.get("before") or "").strip()
+    raw = (request.args.get("path") or "").strip()
+    try:
+        if raw:
+            proj, err = _session_project_or_error(raw)
+            if err:
+                return err
+            res = sc.list_sessions(proj["path"], name=proj["name"], stale=stale, q=q,
+                                   limit=limit, before=before)
+            res["errors"] = []
+        else:
+            projects = [{"name": str(p.get("name") or ""), "path": str(p.get("path") or "")}
+                        for p in _pm().list_projects()]
+            res = sc.list_many(projects, stale=stale, q=q, limit=limit, before=before)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/hub/sessions/detail", methods=["GET"])
+def api_hub_sessions_detail():
+    from services import session_catalog as sc
+    proj, err = _session_project_or_error(request.args.get("path") or "")
+    if err:
+        return err
+    res = sc.get_session(proj["path"], request.args.get("id") or "", name=proj["name"])
+    if "error" in res:
+        return jsonify(res), 404
+    return jsonify(res)
+
+
+@app.route("/api/hub/sessions/mark", methods=["POST"])
+def api_hub_sessions_mark():
+    """Body: {path, id, op: stale|unstale|note, reason?, successor?,
+    summary?, next_steps?}. Recorded as ``by: user``."""
+    from services import session_catalog as sc
+    data = request.get_json(force=True) or {}
+    proj, err = _session_project_or_error(data.get("path") or "")
+    if err:
+        return err
+    res = sc.mark(proj["path"], str(data.get("id") or ""), str(data.get("op") or ""),
+                  reason=str(data.get("reason") or ""),
+                  successor=str(data.get("successor") or ""),
+                  summary=str(data.get("summary") or ""),
+                  next_steps=str(data.get("next_steps") or ""), by="user")
+    if "error" in res:
+        return jsonify({"error": res["error"]}), int(res.get("status") or 400)
+    return jsonify(res)
+
+
+@app.route("/api/hub/sessions/resume", methods=["POST"])
+def api_hub_sessions_resume():
+    """Body: {path, id}. Opens a terminal running ``claude --resume <id>``.
+
+    The command is built by the catalog from a validated id — nothing from the
+    request reaches the command line. 409 while the session is open.
+    """
+    from services import session_catalog as sc
+    from services import terminal_launch
+    data = request.get_json(force=True) or {}
+    proj, err = _session_project_or_error(data.get("path") or "")
+    if err:
+        return err
+    spec = sc.resume_spec(proj["path"], str(data.get("id") or ""))
+    if "error" in spec:
+        return jsonify({"error": spec["error"]}), int(spec.get("status") or 404)
+    try:
+        terminal_launch.spawn_terminal(spec["cwd"], spec["argv"])
+    except Exception as e:
+        return jsonify({"error": f"could not open a terminal: {e}",
+                        "command": spec["command"]}), 500
+    try:
+        from services.activity_log import ActivityLog
+        ActivityLog(proj["path"]).log("session_resume", {
+            "host_session_id": spec["id"], "by": "user", "cwd": spec["cwd"]})
+    except Exception:
+        pass
+    return jsonify({"launched": True, "id": spec["id"], "command": spec["command"],
+                    "cwd": spec["cwd"]})
 
 
 # ─── Error handlers ──────────────────────────────────────────────────────────

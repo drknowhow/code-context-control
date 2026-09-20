@@ -29,7 +29,7 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 STATUSES = ("backlog", "in_progress", "blocked", "done")
 PRIORITIES = ("p0", "p1", "p2", "p3")
-LINK_TYPES = ("file", "commit", "edit")
+LINK_TYPES = ("file", "commit", "edit", "session")
 NOTE_KINDS = ("note", "decision")
 _RANK_STEP = 1024.0
 _MIN_GAP = 1e-6

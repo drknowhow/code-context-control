@@ -97,6 +97,8 @@ Every C3-initialized project registers itself here on `c3 init`. Filter by activ
 
 Three top-level views — **Projects**, **Tasks** (a cross-project kanban), and **Credentials** — plus a drill-in panel per project covering Overview, Sub-projects, Tasks, Artifacts, Memory, Ledger, Sessions, Health, Budget, Credentials, Config, and MCP.
 
+**Sessions** (v2.143.0) lists past Claude Code sessions across projects: the title, first and last prompt, the agent's note, and linked tasks and decisions. **Resume** opens a terminal running `claude --resume <id>`, or you can copy the command or open the claude.ai/code link. Agents mark dead ends stale with `c3_session(action='stale')`. → [Sessions](https://github.com/drknowhow/code-context-control/blob/main/docs/sessions.md)
+
 **Sub-projects** make one project a first-class child of another, with its own `.c3`. It can be a nested repo — the parent's index then excludes its subtree — or a project anywhere else on disk, linked by path. Hierarchies nest up to 8 levels, and `c3_search` / `c3_memory` fan out on demand (`scope='all'`, or one by name). → [Sub-projects guide](https://github.com/drknowhow/code-context-control/blob/main/docs/sub-projects.md)
 
 ### Per-project UI

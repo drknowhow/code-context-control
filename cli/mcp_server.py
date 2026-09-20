@@ -694,18 +694,24 @@ async def c3_search(query: str, action: str = "code", top_k: int = 3,
 @mcp.tool()
 async def c3_session(action: str, data: str = "", reasoning: str = "",
                description: str = "", summary: str = "",
-               event_type: str = "auto", ctx: Context = None) -> str:
+               event_type: str = "auto", target: str = "", ctx: Context = None) -> str:
     """Session management: start, save, log, plan, snapshot, restore, compact, convo_log (log/snapshot are safe in plan mode).
     log: data + reasoning. snapshot: data=task, reasoning=next steps, summary=key files.
     restore: data=snapshot_id. convo_log: data=text, event_type=role.
-    plan logs an ephemeral session plan — durable tracked TODOs belong in c3_task."""
+    plan logs an ephemeral session plan — durable tracked TODOs belong in c3_task.
+    Past sessions (the Hub/Desk Sessions view; target = session id, 8+ char prefix, or 'current'):
+      list: data=optional search, target=stale|likely|all (default unmarked) — safe in plan mode.
+      stale: target + reasoning=why (required), data=successor id (optional). Mark a session you
+        superseded, finished or abandoned so nobody resumes a dead end. unstale: target.
+      note: data=what this session did, reasoning=next steps (target defaults to current) — leave
+        one before /clear or when stopping so the session card says where things stand."""
     svc = _svc(ctx)
 
     def finalize(name, args, resp, summ, **kw):
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     return await asyncio.to_thread(handle_session, action, data, reasoning, description, summary,
-                                   event_type, svc, finalize)
+                                   event_type, svc, finalize, target)
 
 
 @mcp.tool()
@@ -1432,7 +1438,8 @@ async def c3_task(
     Tasks: add (title [+description/priority p0-p3/due_date YYYY-MM-DD/tags CSV/milestone/parent]),
       update (task_id + changed fields incl. status backlog|in_progress|blocked|done), done (task_id),
       list (filters: status/priority/tags/milestone/query), get, board (kanban columns + milestone progress), archive,
-      link/unlink (task_id + link_type file|commit|edit + ref — ties tasks to code),
+      link/unlink (task_id + link_type file|commit|edit|session + ref — ties tasks to code;
+        session ref='current' links this conversation),
       block/unblock (task_id + ref=blocking task id; cycle-safe; completing the last open blocker auto-releases dependents to backlog),
       report (overdue, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput).
     Subtasks: one level via parent (add/update; update parent='none' clears).

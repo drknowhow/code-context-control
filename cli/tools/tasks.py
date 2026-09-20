@@ -242,7 +242,13 @@ def handle_task(action, svc, finalize, *, title="", task_id="", status="",
     if action in ("link", "unlink"):
         if not task_id or not link_type or not ref:
             return done_resp(f"[task:error] {action} requires task_id, link_type "
-                             "(file|commit|edit), and ref.", "error")
+                             "(file|commit|edit|session), and ref.", "error")
+        if link_type == "session" and ref.strip().lower() in ("current", "this", "self"):
+            from cli.tools.session import _current_host_id
+            ref = _current_host_id(svc)
+            if not ref:
+                return done_resp("[task:error] this session's id is not known yet; "
+                                 "pass ref=<session id>", "error")
         res = (store.add_link(task_id, link_type, ref, label=label)
                if action == "link" else store.remove_link(task_id, link_type, ref))
         if "error" in res:
