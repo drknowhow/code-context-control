@@ -445,6 +445,20 @@ class TestHubCredentialsWriteRoutes(unittest.TestCase):
                                     if e["scope"] == "global"])
         self.assertNotIn(CANARY, resp.get_data(as_text=True))
 
+    def test_overview_flags_lost_values_and_missing_backup(self):
+        cs.set_credential("LOST", "v-" + CANARY, scope="global",
+                          project_path=str(self.proj))
+        cs.set_credential("KEPT", "k-" + CANARY, scope="global",
+                          project_path=str(self.proj))
+        cs._keyring_module().delete_password("c3-creds", "global|LOST")
+        with self._patched_pm():
+            body = self.client.get("/api/hub/credentials/overview").get_json()
+        g = {e["name"]: e for e in body["global"]["entries"]}
+        self.assertTrue(g["LOST"]["value_missing"])
+        self.assertFalse(g["KEPT"]["value_missing"])
+        self.assertEqual(body["backup"], {"enabled": False, "restorable": 0,
+                                          "lost": 1, "not_backed_up": 1})
+
     def test_overview_uninitialized_project_flagged(self):
         with tempfile.TemporaryDirectory() as bare:
             with self._patched_pm([{"name": "bare", "path": bare}]):

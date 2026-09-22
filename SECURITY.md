@@ -69,6 +69,14 @@ boundaries operators should understand:
 - **Redaction is exact-match**, not semantic: a value transformed by a child
   process (base64, split, re-encoded) will not be caught. Prefer scoped,
   revocable tokens over long-lived master secrets.
+- **The optional backup (v2.145.0)** at `~/.c3/vault_backup.json` holds every
+  value sealed to an X25519 key (ephemeral ECDH, HKDF-SHA256, AES-256-GCM
+  bound to `realm|name`). The private key is wrapped under a scrypt
+  (N=2^17, r=8, p=1) key from the user's passphrase, so anyone who copies
+  the file can mount an offline guess against that passphrase: choose a long
+  one. Anyone who can write the file can plant records, since sealing needs
+  only the public key; restore only fills entries still registered whose
+  value is gone, and never raises `agent_readable`.
 
 ## Hardening notes for operators
 

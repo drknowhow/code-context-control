@@ -154,7 +154,7 @@ def _struct_account(realm_s: str, name: str) -> str:
 # credentials API is how a prompt-injected agent would grant itself reveal
 # access. Mirrored in cli/hook_pretool_enforce.py (parity-tested).
 VAULT_PROTECTED_FILES = frozenset({
-    "config.json", "secrets.enc", "cred_state.json",
+    "config.json", "secrets.enc", "cred_state.json", "vault_backup.json",
     # Usage telemetry (services/cred_telemetry.py) — matching is exact
     # filename, so the rotation file needs its own entry.
     "cred_usage.jsonl", "cred_usage.jsonl.1",
@@ -747,12 +747,14 @@ def _store_value(name: str, value: str, *, scope: str, project_path: str,
                  realm_s: str) -> tuple:
     """Write the value to whichever backend its size calls for.
 
-    Returns ``(storage, raw_bytes)``. Shared by :func:`set_credential` and
-    :func:`set_value` so the threshold decision and the "clean up the backend
-    we are no longer using" half exist once — a value that grew past the
-    threshold must leave the keyring, and one that shrank must leave the
-    sidecar, or a stale copy outlives the entry.
+    Returns ``(storage, raw_bytes, backup)`` where ``backup`` is the
+    :func:`services.credential_backup.seal` result. Shared by
+    :func:`set_credential` and :func:`set_value` so the threshold decision
+    and the "clean up the backend we are no longer using" half exist once —
+    a value that grew past the threshold must leave the keyring, and one
+    that shrank must leave the sidecar, or a stale copy outlives the entry.
     """
+    from services import credential_backup
     raw = value.encode("utf-8")
     storage = "file" if len(raw) > FILE_STORAGE_THRESHOLD else "keyring"
     if storage == "keyring":
@@ -768,7 +770,7 @@ def _store_value(name: str, value: str, *, scope: str, project_path: str,
             _keyring_module().delete_password(KEYRING_SERVICE, _account(realm_s, name))
         except Exception:
             pass
-    return storage, raw
+    return storage, raw, credential_backup.seal(realm_s, name, value)
 
 
 def set_credential(
@@ -871,8 +873,8 @@ def set_credential(
         field_names = sorted(fields)
         value = json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
-    storage, raw = _store_value(name, value, scope=scope,
-                                project_path=project_path, realm_s=realm_s)
+    storage, raw, backup = _store_value(name, value, scope=scope,
+                                        project_path=project_path, realm_s=realm_s)
 
     config = _load_config(base)
     section = _creds_section(config)
@@ -899,7 +901,7 @@ def set_credential(
     _save_config(base, config)
     _write_flag_attestation(realm_s, name, bool(agent_readable))
     _write_struct_attestation(realm_s, name, ctype)
-    return dict(entry)
+    return {**entry, "backup": backup}
 
 
 def set_value(name: str, value: str, *, scope: str = "project",
@@ -940,8 +942,8 @@ def set_value(name: str, value: str, *, scope: str = "project",
             "store a plain value")
 
     realm_s = realm(scope, project_path)
-    storage, raw = _store_value(name, value, scope=scope,
-                                project_path=project_path, realm_s=realm_s)
+    storage, raw, backup = _store_value(name, value, scope=scope,
+                                        project_path=project_path, realm_s=realm_s)
     if "\n" in value and ctype != "multiline":
         ctype = "multiline"
 
@@ -958,7 +960,29 @@ def set_value(name: str, value: str, *, scope: str = "project",
     section["entries"][name] = updated
     config["credentials"] = section
     _save_config(base, config)
-    return dict(updated)
+    return {**updated, "backup": backup}
+
+
+def restore_value(name: str, value: str, *, scope: str, project_path: str = ".") -> None:
+    """Put a recovered value back under an entry that is still registered.
+
+    The registry entry keeps its settings, with one exception: reveal is
+    turned off when the keyring attestation that backs it is gone (it was
+    already failing closed, and the UI should not claim otherwise). A
+    structured entry gets its structured attestation back."""
+    scope = _norm_scope(scope, project_path)
+    entry = _read_entries(scope, project_path).get(name)
+    if entry is None:
+        raise CredentialError(f"{name!r} is not registered in {scope} scope")
+    realm_s = realm(scope, project_path)
+    _store_value(name, value, scope=scope, project_path=project_path, realm_s=realm_s)
+    ctype = str(entry.get("type") or "")
+    if ctype in STRUCTURED_TYPES:
+        _write_struct_attestation(realm_s, name, ctype)
+    if entry.get("agent_readable") and not verify_agent_readable(
+            name, scope=scope, project_path=project_path):
+        update_metadata(name, scope=scope, project_path=project_path,
+                        agent_readable=False)
 
 
 def clear_source(name: str, *, scope: str = "project",
@@ -1238,6 +1262,8 @@ def delete_credential(name: str, *, scope: str, project_path: str = ".") -> bool
         _keyring_module().delete_password(KEYRING_SERVICE, _struct_account(realm_s, name))
     except Exception:
         pass
+    from services import credential_backup
+    credential_backup.drop(realm_s, name)
     config = _load_config(base)
     section = _creds_section(config)
     removed_entry = name in section["entries"]
@@ -1707,7 +1733,10 @@ def describe_missing(refs: list, project_path: str = ".") -> dict:
         elif field:
             out[ref] = f"{name} is not structured — drop the .{field} suffix"
         else:
-            out[ref] = "registered but its value is missing from this realm's store"
+            out[ref] = ("registered but its value is missing from this realm's "
+                        "store (the OS keychain lost it) — the user restores it "
+                        "with `c3 creds backup restore` or re-enters it with "
+                        "`c3 creds set`")
     return out
 
 

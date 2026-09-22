@@ -2451,7 +2451,20 @@ def api_hub_credentials_overview():
          "shadowed_in": shadowed_in.get(name, [])}
         for name, entry in global_entries.items()
     ]
-    return jsonify({"global": {"entries": global_out}, "projects": projects_out})
+    return jsonify({"global": {"entries": global_out}, "projects": projects_out,
+                    "backup": _cred_backup_summary(
+                        [row["path"] for row in projects_out if row["initialized"]])})
+
+
+def _cred_backup_summary(project_paths) -> dict:
+    """Backup state as counts for the Hub banner; a broken file reports its error."""
+    from services import credential_backup
+    try:
+        st = credential_backup.status(project_paths)
+    except credential_backup.BackupError as exc:
+        return {"enabled": True, "error": str(exc), "restorable": 0, "lost": 0}
+    return {"enabled": st["enabled"], "restorable": len(st["restorable"]),
+            "lost": len(st["lost"]), "not_backed_up": len(st["not_backed_up"])}
 
 
 #: Bulk actions may only ever REDUCE what a credential is exposed to.

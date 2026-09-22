@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-context-control"
-version = "2.144.0"
+version = "2.145.0"
 description = "Local MCP code-intelligence for AI coding tools: surgical search/read/edit, agent-config version history, path-level access + masking guards, and a multi-project hub."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,6 +50,7 @@ dependencies = [
     "click>=8.0.0",
     "pyyaml>=6.0.0",
     "keyring>=24.0",
+    "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]

@@ -583,6 +583,16 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_audit.add_argument("--json", dest="as_json", action="store_true", help="Emit raw JSON")
     cr_audit.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
 
+    cr_backup = creds_subs.add_parser(
+        "backup", help="Passphrase-locked copy of every value that survives an OS keychain wipe")
+    cr_backup.add_argument(
+        "backup_cmd", choices=["init", "status", "sync", "restore", "passphrase"],
+        help="init: turn it on (asks for a passphrase) · status · sync: copy every live "
+             "value now · restore: put lost values back (asks for the passphrase) · "
+             "passphrase: change it")
+    cr_backup.add_argument("--only", default="", help="restore: comma-separated names (default: all lost values)")
+    cr_backup.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+
     # ── Agent Locks (docs/agent-locks.md) ───────────────────────────────
     # force-release is human-only: it bumps the fencing counter so a holder
     # that comes back is stale by construction. Agents get c3_locks instead,

@@ -78,7 +78,8 @@ _SAMPLE_STRATEGIES = ("first", "last")
 # paths already carry a dedicated guard (credential_store.vault_guard_reason)
 # AND their own human-only escalation (agent_readable). An opt-out here would
 # add nothing but a shorter route to the same secrets.
-BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json")
+BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json",
+                         "**/.c3/vault_backup.json")
 
 # Tier 1 — a human may switch these off, but only through the two-key opt-out
 # below: a config entry AND a keyring attestation. Default is all enforced.

@@ -104,10 +104,16 @@ def _act_list(project_path: str) -> str:
     lines += [_format_entry_line(n, e, usage, n in missing)
               for n, e in entries.items()]
     if missing:
+        from services import credential_backup
+        way_back = ("The user restores them in a terminal with `c3 creds backup "
+                    "restore` (it asks for the backup passphrase)"
+                    if credential_backup.is_enabled() else
+                    "No vault backup is configured; the user re-enters them "
+                    "(Credentials UI or `c3 creds set`)")
         lines.append(
             f"[creds:value-missing] {len(missing)} registered entries have no "
             "stored value (the OS keychain no longer holds it); injecting them "
-            "fails. The user re-enters them (Credentials UI or `c3 creds set`).")
+            f"fails. {way_back}.")
     lines.append(_USAGE_FOOTER)
     return "\n".join(lines)
 

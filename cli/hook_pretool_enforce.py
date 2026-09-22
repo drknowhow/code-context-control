@@ -125,6 +125,7 @@ _WRITE_CLASS_ALWAYS = frozenset({"Edit", "Write", "MultiEdit"})
 # Mirrors services.credential_store.VAULT_PROTECTED_FILES (parity-tested);
 # duplicated because hooks must stay import-light.
 _VAULT_FILES = frozenset({"config.json", "secrets.enc", "cred_state.json",
+                          "vault_backup.json",
                           "cred_usage.jsonl", "cred_usage.jsonl.1"})
 
 # Redirect messages per native tool

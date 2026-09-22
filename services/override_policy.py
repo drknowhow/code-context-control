@@ -206,7 +206,8 @@ def _absolute_denies() -> frozenset:
     except Exception:
         # Fail closed: if we cannot read the Tier-0 list, treat the known
         # members as denied anyway rather than declaring them escalatable.
-        return frozenset({"**/.c3/secrets.enc", "**/.c3/cred_state.json"})
+        return frozenset({"**/.c3/secrets.enc", "**/.c3/cred_state.json",
+                          "**/.c3/vault_backup.json"})
 
 
 #: Files inside `.c3/` that no grant may ever authorise writing, whatever the
@@ -216,6 +217,7 @@ def _absolute_denies() -> frozenset:
 FORBIDDEN_TARGET_NAMES = frozenset({
     "secrets.enc",
     "cred_state.json",
+    "vault_backup.json",
     "config.json",
     "override_grants.json",
     "overrides.jsonl",

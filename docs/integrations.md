@@ -93,6 +93,29 @@ The write-only wire contract extends to the Hub: values are submitted
 inbound-only, **no hub route ever returns a stored value**, and search indexes
 metadata only.
 
+**Backup (v2.145.0).** The keyring is the only copy of a value, and Windows has
+been seen to empty Credential Manager on a restart. The registry survives such
+a wipe and the values do not; `c3 creds list` then shows `VALUE MISSING`.
+`c3 creds backup init` turns on a second copy in `~/.c3/vault_backup.json`
+that depends on neither the keyring nor DPAPI:
+
+```bash
+c3 creds backup init      # choose a passphrase, 16+ chars (keep it in a password manager)
+c3 creds backup status    # held / restorable / lost / not backed up yet
+c3 creds backup restore   # after a wipe: asks for the passphrase, refills lost values
+c3 creds backup sync      # copy every live value now (init already did this once)
+c3 creds backup passphrase
+```
+
+Every value write afterwards (CLI, Hub, UI, `c3_credentials`, `.env` import)
+is sealed to the backup's public key without a prompt; only restore needs the
+passphrase. Restore never overwrites a value that still resolves, does not
+recreate an entry deleted since, and brings reveal-enabled entries back
+injection-only. `init`, `restore` and `passphrase` refuse to run without a
+terminal, so the passphrase cannot be piped in. The file is a Tier-0 Access
+Guard path, like `secrets.enc`. Forgetting the passphrase makes the backup
+unopenable; delete the file and run `init` again to start over.
+
 Full guide: `cli/guide/credentials.html` (open in-app at `/guide/credentials.html`).
 
 ---
