@@ -75,14 +75,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html" class="active">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.32.0</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -95,6 +99,7 @@
       <a href="#connect-openapi" class="sidebar-link"><span class="icon">🌐</span> Connect any LLM (REST)</a>
       <a href="#endpoints"       class="sidebar-link"><span class="icon">📡</span> Endpoints</a>
       <a href="#tools"           class="sidebar-link"><span class="icon">🧰</span> Tools &amp; tiers</a>
+      <a href="#mobile"          class="sidebar-link"><span class="icon">📱</span> Mobile &amp; desktop apps</a>
       <a href="#auth"            class="sidebar-link"><span class="icon">🔐</span> Auth &amp; security</a>
       <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
       <a href="#config"          class="sidebar-link"><span class="icon">📂</span> Configuration</a>
@@ -112,13 +117,14 @@
 
     <div class="page-hero">
       <h1>Oracle Discovery API</h1>
-      <p>Point Claude — or any function-calling LLM — at a running Oracle and let it use C3's cross-project code &amp; memory intelligence as tools. Discover projects, search code and memory across all of them, traverse the memory graph, and surface insights, without ever opening the chat UI.</p>
+      <p>Point Claude, or any function-calling LLM, at a running Oracle and let it use C3's cross-project code &amp; memory intelligence as tools. Discover projects, search code and memory across all of them, traverse the memory graph, and surface insights, without ever opening the chat UI. The same Oracle process also serves a companion mobile app and the C3 Desk desktop tray client over a separate, capability-gated <code>/api/mobile/*</code> surface.</p>
       <div class="pill-row">
-        <span class="pill pill-accent">v2.32.0</span>
+        <span class="pill pill-accent">v2.32.0 → v2.126.0</span>
         <span class="pill pill-purple">External LLM tools</span>
         <span class="pill pill-green">MCP + OpenAPI</span>
         <span class="pill">Read &amp; safe-actions</span>
         <span class="pill">Bearer + loopback</span>
+        <span class="pill">Mobile + desktop gateway</span>
       </div>
     </div>
 
@@ -128,7 +134,7 @@
       <p>The Oracle normally runs the LLM relationship <em>inwards</em>: its own model (Ollama) calls C3 tools to analyze your projects. The Discovery API flips that — it exposes those same capabilities <strong>outwards</strong>, so an external LLM can use the Oracle as a discovery tool over your whole C3 estate.</p>
 
       <div class="callout">
-        <p><strong>Two transports, one tool core.</strong> The exact same tool registry is served over both <strong>MCP</strong> (streamable HTTP/SSE — native for Claude Code / Claude Desktop) and an <strong>OpenAPI REST</strong> surface (for any function-calling LLM). They run on separate loopback ports because Flask is WSGI and the MCP transport is ASGI, but they dispatch through one definition of each tool — so the two surfaces can never drift apart.</p>
+        <p><strong>Two transports, one tool core.</strong> The exact same tool registry is served over both <strong>MCP</strong> (streamable HTTP/SSE, native for Claude Code / Claude Desktop) and an <strong>OpenAPI REST</strong> surface (for any function-calling LLM). They run on separate loopback ports because Flask is WSGI and the MCP transport is ASGI, but they dispatch through one definition of each tool — so the two surfaces can never drift apart.</p>
       </div>
 
       <h3>What you get</h3>
@@ -171,7 +177,7 @@
           <pre><code>c3 oracle serve --no-browser
 <span class="com"># or: run it at login, no terminal window</span>
 c3 oracle serve --install</code></pre>
-          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Prints the REST + MCP URLs and ensures an API key exists. The MCP server starts in a background thread. <code>--install</code> registers a windowless background service (Task Scheduler / launchd / systemd) and starts it now — the same buttons live in <strong>Hub → Settings → Oracle service</strong>.</p>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Prints the REST + MCP URLs and ensures an API key exists. The MCP server starts in a background thread. <code>--install</code> (v2.91.0) registers a windowless background service (Task Scheduler with a Run-key fallback on Windows, a LaunchAgent on macOS, a systemd user unit on Linux) and starts it now, so the Oracle comes back on its own at login. The same buttons live in <strong>Hub → Settings → Oracle service</strong>, which also fills in the Hub's Oracle URL automatically once the service starts.</p>
         </div>
         <div class="step-card">
           <span class="step-num">2</span><h4>Get the token</h4>
@@ -290,10 +296,48 @@ curl -X POST \
 
     <hr class="divider">
 
+    <!-- ═══════════════════════════════════════ MOBILE ═══ -->
+    <section id="mobile" class="tool-section">
+      <h2>Mobile &amp; desktop companion apps</h2>
+      <p>The same Oracle process also serves <code>/api/mobile/*</code> — a separate, Bearer-gated surface for the C3 mobile app and the C3 Desk desktop tray client (<code>oracle/services/mobile_api.py</code> and friends). It is capability-gated: <code>GET /api/mobile/info</code> reports what this Oracle build actually exposes, so a client hides a feature it cannot use instead of discovering it by trial and error. <code>api_version</code> is currently <strong>5</strong>.</p>
+
+      <table class="params-table">
+        <thead><tr><th>Capability</th><th>Since</th><th>What it adds</th></tr></thead>
+        <tbody>
+          <tr><td>Core gateway</td><td>v2.68.0</td><td>Cross-project activity feed, project overview + health, PM board read/write, daily digest, notification ack, <strong>and</strong> a network-reachable credential vault (list/get/check/set/delete, allowlist-serialized — never a reveal route) and Access Guard (rules, masks, path checks, tool discipline). Bearer required on every method, GETs included.</td></tr>
+          <tr><td><code>feed_wait</code></td><td>v2.73.0</td><td><code>GET /api/mobile/feed?wait=0..30</code> holds the request open until something new matches the watermark, instead of the app polling every 15s. Requires <code>since</code>; refused with <code>before</code>. Waiters capped at 4; past the cap it degrades to an immediate answer.</td></tr>
+          <tr><td>Ops + chat</td><td>v2.76.0</td><td><code>edits</code>, <code>locks</code>, <code>status</code>, <code>insights</code>, <code>suggestions</code>, <code>review</code> routes — the phone can read state, not just events. Chat is poll-based, not SSE: <code>POST /chat/turn</code>, <code>GET /turn/&lt;id&gt;?after=</code>, <code>DELETE /turn/&lt;id&gt;</code>, so a backgrounded app can resume a turn instead of losing it when the OS kills the socket.</td></tr>
+          <tr><td>Jobs + CI</td><td>v2.126.0</td><td><code>GET /api/mobile/jobs</code> (read-only <code>c3_shell_job</code> rows), <code>GET /api/mobile/ci/runs</code> / <code>ci/run</code> (local CI history).</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Per-client tokens and the loopback listener (v2.125.0)</h3>
+      <p>Before v2.125.0 the gateway had one credential, the Discovery token, shared by every client. Now each client (a phone, or the C3 Desk tray app) can carry its own token:</p>
+      <ul>
+        <li><code>POST /api/mobile/clients</code> mints one. It has no Bearer of its own; it requires a local caller plus the owner-only <code>~/.c3/oracle/bootstrap.key</code>, and returns the token exactly once.</li>
+        <li><code>GET /api/mobile/clients</code> lists issued clients (hashes never included); <code>DELETE /api/mobile/clients/&lt;id&gt;</code> revokes one immediately.</li>
+        <li>Tokens are stored as SHA-256 hashes in <code>~/.c3/oracle/clients.json</code>, owner-only ACL. The Discovery token still works everywhere — it maps to a synthetic <code>mobile</code> client so existing phones keep working unchanged.</li>
+        <li>Dashboard: <strong>Settings → Mobile app → Show pairing code</strong> now mints a per-device token for the QR rather than embedding the Discovery token, so rotating the Discovery token no longer un-pairs every phone. A <strong>Paired devices</strong> list lets you revoke one by one.</li>
+      </ul>
+      <p>A <strong>loopback listener</strong> (<code>oracle/listeners.py</code>, config key <code>loopback_listener</code>, default <code>true</code>) solves a specific problem: if <code>bind_host</code> is set to a specific non-loopback address (a Tailscale IP, say), <code>http://127.0.0.1</code> used to be refused even from the Oracle's own machine — which broke the same-box C3 Desk client. When <code>bind_host</code> is non-loopback, the same Flask app now also listens on <code>127.0.0.1</code> on the same port, with the same Host allowlist and Bearer gates. A wildcard or already-loopback bind is unchanged.</p>
+
+      <h3>Event notifications and session boundaries (v2.126.0)</h3>
+      <p>A finished background job, a local-CI run, a session ending, or the MCP runtime coming ready each write one notification with a machine-readable <code>kind</code> and a <code>ref_id</code> (<code>services/notifications.py</code>, <code>EVENT_KINDS</code>):</p>
+      <table class="kv-table">
+        <tr><td><code>shell_job</code></td><td><code>ref_id</code> = job id. <code>info</code> for <code>done</code>; <code>warning</code> for <code>failed</code>/<code>timeout</code>/<code>cancelled</code>/<code>lost</code>.</td></tr>
+        <tr><td><code>ci</code></td><td><code>ref_id</code> = run id. <code>info</code> for <code>FULL_CI_PASS</code>; <code>warning</code> for <code>PARTIAL_PASS</code>/<code>FAIL</code>.</td></tr>
+        <tr><td><code>session</code></td><td><code>ref_id</code> = host session id. "Session started" / "Session ended", from new <code>SessionStart</code>/<code>SessionEnd</code> hooks.</td></tr>
+        <tr><td><code>mcp</code></td><td><code>ref_id</code> = C3 session id. "C3 connected" once the MCP runtime is ready to serve — what a desktop "MCP failed to connect" indicator keys on.</td></tr>
+      </table>
+      <p>Every producer is best-effort: a notification failure never fails the job, run, hook or server it reports on. <code>override.channel</code> (<code>mobile</code> / <code>desktop</code> / <code>both</code>) is also consumed here, so the desktop client only toasts an override request meant for it.</p>
+    </section>
+
+    <hr class="divider">
+
     <!-- ═══════════════════════════════════════ AUTH ═══ -->
     <section id="auth" class="tool-section">
       <h2>Authentication &amp; security</h2>
-      <p>A single Bearer token guards both transports. The REST surface checks it in a Flask <code>before_request</code> hook; the MCP transport checks it in a pure-ASGI middleware (so streaming responses pass through intact).</p>
+      <p>A single Bearer token guards both Discovery transports. The REST surface checks it in a Flask <code>before_request</code> hook; the MCP transport checks it in a pure-ASGI middleware (so streaming responses pass through intact). The mobile gateway (previous section) authenticates separately, with the Discovery token or a per-client token.</p>
 
       <h3>Where the token lives</h3>
       <table class="kv-table">
@@ -306,6 +350,10 @@ curl -X POST \
           <td>Environment override for headless / CI / containers where no keyring backend exists. When set, it wins and is <strong>never</strong> persisted to the keyring.</td>
         </tr>
       </table>
+
+      <h3>Rate limiting and audit logging (v2.64.0)</h3>
+      <p>Tool-executing routes (<code>/call</code>, <code>/call/stream</code>, <code>/tools/&lt;name&gt;</code>) sit behind a per-caller token bucket — default <strong>60 calls/min</strong> with a quarter-minute burst (<code>api_rate_limit_per_min</code>, <code>api_rate_burst</code>; <code>0</code> disables). Listing tools, the OpenAPI document, and <code>mcp-info</code> stay unthrottled. Exhaustion answers <code>429</code> with <code>Retry-After</code>.</p>
+      <p>Every tool call also appends one line to <code>~/.c3/oracle/discovery_audit.jsonl</code> (<code>api_audit_enabled</code>), readable via <code>GET /api/activity/discovery</code>. The log stores a <strong>hash</strong> of the arguments, never the arguments themselves, and identifies the caller by token fingerprint rather than the token. Auditing fails open — a broken log never breaks a call.</p>
 
       <div class="callout callout-warn">
         <p><strong>Exposing on a network.</strong> The default bind is <code>127.0.0.1</code>. To let a remote LLM service reach the Oracle, set <code>bind_host</code> to <code>0.0.0.0</code> in <code>~/.c3/oracle/config.json</code> — and put it behind TLS + a firewall yourself. The token alone is not a substitute for transport security.</p>
@@ -327,7 +375,7 @@ curl -X POST \
           <tr><td><code>c3 oracle api rotate</code></td> <td>Replace the token with a fresh one</td></tr>
           <tr><td><code>c3 oracle api clear</code></td>  <td>Delete the stored token from the keyring</td></tr>
           <tr><td><code>c3 oracle serve</code></td>      <td>Run the dashboard + discovery endpoints in this terminal (<code>--no-browser</code>, <code>--port</code>)</td></tr>
-          <tr><td><code>c3 oracle serve --install</code></td>   <td>Register the Oracle as a login/startup service — no terminal window — and start it now. Windows: Task Scheduler (Run-key fallback); macOS: launchd; Linux: systemd user unit</td></tr>
+          <tr><td><code>c3 oracle serve --install</code></td>   <td>Register the Oracle as a login/startup service (no terminal window) and start it now. Windows: Task Scheduler (Run-key fallback); macOS: launchd; Linux: systemd user unit</td></tr>
           <tr><td><code>c3 oracle serve --uninstall</code></td> <td>Remove the startup registration (a running Oracle keeps running)</td></tr>
           <tr><td><code>c3 oracle serve --status</code></td>    <td>Installed? Running? Port, bind host, URL, and the launcher log path</td></tr>
           <tr><td><code>c3 oracle open</code></td>       <td>Sign in to a running dashboard via a single-use URL (the hub's <strong>Open Oracle</strong> button does the same thing)</td></tr>
@@ -343,10 +391,13 @@ curl -X POST \
       <h2><code>~/.c3/oracle/config.json</code> keys</h2>
       <table class="kv-table">
         <tr><td><code>bind_host</code></td>        <td>Interface to bind. Default <code>127.0.0.1</code>. Use <code>0.0.0.0</code> to expose on a network (add TLS/firewall).</td></tr>
+        <tr><td><code>loopback_listener</code></td> <td>When <code>bind_host</code> is a specific non-loopback address, also serve the same app on <code>127.0.0.1</code> (same Host allowlist, same Bearer gates). Default <code>true</code> (v2.125.0).</td></tr>
         <tr><td><code>allowed_hosts</code></td>    <td>Extra hostnames/IPs the Host + Origin guard accepts. Needed when <code>bind_host</code> is non-loopback so legitimate browsers/clients aren't blocked (v2.33.0).</td></tr>
         <tr><td><code>api_enabled</code></td>      <td>Serve the <code>/api/discovery/*</code> REST surface. Default <code>true</code>.</td></tr>
         <tr><td><code>api_require_auth</code></td> <td>Require the Bearer token. Default <code>true</code>.</td></tr>
         <tr><td><code>api_max_tier</code></td>     <td>Cap exposed tools: <code>read</code> (discovery only) or <code>action</code> (adds <code>suggest_action</code>, <code>delegate_task</code>). Default <code>action</code>.</td></tr>
+        <tr><td><code>api_rate_limit_per_min</code></td> <td>Per-caller token-bucket rate for tool-executing Discovery routes. Default <code>60</code>; <code>0</code> disables (v2.64.0).</td></tr>
+        <tr><td><code>api_audit_enabled</code></td> <td>Append a hashed-argument audit line per Discovery tool call to <code>discovery_audit.jsonl</code>. Default <code>true</code> (v2.64.0).</td></tr>
         <tr><td><code>mcp_enabled</code></td>      <td>Start the MCP HTTP/SSE server. Default <code>true</code>.</td></tr>
         <tr><td><code>mcp_port</code></td>         <td>MCP transport port. Default <code>3332</code>.</td></tr>
       </table>
