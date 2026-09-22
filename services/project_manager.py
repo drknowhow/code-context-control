@@ -533,6 +533,15 @@ class ProjectManager:
         return {"dropped": len(registry) - len(valid) - len(reaped),
                 "reaped": reaped}
 
+    def list_registered(self) -> list:
+        """The stored project rows (name, path, parent_path, ...) as registered.
+
+        No liveness, session or config enrichment, so it touches one file.
+        Callers that only iterate projects use this; ``list_projects`` reads
+        every project's activity log and probes session ports.
+        """
+        return self._read_projects()
+
     def list_projects(self) -> list:
         projects = self._read_projects()
         registry = self._read_registry()

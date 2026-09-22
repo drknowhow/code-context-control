@@ -800,8 +800,11 @@ def inspect_project(project_path, event: str = "", engine: str = "auto") -> dict
     # Lazy: keeps parsing independent of the execution engines, and avoids
     # paying for a `docker version` probe on every import.
     from services import ci_act
-    engines = ci_act.availability() if engine in ("auto", "act") else {
-        "ok": False, "reason": "engine='native' — containers not considered"}
+    if engine in ("auto", "act"):
+        engines = ci_act.availability(max_age=ci_act.DISPLAY_PROBE_TTL_S)
+    else:
+        engines = {"ok": False,
+                   "reason": "engine='native' — containers not considered"}
     act_ok = bool(engines.get("ok"))
 
     native, container, foreign, unsupported = [], [], [], []

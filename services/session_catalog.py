@@ -112,7 +112,7 @@ def _bare(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def claude_transcript_dir(project) -> Path | None:
+def claude_transcript_dir(project, index: _RootIndex | None = None) -> Path | None:
     """The transcript folder Claude Code uses for ``project``, or None.
 
     Exact slug first (every non-alphanumeric becomes ``-``), then the same slug
@@ -131,21 +131,62 @@ def claude_transcript_dir(project) -> Path | None:
         if name and cand.is_dir():
             return cand
     target = _bare(project_str)
-    try:
-        for d in root.iterdir():
-            if d.is_dir() and _bare(d.name) == target:
-                return d
-    except OSError:
-        return None
+    if index is None or index.root != root:
+        index = _RootIndex(root)
+    for d in index.dirs():
+        if _bare(d.name) == target:
+            return d
     return None
 
 
-def _same_dir(a: str, b) -> bool:
+class _RootIndex:
+    """One listing of the transcript root and, on first use, of which folder
+    holds each transcript id — shared by every project one request builds.
+
+    Request-scoped on purpose: Windows does not refresh a folder's mtime in
+    its parent's listing when a file is created inside it, so a listing kept
+    across requests cannot tell that a new transcript appeared.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._dirs: list[Path] | None = None
+        self._owners: dict[str, Path] | None = None
+        self._lock = threading.Lock()
+
+    def dirs(self) -> list[Path]:
+        with self._lock:
+            if self._dirs is None:
+                try:
+                    with os.scandir(self.root) as it:
+                        self._dirs = [Path(e.path) for e in it if e.is_dir()]
+                except OSError:
+                    self._dirs = []
+            return self._dirs
+
+    def owner(self, stem: str) -> Path | None:
+        dirs = self.dirs()
+        with self._lock:
+            if self._owners is None:
+                owners: dict[str, Path] = {}
+                for d in dirs:
+                    try:
+                        with os.scandir(d) as it:
+                            for e in it:
+                                if e.name.endswith(".jsonl") and e.is_file():
+                                    owners.setdefault(e.name[:-6], Path(e.path))
+                    except OSError:
+                        continue
+                self._owners = owners
+        return self._owners.get(stem)
+
+
+def _dir_key(path) -> str:
     try:
-        ra, rb = os.path.realpath(a), os.path.realpath(str(b))
-    except Exception:
-        ra, rb = str(a), str(b)
-    return os.path.normcase(os.path.normpath(ra)) == os.path.normcase(os.path.normpath(rb))
+        real = os.path.realpath(str(path))
+    except (OSError, ValueError):
+        real = str(path)
+    return os.path.normcase(os.path.normpath(real))
 
 
 # ── Reading one transcript ─────────────────────────────────────────────────
@@ -569,36 +610,39 @@ def _transcript_files(tdir: Path | None, limit: int | None = MAX_TRANSCRIPTS) ->
     return files if limit is None else files[:limit]
 
 
-def _find_elsewhere(host_id: str) -> Path | None:
+def _find_elsewhere(host_id: str, index: _RootIndex) -> Path | None:
     """A Claude transcript for ``host_id`` in ANY project folder — a session
     run from a worktree lives under the worktree's slug, not the project's."""
     if not UUID_RE.match(host_id or ""):
         return None
-    root = claude_projects_root()
-    try:
-        for d in root.iterdir():
-            cand = d / f"{host_id}.jsonl"
-            if cand.is_file():
-                return cand
-    except OSError:
-        return None
-    return None
+    return index.owner(host_id)
 
 
-def _build(project, name: str = "") -> tuple[list[dict], dict]:
-    """Every row for one project (unfiltered) plus a lookup context."""
+def _build(project, name: str = "", index: _RootIndex | None = None) -> tuple[list[dict], dict]:
+    """Every row for one project (unfiltered) plus a lookup context.
+
+    ``index``: a transcript-root listing shared across one request's builds.
+    """
     project = Path(project)
     name = name or project.name
+    root = claude_projects_root()
+    if index is None or index.root != root:
+        index = _RootIndex(root)
     with _project_lock(project):
         cache = _load_cache(project)
         dirty: list = []
-        tdir = claude_transcript_dir(project)
+        tdir = claude_transcript_dir(project, index)
         metas = {}
+        own_dir = _dir_key(project)
+        cwd_keys: dict[str, str] = {}
         for f in _transcript_files(tdir):
             meta = _cached(cache["transcripts"], f, scan_transcript, dirty)
             if not meta:
                 continue
-            if meta.get("cwd") and not _same_dir(meta["cwd"], project):
+            cwd = meta.get("cwd")
+            if cwd and cwd not in cwd_keys:
+                cwd_keys[cwd] = _dir_key(cwd)
+            if cwd and cwd_keys[cwd] != own_dir:
                 continue  # a folder that only looks like ours
             metas[meta["id"]] = dict(meta, _path=str(f))
         records = []
@@ -617,6 +661,7 @@ def _build(project, name: str = "") -> tuple[list[dict], dict]:
                     snaps.append(snap)
         if dirty:
             _save_cache(project, cache)
+            dirty.clear()
 
     # C3 id → host id, from every place that states it.
     c3_to_host: dict[str, str] = {}
@@ -669,14 +714,16 @@ def _build(project, name: str = "") -> tuple[list[dict], dict]:
             continue
         rec0 = recs[0]
         if _provider(rec0["source_system"]) == "claude" and UUID_RE.match(rid):
-            found = _find_elsewhere(rid)
-            if found is not None:
-                try:
-                    metas[rid] = dict(scan_transcript(found), _path=str(found), _elsewhere=True)
-                    continue
-                except Exception:
-                    pass
+            found = _find_elsewhere(rid, index)
+            meta = _cached(cache["transcripts"], found, scan_transcript, dirty) \
+                if found is not None else None
+            if meta:
+                metas[rid] = dict(meta, _path=str(found), _elsewhere=True)
+                continue
         metas[rid] = {"id": rid, "_c3_only": True, "provider": _provider(rec0["source_system"])}
+    if dirty:
+        with _project_lock(project):
+            _save_cache(project, cache)
 
     marks = _fold_marks(_read_marks(project))
     cleared, pred, succ = _lifecycle(project)
@@ -818,11 +865,12 @@ def list_many(projects: list[dict], *, stale: str = "hide", q: str = "",
         if not path or not (Path(path) / ".c3").is_dir():
             return path, [], ""
         try:
-            rows, _ = _build(path, str(p.get("name") or ""))
+            rows, _ = _build(path, str(p.get("name") or ""), index)
             return path, rows, ""
         except Exception as exc:  # pragma: no cover - defensive
             return path, [], str(exc)
 
+    index = _RootIndex(claude_projects_root())
     merged, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for path, rows, err in pool.map(one, projects):

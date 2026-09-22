@@ -1,6 +1,6 @@
 """ActivityLog — Append-only JSONL activity log for C3 events."""
 import json
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +75,9 @@ class ActivityLog:
         """
         if not self.log_file.exists():
             return []
+        # A row of this type holds its JSON-encoded name, so a chunk or line
+        # without those bytes cannot match and is skipped unparsed.
+        needle = json.dumps(event_type).encode("utf-8")
         events: list = []
         try:
             with open(self.log_file, "rb") as handle:
@@ -86,12 +89,19 @@ class ActivityLog:
                     position -= step
                     handle.seek(position)
                     block = handle.read(step) + tail
-                    lines = block.split(b"\n")
-                    # The first element may be a partial line: keep it for the
-                    # next (earlier) chunk unless we are at the file start.
-                    tail = lines.pop(0) if position > 0 else b""
-                    for raw in reversed(lines):
-                        if not raw.strip():
+                    # The first line may be partial: keep it for the next
+                    # (earlier) chunk unless we are at the file start.
+                    tail = b""
+                    if position > 0:
+                        cut = block.find(b"\n")
+                        if cut < 0:
+                            tail = block
+                            continue
+                        tail, block = block[:cut], block[cut + 1:]
+                    if needle not in block:
+                        continue
+                    for raw in reversed(block.split(b"\n")):
+                        if needle not in raw:
                             continue
                         try:
                             entry = json.loads(raw.decode("utf-8", "replace"))
@@ -119,15 +129,13 @@ class ActivityLog:
         # far back in the log behind many tool_call entries.  Use a larger scan
         # window so they aren't missed.
         scan_factor = 100 if event_type else 5
-        tail = deque(maxlen=max(1, limit * scan_factor))
-        with open(self.log_file, encoding="utf-8") as handle:
-            for line in handle:
-                if line.strip():
-                    tail.append(line)
-        for line in reversed(tail):
+        needle = json.dumps(event_type).encode("utf-8") if event_type else b""
+        for raw in self._tail_lines(max(1, limit * scan_factor)):
+            if needle not in raw:
+                continue
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                entry = json.loads(raw)
+            except ValueError:
                 continue
             if event_type and entry.get("type") != event_type:
                 continue
@@ -140,6 +148,26 @@ class ActivityLog:
             if len(events) >= limit:
                 break
         return events
+
+    def _tail_lines(self, count: int, chunk_bytes: int = 64 * 1024) -> list:
+        """The last ``count`` non-blank lines as bytes, newest first."""
+        lines: list = []
+        with open(self.log_file, "rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            tail = b""
+            while position > 0 and len(lines) < count:
+                step = min(chunk_bytes, position)
+                position -= step
+                handle.seek(position)
+                parts = (handle.read(step) + tail).split(b"\n")
+                tail = parts.pop(0) if position > 0 else b""
+                for raw in reversed(parts):
+                    if raw.strip():
+                        lines.append(raw)
+                        if len(lines) >= count:
+                            break
+        return lines
 
     def get_stats(self) -> dict:
         """Counts by event type, total events, time range."""

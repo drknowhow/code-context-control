@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.145.2"
+__version__ = "2.146.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -6685,10 +6685,10 @@ def _creds_cmd_list(args, project_path: str) -> None:
               "(add --global for all projects).")
         return
     print(f"{len(entries)} credential(s) — project scope shadows global:")
+    present = cred_store.presence_for(entries, project_path)
     missing = 0
     for name, entry in entries.items():
-        gone = not cred_store.is_resolvable(
-            name, project_path=project_path, scope=entry["scope"])
+        gone = not present[name]
         missing += gone
         print("  " + _creds_entry_line(name, entry, gone))
     if missing:

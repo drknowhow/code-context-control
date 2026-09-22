@@ -4,6 +4,68 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.146.0] - 2026-09-22
+
+### Changed — the Hub's cross-project pages stop re-reading every activity log
+
+The Credentials page took about a second to open on a fast desktop, longer on
+a work laptop, and every save waited on two more reloads. Almost none of that
+time went to credentials. Every cross-project Hub route called
+`ProjectManager.list_projects()` just to get names and paths, and that call
+reads each project's activity log to work out which sessions are live.
+`ActivityLog.find_last` JSON-parsed every line on its way back through the
+file, so for a type a project had never logged it parsed the whole file (up to
+the 5 MB rotation cap), about six times per project. Measured with 71
+registered projects:
+
+| Route | Before | After |
+|---|---|---|
+| `/api/hub/credentials/overview` | 925 ms | 108 ms |
+| `/api/hub/credentials/audit` | 1004 ms | 68 ms |
+| `/api/hub/sessions` | 1745 ms | 287 ms |
+| `/api/hub/tokens/overview` | 928 ms | 180 ms |
+| locks, enforcement, access and approval-policy overviews | 760–825 ms | 14–26 ms |
+| `/api/projects` (polled every 5 s) | 713 ms | 225 ms |
+| `/api/ci/inspect` (polled every 2–10 s) | 327 ms | 61 ms |
+
+- `ActivityLog.find_last` and `get_recent(event_type=...)` skip any chunk or
+  line that does not contain the type's JSON-encoded name before parsing it.
+  `get_recent` reads the tail it keeps from the end of the file instead of
+  reading the whole file forward.
+- `ProjectManager.list_registered()` returns the stored project rows with no
+  liveness sweep. The credentials, tokens, locks, enforcement, access,
+  approval-policy, sessions and global-search routes use it. `/api/projects`
+  keeps the full `list_projects()`.
+- `credential_store.value_presence()` checks whether each value in a vault
+  still decodes with one registry read for the whole vault. Before, 43 entries
+  cost 362 reads of `config.json` and 912 path resolutions. `is_resolvable`
+  delegates to it, and the Hub, the project UI, `c3_credentials list` and
+  `c3 creds list` use it. The Hub's backup banner reuses the listing's probe
+  instead of repeating it.
+- The Sessions view lists the Claude transcript root once per request instead
+  of once per lookup, and a transcript found in another project's folder (a
+  worktree session) goes through the per-file cache instead of being re-read
+  on every request. The listing is per request, not cached longer, because
+  Windows does not update a folder's mtime in its parent's listing when a file
+  is created inside it, so a kept listing could not see a new transcript.
+- The CI tab reuses an engine probe (`act --version`, `docker version`, image
+  inspect) for 30 s. Starting a run and `c3_ci doctor` still probe fresh.
+
+### Changed — Hub pages compile faster in the browser and polls stop stacking
+
+- The Hub and project UI shells tell babel-standalone to apply only the React
+  preset. Its default also ran `preset-env`, which compiled the 600 KB bundle
+  down to ES5 on every page load: about 1.9 s on a desktop, against 0.35 s for
+  JSX alone. Current browsers run the rest natively.
+- The Credentials page's global vault list takes its rows from the page's own
+  overview. Opening the page used to load that overview twice, and each save
+  reloaded it twice more.
+- `usePoll` skips a tick while the previous call is still running, so a route
+  slower than its poll interval no longer stacks requests on the Hub.
+- The project list polls every 30 s instead of 5 s when neither the Projects
+  view nor a project drill-in is open. The sidebar and top-bar counts can lag
+  by that much on other pages.
+
 ## [2.145.2] - 2026-09-22
 
 ### Fixed — a corrupt embedding store no longer kills the MCP server (#170)

@@ -63,7 +63,7 @@ class _StubPM:
     def __init__(self, rows):
         self.rows = rows
 
-    def list_projects(self):
+    def list_registered(self):
         return self.rows
 
 

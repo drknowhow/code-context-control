@@ -560,5 +560,32 @@ jobs:
         self.assertEqual(job.failures[0]["file"], "app/thing.py")
 
 
+class TestDisplayProbeCache(unittest.TestCase):
+    def setUp(self):
+        self._saved = ci_act._display_probe
+        ci_act._display_probe = (0.0, None)
+
+    def tearDown(self):
+        ci_act._display_probe = self._saved
+
+    def test_max_age_reuses_a_recent_probe_and_the_default_always_probes(self):
+        with mock.patch.object(ci_act, "_probe_engine",
+                               side_effect=lambda: {"ok": True}) as probe:
+            ci_act.availability(max_age=30)
+            ci_act.availability(max_age=30)
+            self.assertEqual(probe.call_count, 1)
+            ci_act.availability()
+            self.assertEqual(probe.call_count, 2)
+
+    def test_an_expired_probe_runs_again(self):
+        with mock.patch.object(ci_act, "_probe_engine",
+                               side_effect=lambda: {"ok": True}) as probe:
+            ci_act.availability(max_age=30)
+            at, info = ci_act._display_probe
+            ci_act._display_probe = (at - 31, info)
+            ci_act.availability(max_age=30)
+            self.assertEqual(probe.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

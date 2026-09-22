@@ -370,5 +370,35 @@ class TestResume(_Base):
             self.assertNotIn("argv", spec)
 
 
+class TestRootIndex(_Base):
+    def test_a_worktree_transcript_created_after_a_listing_shows_on_the_next(self):
+        wt = self.proj / ".claude" / "worktrees" / "feat"
+        wt.mkdir(parents=True)
+        self.fx.tdir(wt)
+        self.fx.record(self.proj, "20260901_100000_aaaaaaaaaaaa", U1)
+        self.assertFalse(self.row(U1)["resume"]["can_launch"])
+        self.fx.transcript(wt, U1, cwd=wt)
+        self.assertTrue(self.row(U1)["resume"]["can_launch"])
+
+    def test_a_transcript_in_another_folder_is_read_once_across_listings(self):
+        wt = self.proj / ".claude" / "worktrees" / "feat"
+        wt.mkdir(parents=True)
+        self.fx.transcript(wt, U1, cwd=wt)
+        self.fx.record(self.proj, "20260901_100000_aaaaaaaaaaaa", U1)
+        self.assertTrue(self.row(U1)["resume"]["can_launch"])
+        with mock.patch.object(sc, "scan_transcript", wraps=sc.scan_transcript) as scan:
+            self.assertTrue(self.row(U1)["resume"]["can_launch"])
+        scan.assert_not_called()
+
+    def test_one_index_lists_the_folders_once(self):
+        self.fx.transcript(self.proj, U1)
+        index = sc._RootIndex(sc.claude_projects_root())
+        self.assertIsNotNone(index.owner(U1))
+        with mock.patch.object(sc.os, "scandir") as scandir:
+            self.assertIsNone(index.owner(U2))
+            self.assertTrue(index.dirs())
+        scandir.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

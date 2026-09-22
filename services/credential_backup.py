@@ -310,20 +310,26 @@ def sync(project_paths=()) -> dict:
     return out
 
 
-def status(project_paths=()) -> dict:
+def status(project_paths=(), presence=None) -> dict:
     """Counts only — never a value. ``not_backed_up`` lists registered entries
     with a live value but no sealed copy; ``restorable`` lists entries whose
-    value is gone but whose copy is here."""
+    value is gone but whose copy is here.
+
+    ``presence`` maps realm to a ``credential_store.value_presence`` result
+    the caller already holds; any other vault is probed here, once."""
     data = _load()
     records = data.get("records", {}) if data else {}
     out: dict = {"enabled": bool(data), "path": str(backup_path() or ""),
                  "created": data.get("created", "") if data else "",
                  "backed_up": sum(len(r) for r in records.values()),
                  "restorable": [], "lost": [], "not_backed_up": []}
+    known = dict(presence or {})
     for scope, pp, realm_s, name in _realm_entries(project_paths):
         label = name if scope == "global" else f"{name} ({pp})"
         has_copy = name in records.get(realm_s, {})
-        if cs.is_resolvable(name, project_path=pp, scope=scope):
+        if realm_s not in known:
+            known[realm_s] = cs.value_presence(scope, pp)
+        if known[realm_s].get(name, False):
             if not has_copy:
                 out["not_backed_up"].append(label)
         elif has_copy:

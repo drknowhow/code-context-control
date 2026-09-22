@@ -170,7 +170,7 @@ class TestCredAuditRoutes(unittest.TestCase):
             rows = [{"name": "p", "path": str(proj)}]
 
             class _PM:
-                def list_projects(self):
+                def list_registered(self):
                     return rows
 
             with mock.patch.object(hub_server, "_pm", new=lambda: _PM()), \
@@ -212,7 +212,7 @@ class TestCredAuditScopeParam(unittest.TestCase):
                 "scope": "global", "via": "hub"})
 
             class _PM:
-                def list_projects(self):
+                def list_registered(self):
                     return [{"name": "p", "path": str(proj)}]
 
             with mock.patch.object(hub_server, "_pm", new=lambda: _PM()), \
