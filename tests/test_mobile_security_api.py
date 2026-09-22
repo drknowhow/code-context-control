@@ -230,6 +230,18 @@ class TestMobileCredentials(_MobileSecurityBase):
         self.assertEqual(
             cs.get_entry("MOB_STRUCT", project_path=str(self.proj)), {})
 
+    def test_untyped_value_cannot_write_into_a_structured_entry(self):
+        cs.set_credential("MOB_CARD", json.dumps({
+            "cardholder": "x", "number": "4539578763621486", "expiry": "12/27"}),
+            scope="project", project_path=str(self.proj), ctype="card")
+        resp = self.post("/api/mobile/credentials", {
+            "project": str(self.proj), "scope": "project", "name": "MOB_CARD",
+            "value": json.dumps({"expiry": "01/30"}),
+        })
+        self.assertEqual(resp.status_code, 400, resp.get_data(as_text=True))
+        self.assertEqual(cs.get_value("MOB_CARD", project_path=str(self.proj),
+                                      field="expiry"), "12/27")
+
     def test_metadata_only_update_does_not_clobber_siblings(self):
         self.seed("PART", CANARY)
         cs.update_metadata("PART", scope="project", project_path=str(self.proj),

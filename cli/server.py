@@ -2766,7 +2766,10 @@ def api_credentials_list():
     usage = cred_store.read_usage_state(pp)
     out = []
     for name, entry in cred_store.list_entries(pp).items():
-        out.append(cred_store.public_entry(name, entry, usage=usage))
+        out.append(cred_store.public_entry(
+            name, entry, usage=usage,
+            value_ok=cred_store.is_resolvable(
+                name, project_path=pp, scope=entry["scope"])))
     return jsonify({"entries": out})
 
 
@@ -2781,32 +2784,15 @@ def api_credentials_set():
     value = data.get("value")
     # Structured kinds submit a field OBJECT; the store takes JSON text.
     value = json.dumps(value) if isinstance(value, dict) else str(value or "")
-    ctype = str(data.get("type") or data.get("ctype") or "token")
-    meta = {
-        "description": str(data.get("description") or ""),
-        "env_var": str(data.get("env_var") or ""),
-        "agent_readable": bool(data.get("agent_readable")),
-        "inject": bool(data.get("inject")),
-    }
+    meta = cred_store.payload_meta(data)
     try:
         if value:
             entry = cred_store.set_credential(
                 name, value, scope=scope, project_path=str(PROJECT_PATH),
-                ctype=ctype, **meta)
+                ctype=meta.pop("type", None), **meta)
         else:
-            # Metadata-only update: touch ONLY the keys present in the payload
-            # so a single-field toggle can't clobber the others.
-            fields = {}
-            for key in ("description", "env_var"):
-                if key in data:
-                    fields[key] = str(data[key] or "")
-            for key in ("agent_readable", "inject"):
-                if key in data:
-                    fields[key] = bool(data[key])
-            if "type" in data or "ctype" in data:
-                fields["type"] = ctype
             entry = cred_store.update_metadata(
-                name, scope=scope, project_path=str(PROJECT_PATH), **fields)
+                name, scope=scope, project_path=str(PROJECT_PATH), **meta)
     except cred_store.CredentialError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:

@@ -1571,26 +1571,18 @@ def mobile_credentials_set():
                 "needs_confirmation": True, "confirm_with": name,
             }), 400
 
+    meta = cred_store.payload_meta(data)
     try:
         if value:
+            # ctype stays explicit here: "keep the existing type" would let a
+            # phone write field JSON into a structured entry.
+            meta.pop("type", None)
             entry = cred_store.set_credential(
-                name, value, scope=scope, project_path=store_path, ctype=ctype,
-                description=str(data.get("description") or ""),
-                env_var=str(data.get("env_var") or ""),
-                agent_readable=wants_readable,
-                inject=bool(data.get("inject")))
+                name, value, scope=scope, project_path=store_path,
+                ctype=ctype, **meta)
         else:
-            fields = {}
-            for key in ("description", "env_var"):
-                if key in data:
-                    fields[key] = str(data[key] or "")
-            for key in ("agent_readable", "inject"):
-                if key in data:
-                    fields[key] = bool(data[key])
-            if "type" in data or "ctype" in data:
-                fields["type"] = ctype
             entry = cred_store.update_metadata(
-                name, scope=scope, project_path=store_path, **fields)
+                name, scope=scope, project_path=store_path, **meta)
     except cred_store.CredentialError as exc:
         return jsonify({"error": str(exc)}), 400
     except (ValueError, RuntimeError) as exc:

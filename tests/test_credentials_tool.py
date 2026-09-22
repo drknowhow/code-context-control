@@ -117,6 +117,22 @@ class TestCredentialsTool(unittest.TestCase):
         resp = self._call("list")
         self.assertIn("no credentials registered", resp)
 
+    def test_list_marks_entries_whose_value_is_gone(self):
+        self._call("set", name="LOST", value="canary-abc123")
+        self._call("set", name="KEPT", value="canary-abc123")
+        realm_s = cs.realm("project", self._tmp_proj.name)
+        del self._stub.store[("c3-creds", cs._account(realm_s, "LOST"))]
+        lines = {ln.split(" ")[0]: ln for ln in self._call("list").splitlines()}
+        self.assertIn("VALUE MISSING", lines["LOST"])
+        self.assertNotIn("VALUE MISSING", lines["KEPT"])
+        self.assertIn("[creds:value-missing] 1 registered", self._call("list"))
+
+    def test_agent_reset_keeps_env_var(self):
+        self._call("set", name="TOK", value="v1", env_var="tok_env", inject=True)
+        self._call("set", name="TOK", value="v2")
+        entry = cs.get_entry("TOK", project_path=self._tmp_proj.name)
+        self.assertEqual((entry["env_var"], entry["inject"]), ("tok_env", True))
+
     def test_set_then_list_and_describe(self):
         resp = self._call("set", name="API_KEY", value="canary-abc123",
                           description="test key")

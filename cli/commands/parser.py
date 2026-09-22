@@ -520,16 +520,21 @@ def build_parser(version: str, parse_cli_ide_arg):
     cr_set.add_argument("name", help="Entry name (env-var safe: [A-Za-z_][A-Za-z0-9_]*)")
     cr_set.add_argument("--value", default="", help="Secret value (prompted via getpass if omitted — preferred). Structured types take a JSON object of fields")
     cr_set.add_argument("--stdin", action="store_true", help="Read the value from stdin (piped/multiline values)")
+    # Every metadata option defaults to None = keep what an existing entry
+    # has, so re-entering a value does not reset its settings.
     cr_set.add_argument("--type", dest="ctype",
                         choices=["token", "env", "multiline",
                                  "address", "identity", "card", "login"],
-                        default="token",
-                        help="Entry type; address/identity/card/login are structured "
+                        default=None,
+                        help="Entry type (default: keep the entry's type; token for a new one); "
+                             "address/identity/card/login are structured "
                              "(field payload, inject-only, never revealable to the agent)")
-    cr_set.add_argument("--desc", default="", help="Human description shown in list/UI")
-    cr_set.add_argument("--env-var", default="", help="Env var name used at injection (default: entry name)")
-    cr_set.add_argument("--agent-readable", action="store_true", help="Allow the agent to reveal the decoded value into its context (default: injection-only)")
-    cr_set.add_argument("--inject", action="store_true", help="Auto-inject into every c3_shell run")
+    cr_set.add_argument("--desc", default=None, help="Human description shown in list/UI (default: keep)")
+    cr_set.add_argument("--env-var", default=None, help="Env var name used at injection (default: keep; entry name for a new one)")
+    cr_set.add_argument("--agent-readable", action=argparse.BooleanOptionalAction, default=None,
+                        help="Allow the agent to reveal the decoded value into its context (default: keep; injection-only for a new one)")
+    cr_set.add_argument("--inject", action=argparse.BooleanOptionalAction, default=None,
+                        help="Auto-inject into every c3_shell run (default: keep; off for a new one)")
     cr_set.add_argument("--global", dest="use_global", action="store_true", help="Store in the global scope (~/.c3) so every C3 project can use it")
     # --path (not a trailing positional): a second positional after options
     # breaks argparse on py<3.12 ("unrecognized arguments").

@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.143.0"
+__version__ = "2.144.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -6398,11 +6398,12 @@ def _creds_scope(args) -> str:
     return "global" if getattr(args, "use_global", False) else "project"
 
 
-def _creds_entry_line(name: str, entry: dict) -> str:
+def _creds_entry_line(name: str, entry: dict, missing: bool = False) -> str:
     flags = [f for f in ("inject", "agent_readable") if entry.get(f)]
+    size = "VALUE MISSING" if missing else f"len={entry.get('value_len', '?')}"
     parts = [
         f"{name:<24} {entry.get('scope', '?'):<8} {entry.get('type', 'token'):<10}"
-        f" len={entry.get('value_len', '?')}",
+        f" {size}",
     ]
     display = entry.get("display") or {}
     if display:
@@ -6465,13 +6466,15 @@ def _creds_cmd_set(args, project_path: str) -> None:
 
     from services import credential_store as cred_store
 
-    ctype = getattr(args, "ctype", "token") or "token"
+    ctype = getattr(args, "ctype", None)
+    prompt_type = ctype or cred_store.get_entry(
+        args.name, project_path=project_path).get("type", "token")
     value = getattr(args, "value", "") or ""
     if getattr(args, "stdin", False):
         value = sys.stdin.read().rstrip("\n")
     if not value:
-        if ctype in cred_store.STRUCTURED_TYPES:
-            value = _creds_prompt_structured(args.name, ctype)
+        if prompt_type in cred_store.STRUCTURED_TYPES:
+            value = _creds_prompt_structured(args.name, prompt_type)
             if value == "{}":
                 print("Cancelled -- no fields entered.")
                 return
@@ -6485,11 +6488,11 @@ def _creds_cmd_set(args, project_path: str) -> None:
         entry = cred_store.set_credential(
             args.name, value,
             scope=scope, project_path=project_path,
-            description=getattr(args, "desc", "") or "",
+            description=getattr(args, "desc", None),
             ctype=ctype,
-            env_var=getattr(args, "env_var", "") or "",
-            agent_readable=bool(getattr(args, "agent_readable", False)),
-            inject=bool(getattr(args, "inject", False)),
+            env_var=getattr(args, "env_var", None),
+            agent_readable=getattr(args, "agent_readable", None),
+            inject=getattr(args, "inject", None),
         )
     except (cred_store.CredentialError, RuntimeError) as exc:
         print(f"[error] {exc}")
@@ -6575,8 +6578,17 @@ def _creds_cmd_list(args, project_path: str) -> None:
               "(add --global for all projects).")
         return
     print(f"{len(entries)} credential(s) — project scope shadows global:")
+    missing = 0
     for name, entry in entries.items():
-        print("  " + _creds_entry_line(name, entry))
+        gone = not cred_store.is_resolvable(
+            name, project_path=project_path, scope=entry["scope"])
+        missing += gone
+        print("  " + _creds_entry_line(name, entry, gone))
+    if missing:
+        print(f"\n{missing} entr{'y has' if missing == 1 else 'ies have'} no stored "
+              "value (the OS keychain no longer holds it). Re-enter with "
+              "`c3 creds set NAME` (add --global for global entries); the "
+              "entry keeps its env var, description and flags.")
 
 
 def _creds_cmd_rm(args, project_path: str) -> None:

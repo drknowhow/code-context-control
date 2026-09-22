@@ -2016,7 +2016,8 @@ def api_projects_config_get():
 # returned by any hub route (no reveal exists here). `credentials` stays out of
 # _CONFIG_WRITE_SECTIONS — these dedicated routes are the only hub write path.
 
-def _cred_entry_public(name, entry, *, usage=None, shadows_global=None):
+def _cred_entry_public(name, entry, *, usage=None, shadows_global=None,
+                       value_ok=None):
     """Explicit allowlist serializer — structurally cannot emit a value.
 
     Delegates to credential_store.public_entry so the hub, the per-project UI
@@ -2024,7 +2025,8 @@ def _cred_entry_public(name, entry, *, usage=None, shadows_global=None):
     is exactly the drift the write-only wire contract cannot survive."""
     from services import credential_store as cred_store
     return cred_store.public_entry(
-        name, entry, usage=usage, shadows_global=shadows_global)
+        name, entry, usage=usage, shadows_global=shadows_global,
+        value_ok=value_ok)
 
 
 def _resolve_cred_target(path: str, scope: str, *, mutation: bool):
@@ -2141,7 +2143,9 @@ def api_projects_credentials():
         entries.append(_cred_entry_public(
             name, entry, usage=usage,
             shadows_global=(entry.get("scope") == "project"
-                            and name in global_names)))
+                            and name in global_names),
+            value_ok=cred_store.is_resolvable(
+                name, project_path=str(resolved), scope=entry["scope"])))
     return jsonify({"path": str(resolved), "entries": entries})
 
 
@@ -2162,29 +2166,15 @@ def api_projects_credentials_set():
     value = data.get("value")
     # Structured kinds submit a field OBJECT; the store takes JSON text.
     value = json.dumps(value) if isinstance(value, dict) else str(value or "")
-    ctype = str(data.get("type") or data.get("ctype") or "token")
+    meta = cred_store.payload_meta(data)
     try:
         if value:
             entry = cred_store.set_credential(
-                name, value, scope=scope, project_path=store_path, ctype=ctype,
-                description=str(data.get("description") or ""),
-                env_var=str(data.get("env_var") or ""),
-                agent_readable=bool(data.get("agent_readable")),
-                inject=bool(data.get("inject")))
+                name, value, scope=scope, project_path=store_path,
+                ctype=meta.pop("type", None), **meta)
         else:
-            # Metadata-only update: touch ONLY the keys present in the payload
-            # so a single-field toggle can't clobber the others.
-            fields = {}
-            for key in ("description", "env_var"):
-                if key in data:
-                    fields[key] = str(data[key] or "")
-            for key in ("agent_readable", "inject"):
-                if key in data:
-                    fields[key] = bool(data[key])
-            if "type" in data or "ctype" in data:
-                fields["type"] = ctype
             entry = cred_store.update_metadata(
-                name, scope=scope, project_path=store_path, **fields)
+                name, scope=scope, project_path=store_path, **meta)
     except cred_store.CredentialError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
@@ -2443,7 +2433,9 @@ def api_hub_credentials_overview():
                         continue
                     row["entries"].append(_cred_entry_public(
                         name, entry, usage=usage,
-                        shadows_global=name in global_entries))
+                        shadows_global=name in global_entries,
+                        value_ok=cred_store.is_resolvable(
+                            name, project_path=ppath, scope="project")))
                     if name in shadowed_in:
                         shadowed_in[name].append(
                             {"name": row["name"], "path": ppath})
@@ -2452,7 +2444,10 @@ def api_hub_credentials_overview():
         projects_out.append(row)
     global_usage = cred_store.read_usage_state(str(home)) if home else {}
     global_out = [
-        {**_cred_entry_public(name, entry, usage=global_usage),
+        {**_cred_entry_public(
+            name, entry, usage=global_usage,
+            value_ok=cred_store.is_resolvable(
+                name, project_path=str(home), scope="global")),
          "shadowed_in": shadowed_in.get(name, [])}
         for name, entry in global_entries.items()
     ]
