@@ -6,10 +6,13 @@ embeddings. Tracks file content hashes to only re-embed changed files.
 Falls back gracefully when Ollama or chromadb are unavailable.
 """
 
+import gc
 import hashlib
 import json
 import logging
+import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("c3.embedding_index")
@@ -106,19 +109,7 @@ class EmbeddingIndex:
     def _init_backends(self):
         """Initialize chromadb collection and check Ollama."""
         try:
-            import chromadb
-            from chromadb.config import Settings
-
-            persist_dir = str(self._index_dir / "chromadb")
-            Path(persist_dir).mkdir(parents=True, exist_ok=True)
-            self._chroma_client = chromadb.PersistentClient(
-                path=persist_dir,
-                settings=Settings(anonymized_telemetry=False),
-            )
-            self._collection = self._chroma_client.get_or_create_collection(
-                name=COLLECTION_NAME,
-                metadata={"hnsw:space": "cosine"},
-            )
+            self._open_chroma()
             self._available = True
             self._drop_legacy_collection()
         except Exception as e:
@@ -134,6 +125,78 @@ class EmbeddingIndex:
             self._ollama_up = False
             self._model_ok = False
         self._ollama_ok = self._ollama_up and self._model_ok
+
+    def _open_chroma(self, _retried: bool = False) -> None:
+        """Open the persistent collection, quarantining a corrupt store once.
+
+        A damaged HNSW segment does not surface at open time: the Rust backend
+        accepts the client and the collection handle, then faults on the first
+        real read. When that read happens on the background index thread it has
+        taken the whole MCP process down with an access violation, which the
+        host reports only as a dead server (seen 2026-07-17, 2026-09-06).
+
+        So probe here, on the init path, where the failure is still a catchable
+        Python exception, and treat a failed probe as a corrupt store: close the
+        client, move the directory aside, and reopen empty. The store is a
+        rebuildable cache, so the cost is one re-embed, not lost data.
+        """
+        import chromadb
+        from chromadb.config import Settings
+
+        persist_dir = self._index_dir / "chromadb"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        self._chroma_client = chromadb.PersistentClient(
+            path=str(persist_dir),
+            settings=Settings(anonymized_telemetry=False),
+        )
+        self._collection = self._chroma_client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        try:
+            self._collection.count()
+        except Exception as e:
+            if _retried:
+                raise
+            log.warning(
+                "embedding store failed its health probe (%s); "
+                "quarantining and rebuilding",
+                e,
+            )
+            self._quarantine_store(persist_dir)
+            self._open_chroma(_retried=True)
+
+    def _close_chroma(self) -> None:
+        """Drop the client so Windows releases its handle on chroma.sqlite3."""
+        client = self._chroma_client
+        self._collection = None
+        self._chroma_client = None
+        try:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+        gc.collect()
+
+    def _quarantine_store(self, persist_dir: Path) -> None:
+        """Move a corrupt store and its hash file aside for post-mortem.
+
+        The hashes go with it: they claim vectors that the fresh store does not
+        have, so leaving them behind would suppress the very rebuild this is
+        meant to trigger.
+        """
+        self._close_chroma()
+        dest = self._index_dir / f"quarantine_corrupt_{datetime.now():%Y%m%d_%H%M%S}"
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(persist_dir), str(dest / persist_dir.name))
+        try:
+            if self._hash_file.exists():
+                shutil.move(str(self._hash_file), str(dest / self._hash_file.name))
+        except OSError:
+            self._hash_file.unlink(missing_ok=True)
+        self._file_hashes = {}
+        log.warning("quarantined corrupt embedding store to %s", dest)
 
     def _drop_legacy_collection(self) -> None:
         """Best-effort removal of the pre-2.108.0 collection and hash file.
