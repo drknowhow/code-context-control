@@ -2293,6 +2293,18 @@ function HubCredentials({ projects, onOpenDrill }) {
   const totalProjEntries = ((ov || {}).projects || []).reduce((n, r) => n + (r.entries || []).length, 0);
   const globalCount = ((((ov || {}).global) || {}).entries || []).length;
 
+  // Restore and init read a passphrase from the keyboard, so they stay
+  // terminal commands; the Hub only says which one is needed.
+  const bk = (ov || {}).backup;
+  const backupNote = !bk ? null
+    : bk.restorable > 0 ? { tone: T.error, cmd: 'c3 creds backup restore',
+      text: `${bk.restorable} credential${bk.restorable === 1 ? '' : 's'} lost ${bk.restorable === 1 ? 'its value' : 'their values'} in the OS keychain and can be restored from the vault backup.` }
+    : bk.lost > 0 ? { tone: T.error, cmd: '',
+      text: `${bk.lost} credential${bk.lost === 1 ? ' has' : 's have'} no stored value and no backup copy — replace each secret marked "value missing".` }
+    : !bk.enabled ? { tone: T.warn, cmd: 'c3 creds backup init',
+      text: 'No vault backup: values live only in the OS keychain, which Windows can empty on a restart.' }
+    : null;
+
   return (
     <div className="fade-up" style={{ maxWidth: 1100 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -2313,6 +2325,20 @@ function HubCredentials({ projects, onOpenDrill }) {
           display: 'inline-flex', alignItems: 'center', gap: 6,
         }}><I name="refresh" size={12} /> Refresh</button>
       </div>
+
+      {backupNote && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          marginBottom: 10, padding: '8px 12px', fontSize: 12, color: T.text,
+          border: `1px solid ${T.border}`, borderLeft: `3px solid ${backupNote.tone}`,
+          borderRadius: 6, background: T.surfaceAlt,
+        }}>
+          <span>{backupNote.text}</span>
+          {backupNote.cmd && (
+            <span>In a terminal: <span className="mono" style={{ color: backupNote.tone }}>{backupNote.cmd}</span></span>
+          )}
+        </div>
+      )}
 
       {/* Cross-project search — always visible, above the sub-tabs */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>

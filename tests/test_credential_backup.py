@@ -190,6 +190,20 @@ class TestCredentialBackup(_BackupBase):
         self.assertEqual([f.split(":")[0] for f in out["failed"]], ["B"])
 
 
+class TestAgentHint(_BackupBase):
+    def _list(self):
+        from cli.tools.credentials import handle_credentials
+        svc = mock.Mock(project_path=self.proj, edit_ledger=None, activity_log=None)
+        return handle_credentials("list", svc, lambda tool, args, resp, summary: resp)
+
+    def test_list_points_to_restore_only_when_a_backup_exists(self):
+        cs.set_credential("GTOK", CANARY, scope="global", project_path=self.proj)
+        self.wipe_keychain()
+        self.assertIn("No vault backup", self._list())
+        cb.init(PASS)
+        self.assertIn("c3 creds backup restore", self._list())
+
+
 class TestBackupCli(_BackupBase):
     def _run(self, argv, *, tty=True, secrets=()):
         from cli.c3 import cmd_creds

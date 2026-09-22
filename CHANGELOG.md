@@ -25,6 +25,10 @@ the only way back was finding each secret again. See
   `restore` and `passphrase` refuse to run without a terminal.
 - `c3 creds set` says when no backup is configured or the copy failed. The
   missing-value message on injection names `c3 creds backup restore`.
+- **Hub Credentials** shows a banner when values can be restored, are lost
+  with no copy, or no backup exists, naming the terminal command
+  (`backup` counts on `GET /api/hub/credentials/overview`).
+  `c3_credentials(action='list')` tells the agent which way back applies.
 - `vault_backup.json` joins the Tier-0 Access Guard paths, the vault write
   guard and the never-grantable override targets.
 - `cryptography` is now a declared dependency. It was already needed for
