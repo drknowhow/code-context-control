@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from services.activity_log import ActivityLog  # noqa: E402
 
 
-class TestFindLast(unittest.TestCase):
+class _LogCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -38,6 +38,8 @@ class TestFindLast(unittest.TestCase):
         rows += [{"type": "tool_call", "timestamp": f"t{i}"} for i in range(noise)]
         self._write(rows)
 
+
+class TestFindLast(_LogCase):
     def test_finds_a_row_get_recent_cannot_see(self):
         self._buried(5000)
         self.assertEqual(self.activity.get_recent(limit=1, event_type="session_start"), [])
@@ -90,6 +92,32 @@ class TestFindLast(unittest.TestCase):
         self.assertEqual(
             self.activity.find_last("session_start"),
             self.activity.get_recent(limit=1, event_type="session_start"))
+
+    def test_a_row_that_only_mentions_the_type_is_not_a_match(self):
+        self._write([
+            {"type": "session_start", "session_id": "real", "timestamp": "t0"},
+            {"type": "tool_call", "note": "session_start", "timestamp": "t1"},
+        ])
+        self.assertEqual(
+            [r["session_id"] for r in self.activity.find_last("session_start")], ["real"])
+        self.assertEqual(
+            [r["timestamp"] for r in self.activity.get_recent(event_type="session_start")],
+            ["t0"])
+
+
+class TestGetRecentTail(_LogCase):
+    def test_untyped_reads_the_newest_rows_across_chunks(self):
+        self._write([{"type": "tool_call", "timestamp": f"t{i:05d}", "pad": "x" * 100}
+                     for i in range(3000)])
+        self.assertEqual([r["timestamp"] for r in self.activity.get_recent(limit=3)],
+                         ["t02999", "t02998", "t02997"])
+
+    def test_window_counts_every_line_not_only_matches(self):
+        rows = [{"type": "decision", "timestamp": "t0"}]
+        rows += [{"type": "tool_call", "timestamp": f"t{i}"} for i in range(1, 101)]
+        self._write(rows)
+        self.assertEqual(self.activity.get_recent(limit=1, event_type="decision"), [])
+        self.assertEqual(len(self.activity.get_recent(limit=2, event_type="decision")), 1)
 
 
 if __name__ == "__main__":
