@@ -4,6 +4,29 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.145.2] - 2026-09-22
+
+### Fixed — a corrupt embedding store no longer kills the MCP server (#170)
+
+A damaged HNSW segment does not surface when the store is opened: chromadb
+hands back a client and a collection handle, then faults on the first real
+read. That read lands on the background `c3-embed-index` thread
+(`build` → `_remove_file_chunks` → `Collection.get`), and the fault is a native
+access violation, so the whole process dies. The host sees a server that
+connected, listed its tools and vanished; Claude Code reported `c3` as failed
+to connect with no error to chase. It happened on 2026-07-17 and 2026-09-06.
+
+- `EmbeddingIndex._open_chroma` probes the store with `count()` on the init
+  path, where the failure is still a catchable Python exception, and treats a
+  failed probe as corruption. It closes the client (Windows will not release
+  `chroma.sqlite3` otherwise), moves the store and its hash file to
+  `.c3/embeddings/quarantine_corrupt_<timestamp>/`, and reopens empty.
+- The hash file moves too. It claims vectors the fresh store does not have, so
+  leaving it would suppress the rebuild the quarantine exists to force.
+- One retry, never a loop. If the replacement store also fails its probe, the
+  index degrades to unavailable instead of taking the server down. The store
+  is a rebuildable cache, so recovery costs one re-embed and no data.
+
 ## [2.145.1] - 2026-09-22
 
 ### Changed — the in-app guide describes the C3 you have installed
