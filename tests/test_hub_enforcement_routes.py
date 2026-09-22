@@ -30,7 +30,7 @@ class _StubPM:
     def __init__(self, projects):
         self._projects = projects
 
-    def list_projects(self):
+    def list_registered(self):
         return self._projects
 
 

@@ -287,7 +287,7 @@ class TestTokenRoutes(unittest.TestCase):
                     {"name": "bare", "path": str(Path(tmp) / "bare")}]
 
             class _PM:
-                def list_projects(self):
+                def list_registered(self):
                     return rows
 
             with mock.patch.object(hub_server, "_pm", new=lambda: _PM()):
@@ -307,7 +307,7 @@ class TestTokenRoutes(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             class _PM:
-                def list_projects(self):
+                def list_registered(self):
                     return []
 
             with mock.patch.object(hub_server, "_pm", new=lambda: _PM()):

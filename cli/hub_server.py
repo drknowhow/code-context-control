@@ -1804,7 +1804,7 @@ def api_projects_browse():
         return jsonify({"error": str(e)}), 400
     if not resolved.is_dir():
         return jsonify({"error": f"Not a directory: {resolved}"}), 404
-    registered = {os.path.normcase(p.get("path", "")) for p in _pm()._read_projects()}
+    registered = {os.path.normcase(p.get("path", "")) for p in _pm().list_registered()}
     dirs = []
     try:
         for child in sorted(resolved.iterdir(), key=lambda c: c.name.lower()):
@@ -1913,7 +1913,7 @@ def api_search_global():
                    if wanted else None)
 
     candidates, skipped = [], []
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = p.get("path") or ""
         if wanted_norm is not None and os.path.normcase(ppath) not in wanted_norm:
             continue
@@ -2138,14 +2138,15 @@ def api_projects_credentials():
     usage = cred_store.read_usage_state(str(resolved))
     home = cred_store.global_base()
     global_names = set(cred_store.list_entries(str(home))) if home else set()
+    listed = cred_store.list_entries(str(resolved))
+    present = cred_store.presence_for(listed, str(resolved))
     entries = []
-    for name, entry in cred_store.list_entries(str(resolved)).items():
+    for name, entry in listed.items():
         entries.append(_cred_entry_public(
             name, entry, usage=usage,
             shadows_global=(entry.get("scope") == "project"
                             and name in global_names),
-            value_ok=cred_store.is_resolvable(
-                name, project_path=str(resolved), scope=entry["scope"])))
+            value_ok=present[name]))
     return jsonify({"path": str(resolved), "entries": entries})
 
 
@@ -2360,7 +2361,7 @@ def api_hub_credentials_audit():
     only_global = (request.args.get("scope") or "").strip().lower() == "global"
 
     events, errors = [], []
-    for p in ([] if only_global else _pm().list_projects()):
+    for p in ([] if only_global else _pm().list_registered()):
         ppath = str(p.get("path") or "")
         if not (Path(ppath) / ".c3").is_dir():
             continue
@@ -2417,9 +2418,12 @@ def api_hub_credentials_overview():
     from services import credential_store as cred_store
     home = cred_store.global_base()
     global_entries = cred_store.list_entries(str(home)) if home else {}
+    # realm -> {name: value decodes}, probed once per vault and shared with
+    # the backup banner, which asks the same question of the same entries.
+    present = {"global": cred_store.value_presence("global", str(home))} if home else {}
     shadowed_in = {name: [] for name in global_entries}
     projects_out = []
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or "", "path": ppath,
                "initialized": True, "error": None, "entries": []}
@@ -2428,14 +2432,15 @@ def api_hub_credentials_overview():
                 row["initialized"] = False
             else:
                 usage = cred_store.read_usage_state(ppath)
+                ok = cred_store.value_presence("project", ppath)
+                present[cred_store.realm("project", ppath)] = ok
                 for name, entry in cred_store.list_entries(ppath).items():
                     if entry.get("scope") != "project":
                         continue
                     row["entries"].append(_cred_entry_public(
                         name, entry, usage=usage,
                         shadows_global=name in global_entries,
-                        value_ok=cred_store.is_resolvable(
-                            name, project_path=ppath, scope="project")))
+                        value_ok=ok.get(name, False)))
                     if name in shadowed_in:
                         shadowed_in[name].append(
                             {"name": row["name"], "path": ppath})
@@ -2446,21 +2451,21 @@ def api_hub_credentials_overview():
     global_out = [
         {**_cred_entry_public(
             name, entry, usage=global_usage,
-            value_ok=cred_store.is_resolvable(
-                name, project_path=str(home), scope="global")),
+            value_ok=present.get("global", {}).get(name, False)),
          "shadowed_in": shadowed_in.get(name, [])}
         for name, entry in global_entries.items()
     ]
     return jsonify({"global": {"entries": global_out}, "projects": projects_out,
                     "backup": _cred_backup_summary(
-                        [row["path"] for row in projects_out if row["initialized"]])})
+                        [row["path"] for row in projects_out if row["initialized"]],
+                        present)})
 
 
-def _cred_backup_summary(project_paths) -> dict:
+def _cred_backup_summary(project_paths, present) -> dict:
     """Backup state as counts for the Hub banner; a broken file reports its error."""
     from services import credential_backup
     try:
-        st = credential_backup.status(project_paths)
+        st = credential_backup.status(project_paths, presence=present)
     except credential_backup.BackupError as exc:
         return {"enabled": True, "error": str(exc), "restorable": 0, "lost": 0}
     return {"enabled": st["enabled"], "restorable": len(st["restorable"]),
@@ -2612,7 +2617,7 @@ def api_hub_tokens_overview():
     days = _hub_tokens_days(request.args.get("days"))
     rows, totals = [], {"tool_calls": 0, "tool_tokens": 0,
                         "session_tokens": 0, "saved": 0}
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
                "error": None, "tool_calls": 0, "tool_tokens": 0,
@@ -2662,7 +2667,7 @@ def api_hub_locks_overview():
     from services import agent_locks as al
 
     rows, total = [], 0
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
                "error": None, "enabled": True, "mode": "advisory",
@@ -2752,7 +2757,7 @@ def api_hub_enforcement_overview():
 
     rows = []
     totals = {"discipline": 0, "access": 0}
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
                "error": None, "mode": None, "scope": "", "set_by": "",
@@ -3428,7 +3433,7 @@ def api_hub_override_policy_overview():
     from services import override_policy as opol
 
     rows = []
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
                "initialized": True, "error": None, "policy": None,
@@ -3740,7 +3745,7 @@ def api_hub_access_overview():
     empty = {"deny": [], "read_only": [], "confirm": [], "mask": 0,
              "corrupt": False}
     rows = []
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         ppath = str(p.get("path") or "")
         row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
                "initialized": True, "error": None, "rules": dict(empty)}
@@ -4268,7 +4273,7 @@ def api_pm_global():
     from services.task_store import TaskStore
 
     tasks, skipped, by_project = [], [], {}
-    entries = _pm()._read_projects()
+    entries = _pm().list_registered()
     for p in entries:
         ppath = p.get("path") or ""
         if not Path(ppath).is_dir():
@@ -4808,7 +4813,7 @@ def _session_project(raw: str):
     if not raw:
         return None
     want = os.path.normcase(os.path.normpath(raw))
-    for p in _pm().list_projects():
+    for p in _pm().list_registered():
         path = str(p.get("path") or "")
         if path and os.path.normcase(os.path.normpath(path)) == want:
             return {"name": str(p.get("name") or Path(path).name), "path": path}
@@ -4847,7 +4852,7 @@ def api_hub_sessions_overview():
         return row
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        rows = list(pool.map(one, _pm().list_projects()))
+        rows = list(pool.map(one, _pm().list_registered()))
     rows.sort(key=lambda r: r.get("last_active") or "", reverse=True)
     return jsonify({"projects": rows, "features": _SESSIONS_FEATURES})
 
@@ -4876,7 +4881,7 @@ def api_hub_sessions_list():
             res["errors"] = []
         else:
             projects = [{"name": str(p.get("name") or ""), "path": str(p.get("path") or "")}
-                        for p in _pm().list_projects()]
+                        for p in _pm().list_registered()]
             res = sc.list_many(projects, stale=stale, q=q, limit=limit, before=before)
         return jsonify(res)
     except Exception as e:
