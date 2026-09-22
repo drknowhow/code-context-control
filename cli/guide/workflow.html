@@ -222,14 +222,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html" class="active">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.x</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -241,14 +245,19 @@
       <a href="#step1" class="sidebar-link"><span class="icon">🧠</span> 1. Recall</a>
       <a href="#step2" class="sidebar-link"><span class="icon">🔍</span> 2. Search</a>
       <a href="#step3" class="sidebar-link"><span class="icon">📄</span> 3. Map + Read</a>
-      <a href="#step4" class="sidebar-link"><span class="icon">✏️</span> 4. Edit</a>
-      <a href="#step5" class="sidebar-link"><span class="icon">🔎</span> 5. Filter</a>
-      <a href="#step6" class="sidebar-link"><span class="icon">✅</span> 6. Validate</a>
-      <a href="#step7" class="sidebar-link"><span class="icon">📋</span> 7. Log</a>
+      <a href="#step4" class="sidebar-link"><span class="icon">💥</span> 4. Impact</a>
+      <a href="#step5" class="sidebar-link"><span class="icon">✏️</span> 5. Edit</a>
+      <a href="#step6" class="sidebar-link"><span class="icon">🔎</span> 6. Filter</a>
+      <a href="#step7" class="sidebar-link"><span class="icon">⚡</span> 7. Shell</a>
+      <a href="#step8" class="sidebar-link"><span class="icon">✅</span> 8. Validate</a>
+      <a href="#step9" class="sidebar-link"><span class="icon">📋</span> 9. Session</a>
+      <a href="#step10" class="sidebar-link"><span class="icon">🤖</span> 10. Delegate</a>
+      <a href="#step11" class="sidebar-link"><span class="icon">🧪</span> 11. Local CI</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Guidance</div>
       <a href="#antipatterns" class="sidebar-link"><span class="icon">🚫</span> Anti-patterns</a>
+      <a href="#confirm-holds" class="sidebar-link"><span class="icon">🙋</span> Confirm Holds</a>
       <a href="#plan-mode" class="sidebar-link"><span class="icon">📐</span> Plan Mode</a>
       <a href="#session-restart" class="sidebar-link"><span class="icon">🔄</span> Session Restart</a>
       <a href="#terse-skill" class="sidebar-link"><span class="icon">⚡</span> /terse Skill</a>
@@ -263,16 +272,16 @@
 
     <div class="page-hero">
       <h1>Workflow</h1>
-      <p>The mandatory 7-step order Claude must follow every session. Hooks enforce this — skipping steps will cause tool denials.</p>
+      <p>The order C3's managed instructions ask every agent to follow. Hooks enforce the read/write parts — skipping straight to native tools causes denials.</p>
     </div>
 
-    <!-- ═══ Excalidraw: 7-step flowchart ═══════════════════════ -->
+    <!-- ═══ Excalidraw: 11-step flowchart ══════════════════════ -->
     <section class="section" id="workflow-diagram">
       <div class="section-title"><span class="icon">📊</span> Visual Overview</div>
       <p class="muted text-sm" style="margin-bottom: 14px;">
         Scroll inside the diagram to zoom · drag to pan · built with Excalidraw
       </p>
-      <div id="exc-workflow" class="exc-frame" style="height: 970px;">
+      <div id="exc-workflow" class="exc-frame" style="height: 1280px;">
         <div class="exc-loading">
           <div class="spinner"></div>
           Loading diagram…
@@ -337,22 +346,52 @@
             <td>Terminal output &gt;10 lines or log files</td>
           </tr>
           <tr>
-            <td><span class="badge badge-green">7</span></td>
+            <td><span class="badge badge-orange">7</span></td>
+            <td><strong>Shell</strong></td>
+            <td><code>c3_shell(cmd, cwd='', timeout=60)</code></td>
+            <td>Tests, git, builds, scripts — instead of native Bash. <code>c3_shell_job</code> for anything that outruns one tool call</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">8</span></td>
             <td><strong>Validate</strong></td>
             <td><code>c3_validate(file_path)</code></td>
             <td>After every edit; type check auto-runs if pyright/tsc installed</td>
           </tr>
           <tr>
-            <td><span class="badge badge-cyan">8</span></td>
-            <td><strong>Log</strong></td>
-            <td><code>c3_session(action='log')</code></td>
-            <td>After decisions; snapshot before /clear</td>
+            <td><span class="badge badge-cyan">9</span></td>
+            <td><strong>Session</strong></td>
+            <td><code>c3_session(action='log' | 'snapshot' | 'note')</code></td>
+            <td>Log decisions, snapshot before /clear, leave a <code>note</code> before stopping</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">10</span></td>
+            <td><strong>Delegate</strong></td>
+            <td><code>c3_delegate(task, task_type, ...)</code></td>
+            <td>Bounded subtask to your own provider one tier down, or <code>c3_agent(workflow=...)</code> for a multi-step pipeline. <a href="delegate.html">Full guide →</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-orange">11</span></td>
+            <td><strong>Local CI</strong></td>
+            <td><code>c3_ci(action='run')</code></td>
+            <td>Run this repo's real <code>.github/workflows</code> here before pushing. Only <code>FULL_CI_PASS</code> means safe to push. <a href="ci.html">Full guide →</a></td>
           </tr>
           <tr>
             <td><span class="badge badge-purple">+</span></td>
             <td><strong>Bitbucket</strong></td>
             <td><code>c3_bitbucket(action='list_prs')</code></td>
             <td>v2.30.0 — see/act on PRs, branches, builds, repo admin on enterprise Bitbucket Data Center. <a href="bitbucket.html">Full guide →</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">+</span></td>
+            <td><strong>Jira</strong></td>
+            <td><code>c3_jira(action='my_issues')</code></td>
+            <td>v2.56.0 — search, create, transition, comment on Jira Cloud/Data Center issues. <a href="jira.html">Full guide →</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">+</span></td>
+            <td><strong>Credentials</strong></td>
+            <td><code>c3_shell(cmd, env_creds='NAME')</code></td>
+            <td>v2.58.0 — use a vault secret by name; it never enters model context. <a href="credentials.html">Full guide →</a></td>
           </tr>
           <tr>
             <td><span class="badge badge-purple">+</span></td>
@@ -364,7 +403,13 @@
             <td><span class="badge badge-purple">+</span></td>
             <td><strong>Sub-projects</strong></td>
             <td><code>c3 sub add &lt;folder&gt;</code></td>
-            <td>v2.44.0 — link child projects living inside a parent; federated search/memory + Hub management. <a href="#subprojects">Section →</a></td>
+            <td>v2.96.0 — link child projects anywhere on disk, nested up to 8 levels; federated search/memory + Hub management. <a href="#subprojects">Section →</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">+</span></td>
+            <td><strong>Confirm holds</strong></td>
+            <td><code>c3_override(action='wait', request_id=...)</code></td>
+            <td>v2.97.0 — a <code>[c3-access:confirm]</code> refusal is a pause, not a block. <a href="#confirm-holds">Section →</a></td>
           </tr>
         </tbody>
       </table>
@@ -429,22 +474,28 @@
             <tbody>
               <tr>
                 <td class="param-name">code</td>
-                <td class="param-desc">TF-IDF code search — find functions, classes, patterns by content</td>
+                <td class="param-desc">Default. SQLite FTS5/BM25 fused with the embedding index by reciprocal rank — find functions, classes, patterns by content</td>
+              </tr>
+              <tr>
+                <td class="param-name">lexical</td>
+                <td class="param-desc">The BM25 ranking alone, no fusion</td>
               </tr>
               <tr>
                 <td class="param-name">files</td>
-                <td class="param-desc">File discovery — find files by name, extension, path pattern</td>
+                <td class="param-desc">File discovery — exact name, glob, or substring</td>
               </tr>
               <tr>
                 <td class="param-name">semantic</td>
-                <td class="param-desc">Embedding-based similarity search — find conceptually related code</td>
+                <td class="param-desc">Embedding-based similarity search alone — find conceptually related code</td>
               </tr>
               <tr>
                 <td class="param-name">exact</td>
-                <td class="param-desc">Regex-based exact search — when you know the literal string</td>
+                <td class="param-desc">Regex over every indexed file, definitions printed first — when you know the literal string or pattern</td>
               </tr>
             </tbody>
           </table>
+
+          <p class="text-sm muted">Filter any action with <code>path=</code>, <code>lang=</code>, <code>kind=</code> (comma-separated). Full reference: <a href="tools.html#c3_search">c3_search tool card →</a>.</p>
 
           <div class="compare">
             <div class="compare-block compare-bad">
@@ -461,7 +512,7 @@ c3_search(query=<span class="str">'*.py auth'</span>, action=<span class="str">'
           </div>
 
           <h4>prefetch=True</h4>
-          <p>Pass <code>prefetch=True</code> to auto-compress the top result files in parallel, saving a round-trip:</p>
+          <p>Pass <code>prefetch=True</code> to auto-read the top result files, saving a round-trip:</p>
           <pre><code>c3_search(query=<span class="str">'session manager'</span>, action=<span class="str">'code'</span>, prefetch=<span class="val">True</span>)</code></pre>
         </div>
       </div>
@@ -476,11 +527,11 @@ c3_search(query=<span class="str">'*.py auth'</span>, action=<span class="str">'
             <div class="step-name">Map then Read</div>
             <div class="step-subtitle">Get a structural overview first, then read only what you need</div>
           </div>
-          <span class="step-tool">c3_compress + c3_read</span>
+          <span class="step-tool">c3_read</span>
         </div>
         <div class="workflow-step-body">
 
-          <p>Reading a whole file wastes tokens. The correct pattern is: <strong>compress to get the map</strong>, then <strong>read only the specific symbols or lines</strong> you need.</p>
+          <p>Reading a whole file wastes tokens. <code>c3_read(file_path)</code> called with no <code>symbols</code>/<code>lines</code> IS the map: one line per symbol with its signature and <code>[La-Lb]</code> range, at roughly 10% of the file's tokens. A directory path maps its files instead (2.123.0). <code>c3_compress</code> left the MCP surface in 2.124.0 — its six modes collapsed into this one canonical map, since telemetry showed almost nothing used the other five. There is no separate compress step any more: map, then read the symbols or lines you need.</p>
 
           <div class="compare">
             <div class="compare-block compare-bad">
@@ -491,46 +542,36 @@ Read(file_path=<span class="str">'services/session_manager.py'</span>)</code></p
             <div class="compare-block compare-good">
               <div class="compare-label">✅ Correct</div>
               <pre><code><span class="com"># Map → targeted read</span>
-c3_compress(file_path=<span class="str">'services/session_manager.py'</span>, mode=<span class="str">'map'</span>)
+c3_read(file_path=<span class="str">'services/session_manager.py'</span>)
 c3_read(file_path=<span class="str">'services/session_manager.py'</span>, symbols=[<span class="str">'SessionManager.save'</span>])</code></pre>
             </div>
           </div>
 
-          <h4>Compress modes</h4>
+          <h4>Directories, batches, and large files</h4>
           <table class="params-table">
-            <thead><tr><th>Mode</th><th>Output</th><th>Best for</th></tr></thead>
+            <thead><tr><th>Call</th><th>What it returns</th></tr></thead>
             <tbody>
               <tr>
-                <td class="param-name">map</td>
-                <td class="param-desc">Line-range map of all symbols (functions, classes, constants)</td>
-                <td class="param-desc">Understanding file structure before reading</td>
+                <td class="param-name">c3_read('services/')</td>
+                <td class="param-desc">A directory map: one line per file, up to six top symbols each, most-recently-edited first (capped at 400 files)</td>
               </tr>
               <tr>
-                <td class="param-name">dense_map</td>
-                <td class="param-desc">Same as map but with docstrings included</td>
-                <td class="param-desc">When you need a bit more context per symbol</td>
+                <td class="param-name">c3_read('a.py,b.py')</td>
+                <td class="param-desc">A batch map of several files in one call</td>
               </tr>
               <tr>
-                <td class="param-name">smart</td>
-                <td class="param-desc">Adaptive compression — keeps important sections</td>
-                <td class="param-desc">General-purpose read when map is insufficient</td>
-              </tr>
-              <tr>
-                <td class="param-name">diff</td>
-                <td class="param-desc">Show what changed recently (git diff aware)</td>
-                <td class="param-desc">Reviewing recent changes</td>
-              </tr>
-              <tr>
-                <td class="param-name">bug_scan</td>
-                <td class="param-desc">Highlight suspicious patterns</td>
-                <td class="param-desc">Quick bug-hunting pass</td>
+                <td class="param-name">c3_read(file_path, lines=[a,b])</td>
+                <td class="param-desc">The exact line range — the only way into a 2 MB+ file, which isn't parsed for a map</td>
               </tr>
             </tbody>
           </table>
 
-          <h4>Batch compress</h4>
-          <pre><code><span class="com"># Compress multiple files in one call</span>
-c3_compress(file_path=<span class="str">'services/memory.py,services/agents.py'</span>, mode=<span class="str">'map'</span>)</code></pre>
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              A file whose map would cost more tokens than its source is served whole instead. See <code>docs/file-map.md</code> for the grammar and the retired-mode table.
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -647,6 +688,37 @@ c3_filter(file_path=<span class="str">".c3/sessions/session_001.json"</span>, pa
         <div class="workflow-step-header">
           <div class="step-badge">7</div>
           <div class="step-info">
+            <div class="step-name">Shell</div>
+            <div class="step-subtitle">Tests, git, builds, scripts — instead of native Bash</div>
+          </div>
+          <span class="step-tool">c3_shell</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p><code>c3_shell(cmd, cwd='', timeout=60)</code> returns structured <code>{exit_code, stdout, stderr, duration_ms}</code>, auto-logs git-mutating commands (commit/add/merge/rebase/reset/restore/checkout) to the edit ledger, and keeps a response under an 18 KiB byte budget (whatever gets clipped is kept in a spill store you page back with <code>output_id</code>). It best-effort blocks the most catastrophic commands (<code>rm -rf</code> of <code>/</code>, a top-level system dir, or <code>$HOME</code>/<code>~</code>; fork bombs; whole-drive wipes) and soft-warns on <code>--force</code>, <code>--no-verify</code>, <code>reset --hard</code> — a guard, not a sandbox. Native Bash remains the fallback for interactive/TTY commands.</p>
+
+          <pre><code><span class="com"># Run tests — failure blocks and totals are kept first if output is long</span>
+c3_shell(cmd=<span class="str">'pytest tests/ -v'</span>)
+
+<span class="com"># Git mutation — auto-logged to the edit ledger</span>
+c3_shell(cmd=<span class="str">'git commit -m "wire retry backoff"'</span>)</code></pre>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              Anything that outlives one tool call (a full test suite, a long build, a device command) belongs in <code>c3_shell_job(action='start', cmd=..., timeout=1800)</code> instead: it hands the command to a detached supervisor and gives you a <code>job_id</code> back immediately. A <code>c3_shell</code> timeout is never converted into a job. Poll with <code>c3_shell_job(action='status'|'tail', job_id=...)</code>, then page the kept output the same way as <code>c3_shell</code>'s. Prefer <code>c3_ci</code> (step 11) for this repository's own GitHub Actions workflows.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 8 -->
+    <section class="section" id="step8">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">8</div>
+          <div class="step-info">
             <div class="step-name">Validate</div>
             <div class="step-subtitle">Syntax + type check every edited file before reporting done</div>
           </div>
@@ -679,17 +751,25 @@ c3_validate(file_path=<span class="str">'services/auth.py,services/session.py,cl
     </section>
 
     <!-- Step 8 -->
-    <section class="section" id="step8">
+    <section class="section" id="step9">
       <div class="workflow-step">
         <div class="workflow-step-header">
-          <div class="step-badge">8</div>
+          <div class="step-badge">9</div>
           <div class="step-info">
-            <div class="step-name">Log &amp; Snapshot</div>
-            <div class="step-subtitle">Persist decisions and context so the next session starts informed</div>
+            <div class="step-name">Session</div>
+            <div class="step-subtitle">Persist decisions and context so the next session — or the next person — starts informed</div>
           </div>
           <span class="step-tool">c3_session</span>
         </div>
         <div class="workflow-step-body">
+
+          <h4>Leave a note before stopping</h4>
+          <p><strong>v2.143.0</strong> — before /clear or before you stop, leave a note: what this session did, what's next. It shows on the session's card in the Hub/Desk Sessions view.</p>
+          <pre><code>c3_session(action=<span class="str">'note'</span>, data=<span class="str">'Wired the Shell workflow step'</span>, reasoning=<span class="str">'Still need the Delegate step'</span>)</code></pre>
+
+          <p>If this session supersedes, finishes, or abandons an earlier one, mark that one <code>stale</code> so nobody resumes a dead end — <code>reasoning</code> is required, and <code>target</code> takes a session id, an 8+ char prefix, or <code>current</code>:</p>
+          <pre><code>c3_session(action=<span class="str">'stale'</span>, target=<span class="str">'a1b2c3d4'</span>, reasoning=<span class="str">'restarted after a bad approach'</span>)</code></pre>
+          <p>Full session catalog, resume flow, and the Hub Sessions tab: <a href="sessions.html">Sessions guide →</a></p>
 
           <h4>Log a decision</h4>
           <pre><code>c3_session(action=<span class="str">'log'</span>, data=<span class="str">'Chose JWT over session cookies — easier horizontal scaling'</span>)</code></pre>
@@ -714,7 +794,7 @@ c3_validate(file_path=<span class="str">'services/auth.py,services/session.py,cl
               <tr><td style="padding: 6px 10px;">/clear</td><td style="padding: 6px 10px;">Indirect</td><td style="padding: 6px 10px;">Session ends first, triggering the hook</td></tr>
             </tbody>
           </table>
-          <p>Manual snapshots are still recommended before <code>/clear</code> for maximum reliability, but the auto-snapshot serves as a safety net.</p>
+          <p>Manual snapshots are still recommended before <code>/clear</code> for maximum reliability, but the auto-snapshot is a safety net.</p>
 
           <h4>Restore in new session</h4>
           <pre><code>c3_session(action=<span class="str">'restore'</span>)</code></pre>
@@ -722,6 +802,67 @@ c3_validate(file_path=<span class="str">'services/auth.py,services/session.py,cl
           <h4>Compact (one-step restart)</h4>
           <pre><code><span class="com"># Snapshot + summary + restore instruction in one step</span>
 c3_session(action=<span class="str">'compact'</span>)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 10 -->
+    <section class="section" id="step10">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">10</div>
+          <div class="step-info">
+            <div class="step-name">Delegate</div>
+            <div class="step-subtitle">Hand a bounded subtask to your own provider, one tier down</div>
+          </div>
+          <span class="step-tool">c3_delegate</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p>For work that's local-model-sized (summarize a diff or log, explain a function, triage a traceback), <code>c3_delegate</code> sends it to a smaller model from the provider you already run on. In Claude Code that's Haiku by default (<code>backend='host'</code>, <code>tier='small'</code>). <code>scout=true</code> lets the delegate look files up itself; <code>write_paths='a.py,b.py'</code> has Sonnet make a change you specified and hands back the diff to review.</p>
+
+          <pre><code><span class="com"># Summarize a diff on Haiku</span>
+c3_delegate(task=<span class="str">'Summarize this diff for a changelog in three bullets'</span>, context=<span class="str">'&lt;diff&gt;'</span>)
+
+<span class="com"># A lookup the delegate does itself</span>
+c3_delegate(task=<span class="str">'Which functions call charge_card, and where?'</span>, scout=<span class="kw">True</span>)</code></pre>
+
+          <p>For a compound investigation that would otherwise be 5+ tool calls, use <code>c3_agent(workflow='investigate' | 'review_changes' | 'prepare_context' | 'preflight' | 'validate_compress')</code> instead. Full backend/tier reference: <a href="delegate.html">Delegate guide →</a>.</p>
+
+          <div class="callout callout-info">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              A <code>[c3:delegate-hint]</code> line on a tool response names a call worth delegating when your own work looks delegable. In Claude Code, <code>c3 install-mcp</code> also writes two subagents, <code>c3-scout</code> (Haiku, read-only) and <code>c3-worker</code> (Sonnet), so C3's hooks still apply inside them.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 11 -->
+    <section class="section" id="step11">
+      <div class="workflow-step">
+        <div class="workflow-step-header">
+          <div class="step-badge">11</div>
+          <div class="step-info">
+            <div class="step-name">Local CI</div>
+            <div class="step-subtitle">Run this repository's real CI here, before pushing — not after</div>
+          </div>
+          <span class="step-tool">c3_ci</span>
+        </div>
+        <div class="workflow-step-body">
+
+          <p><code>c3_ci</code> reads <code>.github/workflows/*.yml</code> as the only source of truth; it does not define a second CI config. <code>inspect</code> shows the job DAG and what's runnable on this host; <code>run</code> executes in dependency order and SKIPS (never passes) a job whose dependency failed. Only <strong>FULL_CI_PASS</strong> means every job ran here and passed — the only verdict that means safe to push. <strong>PARTIAL_PASS</strong> is not a green light: something didn't run (another OS, an unsupported action, or a subset you selected).</p>
+
+          <pre><code><span class="com"># Before you push</span>
+c3_ci(action=<span class="str">'inspect'</span>)
+c3_ci(action=<span class="str">'run'</span>, mode=<span class="str">'required'</span>)
+
+<span class="com"># Fix loop</span>
+c3_ci(action=<span class="str">'rerun'</span>)
+c3_ci(action=<span class="str">'failures'</span>)</code></pre>
+
+          <p>Engines: <code>native</code> runs jobs matching this host; <code>act</code> runs Linux jobs in a real container (real <code>uses:</code> actions included) when act + Docker are installed — a container run counts toward FULL_CI_PASS, a cross-OS one never does. Full reference: <a href="ci.html">CI guide →</a>.</p>
         </div>
       </div>
     </section>
@@ -736,7 +877,7 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
 
       <div class="antipattern">
         <span class="x">✗</span>
-        <div><strong>Starting with native file search/read</strong> — always use c3_search or c3_compress first, even for "quick" lookups.</div>
+        <div><strong>Starting with native file search/read</strong> — always use c3_search first, even for "quick" lookups.</div>
       </div>
       <div class="antipattern">
         <span class="x">✗</span>
@@ -744,11 +885,15 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
       </div>
       <div class="antipattern">
         <span class="x">✗</span>
-        <div><strong>Reading entire files with native Read</strong> — always compress first, then read only the symbols you need.</div>
+        <div><strong>Reading entire files with native Read</strong> — always map with c3_read first, then read only the symbols or lines you need.</div>
       </div>
       <div class="antipattern">
         <span class="x">✗</span>
         <div><strong>Skipping c3_validate after edits</strong> — you will silently introduce syntax errors that break the next session.</div>
+      </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Retrying a c3_edit that errored or timed out</strong> — it may have already written. Send the same args to <code>c3_edits(action='verify')</code> first; a double-apply can corrupt a file whose <code>new_string</code> contains its <code>old_string</code>.</div>
       </div>
       <div class="antipattern">
         <span class="x">✗</span>
@@ -762,6 +907,35 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
         <span class="x">✗</span>
         <div><strong>Skipping recall at session start</strong> — you'll rediscover decisions and conventions already documented in memory.</div>
       </div>
+      <div class="antipattern">
+        <span class="x">✗</span>
+        <div><strong>Routing around a confirm hold</strong> — a <code>[c3-access:confirm]</code> refusal via <code>c3_shell</code>, another tool, or a native write is not a bug to work around. See <a href="#confirm-holds">Confirm Holds</a>.</div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Confirm holds -->
+    <section class="section" id="confirm-holds">
+      <div class="section-title"><span class="icon">🙋</span> Confirm Holds</div>
+
+      <p>A refusal tagged <code>[c3-access:confirm]</code> is a <strong>pause, not a block</strong> — either the user set that path to "ask me first", or it's the builtin agent-config confirm tier (instruction docs, hooks, skills, MCP configs: writes to that whole set pause by default since v2.100.0, widened in v2.102.0 to cover shell writes too). Reads stay open; only writes hold.</p>
+
+      <ol>
+        <li>Read the refusal's tail. If it names a request id, C3 already filed it — wait on that id: <code>c3_override(action='wait', request_id='...', timeout_s=180)</code>. The bare call waits only 60s; "still pending" is not a denial, so wait again or do unaffected work.</li>
+        <li>If no request was filed, it names the surface that files one (<code>c3_read</code>, <code>c3_edit</code>, or a native tool) — use that surface rather than asking in chat.</li>
+        <li>If a request could not be filed, obey the reason given: a denied-and-muted request means don't ask again; a rate limit means withdraw one or wait.</li>
+        <li>Once approved, retry the <strong>same call once</strong>, on the <strong>same surface</strong>. Never retry before a decision, never re-file (duplicates collapse into the pending request), and never route around the hold via <code>c3_shell</code> or another tool.</li>
+      </ol>
+
+      <div class="callout callout-warning">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          Most credential-vault, Tier-0, and catastrophic-shell-command denials are <strong>not escalatable</strong> at all — they're refused here and never shown to anyone. If a refusal didn't invite you to ask, don't ask; mark the step blocked and tell the user.
+        </div>
+      </div>
+
+      <p>Full reference: <a href="access.html">Access guide →</a>.</p>
     </section>
 
     <hr class="divider">
@@ -772,7 +946,7 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
 
       <div class="plan-mode-box">
         <div class="title">Plan Mode — Read-only tools only</div>
-        <p>In plan mode, all c3_* read tools work normally: <code>c3_search</code>, <code>c3_read</code>, <code>c3_compress</code>, <code>c3_filter</code>, <code>c3_validate</code>, <code>c3_status</code>, <code>c3_memory(recall/query)</code>. Skip edit and delegate steps in plan mode.</p>
+        <p>In plan mode, all c3_* read tools work normally: <code>c3_search</code>, <code>c3_read</code>, <code>c3_filter</code>, <code>c3_validate</code>, <code>c3_status</code>, <code>c3_impact</code>, <code>c3_memory</code> (recall/index/fetch/query/list), <code>c3_task</code> reads, <code>c3_artifacts</code> reads, <code>c3_ci</code> (inspect/plan/status/failures/logs/runs/history/doctor). Skip edit, shell writes, and delegate write mode in plan mode.</p>
       </div>
     </section>
 
@@ -829,7 +1003,7 @@ c3_session(action=<span class="str">'restore'</span>)</code></pre>
       <div class="callout callout-tip">
         <span class="callout-icon">💡</span>
         <div class="callout-body">
-          Complements C3's input-token compression (<code>c3_compress</code>, <code>c3_filter</code>). Those shrink what Claude <em>reads</em>; terse mode shrinks what Claude <em>writes</em>.
+          Complements C3's input-token compression (<code>c3_read</code>'s map, <code>c3_filter</code>). Those shrink what Claude <em>reads</em>; terse mode shrinks what Claude <em>writes</em>.
         </div>
       </div>
 
@@ -994,13 +1168,13 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
       <p>With <code>hybrid.subprojects.memory_rollup</code> enabled, a parent-side recall also unions in the children's facts automatically.</p>
 
       <h4>Hub UI management (v2.57.0)</h4>
-      <p>Everything the CLI does — plus the operations that need multi-step safety — is available in the Hub:</p>
+      <p>Everything the CLI does, plus the operations that need multi-step safety, is available in the Hub:</p>
       <ul>
-        <li><strong>"Link project by path…"</strong> (v2.96.0) — kebab menu on any card, at any depth. Browse anywhere or paste a path; C3 inspects it before anything happens and shows you what you are about to claim — the project's name and version, whether the hub already knows it, how much is in it, who already claims it, and what sub-projects it would bring with it. One confirm registers and links an unregistered project. Unlinked nested projects it finds are offered as suggestions, never applied.</li>
+        <li><strong>"Link project by path…"</strong> (v2.96.0) — kebab menu on any card, at any depth. Browse anywhere or paste a path; C3 inspects it before anything happens and shows you what you are about to claim: the project's name and version, whether the hub already knows it, how much is in it, who already claims it, and what sub-projects it would bring with it. One confirm registers and links an unregistered project. Unlinked nested projects it finds are offered as suggestions, never applied.</li>
         <li><strong>Designate</strong> — kebab menu → "Designate sub-project…" on any project card, or from the drill-in <strong>Sub-projects</strong> tab. A folder picker fenced to the parent's subtree validates the choice, shows adopt-vs-initialize expectations up front, and offers an instruction-docs/IDE picker (<code>auto | claude | vscode | cursor | codex | grok | antigravity</code>).</li>
         <li><strong>"Make sub-project of…"</strong> — the reverse move: pick any registered project to sit under. The only projects excluded are this one and its own descendants.</li>
         <li><strong>Sub-projects drill tab</strong> — per-child rows with inline <em>Validate</em> and <em>Promote</em>; inline <em>Reconcile</em> with per-issue detail and planned repair actions; a <em>Cascade</em> launcher with operation picker, include-parent toggle, affected-children preview, live progress, and Cancel.</li>
-        <li><strong>Link health, passively</strong> — parents show a red "N link issues" badge and children a status badge (<code>ok · backlink_broken · unregistered · missing_folder · missing_c3 · orphan</code>), computed from config + filesystem on every listing — no manual reconcile needed to spot trouble.</li>
+        <li><strong>Link health, passively</strong> — parents show a red "N link issues" badge and children a status badge (<code>ok · backlink_broken · unregistered · missing_folder · missing_c3 · orphan</code>), computed from config + filesystem on every listing, no manual reconcile needed to spot trouble.</li>
         <li><strong>"Change parent…"</strong> — unlink → validate → relink, with a per-step checklist. Since a child can be addressed by absolute path, re-parenting is a configuration change and no files move.</li>
         <li><strong>"De-initialize…"</strong> — clear-mode removal behind a typed-name confirmation: deletes <code>.c3</code>, uninstalls the MCP config, removes instruction docs, deregisters. Your code is untouched.</li>
         <li><strong>Federation toggles</strong> — the config editor's Sub-projects section on parent projects: memory roll-up, search fan-out for <code>scope='all'</code>, and max children per query, persisted under <code>hybrid.subprojects</code>.</li>
@@ -1087,11 +1261,11 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
             <td>Grep with exact pattern</td>
           </tr>
           <tr>
-            <td>c3_compress failed (file too short / binary)</td>
+            <td>c3_read's map failed (binary file, parse error)</td>
             <td>Read with limited lines</td>
           </tr>
           <tr>
-            <td>c3_edit failed (old_string not found after multiple retries)</td>
+            <td>c3_edit failed (old_string not found) — after checking c3_edits(action='verify') first</td>
             <td>Read to confirm exact content, then retry c3_edit</td>
           </tr>
           <tr>
@@ -1108,7 +1282,7 @@ c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'pay
 <script type="module">
 // ═══════════════════════════════════════════════════════════════
 //  C3 Guide — Excalidraw Diagrams
-//  Workflow page: 7-step flowchart + session restart cycle
+//  Workflow page: 11-step flowchart + session restart cycle
 // ═══════════════════════════════════════════════════════════════
 // exportToSvg renders to a static SVG — no React component, no iframes.
 // Works correctly under file:// protocol (no cross-origin iframe issue).
@@ -1162,19 +1336,22 @@ const mkEllipse = (x, y, w, h, o = {}) => ({
   seed: _s(), version: 1, versionNonce: _s(), ...o,
 });
 
-// ── Diagram 1: 7-Step Workflow Flowchart ───────────────────────
+// ── Diagram 1: 11-Step Workflow Flowchart ──────────────────────
 function workflowScene() {
   const els = [];
 
   const STEPS = [
-    { n: 1, label: 'RECALL',         tool: "c3_memory(action='recall')",                          s: '#3b82f6', bg: '#0d1e42' },
-    { n: 2, label: 'SEARCH',         tool: "c3_search(action='code | files | semantic')",          s: '#3b82f6', bg: '#0d1e42' },
-    { n: 3, label: 'MAP + READ',     tool: "c3_compress(mode='map')  →  c3_read(symbols=[...])",   s: '#3b82f6', bg: '#0d1e42' },
-    { n: 4, label: 'IMPACT',         tool: "c3_impact(target='symbol')   ← shared symbols only",  s: '#f59e0b', bg: '#1f1300', dash: true },
-    { n: 5, label: 'EDIT',           tool: "c3_edit(file_path, old_string, new_string, summary)",  s: '#22c55e', bg: '#0a2618' },
-    { n: 6, label: 'FILTER',         tool: "c3_filter(text=...)    ← only if output > 10 lines",  s: '#a78bfa', bg: '#1a0a3a', dash: true },
-    { n: 7, label: 'VALIDATE',       tool: "c3_validate(file_path)",                               s: '#22c55e', bg: '#0a2618' },
-    { n: 8, label: 'LOG + SNAPSHOT', tool: "c3_session(action='log' | 'snapshot')",                s: '#22d3ee', bg: '#041820' },
+    { n: 1,  label: 'RECALL',    tool: "c3_memory(action='recall')",                            s: '#3b82f6', bg: '#0d1e42' },
+    { n: 2,  label: 'SEARCH',    tool: "c3_search(action='code | lexical | exact | files | …')", s: '#3b82f6', bg: '#0d1e42' },
+    { n: 3,  label: 'MAP+READ',  tool: "c3_read(file_path)  →  c3_read(symbols=[...])",          s: '#3b82f6', bg: '#0d1e42' },
+    { n: 4,  label: 'IMPACT',    tool: "c3_impact(target='symbol')   ← shared symbols only",     s: '#f59e0b', bg: '#1f1300', dash: true },
+    { n: 5,  label: 'EDIT',      tool: "c3_edit(file_path, old_string, new_string, summary)",    s: '#22c55e', bg: '#0a2618' },
+    { n: 6,  label: 'FILTER',    tool: "c3_filter(text=...)    ← only if output > 10 lines",     s: '#a78bfa', bg: '#1a0a3a', dash: true },
+    { n: 7,  label: 'SHELL',     tool: "c3_shell(cmd=...)   ← tests, git, build",                s: '#f97316', bg: '#2a1200' },
+    { n: 8,  label: 'VALIDATE',  tool: "c3_validate(file_path)",                                 s: '#22c55e', bg: '#0a2618' },
+    { n: 9,  label: 'SESSION',   tool: "c3_session(action='log' | 'snapshot' | 'note')",         s: '#22d3ee', bg: '#041820' },
+    { n: 10, label: 'DELEGATE',  tool: "c3_delegate(task, task_type, ...)   ← optional",         s: '#a78bfa', bg: '#1a0a3a', dash: true },
+    { n: 11, label: 'LOCAL CI',  tool: "c3_ci(action='run')   ← before pushing",                 s: '#f97316', bg: '#2a1200', dash: true },
   ];
 
   const BX = 90, BW = 570, BH = 82, BY0 = 90, GAP = 122;
@@ -1225,7 +1402,7 @@ function workflowScene() {
       els.push(mkArrow(CX, y + BH, CX, y + GAP, { strokeColor: '#30363d', strokeWidth: 2 }));
     }
 
-    // "optional" badge (step 5 only)
+    // "optional" badge (dashed steps only)
     if (step.dash) {
       els.push(mkRect(BX + BW + 14, y + 28, 100, 28, {
         strokeColor: '#a78bfa', backgroundColor: '#1a0a3a',

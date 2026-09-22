@@ -79,14 +79,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html" class="active">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.x</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -95,18 +99,24 @@
       <div class="sidebar-label">Search &amp; Read</div>
       <a href="#c3_search"   class="sidebar-link"><span class="icon">🔍</span> c3_search</a>
       <a href="#c3_read"     class="sidebar-link"><span class="icon">📖</span> c3_read</a>
-      <a href="#c3_compress" class="sidebar-link"><span class="icon">🗜️</span> c3_compress</a>
       <a href="#c3_filter"   class="sidebar-link"><span class="icon">🔎</span> c3_filter</a>
-      <a href="#c3_impact"   class="sidebar-link"><span class="icon">💥</span> c3_impact</a>
     </div>
     <div class="sidebar-section">
-      <div class="sidebar-label">Execute</div>
-      <a href="#c3_shell"    class="sidebar-link"><span class="icon">⚡</span> c3_shell</a>
+      <div class="sidebar-label">Execute &amp; Analysis</div>
+      <a href="#c3_impact"    class="sidebar-link"><span class="icon">💥</span> c3_impact</a>
+      <a href="#c3_shell"     class="sidebar-link"><span class="icon">⚡</span> c3_shell</a>
+      <a href="#c3_shell_job" class="sidebar-link"><span class="icon">🕐</span> c3_shell_job</a>
+      <a href="#c3_ci"        class="sidebar-link"><span class="icon">🧪</span> c3_ci</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Write</div>
       <a href="#c3_edit"     class="sidebar-link"><span class="icon">✏️</span> c3_edit</a>
       <a href="#c3_validate" class="sidebar-link"><span class="icon">✅</span> c3_validate</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Coordination</div>
+      <a href="#c3_locks"    class="sidebar-link"><span class="icon">🔒</span> c3_locks</a>
+      <a href="#c3_override" class="sidebar-link"><span class="icon">🙋</span> c3_override</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label" id="session">Session &amp; Memory</div>
@@ -120,7 +130,7 @@
       <a href="#c3_agent"    class="sidebar-link"><span class="icon">🔗</span> c3_agent</a>
     </div>
     <div class="sidebar-section">
-      <div class="sidebar-label">Ledger</div>
+      <div class="sidebar-label">Ledger &amp; Config</div>
       <a href="#c3_edits"    class="sidebar-link"><span class="icon">📝</span> c3_edits</a>
       <a href="#c3_artifacts" class="sidebar-link"><span class="icon">🛡️</span> c3_artifacts</a>
     </div>
@@ -142,7 +152,7 @@
 
     <div class="page-hero">
       <h1>Tools Reference</h1>
-      <p>Complete reference for all 18 C3 MCP tools — parameters, actions, examples, and usage notes.</p>
+      <p>Complete reference for all 23 C3 MCP tools registered at v2.145.0 — parameters, actions, examples, and usage notes.</p>
     </div>
 
     <!-- TOC -->
@@ -151,12 +161,15 @@
       <div class="toc-grid">
         <a href="#c3_search"   class="toc-item">c3_search   <span class="cat">Search</span></a>
         <a href="#c3_read"     class="toc-item">c3_read     <span class="cat">Read</span></a>
-        <a href="#c3_compress" class="toc-item">c3_compress <span class="cat">Read</span></a>
         <a href="#c3_filter"   class="toc-item">c3_filter   <span class="cat">Utility</span></a>
         <a href="#c3_impact"   class="toc-item">c3_impact   <span class="cat">Analysis</span></a>
         <a href="#c3_shell"    class="toc-item">c3_shell    <span class="cat">Execute</span></a>
+        <a href="#c3_shell_job" class="toc-item">c3_shell_job <span class="cat">Execute</span></a>
+        <a href="#c3_ci"       class="toc-item">c3_ci       <span class="cat">Execute</span></a>
         <a href="#c3_edit"     class="toc-item">c3_edit     <span class="cat">Write</span></a>
         <a href="#c3_validate" class="toc-item">c3_validate <span class="cat">Write</span></a>
+        <a href="#c3_locks"    class="toc-item">c3_locks    <span class="cat">Coordination</span></a>
+        <a href="#c3_override" class="toc-item">c3_override <span class="cat">Coordination</span></a>
         <a href="#c3_session"  class="toc-item">c3_session  <span class="cat">Session</span></a>
         <a href="#c3_memory"   class="toc-item">c3_memory   <span class="cat">Memory</span></a>
         <a href="#c3_status"   class="toc-item">c3_status   <span class="cat">Status</span></a>
@@ -184,10 +197,10 @@
             <span class="badge badge-green">read-only</span>
             <span class="badge badge-purple">plan-mode safe</span>
           </div>
-          <span class="tool-tagline">Codebase search — TF-IDF, semantic, files, exact</span>
+          <span class="tool-tagline">Codebase search — SQLite FTS5/BM25 fused with dense embeddings</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">The primary discovery tool. Always use before Grep or Glob. Returns ranked results with file locations and surrounding context. Supports TF-IDF code search, embedding-based semantic search, file discovery, and exact regex search.</p>
+          <p class="tool-desc">The primary discovery tool. Always use before Grep or Glob. <code>code</code> (the default) ranks candidates with SQLite FTS5/BM25 (<code>services/lexical_index.py</code>, stored in <code>.c3/index/index.sqlite</code>) and fuses them with the embedding index by reciprocal rank fusion (<code>Σ 1/(k + rank)</code>, <code>k=60</code>) once the dense backend is warm — <code>action='lexical'</code> returns the BM25 ranking alone, with no fusion. The tokenizer keeps identifiers whole and split with digits intact (<code>sha256_digest</code> indexes as <code>sha256_digest sha256 digest</code>; <code>v2</code>, <code>S256</code> are tokens) and applies no stemming. A query that IS a symbol name puts its definition first. An oversized chunk comes back as a bounded window instead of being skipped.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -202,19 +215,49 @@
                 <td class="param-name">action</td>
                 <td class="param-type">string</td>
                 <td class="param-default">"code"</td>
-                <td class="param-desc"><code>code</code> TF-IDF search · <code>files</code> file discovery · <code>semantic</code> embedding similarity · <code>exact</code> regex match · <code>transcript</code> session history search</td>
+                <td class="param-desc"><code>code</code> BM25 fused with dense by RRF · <code>lexical</code> the BM25 ranking alone · <code>exact</code> regex over every indexed file, definitions printed first · <code>files</code> by filename (exact, glob, or substring) · <code>semantic</code> embeddings alone, falls back to <code>code</code> when empty · <code>transcript</code> session history search</td>
               </tr>
               <tr>
                 <td class="param-name">top_k</td>
                 <td class="param-type">int</td>
                 <td class="param-default">3</td>
-                <td class="param-desc">Max results to return</td>
+                <td class="param-desc">Max results. Honored up to 50 for <code>files</code> and <code>exact</code>; <code>code</code>, <code>lexical</code> and <code>semantic</code> cap at 10</td>
+              </tr>
+              <tr>
+                <td class="param-name">path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated globs or substrings against the relative path, e.g. <code>'src/**,*.go'</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">lang</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated language names or bare extensions, e.g. <code>'python,go'</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">kind</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated <code>source</code>/<code>test</code>/<code>doc</code>/<code>config</code> and/or chunk types <code>function</code>/<code>class</code>/<code>method</code>/<code>heading</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">ignore_case</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Case-insensitive matching for <code>action='exact'</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">scope</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc"><code>''</code> current project · <code>'all'</code> also searches linked sub-projects · <code>'&lt;name&gt;'</code> one sub-project</td>
               </tr>
               <tr>
                 <td class="param-name">prefetch</td>
                 <td class="param-type">bool</td>
                 <td class="param-default">false</td>
-                <td class="param-desc">Auto-compress top result files in parallel after search</td>
+                <td class="param-desc">Auto-read the top results after the search returns</td>
               </tr>
               <tr>
                 <td class="param-name">max_tokens</td>
@@ -226,8 +269,11 @@
           </table>
 
           <h4>Examples</h4>
-          <pre><code><span class="com"># Find code by content</span>
+          <pre><code><span class="com"># Find code by content (fused BM25 + dense)</span>
 c3_search(query=<span class="str">'session snapshot restore'</span>, action=<span class="str">'code'</span>)
+
+<span class="com"># BM25 ranking alone, no fusion</span>
+c3_search(query=<span class="str">'session snapshot restore'</span>, action=<span class="str">'lexical'</span>)
 
 <span class="com"># Find files by name/path</span>
 c3_search(query=<span class="str">'hook files in cli/'</span>, action=<span class="str">'files'</span>)
@@ -235,11 +281,18 @@ c3_search(query=<span class="str">'hook files in cli/'</span>, action=<span clas
 <span class="com"># Semantic similarity search</span>
 c3_search(query=<span class="str">'code that handles authentication expiry'</span>, action=<span class="str">'semantic'</span>)
 
-<span class="com"># Exact regex match</span>
-c3_search(query=<span class="str">'class.*Manager'</span>, action=<span class="str">'exact'</span>, top_k=10)
+<span class="com"># Exact regex match, case-insensitive, scoped to Python source</span>
+c3_search(query=<span class="str">'class.*Manager'</span>, action=<span class="str">'exact'</span>, ignore_case=<span class="val">True</span>, lang=<span class="str">'python'</span>, top_k=10)
 
-<span class="com"># With auto-prefetch of top results</span>
-c3_search(query=<span class="str">'memory consolidation'</span>, action=<span class="str">'code'</span>, prefetch=<span class="val">True</span>)</code></pre>
+<span class="com"># Filtered to tests under services/</span>
+c3_search(query=<span class="str">'token bucket'</span>, path=<span class="str">'services/**'</span>, kind=<span class="str">'test'</span>)</code></pre>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              Each hit header ends in the backend that produced it: <code>[lexical]</code>, <code>[dense]</code>, <code>[lexical+dense]</code>, a <code>symbol+</code> prefix for an exact-symbol match, and <code>, reranked</code> when the optional cross-encoder reordered the block (off by default; it lost on this project's own relevance suite; see <code>c3 search-eval --rerank on</code>). A zero-result response names the next action to try. <code>c3_read</code> on a hit is the next step — <code>c3_compress</code> left the MCP surface in 2.124.0.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -251,10 +304,10 @@ c3_search(query=<span class="str">'memory consolidation'</span>, action=<span cl
             <span class="badge badge-green">read-only</span>
             <span class="badge badge-purple">plan-mode safe</span>
           </div>
-          <span class="tool-tagline">Targeted symbol or line-range reads</span>
+          <span class="tool-tagline">Map a file or directory, then read exact symbols or line ranges</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Read specific symbols (functions, classes, methods) or exact line ranges from a file. Always use after c3_compress to get the line map. Never read entire files.</p>
+          <p class="tool-desc">Called with only <code>file_path</code>, this is the map tool: one line per symbol with its signature and <code>[La-Lb]</code> range, at roughly 10% of the file's tokens (<code>services/file_map.py</code>). Since 2.123.0 a <strong>directory</strong> path maps its files instead: one line per file with up to six of its top symbols, most-recently-edited first, capped at 400 files. Pass <code>symbols</code> or <code>lines</code> to read exact source. <code>c3_compress</code> left the MCP surface in 2.124.0 (six modes collapsed into one canonical map, since telemetry showed almost nothing used the other five); this tool is the only map entry point now, and it already accepts a comma-separated <code>file_path</code> for a batch. A file whose map would cost more tokens than its source (small files) is served whole instead, headed <code>whole file — smaller than its map</code>. A very large file (2 MB+) is not parsed at all. Read it with <code>lines=[a,b]</code>. Paths outside the project root are read too (tagged <code>[c3-read:external]</code>), for a sibling repo or an extra working directory.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -263,88 +316,49 @@ c3_search(query=<span class="str">'memory consolidation'</span>, action=<span cl
                 <td class="param-name">file_path</td>
                 <td class="param-type">string</td>
                 <td class="param-default">required</td>
-                <td class="param-desc">Relative path to the file</td>
+                <td class="param-desc">Single path, comma-separated batch, or a directory (maps its files)</td>
               </tr>
               <tr>
                 <td class="param-name">symbols</td>
                 <td class="param-type">array</td>
                 <td class="param-default">null</td>
-                <td class="param-desc">Symbol names to read: <code>["ClassName.method_name"]</code> or <code>["function_name"]</code></td>
+                <td class="param-desc">Symbol names as the map prints them: <code>["ClassName.method_name"]</code> or <code>["function_name"]</code></td>
               </tr>
               <tr>
                 <td class="param-name">lines</td>
-                <td class="param-type">string</td>
+                <td class="param-type">int | array</td>
                 <td class="param-default">null</td>
-                <td class="param-desc">Line range: <code>"100-150"</code> or <code>"100"</code></td>
+                <td class="param-desc">A single line, <code>[start, end]</code>, or a list of ranges</td>
+              </tr>
+              <tr>
+                <td class="param-name">include_docstrings</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">true</td>
+                <td class="param-desc">Include each symbol's docstring when reading source</td>
               </tr>
             </tbody>
           </table>
 
           <h4>Examples</h4>
-          <pre><code><span class="com"># Read specific symbols</span>
+          <pre><code><span class="com"># Map a file (no symbols/lines)</span>
+c3_read(file_path=<span class="str">'cli/mcp_server.py'</span>)
+
+<span class="com"># Map a directory — one line per file</span>
+c3_read(file_path=<span class="str">'services/'</span>)
+
+<span class="com"># Read specific symbols</span>
 c3_read(file_path=<span class="str">'services/session_manager.py'</span>, symbols=[<span class="str">'SessionManager.save'</span>, <span class="str">'SessionManager.restore'</span>])
 
-<span class="com"># Read by line range (from compress map)</span>
-c3_read(file_path=<span class="str">'cli/c3.py'</span>, lines=<span class="str">'660-720'</span>)
+<span class="com"># Read by line range (from the map's [La-Lb])</span>
+c3_read(file_path=<span class="str">'cli/c3.py'</span>, lines=[<span class="num">660</span>, <span class="num">720</span>])
 
-<span class="com"># Read a standalone function</span>
-c3_read(file_path=<span class="str">'services/memory.py'</span>, symbols=[<span class="str">'recall_facts'</span>])</code></pre>
-        </div>
-      </div>
-
-      <!-- c3_compress -->
-      <div class="tool-card" id="c3_compress">
-        <div class="tool-card-header">
-          <span class="tool-name">c3_compress</span>
-          <div class="tag-row">
-            <span class="badge badge-green">read-only</span>
-            <span class="badge badge-purple">plan-mode safe</span>
-          </div>
-          <span class="tool-tagline">Structural file map — 40–70% token savings</span>
-        </div>
-        <div class="tool-card-body">
-          <p class="tool-desc">Returns a compact structural summary of one or more files. Use before c3_read to understand file structure and get the line numbers needed for targeted reads. Supports batch (comma-separated paths).</p>
-
-          <table class="params-table">
-            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
-            <tbody>
-              <tr>
-                <td class="param-name">file_path</td>
-                <td class="param-type">string</td>
-                <td class="param-default">required</td>
-                <td class="param-desc">Single path or comma-separated list of paths</td>
-              </tr>
-              <tr>
-                <td class="param-name">mode</td>
-                <td class="param-type">string</td>
-                <td class="param-default">"smart"</td>
-                <td class="param-desc"><code>map</code> symbol line-map · <code>dense_map</code> map + docstrings · <code>smart</code> adaptive · <code>diff</code> recent changes · <code>bug_scan</code> suspicious patterns · <code>ast</code> knowledge-graph via codebase-memory-mcp</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h4>Examples</h4>
-          <pre><code><span class="com"># Map a single file</span>
-c3_compress(file_path=<span class="str">'cli/mcp_server.py'</span>, mode=<span class="str">'map'</span>)
-
-<span class="com"># Map multiple files in one call</span>
-c3_compress(file_path=<span class="str">'services/memory.py,services/agents.py'</span>, mode=<span class="str">'map'</span>)
-
-<span class="com"># See recent changes</span>
-c3_compress(file_path=<span class="str">'cli/c3.py'</span>, mode=<span class="str">'diff'</span>)
-
-<span class="com"># Quick bug scan</span>
-c3_compress(file_path=<span class="str">'services/embedding_index.py'</span>, mode=<span class="str">'bug_scan'</span>)
-
-<span class="com"># Knowledge-graph overview (requires codebase-memory-mcp installed)</span>
-c3_compress(file_path=<span class="str">'.'</span>, mode=<span class="str">'ast'</span>)</code></pre>
+<span class="com"># Map a batch of files in one call</span>
+c3_read(file_path=<span class="str">'services/memory.py,services/agents.py'</span>)</code></pre>
 
           <div class="callout callout-tip">
             <span class="callout-icon">💡</span>
             <div class="callout-body">
-              The <code>map</code> output includes line numbers for every symbol. Use those line numbers directly in <code>c3_read(lines=…)</code> to read specific sections.
-              <br><br>
-              The <code>ast</code> mode uses <a href="https://github.com/DeusData/codebase-memory-mcp" target="_blank">codebase-memory-mcp</a> (optional install) for a project-wide knowledge graph — languages, entry points, hotspots, HTTP routes, and module clusters.
+              A directory map lists files most-recently-edited first, then by how much structure they hold. <code>lines=&lt;int&gt;</code> on a directory sets its token budget (default 1500) instead of a line range, since a directory has no line numbers. See <code>docs/file-map.md</code> for the full grammar.
             </div>
           </div>
         </div>
@@ -383,6 +397,24 @@ c3_compress(file_path=<span class="str">'.'</span>, mode=<span class="str">'ast'
                 <td class="param-type">string</td>
                 <td class="param-default">""</td>
                 <td class="param-desc">Regex pattern to filter by (e.g. <code>"error|warning"</code>)</td>
+              </tr>
+              <tr>
+                <td class="param-name">max_lines</td>
+                <td class="param-type">int</td>
+                <td class="param-default">50</td>
+                <td class="param-desc">Max lines to keep in the output</td>
+              </tr>
+              <tr>
+                <td class="param-name">depth</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"smart"</td>
+                <td class="param-desc"><code>fast</code> pattern-only · <code>smart</code> pattern + heuristics · <code>deep</code> heavier analysis</td>
+              </tr>
+              <tr>
+                <td class="param-name">use_llm</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">true</td>
+                <td class="param-desc">Allow a local-model summarization pass when the pattern/heuristic pass alone isn't enough</td>
               </tr>
             </tbody>
           </table>
@@ -481,7 +513,7 @@ c3_filter(text=<span class="str">"&lt;webpack build output&gt;"</span>, pattern=
           <div class="callout callout-info">
             <span class="callout-icon">💡</span>
             <div class="callout-body">
-              <strong>Unicode lookalikes are matched automatically.</strong> If <code>old_string</code> uses straight quotes but the file has curly quotes (or vice versa), or the two differ only by ASCII vs. unicode dashes (<code>-</code>/<code>–</code>/<code>—</code>) or non-breaking spaces, c3_edit retries with a normalized match and splices your <code>new_string</code> in at the matched offsets — unrelated lookalikes elsewhere are left intact. The response is tagged <code>[unicode-normalized]</code> when the fallback was used.
+              <strong>Unicode lookalikes are matched automatically.</strong> If <code>old_string</code> uses straight quotes but the file has curly quotes (or vice versa), or the two differ only by ASCII vs. unicode dashes (<code>-</code>/<code>–</code>/<code>—</code>) or non-breaking spaces, c3_edit retries with a normalized match and splices your <code>new_string</code> in at the matched offsets; unrelated lookalikes elsewhere are left intact. The response is tagged <code>[unicode-normalized]</code> when the fallback was used.
             </div>
           </div>
         </div>
@@ -533,6 +565,11 @@ c3_validate(file_path=<span class="str">'cli/c3.py,cli/mcp_server.py,services/ag
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ EXECUTE ══════════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Execute &amp; Analysis</div>
 
       <!-- c3_impact -->
       <div class="tool-card" id="c3_impact">
@@ -579,7 +616,7 @@ c3_impact(target=<span class="str">'handle_memory'</span>, file_path=<span class
 c3_impact(target=<span class="str">'MemoryStore'</span>, mode=<span class="str">'unstaged'</span>)
 
 <span class="com"># Safe to remove? (check before deleting)</span>
-c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
+c3_impact(target=<span class="str">'_legacy_scan'</span>)</code></pre>
 
           <h4>Risk levels</h4>
           <div class="tag-row">
@@ -609,7 +646,7 @@ c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
           <span class="tool-tagline">Structured shell execution — exit codes, auto-filter, git-ledger hooks</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Run a shell command through C3 with structured returns (<code>exit_code</code>, <code>stdout</code>, <code>stderr</code>, <code>duration_ms</code>), hard timeout + <code>taskkill /F /T</code> on Windows, auto-filter of long stdout, and automatic edit-ledger entries for git-mutating commands. Use for tests, git, builds, and one-shot scripts. Native Bash remains the fallback for interactive / TTY commands (<code>gh pr create</code> with editor, <code>ollama run</code>).</p>
+          <p class="tool-desc">Run a shell command through C3 with structured returns (<code>exit_code</code>, <code>stdout</code>, <code>stderr</code>, <code>duration_ms</code>), a hard timeout with tree-kill (<code>taskkill /F /T</code> on Windows), and automatic edit-ledger entries for git-mutating commands. Use for tests, git, builds, and one-shot scripts. The response never exceeds an 18 KiB budget (22 KiB ceiling; <code>max_bytes</code> may only lower it). Under budget the output is complete: ANSI/control sequences are stripped, <code>\r</code> progress rewrites collapse to their final state, and 3+ identical consecutive lines fold to one plus <code>&nbsp;[x N]</code>. Over budget, a recognised test/build runner (pytest, unittest, cargo, tsc, jest, vitest) keeps its failure blocks, error lines and totals first (each announced by <code>[La-b: why]</code>), then a bounded head/tail; everything dropped is kept in a spill store outside the project for 3 days and named by an <code>output_id</code> in the header. <code>filter_output=False</code> skips only the two collapses (escapes are still stripped, the cap is never lifted). Native Bash remains the fallback for interactive / TTY commands (<code>gh pr create</code> with an editor, <code>ollama run</code>). Work that outlives one tool call belongs in <a href="#c3_shell_job"><code>c3_shell_job</code></a> — a <code>c3_shell</code> timeout is never converted into a job.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -617,7 +654,7 @@ c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
               <tr>
                 <td class="param-name">cmd</td>
                 <td class="param-type">string</td>
-                <td class="param-default">required</td>
+                <td class="param-default">""</td>
                 <td class="param-desc">Shell command to execute (Git Bash on Windows when available; otherwise the platform default shell)</td>
               </tr>
               <tr>
@@ -630,32 +667,68 @@ c3_impact(target=<span class="str">'_legacy_compress'</span>)</code></pre>
                 <td class="param-name">timeout</td>
                 <td class="param-type">int</td>
                 <td class="param-default">60</td>
-                <td class="param-desc">Seconds before the process is killed with <code>taskkill /F /T</code> (Win) or <code>SIGKILL</code>. Capped at 600</td>
+                <td class="param-desc">Seconds before the process tree is killed</td>
               </tr>
               <tr>
                 <td class="param-name">filter_output</td>
                 <td class="param-type">bool</td>
-                <td class="param-default">True</td>
-                <td class="param-desc">Auto-route stdout through <code>c3_filter</code> when it exceeds 30 lines</td>
+                <td class="param-default">true</td>
+                <td class="param-desc">Apply ANSI-strip, <code>\r</code> collapse and repeated-line folding (the byte budget always applies regardless)</td>
               </tr>
               <tr>
                 <td class="param-name">log</td>
                 <td class="param-type">bool</td>
-                <td class="param-default">True</td>
+                <td class="param-default">true</td>
                 <td class="param-desc">Write <code>shell_exec</code> to the activity log and auto-log git-mutating commands to the edit ledger</td>
+              </tr>
+              <tr>
+                <td class="param-name">env_creds</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated vault entry names injected as env vars (see <a href="#c3_credentials">c3_credentials</a>); <code>{{cred:NAME}}</code> inside <code>cmd</code> also expands server-side</td>
+              </tr>
+              <tr>
+                <td class="param-name">max_bytes</td>
+                <td class="param-type">int</td>
+                <td class="param-default">0</td>
+                <td class="param-desc">Lower the response byte budget for this call (0 = default 18 KiB)</td>
+              </tr>
+              <tr>
+                <td class="param-name">output_id</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Page back a prior response's spilled output (<code>'o-…'</code> from a clipped header)</td>
+              </tr>
+              <tr>
+                <td class="param-name">output_action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc"><code>read</code> (with <code>lines='120-180'</code>) · <code>search</code> (with <code>pattern=</code>) · <code>tail</code> (with <code>lines='80'</code>) · <code>delete</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">stream</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"stdout"</td>
+                <td class="param-desc"><code>stdout</code> or <code>stderr</code>, for paging a spilled output</td>
               </tr>
             </tbody>
           </table>
 
           <h4>Examples</h4>
-          <pre><code><span class="com"># Run tests — exit_code propagates, long output is filtered</span>
+          <pre><code><span class="com"># Run tests — exit_code propagates, failure blocks kept first over budget</span>
 c3_shell(cmd=<span class="str">'pytest tests/test_c3_shell.py -v'</span>)
 
 <span class="com"># Git mutation — affected files auto-recorded in the edit ledger</span>
 c3_shell(cmd=<span class="str">'git commit -m "wire c3_shell"'</span>)
 
 <span class="com"># Build with a longer timeout</span>
-c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="str">300</span>)
+c3_shell(cmd=<span class="str">'npm run build'</span>, timeout=<span class="num">300</span>)
+
+<span class="com"># Use a vault secret without it ever entering context</span>
+c3_shell(cmd=<span class="str">'npm publish'</span>, env_creds=<span class="str">'NPM_TOKEN'</span>)
+
+<span class="com"># Page back the rest of a clipped response</span>
+c3_shell(output_id=<span class="str">'o-3f9a1c2b4d5e'</span>, output_action=<span class="str">'search'</span>, pattern=<span class="str">'FAILED'</span>)
 
 <span class="com"># Portable JSON formatting — Git Bash may not include jq</span>
 c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m json.tool'</span>)</code></pre>
@@ -663,7 +736,7 @@ c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m
           <h4>Safety classification</h4>
           <div class="tag-row">
             <span class="badge badge-red">BLOCKED — rm -rf of /, a top-level system dir, $HOME/~; fork bombs; whole-drive wipes</span>
-            <span class="badge badge-yellow">WARN — --force, --no-verify, reset --hard, DROP/TRUNCATE</span>
+            <span class="badge badge-yellow">WARN — --force, --no-verify, reset --hard</span>
             <span class="badge badge-green">OK — everything else</span>
           </div>
           <p class="tool-desc" style="margin-top:8px">The blocklist is a <strong>best-effort guard against the most catastrophic commands — not a sandbox</strong>. <code>c3_shell</code> runs arbitrary commands by design; for an intentionally dangerous command, use native <code>Bash</code> with explicit approval.</p>
@@ -671,7 +744,285 @@ c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m
           <div class="callout callout-tip">
             <span class="callout-icon">💡</span>
             <div class="callout-body">
-              Prefer <code>c3_shell</code> over native <code>Bash</code> for anything noisy, git-mutating, or long-running. You get structured returns, consistent timeout behaviour, free output filtering, and ledger coupling. Git Bash does not guarantee optional utilities such as <code>jq</code>; use Python's stdlib JSON tools for portable commands. Fall back to native <code>Bash</code> only for interactive / TTY commands.
+              A <code>[c3_shell:hint]</code> line may follow a <code>cat</code>/<code>grep</code>/<code>find</code>/<code>ls</code>-shaped command, naming the equivalent <code>c3_read</code>/<code>c3_search</code> call — advisory only, the command still runs. An id from <code>output_id</code> resolves only for the same project and the same session, and only while the current Access Guard rules still allow the paths the original command touched. See <code>docs/shell-output.md</code>.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_shell_job -->
+      <div class="tool-card" id="c3_shell_job">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_shell_job</span>
+          <div class="tag-row">
+            <span class="badge badge-orange">execution</span>
+            <span class="badge">v2.114.0</span>
+          </div>
+          <span class="tool-tagline">Background shell job — for work that outlives a tool call</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Full test suites, long builds, device/emulator commands: anything over the client's ~2 minute ceiling on <code>c3_shell</code>. <code>start</code> runs <code>c3_shell</code>'s full pre-flight (blocklist, Access Guard cwd deny, advisory read scan, write scan with confirm holds, credential expansion) and then hands the command to a <strong>detached supervisor process</strong> that survives the MCP server, replying with a <code>job_id='j-…'</code> immediately; nothing here waits on the job, and a <code>c3_shell</code> timeout is never turned into one. Output lands in the same spill store as <code>c3_shell</code> and is <strong>always</strong> promoted there (a job's output is the deliverable), kept 3 days: page it with <code>c3_shell(output_id=…, output_action=…)</code>. Jobs are per project AND per session — another project or session gets "not found". Not proxied through <code>c3_project</code>. Prefer <a href="#c3_ci">c3_ci</a> for this repository's own GitHub Actions workflows; jobs are for everything else.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">required</td>
+                <td class="param-desc"><code>start</code> · <code>status</code> · <code>tail</code> · <code>cancel</code> · <code>list</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">cmd</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Command for <code>start</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">timeout</td>
+                <td class="param-type">int</td>
+                <td class="param-default">1800</td>
+                <td class="param-desc">Seconds before the job's own timeout fires. Ceiling 21600 (6 h); a larger request runs at 6 h</td>
+              </tr>
+              <tr>
+                <td class="param-name">job_id</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Required for <code>status</code>, <code>tail</code>, <code>cancel</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">stream</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"stdout"</td>
+                <td class="param-desc"><code>stdout</code> or <code>stderr</code>, for <code>tail</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">lines</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc"><code>tail</code> line count, default 50</td>
+              </tr>
+              <tr>
+                <td class="param-name">env_creds</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Vault entry names injected as env vars — travel on the supervisor's stdin pipe only, never argv or disk</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Kick off the full suite, get a job id back at once</span>
+c3_shell_job(action=<span class="str">'start'</span>, cmd=<span class="str">'pytest -q'</span>, timeout=<span class="num">1800</span>)
+
+<span class="com"># Check on it</span>
+c3_shell_job(action=<span class="str">'status'</span>, job_id=<span class="str">'j-3f9a1c2b4d5e'</span>)
+
+<span class="com"># Watch the growing output while it runs</span>
+c3_shell_job(action=<span class="str">'tail'</span>, job_id=<span class="str">'j-3f9a1c2b4d5e'</span>, stream=<span class="str">'stdout'</span>, lines=<span class="str">'80'</span>)
+
+<span class="com"># After it finishes, page the kept output by output_id from status</span>
+c3_shell(output_id=<span class="str">'o-…'</span>, output_action=<span class="str">'read'</span>, lines=<span class="str">'1-200'</span>)
+
+<span class="com"># All this project + session's jobs</span>
+c3_shell_job(action=<span class="str">'list'</span>)</code></pre>
+
+          <div class="callout callout-tip">
+            <span class="callout-icon">💡</span>
+            <div class="callout-body">
+              A job's state machine: <code>queued → running → done | failed | timeout | cancelled</code>, or <code>lost</code> if the supervisor process disappears (its output is still promoted so nothing is lost). <code>cancel</code> kills the process tree only if the recorded pid still has the creation time recorded at spawn — a reused pid is never signalled. See <code>docs/shell-jobs.md</code>.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ CI ════════════════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">CI</div>
+
+      <!-- c3_ci -->
+      <div class="tool-card" id="c3_ci">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_ci</span>
+          <div class="tag-row">
+            <span class="badge badge-orange">execution</span>
+            <span class="badge">v2.79.0</span>
+          </div>
+          <span class="tool-tagline">Run this repository's real .github/workflows locally, before pushing</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Reads <code>.github/workflows/*.yml</code> as the only source of truth; there is no second CI config. <code>inspect</code> shows the job DAG and what's runnable on this host; <code>run</code> executes in dependency order and SKIPS (never passes) a job whose dependency failed; <code>rerun</code> retries only what failed; <code>failures</code> returns structured <code>{file, line, message}</code> instead of raw logs. Only <strong>FULL_CI_PASS</strong> means every job ran here and passed — the only verdict that means safe to push. <strong>PARTIAL_PASS</strong> means something did not run (another OS, an action C3 can't execute, or a subset you selected) and is not a green light. Full action reference and the <code>native</code>/<code>act</code> engine choice live on the <a href="ci.html"><strong>CI guide</strong></a>.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">inspect, plan</td><td class="param-desc">Job DAG and runnability on this host; <code>plan</code> shows the run/skip decision for <code>mode='required'</code></td></tr>
+              <tr><td class="param-name">run, rerun</td><td class="param-desc">Execute in <code>needs</code> order; <code>job=</code> selects one job or matrix cell; <code>rerun</code> retries only last run's failures</td></tr>
+              <tr><td class="param-name">status, failures, logs, runs</td><td class="param-desc">Last run's state; structured failures; raw logs; run history</td></tr>
+              <tr><td class="param-name">history</td><td class="param-desc">Per-job fail rates; flags FLAKY jobs (passed and failed on identical inputs)</td></tr>
+              <tr><td class="param-name">cache</td><td class="param-desc">A job whose inputs are unchanged since it last passed is reused (status <code>cached</code>); <code>no_cache=true</code> forces a re-run</td></tr>
+              <tr><td class="param-name">publish</td><td class="param-desc">Posts the last run as a GitHub commit status via your <code>gh</code> auth; refuses a dirty tree, an unpushed commit, and (unless forced) a PARTIAL result</td></tr>
+              <tr><td class="param-name">doctor</td><td class="param-desc">What's available on this host: native vs. <code>act</code>+Docker</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># See the job DAG and what's runnable here</span>
+c3_ci(action=<span class="str">'inspect'</span>)
+
+<span class="com"># Run everything this change could have broken</span>
+c3_ci(action=<span class="str">'run'</span>, mode=<span class="str">'required'</span>)
+
+<span class="com"># One job</span>
+c3_ci(action=<span class="str">'run'</span>, job=<span class="str">'test (ubuntu-latest, 3.12)'</span>)
+
+<span class="com"># Fix loop — only the failures</span>
+c3_ci(action=<span class="str">'rerun'</span>)
+c3_ci(action=<span class="str">'failures'</span>)</code></pre>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              <code>allow_host_mutation=true</code> lets the <code>native</code> engine run steps that reconfigure this machine (<code>pip install -g</code>, <code>apt</code>, <code>brew</code> …) — it has no isolation, and running this repo's own CI natively once uninstalled C3. Prefer <code>engine='act'</code> when act + Docker are installed. Jobs that look like they publish or deploy are refused unless <code>allow_side_effects=true</code>; C3 never passes secrets to <code>act</code>.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ COORDINATION ═════ -->
+    <div class="tool-section">
+      <div class="tool-section-label">Coordination</div>
+
+      <!-- c3_locks -->
+      <div class="tool-card" id="c3_locks">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_locks</span>
+          <div class="tag-row">
+            <span class="badge badge-cyan">coordination</span>
+            <span class="badge">v2.65.0</span>
+          </div>
+          <span class="tool-tagline">Agent leases — who is already touching this file</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">Guards answer "may the agent touch this?"; locks answer "is someone already touching it?" Two sessions each run their own <code>c3-mcp</code> server, so two agents could interleave read → replace → write on the same file with no error on either side. <code>c3_edit</code> already takes a lease on the file it edits, carrying the intent from your edit summary; use <code>acquire</code> to claim a multi-file refactor up front. Acquisition is <strong>all-or-nothing</strong> over the path list, so two agents grabbing the same pair in opposite order cannot deadlock. TTL is the real release mechanism: a crashed agent's lease expires on its own (default 900s / 15min, <code>locks.default_ttl_s</code> in <code>.c3/config.json</code>) rather than wedging the repo; a lease you no longer need should still be released explicitly. Leases gate C3's own tool surfaces only — a raw shell redirect, a non-Claude agent, or a human in an editor is not covered. Set <code>locks.enabled: false</code> to opt out.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"list"</td>
+                <td class="param-desc"><code>list</code> · <code>acquire</code> · <code>release</code> · <code>renew</code> · <code>sweep</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">paths</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Comma-separated, project-relative. Required for <code>acquire</code>/<code>renew</code>; omit on <code>release</code> to release everything this session holds</td>
+              </tr>
+              <tr>
+                <td class="param-name">intent</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Short note another agent sees when blocked, e.g. <code>"refactor retry backoff"</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">ttl_s</td>
+                <td class="param-type">int</td>
+                <td class="param-default">0</td>
+                <td class="param-desc">Lease lifetime in seconds for <code>acquire</code>/<code>renew</code> (0 = the project's configured default)</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># Who holds what right now</span>
+c3_locks(action=<span class="str">'list'</span>)
+
+<span class="com"># Claim a multi-file refactor up front</span>
+c3_locks(action=<span class="str">'acquire'</span>, paths=<span class="str">'services/router.py,services/retry.py'</span>, intent=<span class="str">'refactor retry backoff'</span>)
+
+<span class="com"># Release when done</span>
+c3_locks(action=<span class="str">'release'</span>, paths=<span class="str">'services/router.py,services/retry.py'</span>)
+
+<span class="com"># Drop expired leases (also happens automatically)</span>
+c3_locks(action=<span class="str">'sweep'</span>)</code></pre>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              A denied <code>acquire</code> is a policy block, not a transient error. Do not route around it via native tools. Work elsewhere, or ask the holder (named in the response) to release. <code>c3 locks force-release &lt;path&gt;</code> exists to break a stuck lease, but it's human-only and audited — never call it from the agent surface.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- c3_override -->
+      <div class="tool-card" id="c3_override">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_override</span>
+          <div class="tag-row">
+            <span class="badge badge-cyan">coordination</span>
+          </div>
+          <span class="tool-tagline">Ask a human to allow ONE blocked call — never a policy change</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">When a call is refused with <code>[c3-access:confirm]</code> (a path the user set to "ask me first", or the builtin agent-config confirm tier), the refusal names a request C3 already filed, or the surface that files one. A yes from the user mints a single-use, session-bound, path-exact grant with a short TTL; the rule that blocked you stays in force. Most denials are <strong>not</strong> escalatable (credential vault, Tier-0, catastrophic shell commands) and are refused here without ever reaching the user. If a refusal did not invite you to ask, do not ask — mark the step blocked and tell the user instead. Full flow and the confirm-hold model live on the <a href="access.html"><strong>Access guide</strong></a>.</p>
+
+          <table class="params-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="param-name">action</td>
+                <td class="param-type">string</td>
+                <td class="param-default">"list"</td>
+                <td class="param-desc"><code>request</code> · <code>status</code> · <code>wait</code> · <code>list</code> · <code>withdraw</code> — there is no <code>approve</code> here; only the user decides</td>
+              </tr>
+              <tr>
+                <td class="param-name">path</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">The exact blocked path, for <code>request</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">why</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">One concrete sentence for the human, for <code>request</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">request_id</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">Id from the original refusal, for <code>status</code>/<code>wait</code>/<code>withdraw</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">timeout_s</td>
+                <td class="param-type">int</td>
+                <td class="param-default">60</td>
+                <td class="param-desc"><code>wait</code> blocks this long; default 60, max 180. "Still pending" is not a denial — wait again or do unaffected work</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># A hold names a request id already filed — wait on it</span>
+c3_override(action=<span class="str">'wait'</span>, request_id=<span class="str">'req_a1b2c3'</span>, timeout_s=<span class="num">180</span>)
+
+<span class="com"># Nothing was filed — ask for this exact path yourself</span>
+c3_override(action=<span class="str">'request'</span>, path=<span class="str">'.env.production'</span>, why=<span class="str">'need the DB host to reproduce the bug'</span>)
+
+<span class="com"># What's still open</span>
+c3_override(action=<span class="str">'list'</span>)</code></pre>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              Never retry the blocked call before a decision, never route around a hold via <code>c3_shell</code> or another tool, and never re-file — duplicates collapse into the pending request. Retry the SAME call once, on the SAME surface, only after an approval.
             </div>
           </div>
         </div>
@@ -689,10 +1040,10 @@ c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m
           <div class="tag-row">
             <span class="badge badge-cyan">session</span>
           </div>
-          <span class="tool-tagline">Snapshot, restore, log, compact — session lifecycle</span>
+          <span class="tool-tagline">Snapshot, restore, log, plus finding and marking past sessions</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Manages the session lifecycle. Use <code>log</code> to record decisions, <code>snapshot</code> before /clear, <code>restore</code> to recover after /clear, and <code>compact</code> for a one-step restart. Session data persists in <code>.c3/sessions/</code>.</p>
+          <p class="tool-desc">Manages the session lifecycle: <code>log</code> for decisions, <code>snapshot</code> before /clear, <code>restore</code> to recover after /clear, <code>compact</code> for a one-step restart. Since <strong>v2.143.0</strong> it also covers the session catalog (one row per Claude Code conversation joining transcript, C3 sessions, decisions, snapshots and tasks), so you can find an old session, see what it was, and mark one a dead end. The full catalog, the Hub Sessions tab and resume flow are on the <a href="sessions.html"><strong>Sessions guide</strong></a>.</p>
 
           <table class="params-table">
             <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -707,13 +1058,19 @@ c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m
                 <td class="param-name">data</td>
                 <td class="param-type">string</td>
                 <td class="param-default">""</td>
-                <td class="param-desc">Content for log/plan actions</td>
+                <td class="param-desc">Content for <code>log</code>/<code>plan</code>/<code>note</code>; a successor session id for <code>stale</code>; a search term for <code>list</code></td>
               </tr>
               <tr>
                 <td class="param-name">reasoning</td>
                 <td class="param-type">string</td>
                 <td class="param-default">""</td>
-                <td class="param-desc">Optional rationale for log entries</td>
+                <td class="param-desc">Rationale for <code>log</code>; required for <code>stale</code>; next steps for <code>note</code></td>
+              </tr>
+              <tr>
+                <td class="param-name">target</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc">A session id, an 8+ char prefix, or <code>current</code> — for <code>note</code>, <code>stale</code>, <code>unstale</code>; also filters <code>list</code> to <code>stale</code>/<code>likely</code>/<code>all</code></td>
               </tr>
             </tbody>
           </table>
@@ -724,11 +1081,15 @@ c3_shell(cmd=<span class="str">'curl -s http://localhost:8000/health | python -m
             <tbody>
               <tr><td class="param-name">start</td><td>—</td><td class="param-desc">Start a new session (auto-called on server start)</td></tr>
               <tr><td class="param-name">log</td><td>✓</td><td class="param-desc">Record a decision or note to the session</td></tr>
-              <tr><td class="param-name">plan</td><td>✓</td><td class="param-desc">Record a plan or approach</td></tr>
+              <tr><td class="param-name">plan</td><td>✓</td><td class="param-desc">Record an ephemeral plan or approach (durable tracked TODOs belong in <a href="#c3_task">c3_task</a>)</td></tr>
               <tr><td class="param-name">snapshot</td><td>✓</td><td class="param-desc">Save full session state (call before /clear)</td></tr>
               <tr><td class="param-name">restore</td><td>—</td><td class="param-desc">Restore last session snapshot (call after /clear)</td></tr>
               <tr><td class="param-name">compact</td><td>—</td><td class="param-desc">One-step snapshot + summary + restore prompt</td></tr>
               <tr><td class="param-name">convo_log</td><td>✓</td><td class="param-desc">Search session conversation history</td></tr>
+              <tr><td class="param-name">note</td><td>✓</td><td class="param-desc"><strong>v2.143.0</strong> — leave what this session did and what's next, before stopping or /clear</td></tr>
+              <tr><td class="param-name">stale</td><td>✓</td><td class="param-desc"><strong>v2.143.0</strong> — mark a session you superseded, finished or abandoned; <code>reasoning</code> required, <code>data</code>=successor id optional</td></tr>
+              <tr><td class="param-name">unstale</td><td>✓</td><td class="param-desc"><strong>v2.143.0</strong> — undo a stale mark</td></tr>
+              <tr><td class="param-name">list</td><td>✓</td><td class="param-desc"><strong>v2.143.0</strong> — titles and flags across past sessions (the Hub/Desk Sessions view); never another session's prompts</td></tr>
             </tbody>
           </table>
 
@@ -739,8 +1100,11 @@ c3_session(action=<span class="str">'log'</span>, data=<span class="str">'Chose 
 <span class="com"># Before /clear</span>
 c3_session(action=<span class="str">'snapshot'</span>)
 
-<span class="com"># After /clear</span>
-c3_session(action=<span class="str">'restore'</span>)
+<span class="com"># Before stopping — what got done, what's next</span>
+c3_session(action=<span class="str">'note'</span>, data=<span class="str">'Wired c3_shell byte budget'</span>, reasoning=<span class="str">'Still need output_id paging tests'</span>)
+
+<span class="com"># This session superseded an earlier dead end</span>
+c3_session(action=<span class="str">'stale'</span>, target=<span class="str">'a1b2c3d4'</span>, reasoning=<span class="str">'restarted after a bad approach'</span>, data=<span class="str">'current'</span>)
 
 <span class="com"># One-step restart</span>
 c3_session(action=<span class="str">'compact'</span>)</code></pre>
@@ -790,13 +1154,25 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
                 <td class="param-name">fact_id</td>
                 <td class="param-type">string</td>
                 <td class="param-default">""</td>
-                <td class="param-desc">Fact ID for <code>update</code> and <code>delete</code></td>
+                <td class="param-desc">Fact ID(s) for <code>update</code>, <code>delete</code>, and <code>fetch</code> (comma-separated: <code>"id1,id2"</code>)</td>
               </tr>
               <tr>
                 <td class="param-name">top_k</td>
                 <td class="param-type">int</td>
                 <td class="param-default">3</td>
                 <td class="param-desc">Max facts to return</td>
+              </tr>
+              <tr>
+                <td class="param-name">include_scores</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Add a per-fact salience score to <code>recall</code> results</td>
+              </tr>
+              <tr>
+                <td class="param-name">scope</td>
+                <td class="param-type">string</td>
+                <td class="param-default">""</td>
+                <td class="param-desc"><code>recall</code> only: <code>''</code> config default · <code>'all'</code> union linked sub-project facts · <code>'&lt;name&gt;'</code> one sub-project · <code>'project'</code> this project only</td>
               </tr>
             </tbody>
           </table>
@@ -805,19 +1181,21 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
           <table class="params-table">
             <thead><tr><th>Action</th><th>Read-only?</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="param-name">recall</td><td>✓</td><td class="param-desc">Semantic recall of top-k relevant facts for a query</td></tr>
-              <tr><td class="param-name">query</td><td>✓</td><td class="param-desc">Exact/keyword search over facts</td></tr>
-              <tr><td class="param-name">list</td><td>✓</td><td class="param-desc">List all facts (optionally by category)</td></tr>
-              <tr><td class="param-name">add</td><td>—</td><td class="param-desc">Add a new persistent fact</td></tr>
+              <tr><td class="param-name">recall</td><td>✓</td><td class="param-desc">Semantic search, top-k relevant facts for a query</td></tr>
+              <tr><td class="param-name">index</td><td>✓</td><td class="param-desc">Compact list of ids + snippets for a large store — pair with <code>fetch</code> for the full text</td></tr>
+              <tr><td class="param-name">fetch</td><td>✓</td><td class="param-desc">Full text by <code>fact_id</code> (comma-separated for a batch)</td></tr>
+              <tr><td class="param-name">query</td><td>✓</td><td class="param-desc">Multi-source search: facts + sessions + files together</td></tr>
+              <tr><td class="param-name">list</td><td>✓</td><td class="param-desc">List all facts (<code>category=''</code> shows all, or filter)</td></tr>
+              <tr><td class="param-name">add</td><td>—</td><td class="param-desc">Add a new persistent fact (empty category → <code>general</code>)</td></tr>
               <tr><td class="param-name">update</td><td>—</td><td class="param-desc">Update an existing fact by ID</td></tr>
               <tr><td class="param-name">delete</td><td>—</td><td class="param-desc">Delete a fact by ID</td></tr>
               <tr><td class="param-name">review</td><td>✓</td><td class="param-desc">Review facts for staleness / deduplication</td></tr>
-              <tr><td class="param-name">consolidate</td><td>—</td><td class="param-desc">Merge duplicate/redundant facts</td></tr>
+              <tr><td class="param-name">consolidate, consolidate_deep</td><td>—</td><td class="param-desc">Merge duplicate/redundant facts; <code>_deep</code> is the heavier pass</td></tr>
               <tr><td class="param-name">score</td><td>✓</td><td class="param-desc">Show salience scores for all facts</td></tr>
               <tr><td class="param-name">trends</td><td>✓</td><td class="param-desc">Show memory usage trends over time</td></tr>
               <tr><td class="param-name">graph</td><td>✓</td><td class="param-desc">Show fact relationships graph</td></tr>
               <tr><td class="param-name">ground</td><td>—</td><td class="param-desc">Ground facts against current codebase (verify still accurate)</td></tr>
-              <tr><td class="param-name">export</td><td>✓</td><td class="param-desc">Export all facts as JSON</td></tr>
+              <tr><td class="param-name">export</td><td>✓</td><td class="param-desc">Export all facts as markdown</td></tr>
               <tr><td class="param-name">lifespan</td><td>✓</td><td class="param-desc">Show fact age and decay information</td></tr>
             </tbody>
           </table>
@@ -825,6 +1203,10 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
           <h4>Examples</h4>
           <pre><code><span class="com"># Session start — recall relevant facts</span>
 c3_memory(action=<span class="str">'recall'</span>, query=<span class="str">'authentication token system'</span>, top_k=<span class="num">5</span>)
+
+<span class="com"># Large store: browse compact, then fetch just what you need</span>
+c3_memory(action=<span class="str">'index'</span>)
+c3_memory(action=<span class="str">'fetch'</span>, fact_id=<span class="str">'a1b2c3,d4e5f6'</span>)
 
 <span class="com"># Add a new fact</span>
 c3_memory(action=<span class="str">'add'</span>, fact=<span class="str">'[architecture] JWT tokens use RS256 — public key in /etc/c3/jwt.pub'</span>, category=<span class="str">'architecture'</span>)
@@ -867,7 +1249,7 @@ c3_memory(action=<span class="str">'list'</span>, category=<span class="str">'ar
                 <td class="param-name">view</td>
                 <td class="param-type">string</td>
                 <td class="param-default">"budget"</td>
-                <td class="param-desc"><code>budget</code> token budget · <code>health</code> server health · <code>notifications</code> pending alerts · <code>sessions</code> session list</td>
+                <td class="param-desc"><code>budget</code> token budget · <code>health</code> memory/index/notifications · <code>notifications</code> actionable-only alerts · <code>sessions</code> session list · <code>ghost_files</code> 0KB / orphaned file check · <code>access</code> Access Guard rules (read-only)</td>
               </tr>
               <tr>
                 <td class="param-name">detailed</td>
@@ -880,9 +1262,9 @@ c3_memory(action=<span class="str">'list'</span>, category=<span class="str">'ar
 
           <h4>Examples</h4>
           <pre><code>c3_status(view=<span class="str">'budget'</span>)           <span class="com"># Token budget remaining</span>
-c3_status(view=<span class="str">'health'</span>)           <span class="com"># MCP server + services health</span>
+c3_status(view=<span class="str">'health'</span>)           <span class="com"># Memory / index / notification health</span>
 c3_status(view=<span class="str">'notifications'</span>)    <span class="com"># Pending alerts (budget warnings, etc.)</span>
-c3_status(view=<span class="str">'sessions'</span>)         <span class="com"># Recent sessions list</span></code></pre>
+c3_status(view=<span class="str">'access'</span>)           <span class="com"># Current Access Guard rules</span></code></pre>
         </div>
       </div>
     </div>
@@ -1031,15 +1413,15 @@ c3_delegate(task=<span class="str">'Rename calc_total to order_total in its defi
               </tr>
               <tr>
                 <td class="param-name">review_changes</td>
-                <td class="param-desc">Compress recently changed files + summarize what changed</td>
+                <td class="param-desc">Map recently changed files + summarize what changed</td>
               </tr>
               <tr>
                 <td class="param-name">prepare_context</td>
-                <td class="param-desc">Search + compress files relevant to a scope/topic</td>
+                <td class="param-desc">Search + map files relevant to a scope/topic</td>
               </tr>
               <tr>
                 <td class="param-name">investigate</td>
-                <td class="param-desc">Multi-step investigation: search → compress → summarize → recommend</td>
+                <td class="param-desc">Multi-step investigation: search → map → summarize → recommend</td>
               </tr>
               <tr>
                 <td class="param-name">preflight</td>
@@ -1047,7 +1429,7 @@ c3_delegate(task=<span class="str">'Rename calc_total to order_total in its defi
               </tr>
               <tr>
                 <td class="param-name">validate_compress</td>
-                <td class="param-desc">Batch validate + compress a set of files</td>
+                <td class="param-desc">Batch validate + map a set of files</td>
               </tr>
             </tbody>
           </table>
@@ -1068,9 +1450,9 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
       </div>
     </div>
 
-    <!-- ═══════════════════════════════════════ LEDGER ════════════ -->
+    <!-- ═══════════════════════════════════════ LEDGER & CONFIG ═══ -->
     <div class="tool-section">
-      <div class="tool-section-label">Ledger</div>
+      <div class="tool-section-label">Ledger &amp; Config</div>
 
       <!-- c3_edits -->
       <div class="tool-card" id="c3_edits">
@@ -1123,6 +1505,7 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
               <tr><td class="param-name">versions</td><td class="param-desc">Show version history for a specific file</td></tr>
               <tr><td class="param-name">stats</td><td class="param-desc">Aggregate stats: most-edited files, change frequency</td></tr>
               <tr><td class="param-name">tag</td><td class="param-desc">Tag an edit entry with a label</td></tr>
+              <tr><td class="param-name">verify</td><td class="param-desc"><strong>v2.75.0</strong> — did an edit land? Pass the SAME <code>file</code>/<code>old_string</code>/<code>new_string</code> (or <code>edits</code>) a failed or timed-out <code>c3_edit</code> call took. Answers APPLIED (do not retry) / NOT_APPLIED (safe to retry) / INCONCLUSIVE (read the file)</td></tr>
             </tbody>
           </table>
 
@@ -1137,7 +1520,18 @@ c3_edits(action=<span class="str">'versions'</span>, file=<span class="str">'ser
 c3_edits(action=<span class="str">'stats'</span>)
 
 <span class="com"># Edits made on a specific branch</span>
-c3_edits(action=<span class="str">'history'</span>, branch=<span class="str">'feature/x'</span>)</code></pre>
+c3_edits(action=<span class="str">'history'</span>, branch=<span class="str">'feature/x'</span>)
+
+<span class="com"># c3_edit errored or timed out — did it actually write?</span>
+c3_edits(action=<span class="str">'verify'</span>, file=<span class="str">'services/router.py'</span>,
+         old_string=<span class="str">'RETRY_LIMIT = 3'</span>, new_string=<span class="str">'RETRY_LIMIT = 5'</span>)</code></pre>
+
+          <div class="callout callout-warning">
+            <span class="callout-icon">⚠️</span>
+            <div class="callout-body">
+              A <code>c3_edit</code> call can fail AFTER doing its work — the write landed but the response never arrived. Retrying blind can double-apply an edit whose <code>new_string</code> contains its <code>old_string</code> (appending a line, wrapping a call). Always route a failed or timed-out <code>c3_edit</code> through <code>verify</code> first.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1152,18 +1546,25 @@ c3_edits(action=<span class="str">'history'</span>, branch=<span class="str">'fe
           <span class="tool-tagline">Durable per-project tasks, milestones, and decision notes — the project-management layer</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">Every C3 project carries a PM store at <code>.c3/pm/pm.json</code>: tasks with status (backlog / in_progress / blocked / done), priority (p0–p3), due dates, tags, and code links (files, commits, edit-ledger entries); milestones with computed progress; and a decision-note log separate from AI memory. The same store powers the Hub's Tasks tab and kanban board, the per-project UI's Tasks tab, and this tool. Task ids accept any unique prefix (≥4 chars); milestones resolve by id or unique name. Read actions are plan-mode-safe. Ephemeral session plans stay in <code>c3_session(action='plan')</code>.</p>
+          <p class="tool-desc">Every C3 project carries a PM store at <code>.c3/pm/pm.json</code>: tasks with status (backlog / in_progress / blocked / done), priority (p0–p3), due dates, tags, and code links (files, commits, edit-ledger entries, sessions); milestones with computed progress; a time log; and a decision-note log separate from AI memory. The same store powers the Hub's Tasks tab and kanban board, the per-project UI's Tasks tab, and this tool. Task ids accept any unique prefix (≥4 chars); milestones resolve by id or unique name. Read actions are plan-mode-safe. Ephemeral session plans stay in <code>c3_session(action='plan')</code>.</p>
 
           <h4>Actions</h4>
           <table class="params-table">
             <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="param-name">add</td><td>Write</td><td class="param-desc">Create a task: <code>title</code> + optional description / priority / due_date (YYYY-MM-DD) / tags (CSV) / milestone</td></tr>
-              <tr><td class="param-name">update, done, archive</td><td>Write</td><td class="param-desc"><code>task_id</code> + changed fields; <code>done</code> stamps completion; archive keeps history</td></tr>
+              <tr><td class="param-name">add</td><td>Write</td><td class="param-desc">Create a task: <code>title</code> + optional description / priority p0-p3 / due_date (YYYY-MM-DD) / tags (CSV) / milestone / <code>parent</code> (subtask)</td></tr>
+              <tr><td class="param-name">update, done, archive</td><td>Write</td><td class="param-desc"><code>task_id</code> + changed fields (incl. <code>status</code>); <code>done</code> stamps completion; <code>parent='none'</code> clears a subtask link</td></tr>
               <tr><td class="param-name">list, get, board</td><td>Read</td><td class="param-desc">Filtered list (status/priority/tags/milestone/query), full detail, kanban columns + milestone progress</td></tr>
-              <tr><td class="param-name">link, unlink</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>link_type</code> (file | commit | edit) + <code>ref</code> — tie tasks to the code they touch</td></tr>
-              <tr><td class="param-name">milestone_add / _update / _list / _archive</td><td>Both</td><td class="param-desc">Milestones with target dates; list shows progress %; archive detaches its tasks</td></tr>
+              <tr><td class="param-name">link, unlink</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>link_type</code> (file | commit | edit | session) + <code>ref</code> — <code>ref='current'</code> links this conversation</td></tr>
+              <tr><td class="param-name">block, unblock</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>ref</code>=blocking task id; cycle-safe. Completing the last open blocker auto-releases dependents to backlog</td></tr>
+              <tr><td class="param-name">report</td><td>Read</td><td class="param-desc">Overdue tasks, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput</td></tr>
+              <tr><td class="param-name">milestone_add / _update / _list</td><td>Both</td><td class="param-desc">Milestones with target dates; list shows progress %</td></tr>
+              <tr><td class="param-name">milestone_complete, milestone_reopen</td><td>Write</td><td class="param-desc"><strong>v2.86.0</strong> — close a shipped milestone (tasks KEEP their link, unlike archive); refuses while open tasks remain. <code>_reopen</code> undoes it</td></tr>
+              <tr><td class="param-name">milestone_archive</td><td>Write</td><td class="param-desc">Removal — detaches its tasks</td></tr>
+              <tr><td class="param-name">time_add, time_update, time_delete</td><td>Write</td><td class="param-desc">Manual time entries: <code>minutes</code> 1-1440 [+note/due_date/task_id]; update/delete by <code>ref</code>=entry id</td></tr>
+              <tr><td class="param-name">time_list, time_summary</td><td>Read</td><td class="param-desc">Manual entries + recent auto-tracked sessions; today/7d/30d totals (auto vs manual). Server startup + tool calls auto-ping <code>.c3/time</code>; idle gaps &gt;15min close a session</td></tr>
               <tr><td class="param-name">note_add, note_list</td><td>Both</td><td class="param-desc">Dated notes; <code>kind='decision'</code> for the decision log</td></tr>
+              <tr><td class="param-name">history</td><td>Read</td><td class="param-desc">Append-only event log ([+task_id] [+limit]), newest first — who/what/when, before→after</td></tr>
             </tbody>
           </table>
 
@@ -1179,6 +1580,12 @@ c3_task(action=<span class="str">'done'</span>, task_id=<span class="str">'a1b2'
 <span class="com"># Milestones + the board</span>
 c3_task(action=<span class="str">'milestone_add'</span>, name=<span class="str">'v2.46'</span>, target_date=<span class="str">'2026-08-01'</span>)
 c3_task(action=<span class="str">'board'</span>)
+
+<span class="com"># Ship it — tasks keep their link, unlike archive</span>
+c3_task(action=<span class="str">'milestone_complete'</span>, milestone=<span class="str">'v2.46'</span>)
+
+<span class="com"># Log time against a task</span>
+c3_task(action=<span class="str">'time_add'</span>, minutes=<span class="num">45</span>, task_id=<span class="str">'a1b2'</span>, note=<span class="str">'wrote the migration'</span>)
 
 <span class="com"># Record a decision</span>
 c3_task(action=<span class="str">'note_add'</span>, note=<span class="str">'Kanban rank uses float sort keys'</span>, kind=<span class="str">'decision'</span>)</code></pre>
@@ -1198,7 +1605,7 @@ c3_task(action=<span class="str">'note_add'</span>, note=<span class="str">'Kanb
           <span class="tool-tagline">Version history, diff, and restore for the files that shape the agent itself</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">C3 tracks every <em>agent-affecting artifact</em> across all IDEs it knows — instruction docs (<code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>GEMINI.md</code>, <code>.cursorrules</code>, <code>.github/copilot-instructions.md</code>), settings/hooks (<code>.claude/settings*.json</code>), MCP configs (<code>.mcp.json</code>, <code>.codex/config.toml</code>, <code>.gemini/settings.json</code>, …), and Claude Code extensions (<code>.claude/</code> skills, agents, commands, plugins). Content-addressed snapshots land in <code>.c3/agent_artifacts/</code>; every change is a history event with attribution: <code>c3_edit</code> (this session), <code>hook</code> (native Edit/Write), <code>scan</code> (out-of-band — you edited it in an editor), <code>install_mcp</code> (C3 regenerating its own files), or <code>restore</code>. A background agent scans every ~2 min and warns only when <em>settings or MCP configs</em> change outside C3. Artifact refs accept an id (<code>skill:browcontrol</code>), unique prefix, or plain path (<code>CLAUDE.md</code>). Everything except <code>restore</code> is plan-mode-safe.</p>
+          <p class="tool-desc">C3 tracks every <em>agent-affecting artifact</em> across all IDEs it knows: instruction docs (<code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>GEMINI.md</code>, <code>.cursorrules</code>, <code>.github/copilot-instructions.md</code>), settings/hooks (<code>.claude/settings*.json</code>), MCP configs (<code>.mcp.json</code>, <code>.codex/config.toml</code>, <code>.gemini/settings.json</code>, …), and Claude Code extensions (<code>.claude/</code> skills, agents, commands, plugins). Content-addressed snapshots land in <code>.c3/agent_artifacts/</code>; every change is a history event with attribution: <code>c3_edit</code> (this session), <code>hook</code> (native Edit/Write), <code>scan</code> (out-of-band — you edited it in an editor), <code>install_mcp</code> (C3 regenerating its own files), or <code>restore</code>. A background agent scans every ~2 min and warns only when <em>settings or MCP configs</em> change outside C3. Artifact refs accept an id (<code>skill:browcontrol</code>), unique prefix, or plain path (<code>CLAUDE.md</code>). Everything except <code>restore</code> is plan-mode-safe.</p>
 
           <h4>Actions</h4>
           <table class="params-table">
@@ -1296,7 +1703,7 @@ c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num"
           <span class="tool-tagline">Credential vault — the agent uses secrets by name, never by value</span>
         </div>
         <div class="tool-card-body">
-          <p class="tool-desc">A user-managed secret store, <strong>global</strong> (<code>~/.c3</code>, visible in every project) or <strong>per-project</strong> (<code>.c3</code>, shadows the same-named global). Values live in the OS keyring (service <code>c3-creds</code>; values over ~1KB in a Fernet-encrypted <code>.c3/secrets.enc</code> whose random master key is itself a keyring entry) — never in config files, and <em>never in the model's context</em>. <strong>Injection-first:</strong> the agent addresses secrets by name and C3 decodes them only at the subprocess boundary — <code>c3_shell(env_creds='A,B')</code> injects env vars, <code>{{cred:NAME}}</code> inside <code>cmd</code> expands server-side, and <code>inject</code>-flagged entries auto-inject into every shell run; echoed values are redacted back to <code>[cred:NAME]</code>. Resolution is <strong>realm-atomic</strong>: a project-registered name resolves in the project realm or not at all, so a hostile repo's committed config can never siphon your global values (tested).</p>
+          <p class="tool-desc">A user-managed secret store, <strong>global</strong> (<code>~/.c3</code>, visible in every project) or <strong>per-project</strong> (<code>.c3</code>, shadows the same-named global). Values live in the OS keyring (service <code>c3-creds</code>; values over ~1KB in a Fernet-encrypted <code>.c3/secrets.enc</code> whose random master key is itself a keyring entry), never in config files, and <em>never in the model's context</em>. <strong>Injection-first:</strong> the agent addresses secrets by name and C3 decodes them only at the subprocess boundary — <code>c3_shell(env_creds='A,B')</code> injects env vars, <code>{{cred:NAME}}</code> inside <code>cmd</code> expands server-side, and <code>inject</code>-flagged entries auto-inject into every shell run; echoed values are redacted back to <code>[cred:NAME]</code>. Resolution is <strong>realm-atomic</strong>: a project-registered name resolves in the project realm or not at all, so a hostile repo's committed config can never siphon your global values (tested).</p>
 
           <h4>Actions</h4>
           <table class="params-table">
@@ -1305,11 +1712,16 @@ c3_bitbucket(action=<span class="str">'merge_pr'</span>, pr_id=<span class="num"
               <tr><td class="param-name">list</td><td>Read</td><td class="param-desc">Merged registry (project shadows global) — names, scope, type, flags, usage. Never values</td></tr>
               <tr><td class="param-name">describe</td><td>Read</td><td class="param-desc">Metadata + storage + live fingerprint (first 8 hex of SHA-256, computed on demand, never persisted)</td></tr>
               <tr><td class="param-name">check</td><td>Read</td><td class="param-desc">Resolvability probe — does the stored value decode?</td></tr>
-              <tr><td class="param-name">set</td><td>Write</td><td class="param-desc">Create/replace an entry. <code>agent_readable</code> may be set at creation only — raising it on an existing entry is user-only</td></tr>
+              <tr><td class="param-name">usage</td><td>Read</td><td class="param-desc"><strong>v2.88.0</strong> — <code>[name]</code>: when/where/how often it was used (counts by surface, recent events for this project, other projects reduced to counts)</td></tr>
+              <tr><td class="param-name">set</td><td>Write</td><td class="param-desc">Create/replace an entry (<code>name</code>, <code>value</code> [<code>scope=project|global</code>] [<code>ctype=token|env|multiline|address|identity|card|login</code>]). <code>agent_readable</code> may be set at creation only — raising it on an existing entry is user-only</td></tr>
               <tr><td class="param-name">delete</td><td>Write</td><td class="param-desc">Remove value + registry entry (owning scope inferred when omitted)</td></tr>
-              <tr><td class="param-name">reveal</td><td>Gated</td><td class="param-desc">The only value-returning action — refused unless the user enabled <code>agent_readable</code> on that entry</td></tr>
+              <tr><td class="param-name">reveal</td><td>Gated</td><td class="param-desc">The only value-returning action — refused unless the user enabled <code>agent_readable</code> on that entry, and permanently disabled for structured kinds</td></tr>
+              <tr><td class="param-name">import_env</td><td>Write</td><td class="param-desc"><strong>v2.93.0</strong> — bulk-import a <code>.env</code> (<code>file_path</code> [<code>only='A,B'</code>]). Never shows a value: names, lengths, fingerprints, per-row reasons only. Project-scope only, never overwrites, defaults to <code>dry_run=true</code>: preview, then re-run <code>dry_run=false</code>. A dry run also diffs (<strong>v2.94.0</strong>): a row already matching the vault reports <code>unchanged</code></td></tr>
             </tbody>
           </table>
+
+          <h4>Structured kinds</h4>
+          <p class="tool-desc"><strong>v2.87.0</strong> added <code>address</code>/<code>identity</code>/<code>card</code>, <strong>v2.90.0</strong> added <code>login</code>. These hold named fields (card: cardholder/number/expiry[/cvc/billing_zip]; login: site_id/canonical_target/username[/password/private_key/…]) and are <strong>inject-only</strong>: address a single field with <code>env_creds='CARD.number'</code> or <code>{{cred:CARD.number}}</code>; reveal is disabled and they never auto-inject. <code>login</code> (<strong>v2.118.0</strong>) covers servers and databases too, not just websites: <code>canonical_target</code> is <code>scheme://host[:port]</code> from an allowlist (https, ssh, sftp, postgres, mysql, redis, …). It is storage only — C3 opens no session and types nothing anywhere; have the user enter values through the Credentials UI or <code>c3 creds set</code> so they never enter the chat.</p>
 
           <h4>Examples</h4>
           <pre><code><span class="com"># What can I use? (names and metadata only)</span>
@@ -1318,7 +1730,11 @@ c3_credentials(action=<span class="str">'check'</span>, name=<span class="str">'
 
 <span class="com"># USE a secret without ever seeing it</span>
 c3_shell(cmd=<span class="str">'npm publish'</span>, env_creds=<span class="str">'NPM_TOKEN'</span>)
-c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}" https://api.example.com'</span>)</code></pre>
+c3_shell(cmd=<span class="str">'curl -H "Authorization: Bearer {{cred:API_KEY}}" https://api.example.com'</span>)
+
+<span class="com"># Preview a .env import, then commit it</span>
+c3_credentials(action=<span class="str">'import_env'</span>, file_path=<span class="str">'.env.production'</span>)
+c3_credentials(action=<span class="str">'import_env'</span>, file_path=<span class="str">'.env.production'</span>, dry_run=<span class="val">False</span>)</code></pre>
 
           <p class="tool-desc"><strong>Surfaces:</strong> the <code>c3 creds</code> CLI (<code>set</code> / <code>get</code> / <code>list</code> / <code>rm</code> / <code>import .env</code>, <code>--global</code> for the shared scope), a per-project dashboard <strong>Credentials</strong> tab, and a top-level <strong>Credentials</strong> view in the Hub (v2.59.0) managing the global vault and every registered project, with overriding shown both ways. Since <strong>v2.61.0</strong> that view adds cross-project <strong>search</strong> (<kbd>/</kbd> or <kbd>Ctrl/⌘-K</kbd>; <code>project:</code> <code>scope:</code> <code>inject:</code> <code>agent:</code> <code>shadow:</code> qualifiers, results grouped by credential name), a per-credential <strong>settings drawer</strong> (metadata, exposure switches, resolution check, write-only value replacement, usage &amp; overrides, delete), and a <strong>right-click context menu</strong>; destructive and exposure-raising actions require typing the credential name. No HTTP route ever returns a stored value (write-only wire contract, endpoint-sweep tested), every mutation is ledger-logged by name, the vault is hard-excluded from the Oracle Discovery API, and cross-project (<code>c3_project</code>) shells run with credentials disabled.</p>
 
@@ -1398,7 +1814,7 @@ c3_jira(action=<span class="str">'list_transitions'</span>, issue=<span class="s
 c3_jira(action=<span class="str">'transition'</span>, issue=<span class="str">'PROJ-123'</span>, transition=<span class="str">'In Progress'</span>)
 c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ-123'</span>, body=<span class="str">'Deployed to staging'</span>)</code></pre>
 
-          <p class="tool-desc"><strong>Surfaces &amp; audit:</strong> the per-project dashboard gets a <strong>Jira tab</strong> (My Work board grouped by statusCategory, JQL search, an issue drawer with transition buttons + comments, and an Activity view) backed by <code>/api/jira/*</code> routes. Issue keys like <code>PROJ-123</code> are auto-linked from branch names and edit-ledger entries (acronym denylist, so UTF-8 / SHA-256 / CVE-2024 never match), and the issue drawer shows the local ledger activity for the open issue — that Activity view works with no account configured. Mutations (<code>create_issue</code>, <code>update_issue</code>, <code>comment</code>, <code>transition</code>, <code>assign</code>, <code>link_issues</code>, <code>unlink_issues</code>, <code>move_to_sprint</code>, <code>move_to_backlog</code>, <code>add_worklog</code>, <code>attach_file</code>, <code>delete_issue</code>) are edit-ledger-logged with identifiers only — bodies are never logged. Read actions are safe in plan mode.</p>
+          <p class="tool-desc"><strong>Surfaces &amp; audit:</strong> the per-project dashboard gets a <strong>Jira tab</strong> (My Work board grouped by statusCategory, JQL search, an issue drawer with transition buttons + comments, and an Activity view) backed by <code>/api/jira/*</code> routes. Issue keys like <code>PROJ-123</code> are auto-linked from branch names and edit-ledger entries (acronym denylist, so UTF-8 / SHA-256 / CVE-2024 never match), and the issue drawer shows the local ledger activity for the open issue; that Activity view works with no account configured. Mutations (<code>create_issue</code>, <code>update_issue</code>, <code>comment</code>, <code>transition</code>, <code>assign</code>, <code>link_issues</code>, <code>unlink_issues</code>, <code>move_to_sprint</code>, <code>move_to_backlog</code>, <code>add_worklog</code>, <code>attach_file</code>, <code>delete_issue</code>) are edit-ledger-logged with identifiers only — bodies are never logged. Read actions are safe in plan mode.</p>
         </div>
       </div>
     </div>
@@ -1429,14 +1845,14 @@ c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ
               <tr><td class="param-name">list</td><td>Discover</td><td class="param-desc">Registered projects (fast; registry only)</td></tr>
               <tr><td class="param-name">scan</td><td>Discover</td><td class="param-desc">Registry + bounded filesystem scan for unregistered <code>.c3</code> projects nearby</td></tr>
               <tr><td class="param-name">info, register, unregister</td><td>Discover</td><td class="param-desc">Project details / add to / remove from the registry</td></tr>
-              <tr><td class="param-name">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project</td></tr>
+              <tr><td class="param-name">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project (<code>compress</code> is the map, same as <code>read</code> with no symbols — it has no standalone top-level tool any more)</td></tr>
               <tr><td class="param-name">subprojects, sub_tree, sub_inspect</td><td>Read</td><td class="param-desc">Direct children; the whole hierarchy; a read-only report on any path (what is there, who already claims it, what it claims, which nested projects under it are unlinked)</td></tr>
               <tr><td class="param-name">sub_add, sub_link, sub_remove, sub_cascade</td><td>Write</td><td class="param-desc">Designate / link by path / unlink / cascade across the subtree — require <code>allow_write=true</code> (<code>sub_cascade</code> with <code>mode='health'</code> is a read)</td></tr>
               <tr><td class="param-name">edit, shell, memory(add/update/delete)</td><td>Write</td><td class="param-desc">Mutate the target project — require <code>allow_write=true</code></td></tr>
             </tbody>
           </table>
 
-          <p class="tool-desc"><strong>Sub-project hierarchy:</strong> <code>project</code> is the PARENT. A child need not live inside it — <code>sub_link</code> takes an absolute path anywhere on disk, including another drive — and hierarchies nest up to 8 levels. Nested children are excluded from the parent's index; externally linked ones were never in it. Linking is refused if it would make a project its own ancestor.</p>
+          <p class="tool-desc"><strong>Sub-project hierarchy:</strong> <code>project</code> is the PARENT. A child need not live inside it: <code>sub_link</code> takes an absolute path anywhere on disk, including another drive, and hierarchies nest up to 8 levels. Nested children are excluded from the parent's index; externally linked ones were never in it. Linking is refused if it would make a project its own ancestor.</p>
 
           <h4>Examples</h4>
           <pre><code><span class="com"># Which projects have C3 installed?</span>
