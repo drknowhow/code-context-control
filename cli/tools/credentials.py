@@ -64,7 +64,8 @@ def _log_access(svc, action: str, name: str, scope: str, response: str) -> None:
         pass
 
 
-def _format_entry_line(name: str, entry: dict, usage: dict) -> str:
+def _format_entry_line(name: str, entry: dict, usage: dict,
+                       missing: bool = False) -> str:
     flags = []
     if entry.get("inject"):
         flags.append("inject")
@@ -73,7 +74,7 @@ def _format_entry_line(name: str, entry: dict, usage: dict) -> str:
     last_used = (usage.get(name) or {}).get("last_used", "")
     parts = [
         f"{name} [{entry.get('scope', '?')}/{entry.get('type', 'token')}]",
-        f"len={entry.get('value_len', '?')}",
+        "VALUE MISSING" if missing else f"len={entry.get('value_len', '?')}",
     ]
     display = entry.get("display") or {}
     if display:
@@ -97,8 +98,16 @@ def _act_list(project_path: str) -> str:
             "The user manages them via the Credentials UI tab or `c3 creds set`."
         )
     usage = cs.read_usage_state(project_path)
+    missing = {n for n, e in entries.items() if not cs.is_resolvable(
+        n, project_path=project_path, scope=e["scope"])}
     lines = [f"[creds] {len(entries)} entries (project scope shadows global):"]
-    lines += [_format_entry_line(n, e, usage) for n, e in entries.items()]
+    lines += [_format_entry_line(n, e, usage, n in missing)
+              for n, e in entries.items()]
+    if missing:
+        lines.append(
+            f"[creds:value-missing] {len(missing)} registered entries have no "
+            "stored value (the OS keychain no longer holds it); injecting them "
+            "fails. The user re-enters them (Credentials UI or `c3 creds set`).")
     lines.append(_USAGE_FOOTER)
     return "\n".join(lines)
 
@@ -384,15 +393,17 @@ def handle_credentials(action: str, svc, finalize, **kwargs) -> str:
                         "(Credentials UI or `c3 creds set --agent-readable`)."
                     )
                 else:
+                    # Empty/false arguments mean "not given": the entry keeps
+                    # its current settings rather than resetting to defaults.
                     entry = cs.set_credential(
                         name, value,
                         scope=scope,
                         project_path=project_path,
-                        description=kwargs.get("description") or "",
-                        ctype=kwargs.get("ctype") or "token",
-                        env_var=kwargs.get("env_var") or "",
-                        agent_readable=want_readable,
-                        inject=bool(kwargs.get("inject")),
+                        description=kwargs.get("description") or None,
+                        ctype=kwargs.get("ctype") or None,
+                        env_var=kwargs.get("env_var") or None,
+                        agent_readable=True if want_readable else None,
+                        inject=True if kwargs.get("inject") else None,
                     )
                     resp = (
                         f"[creds:set] {name} (scope={scope}, "

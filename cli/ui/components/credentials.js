@@ -753,6 +753,7 @@ const CredentialsPanel = () => {
                   {entry.name}
                 </span>
                 <Badge color={entry.scope === "global" ? T.accent : T.blue}>{entry.scope}</Badge>
+                {!!entry.value_missing && <Badge color={T.error}>value missing</Badge>}
                 <Badge color={T.textMuted}>{entry.type || "token"}</Badge>
                 {CREDS_STRUCTURED[entry.type] ? (
                   <span className="mono" style={{ color: T.text }}>

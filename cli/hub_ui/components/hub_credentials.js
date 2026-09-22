@@ -1197,6 +1197,11 @@ function CredRow({ entry, striped, owner, onOpen, onMenu, check,
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 7 }}>
           <span className="mono" style={{ fontWeight: 600, color: T.text, fontSize: 12.5 }}>{entry.name}</span>
           <Badge color={entry.scope === 'global' ? T.accent : T.blue}>{entry.scope}</Badge>
+          {!!entry.value_missing && (
+            <span title="Registered, but the OS keychain no longer holds its value — injecting it fails. Replace the secret to restore it.">
+              <Badge color={T.error}>value missing</Badge>
+            </span>
+          )}
           {!!entry.shadows_global && (
             <span title="This project's value wins over the global entry of the same name">
               <Badge color={T.warn}>overrides global</Badge>
@@ -2074,6 +2079,7 @@ function CredSearchResults({ groups, total, selected, setSelected, onOpen, onMen
                   minWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{def.projectName}</span>
                 <Badge color={e.scope === 'global' ? T.accent : T.blue}>{e.scope}</Badge>
+                {!!e.value_missing && <Badge color={T.error}>value missing</Badge>}
                 {!!e.shadows_global && <Badge color={T.warn}>overrides global</Badge>}
                 <span className="mono" style={{ fontSize: 11, color: T.textDim }}>
                   {e.type || 'token'} · ••••{e.value_len}

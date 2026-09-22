@@ -116,6 +116,26 @@ class TestCredsCliSmoke(unittest.TestCase):
         self.assertIn("SHARED", self._entries(self._tmp_home.name))
         self.assertNotIn("SHARED", self._entries(self.proj))
 
+    def test_bare_reset_keeps_env_var_and_desc(self):
+        self._run(["creds", "set", "TOK", "--value", "v1", "--global", "--env-var",
+                   "tok_env", "--desc", "d", "--inject", "--path", self.proj])
+        self._run(["creds", "set", "TOK", "--value", "v2", "--global",
+                   "--path", self.proj])
+        entry = self._entries(self._tmp_home.name)["TOK"]
+        self.assertEqual((entry["env_var"], entry["description"], entry["inject"]),
+                         ("tok_env", "d", True))
+        self._run(["creds", "set", "TOK", "--value", "v3", "--global",
+                   "--no-inject", "--path", self.proj])
+        self.assertFalse(self._entries(self._tmp_home.name)["TOK"]["inject"])
+
+    def test_list_marks_missing_value(self):
+        self._run(["creds", "set", "GONE", "--value", "v", "--path", self.proj])
+        realm_s = cs.realm("project", self.proj)
+        del self._stub.store[("c3-creds", cs._account(realm_s, "GONE"))]
+        listing = self._run(["creds", "list", "--path", self.proj])
+        self.assertIn("VALUE MISSING", listing)
+        self.assertIn("1 entry has no stored value", listing)
+
     def test_agent_readable_warns(self):
         out = self._run(["creds", "set", "OPEN", "--value", "v",
                          "--agent-readable", "--path", self.proj])

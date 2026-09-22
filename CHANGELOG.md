@@ -4,6 +4,34 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.144.0] - 2026-09-22
+
+### Fixed — re-entering a lost credential no longer resets it, and lost values show
+
+Windows wiped Credential Manager twice in two weeks on this box. The vault
+registry survived and every value did not, but nothing said so: `list` still
+printed `len=37` for an entry that could no longer be injected. Re-entering
+the value made it worse. `c3 creds set NAME` rebuilt the entry from defaults,
+so the env var fell back to the entry name and the description, type and
+`inject` flag were dropped.
+
+- **Re-entering a value keeps the entry's settings.** `set_credential` treats
+  a metadata argument it was not given as "keep what the entry has".
+  `c3 creds set` options now default to keep (`--inject/--no-inject` and
+  `--agent-readable/--no-agent-readable` can still change them), and so does
+  `c3_credentials(action='set')`. The project UI, Hub and mobile set routes
+  change only the keys a request sends, which is what their metadata-only
+  path already did (`credential_store.payload_meta`, one copy instead of three).
+- `agent_readable` survives a re-entry only while its keyring attestation
+  still agrees. After a keychain wipe the entry comes back injection-only
+  instead of trusting the registry flag alone.
+- The mobile gateway still sends an explicit type, so a phone cannot write
+  field JSON into an existing card, identity, address or login entry.
+- **Lost values are marked.** `c3 creds list`, `c3_credentials(action='list')`
+  and the Hub and project credential lists show `VALUE MISSING` / a "value
+  missing" badge for an entry whose value the OS keychain no longer holds
+  (`public_entry(..., value_ok=)` → `value_missing`).
+
 ## [2.143.0] - 2026-09-19
 
 ### Added — Sessions: find an old one, see what it was, get back into it

@@ -365,6 +365,39 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(
             cs.get_entry("PEM", project_path=self.project)["type"], "multiline")
 
+    def test_reentering_a_value_keeps_its_settings(self):
+        cs.set_credential("TOK", "v1", project_path=self.project, ctype="env",
+                          description="d", env_var="tok_env", inject=True)
+        entry = cs.set_credential("TOK", "v2", project_path=self.project)
+        self.assertEqual(
+            (entry["type"], entry["description"], entry["env_var"], entry["inject"]),
+            ("env", "d", "tok_env", True))
+        self.assertEqual(cs.get_value("TOK", project_path=self.project), "v2")
+
+    def test_explicit_settings_override_on_reentry(self):
+        cs.set_credential("TOK", "v1", project_path=self.project,
+                          env_var="old_env", inject=True)
+        entry = cs.set_credential("TOK", "v2", project_path=self.project,
+                                  env_var="new_env", inject=False)
+        self.assertEqual((entry["env_var"], entry["inject"]), ("new_env", False))
+
+    def test_reentry_keeps_agent_readable_only_while_attested(self):
+        cs.set_credential("RD", "v1", project_path=self.project, agent_readable=True)
+        self.assertTrue(
+            cs.set_credential("RD", "v2", project_path=self.project)["agent_readable"])
+        realm_s = cs.realm("project", self.project)
+        del self._stub.store[("c3-creds", cs._flag_account(realm_s, "RD"))]
+        entry = cs.set_credential("RD", "v3", project_path=self.project)
+        self.assertFalse(entry["agent_readable"])
+        self.assertFalse(cs.verify_agent_readable(
+            "RD", scope="project", project_path=self.project))
+
+    def test_payload_meta_carries_only_sent_keys(self):
+        self.assertEqual(cs.payload_meta({"name": "X", "value": "v"}), {})
+        self.assertEqual(
+            cs.payload_meta({"env_var": None, "inject": 1, "ctype": "env"}),
+            {"env_var": "", "inject": True, "type": "env"})
+
 
 PAN = "4242424242424242"          # Luhn-valid visa test number
 PAN_BAD = "4242424242424241"      # fails checksum

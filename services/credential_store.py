@@ -777,11 +777,11 @@ def set_credential(
     *,
     scope: str = "project",
     project_path: str = ".",
-    description: str = "",
-    ctype: str = "token",
-    env_var: str = "",
-    agent_readable: bool = False,
-    inject: bool = False,
+    description: Optional[str] = None,
+    ctype: Optional[str] = None,
+    env_var: Optional[str] = None,
+    agent_readable: Optional[bool] = None,
+    inject: Optional[bool] = None,
     source: str = "",
 ) -> dict:
     """Store the value (keyring or encrypted sidecar) and register the entry.
@@ -793,6 +793,12 @@ def set_credential(
     entry" rule must check the current entry first — this layer stores what it
     is told.
 
+    A metadata argument left as ``None`` keeps what the entry already has in
+    this scope (the default for a new entry), so re-entering a value does not
+    reset its env_var, description, type or inject flag. ``agent_readable``
+    is kept only while the keyring attestation still agrees; without it the
+    entry comes back injection-only.
+
     Structured types (STRUCTURED_TYPES) take a JSON object of fields as
     ``value``. They are inject-only: ``agent_readable``/``inject`` are
     refused, the plain/structured boundary of an existing entry is immutable
@@ -803,18 +809,31 @@ def set_credential(
     _validate_name(name)
     if not value:
         raise CredentialError("value is required")
-    if ctype not in VALID_TYPES:
-        raise CredentialError(f"type must be one of {VALID_TYPES}, got {ctype!r}")
-    if env_var:
-        _validate_name(env_var, what="env_var")
     scope = _norm_scope(scope, project_path)
     base = _scope_dir(scope, project_path)
     if base is None:
         raise CredentialError("global scope unavailable: no home directory")
     realm_s = realm(scope, project_path)
 
-    is_structured = ctype in STRUCTURED_TYPES
     prev_entry = _read_entries(scope, project_path).get(name)
+    prev = prev_entry or {}
+    if ctype is None:
+        ctype = str(prev.get("type") or "token")
+    if description is None:
+        description = str(prev.get("description") or "")
+    if env_var is None:
+        env_var = str(prev.get("env_var") or "")
+    if inject is None:
+        inject = bool(prev.get("inject"))
+    if agent_readable is None:
+        agent_readable = bool(prev.get("agent_readable")) and verify_agent_readable(
+            name, scope=scope, project_path=project_path)
+    if ctype not in VALID_TYPES:
+        raise CredentialError(f"type must be one of {VALID_TYPES}, got {ctype!r}")
+    if env_var:
+        _validate_name(env_var, what="env_var")
+
+    is_structured = ctype in STRUCTURED_TYPES
     prev_struct = structured_type(name, project_path=project_path,
                                   scope=scope) if prev_entry else ""
     if prev_entry is not None:
@@ -1046,7 +1065,7 @@ PUBLIC_FIELDS = ("scope", "type", "value_len", "env_var", "inject",
 
 
 def public_entry(name: str, entry: dict, *, usage=None,
-                 shadows_global=None) -> dict:
+                 shadows_global=None, value_ok=None) -> dict:
     """Explicit allowlist serializer — structurally cannot emit a value.
 
     Lives here, beside _UPDATABLE_FIELDS and the entry-shape literal that
@@ -1064,7 +1083,26 @@ def public_entry(name: str, entry: dict, *, usage=None,
         rec["use_count"] = (usage.get(name) or {}).get("use_count", 0)
     if shadows_global is not None:
         rec["shadows_global"] = bool(shadows_global)
+    if value_ok is not None:
+        rec["value_missing"] = not value_ok
     return rec
+
+
+def payload_meta(data: dict) -> dict:
+    """The metadata keys PRESENT in an HTTP payload, as update_metadata kwargs.
+
+    Absent keys stay out, so a set that carries a value keeps the entry's
+    other settings and a metadata-only update touches only what was sent."""
+    fields: dict = {}
+    for key in ("description", "env_var"):
+        if key in data:
+            fields[key] = str(data[key] or "")
+    for key in ("agent_readable", "inject"):
+        if key in data:
+            fields[key] = bool(data[key])
+    if "type" in data or "ctype" in data:
+        fields["type"] = str(data.get("type") or data.get("ctype") or "token")
+    return fields
 
 
 def is_resolvable(name: str, *, project_path: str = ".", scope: str = "") -> bool:

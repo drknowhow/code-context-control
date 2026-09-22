@@ -88,6 +88,24 @@ class TestCredentialsRoutes(unittest.TestCase):
     def _post(self, payload):
         return self.client.post("/api/credentials", json=payload)
 
+    def test_set_with_value_keeps_settings_not_sent(self):
+        self._post({"name": "KEEP", "value": "v1", "env_var": "keep_env",
+                    "description": "d", "inject": True})
+        entry = self._post({"name": "KEEP", "value": "v2"}).get_json()["entry"]
+        self.assertEqual(
+            (entry["env_var"], entry["description"], entry["inject"]),
+            ("keep_env", "d", True))
+
+    def test_list_flags_entries_whose_value_is_gone(self):
+        self._post({"name": "LOST", "value": CANARY})
+        self._post({"name": "KEPT", "value": CANARY})
+        realm_s = cs.realm("project", str(self.proj))
+        del self._stub.store[("c3-creds", cs._account(realm_s, "LOST"))]
+        rows = {e["name"]: e for e in
+                self.client.get("/api/credentials").get_json()["entries"]}
+        self.assertTrue(rows["LOST"]["value_missing"])
+        self.assertFalse(rows["KEPT"]["value_missing"])
+
     def test_post_creates_entry_and_never_echoes_value(self):
         resp = self._post({"name": "API_KEY", "value": CANARY,
                            "description": "test"})
@@ -168,7 +186,7 @@ class TestCredentialsRoutes(unittest.TestCase):
         which silently forwards any field ever added to the store. Tying the
         keyset to ``PUBLIC_FIELDS`` itself kills that bug class: a new store
         field stays out of the wire until someone allowlists it on purpose."""
-        allowed = {"name", "last_used", "use_count",
+        allowed = {"name", "last_used", "use_count", "value_missing",
                    "shadows_global", "shadowed_in", *cs.PUBLIC_FIELDS}
         entries = [
             self._post({"name": "SHAPE", "value": CANARY,
