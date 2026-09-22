@@ -88,12 +88,33 @@ def _probe(cmd: list, timeout: int = 30) -> tuple:
         return 127, f"{type(exc).__name__}: {exc}"
 
 
-def availability() -> dict:
+#: How old an engine probe a display surface may reuse. The hub CI tab
+#: re-inspects every 2-10 s, and each fresh probe spawns act and docker.
+DISPLAY_PROBE_TTL_S = 30.0
+_display_probe: tuple = (0.0, None)
+
+
+def availability(max_age: float = 0.0) -> dict:
     """Can this engine run at all? Reports WHY not, never just False.
 
     Both halves are checked because they fail independently and a user with
     act installed but Docker stopped deserves to be told which one to fix.
+
+    ``max_age`` > 0 reuses a result at most that many seconds old from an
+    earlier call that also passed it; the default always probes, which is
+    what a run and ``doctor`` need.
     """
+    global _display_probe
+    if max_age <= 0:
+        return _probe_engine()
+    at, info = _display_probe
+    if info is None or time.monotonic() - at > max_age:
+        info = _probe_engine()
+        _display_probe = (time.monotonic(), info)
+    return dict(info)
+
+
+def _probe_engine() -> dict:
     act = find_act()
     info: dict = {"ok": False, "act": act, "act_version": "",
                   "docker": False, "docker_version": "", "reason": ""}
