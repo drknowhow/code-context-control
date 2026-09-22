@@ -700,6 +700,56 @@ class TestStructuredKinds(TestCredentialStore):
         self.assertEqual(
             cs.structured_type("OLD", project_path=self.project), "")
 
+    def _retype(self, name: str, ctype: str) -> None:
+        cfg_path = Path(self.project) / ".c3" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["credentials"]["entries"][name]["type"] = ctype
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_value_presence_answers_per_entry_kind(self):
+        realm_s = cs.realm("project", self.project)
+        cs.set_credential("TOK", "plaintok", project_path=self.project)
+        cs.set_credential("VISA", CARD, project_path=self.project, ctype="card")
+        big = json.dumps({"full_name": "D T", "ssn": "x" * 250, "dob": "y" * 250,
+                          "phone": "z" * 250, "email": "e" * 250})
+        self.assertEqual(cs.set_credential("BIG", big, project_path=self.project,
+                                           ctype="identity")["storage"], "file")
+        cs.set_credential("GONE", "v", project_path=self.project)
+        del self._stub.store[(cs.KEYRING_SERVICE, cs._account(realm_s, "GONE"))]
+        cs.set_credential("FORGED", "plaintok", project_path=self.project)
+        self._retype("FORGED", "card")
+        cs.set_credential("DEMOTED", CARD, project_path=self.project, ctype="card")
+        self._retype("DEMOTED", "token")
+        self._stub.set_password(cs.KEYRING_SERVICE, cs._account(realm_s, "DEMOTED"), "flat")
+
+        self.assertEqual(cs.value_presence("project", self.project), {
+            "TOK": True, "VISA": True, "BIG": True, "GONE": False,
+            "FORGED": False, "DEMOTED": False})
+        self.assertEqual(cs.value_presence("project", self.project, names=["TOK", "NOPE"]),
+                         {"TOK": True})
+
+    def test_value_presence_reads_the_registry_once(self):
+        for i in range(5):
+            cs.set_credential(f"T{i}", "plaintok", project_path=self.project)
+        reads = mock.Mock(wraps=cs._load_config)
+        lookups = mock.Mock(wraps=self._stub.get_password)
+        with mock.patch.object(cs, "_load_config", reads), \
+                mock.patch.object(self._stub, "get_password", lookups):
+            self.assertTrue(all(cs.value_presence("project", self.project).values()))
+        self.assertEqual(reads.call_count, 1)
+        self.assertLessEqual(lookups.call_count, 10)
+
+    def test_presence_for_answers_each_name_from_its_owning_realm(self):
+        cs.set_credential("SHARED", "g", scope="global", project_path=self.project)
+        cs.set_credential("LOCAL", "p", project_path=self.project)
+        cs.set_credential("BOTH", "g", scope="global", project_path=self.project)
+        cs.set_credential("BOTH", "p", project_path=self.project)
+        del self._stub.store[(cs.KEYRING_SERVICE, cs._account(
+            cs.realm("project", self.project), "BOTH"))]
+        listed = cs.list_entries(self.project)
+        self.assertEqual(cs.presence_for(listed, self.project),
+                         {"SHARED": True, "LOCAL": True, "BOTH": False})
+
 
 if __name__ == "__main__":
     unittest.main()

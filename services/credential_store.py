@@ -388,12 +388,14 @@ def _file_get(scope: str, project_path: str, realm_s: str, name: str) -> Optiona
     token = _load_sidecar(path).get(name)
     if not token:
         return None
-    key = _master_key(realm_s, create=False)
-    if key is None:
+    return _decrypt(_master_key(realm_s, create=False), token)
+
+
+def _decrypt(key: Optional[bytes], token) -> Optional[str]:
+    if not key or not token:
         return None
     try:
-        fernet = _crypto_module()(key)
-        return fernet.decrypt(token.encode("ascii")).decode("utf-8")
+        return _crypto_module()(key).decrypt(token.encode("ascii")).decode("utf-8")
     except Exception:
         return None
 
@@ -1136,15 +1138,75 @@ def is_resolvable(name: str, *, project_path: str = ".", scope: str = "") -> boo
     gateway) can answer "is this credential still good?" without importing
     get_value at all. That absence is what the source-grep invariant test
     asserts, which is a stronger guarantee than reviewing call sites."""
-    raw = _get_raw(name, project_path=project_path, scope=scope)
-    if raw is None:
+    owning = _norm_scope(scope, project_path) if scope else _owning_scope(name, project_path)
+    if not owning:
         return False
-    if structured_type(name, project_path=project_path, scope=scope):
+    return value_presence(owning, project_path, names=[name]).get(name, False)
+
+
+def value_presence(scope: str, project_path: str = ".", names=None) -> dict:
+    """``{name: bool}`` for one scope's registered entries (or only ``names``):
+    whether each stored value can still be decoded. Never a value.
+
+    A structured entry counts only when its payload is a JSON object. The
+    registry, realm, sidecar and master key are read once for the batch, so a
+    listing costs one keyring read per entry plus the structured attestation
+    for values that are not JSON objects.
+    """
+    scope = _norm_scope(scope, project_path)
+    entries = _read_entries(scope, project_path)
+    if names is not None:
+        entries = {n: entries[n] for n in names if n in entries}
+    if not entries:
+        return {}
+    try:
+        keyring = _keyring_module()
+    except RuntimeError:
+        return dict.fromkeys(entries, False)
+    realm_s = realm(scope, project_path)
+    sidecar, key = None, None
+    out = {}
+    for name, entry in entries.items():
+        if entry.get("storage") == "file":
+            if sidecar is None:
+                path = _secrets_path(scope, project_path)
+                sidecar = _load_sidecar(path) if path is not None else {}
+                key = _master_key(realm_s, create=False) if sidecar else None
+            raw = _decrypt(key, sidecar.get(name))
+        else:
+            try:
+                raw = keyring.get_password(KEYRING_SERVICE, _account(realm_s, name))
+            except Exception:
+                raw = None
+        if raw is None:
+            out[name] = False
+            continue
         try:
-            return isinstance(json.loads(raw), dict)
+            is_object = isinstance(json.loads(raw), dict)
+        except (ValueError, RecursionError):
+            is_object = False
+        if is_object or entry.get("type") in STRUCTURED_TYPES:
+            out[name] = is_object
+            continue
+        try:
+            attested = keyring.get_password(
+                KEYRING_SERVICE, _struct_account(realm_s, name)) or ""
         except Exception:
-            return False
-    return True
+            attested = ""
+        out[name] = attested not in STRUCTURED_TYPES
+    return out
+
+
+def presence_for(entries: dict, project_path: str = ".") -> dict:
+    """``{name: bool}`` for a :func:`list_entries` view, each name probed in
+    the realm that owns it."""
+    by_scope: dict = {}
+    for name, entry in entries.items():
+        by_scope.setdefault(entry["scope"], []).append(name)
+    out = dict.fromkeys(entries, False)
+    for scope, names in by_scope.items():
+        out.update(value_presence(scope, project_path, names=names))
+    return out
 
 
 def _get_raw(name: str, *, project_path: str = ".", scope: str = "") -> Optional[str]:

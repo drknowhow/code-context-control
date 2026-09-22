@@ -2764,12 +2764,12 @@ def api_credentials_list():
     from services import credential_store as cred_store
     pp = str(PROJECT_PATH)
     usage = cred_store.read_usage_state(pp)
+    listed = cred_store.list_entries(pp)
+    present = cred_store.presence_for(listed, pp)
     out = []
-    for name, entry in cred_store.list_entries(pp).items():
+    for name, entry in listed.items():
         out.append(cred_store.public_entry(
-            name, entry, usage=usage,
-            value_ok=cred_store.is_resolvable(
-                name, project_path=pp, scope=entry["scope"])))
+            name, entry, usage=usage, value_ok=present[name]))
     return jsonify({"entries": out})
 
 

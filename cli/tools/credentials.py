@@ -98,8 +98,7 @@ def _act_list(project_path: str) -> str:
             "The user manages them via the Credentials UI tab or `c3 creds set`."
         )
     usage = cs.read_usage_state(project_path)
-    missing = {n for n, e in entries.items() if not cs.is_resolvable(
-        n, project_path=project_path, scope=e["scope"])}
+    missing = {n for n, ok in cs.presence_for(entries, project_path).items() if not ok}
     lines = [f"[creds] {len(entries)} entries (project scope shadows global):"]
     lines += [_format_entry_line(n, e, usage, n in missing)
               for n, e in entries.items()]

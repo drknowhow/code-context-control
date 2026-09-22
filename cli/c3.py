@@ -6685,10 +6685,10 @@ def _creds_cmd_list(args, project_path: str) -> None:
               "(add --global for all projects).")
         return
     print(f"{len(entries)} credential(s) — project scope shadows global:")
+    present = cred_store.presence_for(entries, project_path)
     missing = 0
     for name, entry in entries.items():
-        gone = not cred_store.is_resolvable(
-            name, project_path=project_path, scope=entry["scope"])
+        gone = not present[name]
         missing += gone
         print("  " + _creds_entry_line(name, entry, gone))
     if missing:
