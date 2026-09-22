@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sessions — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+
+    .kv-table td { padding: 6px 12px; font-size: 13px; }
+    .kv-table td:first-child {
+      font-family: var(--mono); color: var(--text-dim); width: 230px; vertical-align: top;
+    }
+
+    .hint-chip {
+      display: inline-block; font-family: var(--mono); font-size: 11px;
+      padding: 1px 7px; border-radius: 4px; margin: 2px 4px 2px 0;
+      background: var(--bg-3); color: var(--text-muted); border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="sessions.html" class="active">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html">Access</a>
+      <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.145.1</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🗂️</span> Overview</a>
+      <a href="#catalog"         class="sidebar-link"><span class="icon">📋</span> One row per conversation</a>
+      <a href="#c3-session"      class="sidebar-link"><span class="icon">🛠️</span> c3_session actions</a>
+      <a href="#stale"           class="sidebar-link"><span class="icon">🏷️</span> Stale, marks &amp; hints</a>
+      <a href="#liveness"        class="sidebar-link"><span class="icon">💓</span> Liveness</a>
+      <a href="#hub"             class="sidebar-link"><span class="icon">🖥️</span> Hub Sessions tab</a>
+      <a href="#routes"          class="sidebar-link"><span class="icon">🌐</span> Routes</a>
+      <a href="#tasks"           class="sidebar-link"><span class="icon">✅</span> c3_task &amp; sessions</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="tools.html"    class="sidebar-link">Tools reference</a>
+      <a href="delegate.html" class="sidebar-link">Delegate</a>
+      <a href="workflow.html" class="sidebar-link">Standard workflow</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Sessions</h1>
+      <p>C3 keeps every Claude Code conversation as a searchable row: what it was, whether it's live, whether it's worth resuming. <code>c3_session</code> is how an agent marks a session stale, leaves a note, or lists past ones; the Hub's <strong>Sessions</strong> tab is where a person browses, resumes and marks them. A separate layer, durable <code>c3_task</code> tasks and milestones, links to the sessions that created or touched them.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.145.0</span>
+        <span class="pill pill-purple">services/session_catalog.py</span>
+        <span class="pill pill-green">since 2.143.0</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p>Every Claude Code conversation is kept as a transcript (<code>~/.claude/projects/&lt;slug&gt;/&lt;uuid&gt;.jsonl</code>). C3 keeps its own session records, snapshots and tasks beside the project. Before 2.143.0 nothing joined the two: "which session was I doing X in, is it worth going back to, how do I get back" meant opening JSONL files by hand, and nothing could record that a session was a dead end.</p>
+
+      <div class="callout callout-warning">
+        <p><strong>Two different things are both called "session" in C3</strong> — this page is about the first:</p>
+        <ol style="margin: 6px 0 0 18px;">
+          <li><strong>The session catalog</strong> (this page): a historical row per Claude Code conversation — title, transcript excerpts, stale flag, resume command. <code>services/session_catalog.py</code>.</li>
+          <li><strong>Session liveness</strong>: whether the MCP server behind <em>this</em> conversation is running right now, and whether its per-project web UI is up. Heartbeat files, UI autostart and reaping — a different mechanism, covered by <code>docs/session-liveness.md</code>, feeding the <code>live</code> flag the catalog shows.</li>
+        </ol>
+      </div>
+
+      <p>There's a third, unrelated thing with "sessions" in its name: <code>c3_status(view='sessions')</code> reads <code>.c3/session_stats.jsonl</code> and prints token/cost totals per host session — a budget report, not the catalog or the liveness heartbeat.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CATALOG ═══ -->
+    <section id="catalog" class="tool-section">
+      <h2>One row per conversation</h2>
+      <p>The row key is the Claude Code session id — the transcript's file name and the value <code>claude --resume</code> takes. <code>session_catalog.py</code> joins everything that belongs to it:</p>
+      <table class="params-table">
+        <thead><tr><th>Field</th><th>From</th></tr></thead>
+        <tbody>
+          <tr><td><code>title</code></td><td>The transcript's custom title, else its newest AI-generated title, else the first prompt, else the C3 session description</td></tr>
+          <tr><td><code>first_prompt</code>, <code>last_prompt</code></td><td>Transcript head and its last-prompt row. System reminders, meta rows and tool results are stripped; a slash command reads as <code>/plan &lt;args&gt;</code></td></tr>
+          <tr><td><code>started</code>, <code>last_active</code>, <code>branch</code></td><td>Transcript timestamps and <code>gitBranch</code></td></tr>
+          <tr><td><code>live</code></td><td>A fresh <code>.c3/live/</code> heartbeat — see <a href="#liveness">Liveness</a></td></tr>
+          <tr><td><code>note</code></td><td>An agent note (<code>c3_session action='note'</code>), else the newest snapshot a person or agent wrote. Machine labels like "auto-snapshot on stop" are skipped</td></tr>
+          <tr><td><code>links.c3_sessions</code></td><td>Every C3 session this conversation ran — an MCP restart inside one conversation starts a new C3 session, so there can be several</td></tr>
+          <tr><td><code>links.tasks</code></td><td>Tasks created during the session (<code>origin_session</code>) or linked to it (<code>c3_task link_type='session'</code>)</td></tr>
+          <tr><td><code>links.decisions</code>, <code>links.snapshots</code></td><td>Counted across all linked C3 sessions</td></tr>
+          <tr><td><code>links.predecessor</code> / <code>successor</code></td><td>A <code>/clear</code> chain (<code>session_end reason=clear</code> then <code>session_open start_source=clear</code> within 2 minutes), or the successor named when a session was marked stale</td></tr>
+          <tr><td><code>resume</code></td><td><code>command</code>, <code>cwd</code>, <code>remote_url</code>, <code>can_launch</code>, <code>why_not</code></td></tr>
+        </tbody>
+      </table>
+      <p>A transcript is read from its head (64KB, widened to 512KB if a pasted prompt pushes the first one out) and its tail (256KB, then 1MB, then 4MB until a title turns up) — the whole file is never parsed. Results are cached per file in <code>.c3/cache/session_catalog.json</code>, keyed on size and mtime. The newest 200 transcripts per project are listed.</p>
+      <p>The transcript folder must be the exact Claude Code slug of the project path (or an exact alphanumeric match) — it never falls back to "a folder whose name contains the project name", because a wrong folder would resume another project's session. A transcript whose recorded <code>cwd</code> is a different directory is skipped. A session run from a worktree has its own slug and is still found through its C3 record, resuming in the worktree. <code>CLAUDE_CONFIG_DIR</code> is honored, as Claude Code itself honors it.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ C3_SESSION ═══ -->
+    <section id="c3-session" class="tool-section">
+      <h2>c3_session actions</h2>
+      <p><code>c3_session(action=..., data=..., reasoning=..., description=..., summary=..., event_type=..., target=...)</code>. Two families: session-lifecycle actions (unchanged since before 2.143.0) and the catalog actions <code>list</code> / <code>stale</code> / <code>unstale</code> / <code>note</code>, added in 2.143.0 and taking the new <code>target</code> parameter.</p>
+
+      <h3>Lifecycle</h3>
+      <table class="params-table">
+        <thead><tr><th>Action</th><th>Plan-mode safe?</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>start</code></td><td>—</td><td>Starts a new C3 session (called automatically on MCP server start)</td></tr>
+          <tr><td><code>save</code></td><td>—</td><td>Flushes auto-memory, persists the budget, saves the session (<code>summary</code> optional)</td></tr>
+          <tr><td><code>plan</code></td><td>—</td><td>Records an ephemeral plan/approach (<code>data</code> + <code>reasoning</code>). Durable TODOs belong in <code>c3_task</code>, not here</td></tr>
+          <tr><td><code>log</code></td><td>yes</td><td>Records a decision or file-change note. <code>event_type='auto'</code> (default) infers <code>file_change</code> from a leading path-like token, else <code>decision</code></td></tr>
+          <tr><td><code>snapshot</code></td><td>yes</td><td>Full session capture before <code>/clear</code> — <code>data</code> is the task, <code>reasoning</code> the next steps, <code>summary</code> an optional comma-separated file list to embed structural maps for</td></tr>
+          <tr><td><code>restore</code></td><td>—</td><td>Restores the snapshot named in <code>data</code> (or <code>latest</code>), resets the token budget to what it reports</td></tr>
+          <tr><td><code>compact</code></td><td>—</td><td>One-step snapshot + budget reset — a checkpoint-and-restart shortcut</td></tr>
+          <tr><td><code>convo_log</code></td><td>—</td><td>Appends one turn to the conversation store</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Session catalog (2.143.0)</h3>
+      <table class="params-table">
+        <thead><tr><th>Action</th><th>Parameters</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>list</code></td>
+            <td><code>target</code> = <code>stale</code> | <code>likely</code> | <code>all</code> (default: unmarked only); <code>data</code> = optional search text</td>
+            <td>Titles and flags only — never another session's prompts</td>
+          </tr>
+          <tr>
+            <td><code>stale</code></td>
+            <td><code>target</code> = a session id, an 8+ char prefix, or <code>current</code> (required); <code>reasoning</code> required; <code>data</code> = optional successor id</td>
+            <td>Marks a session superseded, finished or abandoned — don't resume this</td>
+          </tr>
+          <tr>
+            <td><code>unstale</code></td>
+            <td><code>target</code> required</td>
+            <td>Clears the stale flag</td>
+          </tr>
+          <tr>
+            <td><code>note</code></td>
+            <td><code>target</code> (defaults to <code>current</code>); <code>data</code> = what was done; <code>reasoning</code> = next steps</td>
+            <td>Leaves a note on the session card — do this before stopping, so the next session (or person) sees where things stand</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <pre><code><span class="com"># Mark this branch's earlier session as superseded</span>
+c3_session(action=<span class="str">'stale'</span>, target=<span class="str">'a1b2c3d4'</span>,
+           reasoning=<span class="str">'superseded by the 2.143 branch'</span>, data=<span class="str">'&lt;successor id&gt;'</span>)
+
+<span class="com"># Undo it</span>
+c3_session(action=<span class="str">'unstale'</span>, target=<span class="str">'a1b2c3d4'</span>)
+
+<span class="com"># Leave a note before stopping</span>
+c3_session(action=<span class="str">'note'</span>, data=<span class="str">'Hub tab done'</span>, reasoning=<span class="str">'Desk segment next'</span>)
+
+<span class="com"># List sessions likely worth marking</span>
+c3_session(action=<span class="str">'list'</span>, target=<span class="str">'likely'</span>)</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ STALE ═══ -->
+    <section id="stale" class="tool-section">
+      <h2>Stale, marks &amp; hints</h2>
+      <p><strong>Stale</strong> means superseded, finished, or abandoned: don't resume this. Only an agent or a person sets it, and always with a reason. A successor session can be named as well. Marks append to <code>.c3/session_marks.jsonl</code> (<code>{ts, provider, id, op, reason, successor, summary, next_steps, by: agent|user, by_session}</code>) and fold last-wins — several MCP processes and the Hub can write at once, and an append never loses a concurrent row the way rewriting one JSON file would. The file is also the audit trail; every mark writes a <code>session_mark</code> activity row too.</p>
+
+      <div class="callout callout-info">
+        <p>The managed instructions ask the agent to leave a <code>note</code> before it stops, and to mark a session <code>stale</code> when its own work supersedes or abandons that session.</p>
+      </div>
+
+      <h3>Hints — heuristics, never a hide</h3>
+      <p><strong>Hints</strong> are grey chips that suggest a look. They never hide a row, and a live session gets none.</p>
+      <p>
+        <span class="hint-chip">idle Nd</span>
+        <span class="hint-chip">ended by /clear</span>
+        <span class="hint-chip">branch gone</span>
+        <span class="hint-chip">short</span>
+      </p>
+      <table class="params-table">
+        <thead><tr><th>Hint</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td><code>idle Nd</code></td><td>No activity for <code>sessions.idle_days</code> (default 14, <code>.c3/config.json</code>)</td></tr>
+          <tr><td><code>ended by /clear</code></td><td>The session ended with <code>/clear</code></td></tr>
+          <tr><td><code>branch gone</code></td><td>Its git branch no longer exists locally</td></tr>
+          <tr><td><code>short</code></td><td>The transcript is under 16KB</td></tr>
+        </tbody>
+      </table>
+      <p>The Hub's <strong>Likely stale</strong> filter shows unmarked rows that have at least one hint.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ LIVENESS ═══ -->
+    <section id="liveness" class="tool-section">
+      <h2>Liveness <span class="badge badge-cyan">v2.128.0</span></h2>
+      <p>Before 2.128.0 the hub's "live" light was inferred from activity-log rows, and it lied three different ways: a closed IDE read live for up to 20 minutes (a real <code>session_end</code> row was written but nothing read it), a quiet-but-open session read dead after 20 minutes of tool-call silence even with its MCP process right there, and a busy session sometimes read dead too — the lookup scanned only the log's last 100 lines, and this repo's own running session's <code>session_start</code> once sat 319 lines from the end of a 20,825-line log.</p>
+      <p>The fix is a fact, not an inference: the MCP server writes one heartbeat file per session, <code>.c3/live/&lt;c3_session_id&gt;.json</code> = <code>{session_id, host_session_id, ide, pid, ts}</code>, refreshed every 60s (<code>HEARTBEAT_INTERVAL_S</code>). A reader treats a file whose <code>ts</code> is within 180s (<code>HEARTBEAT_TTL_S</code>, three missed beats) as live. Clean shutdown removes the file before slower teardown steps run; a crash or a <code>taskkill</code> leaves a stale file, which the next reader ignores and prunes. <code>pid</code> is recorded for diagnostics only — liveness is decided by the timestamp, since pids are reused across reboots and there's no cheap portable "is this pid alive" check.</p>
+      <p>One heartbeat file per <em>session</em>, not per project, so two IDEs on one project, or a repo and its worktree, each report themselves; the hub card shows <code>MCP×N</code>. Where there's no heartbeat (an older C3 in another checkout, or a process killed without cleanup), the old activity-log inference is still the fallback, now also honoring a terminal <code>session_end</code> row.</p>
+
+      <h3>Checking it by hand</h3>
+      <pre><code>ls .c3/live                      <span class="com"># one file per live session in this project</span>
+python -c <span class="str">"from services import session_live as s; print(s.live_sessions('.'))"</span></code></pre>
+      <p>The hooks and the MCP server load their code at process start, so a change here is not live in the session that made it — a new IDE session is required, and the Hub must be restarted.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ HUB ═══ -->
+    <section id="hub" class="tool-section">
+      <h2>Hub Sessions tab</h2>
+      <p>The top bar's <strong>Sessions</strong> view lists past sessions across every registered project (or one, via the left rail), one row each, with a resume button. It never returns another session's live prompts unless you expand that specific row.</p>
+
+      <h3>Filters</h3>
+      <table class="params-table">
+        <thead><tr><th>Filter</th><th>Shows</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Active</strong> (default)</td><td>Everything not marked stale</td></tr>
+          <tr><td><strong>Likely stale</strong></td><td>Not marked, but idle for weeks, ended by <code>/clear</code>, branch deleted, or very short</td></tr>
+          <tr><td><strong>Stale</strong></td><td>Marked stale by an agent or by you</td></tr>
+          <tr><td><strong>All</strong></td><td>Everything</td></tr>
+        </tbody>
+      </table>
+      <p>Each row shows a live dot, the title, a <code>LIVE</code> pill when applicable, the branch, the project (in the all-projects view), the hint chips or the stale reason, and counts of linked tasks/decisions/a snapshot. Expanding a row loads its detail: first/last prompt, the agent note or last snapshot, linked tasks and recent decisions, the predecessor/successor chain, and a preview of the last 8 turns.</p>
+
+      <h3>Row actions</h3>
+      <table class="params-table">
+        <thead><tr><th>Action</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Resume</strong></td>
+            <td>Opens a terminal in the session's directory running <code>claude --resume &lt;id&gt;</code> (Windows Terminal, falling back to a console). Disabled with a reason when the session can't be launched — most commonly because it's already live.</td>
+          </tr>
+          <tr>
+            <td><strong>Copy</strong></td>
+            <td>Puts the exact <code>claude --resume</code> command on the clipboard, for running it yourself.</td>
+          </tr>
+          <tr>
+            <td><strong>Remote</strong></td>
+            <td>Opens the <code>claude.ai/code</code> page for a bridged session — only shown when a <code>remote_url</code> exists.</td>
+          </tr>
+          <tr>
+            <td><strong>Mark stale / Unmark</strong></td>
+            <td>Mark opens a dialog for an optional reason; Unmark clears the flag directly.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-warning">
+        <p><strong>Resume safety.</strong> The route resolves <code>path</code> against the project registry first: an unregistered folder is 404, an uninitialized one 409. The id must be a UUID whose transcript exists for that project, and the argv is fixed (<code>["claude", "--resume", id]</code>); nothing from the request body reaches the command line. A <strong>live</strong> session is refused with 409, since two processes appending to one transcript would corrupt it — continue it where it's already open, or use the remote link. Codex and Gemini sessions are listed but not resumable yet.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ ROUTES ═══ -->
+    <section id="routes" class="tool-section">
+      <h2>Routes (Hub, loopback + CSRF guard)</h2>
+      <table class="params-table">
+        <thead><tr><th>Route</th><th>What</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /api/hub/sessions/overview</code></td><td>Per project: <code>counts {total, live, stale, idle}</code>, <code>last_active</code>, <code>newest</code>, and <code>features</code> for capability probing. Stats files only — fast.</td></tr>
+          <tr><td><code>GET /api/hub/sessions?path=&amp;stale=hide|likely|only|all&amp;q=&amp;limit=&amp;before=</code></td><td>Rows for one project, or all projects when <code>path</code> is empty. Built in parallel, newest first.</td></tr>
+          <tr><td><code>GET /api/hub/sessions/detail?path=&amp;id=</code></td><td>The row plus <code>decisions</code>, <code>snapshot</code>, <code>tasks</code>, and a <code>preview</code> of the last 8 turns (each run of tool calls collapses to one <code>⚙</code> line).</td></tr>
+          <tr><td><code>POST /api/hub/sessions/mark {path, id, op, reason?, successor?, summary?, next_steps?}</code></td><td>Recorded with <code>by: user</code>.</td></tr>
+          <tr><td><code>POST /api/hub/sessions/resume {path, id}</code></td><td>200 <code>{launched, command, cwd}</code>, or 404 / 409 / 500 with the command to run by hand.</td></tr>
+        </tbody>
+      </table>
+      <p>These routes are deliberately <strong>not</strong> on the Oracle gateway. Oracle can bind to the tailnet, and transcript previews (someone else's prompts) should stay on this machine. The first all-projects listing on a machine reads every transcript head and tail once; around 1,000 transcripts took about 20 seconds on the box this was measured on. Later loads are served from the per-file cache.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TASKS ═══ -->
+    <section id="tasks" class="tool-section">
+      <h2>c3_task &amp; sessions</h2>
+      <p>Sessions are conversation history; <code>c3_task</code> is durable project-management state that survives every conversation — tasks (backlog / in_progress / blocked / done, priority p0–p3, due dates, tags), milestones, and a decision-note log, stored in <code>.c3/pm/pm.json</code>. A session links to the tasks it created or touched, which is what <code>links.tasks</code> in the catalog and the <strong>Tasks</strong> section of a session's Hub detail view come from.</p>
+
+      <table class="params-table">
+        <thead><tr><th>Action group</th><th>Actions</th></tr></thead>
+        <tbody>
+          <tr><td>Tasks</td><td><code>add</code> (title + description/priority/due_date/tags/milestone), <code>update</code>, <code>done</code>, <code>list</code>, <code>get</code>, <code>board</code>, <code>archive</code></td></tr>
+          <tr><td>Links</td><td><code>link</code> / <code>unlink</code> — <code>task_id</code> + <code>link_type</code> (<code>file</code> | <code>commit</code> | <code>edit</code> | <code>session</code>) + <code>ref</code>; <code>ref='current'</code> links this conversation</td></tr>
+          <tr><td>Dependencies</td><td><code>block</code> / <code>unblock</code> — <code>task_id</code> + <code>ref</code> (the blocking task); cycle-safe; completing the last open blocker auto-releases dependents to backlog</td></tr>
+          <tr><td>Subtasks</td><td>One level via <code>parent</code> on <code>add</code>/<code>update</code> (<code>parent='none'</code> clears it)</td></tr>
+          <tr><td>Milestones</td><td><code>milestone_add</code> / <code>_update</code> / <code>_list</code> / <code>_archive</code>, plus <code>milestone_complete</code> <span class="badge">v2.86.0</span> / <code>milestone_reopen</code></td></tr>
+          <tr><td>Time</td><td><code>time_add</code> (minutes 1–1440 + note/due_date/task_id) / <code>time_update</code> / <code>time_delete</code> (by entry id) / <code>time_list</code> / <code>time_summary</code> (today/7d/30d, auto vs. manual)</td></tr>
+          <tr><td>Notes</td><td><code>note_add</code> (<code>kind='decision'</code> for the decision log) / <code>note_list</code></td></tr>
+          <tr><td>Reports</td><td><code>report</code>: overdue, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput. <code>history</code> — append-only event log, newest first</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Milestones can be completed, not just archived <span class="badge badge-cyan">v2.86.0</span></h3>
+      <p>Archiving a milestone was the only way to close one, and archiving detaches every task from it — the record of what shipped under which milestone survived only in the event log. <code>milestone_complete</code> flips the lifecycle to <code>completed</code> (stamping <code>completed_at</code>): the milestone leaves default listings and the board, but its tasks <strong>keep their link</strong>. It refuses while open tasks remain. <code>milestone_reopen</code> undoes it.</p>
+
+      <pre><code><span class="com"># Link a task to this conversation</span>
+c3_task(action=<span class="str">'link'</span>, task_id=<span class="str">'a1b2c3d4'</span>, link_type=<span class="str">'session'</span>, ref=<span class="str">'current'</span>)
+
+<span class="com"># Close out a shipped milestone, keeping the history</span>
+c3_task(action=<span class="str">'milestone_complete'</span>, milestone=<span class="str">'v2.145'</span>)
+
+<span class="com"># What's blocking, and what's ready to unblock</span>
+c3_task(action=<span class="str">'report'</span>)</code></pre>
+
+      <p>Task ids accept any unique prefix (≥4 chars); milestones resolve by id or unique name. Read actions (<code>list</code>, <code>get</code>, <code>board</code>, <code>report</code>, <code>history</code>, the <code>time_*</code> reads) are plan-mode safe. Ephemeral session plans stay in <code>c3_session(action='plan')</code> — they don't belong in the durable task store.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+      <table class="params-table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>A session I know is running shows as not live</td>
+            <td>Check <code>.c3/live/</code> for a fresh file. A heartbeat is written right after <code>session_start</code> and every 60s after; if the file is missing entirely, the running C3 predates 2.128.0 or crashed without cleanup — restart the IDE session.</td>
+          </tr>
+          <tr>
+            <td>Resume returns 409</td>
+            <td>The session is already live — two processes cannot safely append to one transcript. Continue it where it's open, or use the Remote link if it was bridged.</td>
+          </tr>
+          <tr>
+            <td>Resume returns 404</td>
+            <td>Either the project isn't registered with the Hub, or the session id has no matching transcript for that project.</td>
+          </tr>
+          <tr>
+            <td>A session doesn't show up at all</td>
+            <td>Its transcript's recorded <code>cwd</code> doesn't match the project path exactly, or it's outside the newest 200 transcripts for that project. Worktree sessions resolve through their own Claude Code slug but still show under the project via their C3 record.</td>
+          </tr>
+          <tr>
+            <td>Marking stale does nothing / errors</td>
+            <td><code>stale</code> requires <code>reasoning</code> and a resolvable <code>target</code> (an id, an 8+ char prefix, or <code>current</code> if this conversation's C3 session id is already known).</td>
+          </tr>
+          <tr>
+            <td>The Hub's first Sessions load is slow</td>
+            <td>Expected on a machine with many transcripts — the first all-projects read parses every transcript's head and tail once (~20s per ~1,000 transcripts). Subsequent loads use the per-file cache in <code>.c3/cache/session_catalog.json</code>.</td>
+          </tr>
+          <tr>
+            <td>A change to session/liveness code doesn't take effect</td>
+            <td>Hooks and the MCP server load code at process start. Start a new IDE session and restart the Hub.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Full design docs: <code>docs/sessions.md</code>, <code>docs/session-liveness.md</code>.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

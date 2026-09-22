@@ -339,15 +339,18 @@ describes the code in front of you.
 
 ## 7. Deliberately not built
 
-Straight from the plan's own §41 "do not begin with" list:
+Straight from the plan's own §41 "do not begin with" list. Several items have
+shipped since, so each line says where it stands:
 
-- distributed / remote runners (PRD 6)
-- a GitHub App or check-run status bridge (PRD 5)
-- complete GitHub Actions emulation — no `if:` evaluation, no expression
-  functions, no composite actions, no containers
-- multi-CI support (GitLab, CircleCI)
-- test-impact prediction and CI intelligence (PRD 7)
-- caching and content-addressed reuse (PRD 4)
+- distributed / remote runners (PRD 6): not built
+- a GitHub App or check-run status bridge (PRD 5): the status bridge shipped
+  in 2.85.0 (`c3 ci publish`); there is no GitHub App
+- complete GitHub Actions emulation: `if:` is evaluated since 2.80.0 and
+  `act` runs Linux jobs in real containers since 2.81.0; the native engine
+  still does not emulate the rest (see below)
+- multi-CI support (GitLab, CircleCI): not built
+- test-impact prediction and CI intelligence (PRD 7): not built
+- caching and content-addressed reuse (PRD 4): shipped in 2.84.0
 
 Within expressions, composite actions, `${{ }}` inside `with:` blocks passed to
 shimmed actions, and object/array literals are not implemented; a condition

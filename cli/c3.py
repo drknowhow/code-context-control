@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.145.0"
+__version__ = "2.145.1"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -5063,7 +5063,7 @@ _GLOBAL_CLAUDE_MD_CONTENT = """\
 # C3 - Global Enforcement (applies to all projects with C3 installed)
 
 ## Tool Discipline
-When C3 MCP tools are available (c3_search, c3_read, c3_compress, c3_edit, c3_validate, etc.),
+When C3 MCP tools are available (c3_search, c3_read, c3_edit, c3_validate, etc.),
 you MUST use them instead of native tools (Read, Grep, Glob, Edit, Write).
 
 Native tools are blocked by PreToolUse hooks in C3 projects. Do NOT attempt them without

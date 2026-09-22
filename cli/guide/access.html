@@ -32,9 +32,11 @@
 
     .rule-table th, .rule-table td { padding: 8px 12px; }
     .rule-table tr:hover { background: var(--bg-3); }
-    .rule-table .k-deny { color: var(--red); font-family: var(--mono); }
-    .rule-table .k-ro   { color: var(--amber); font-family: var(--mono); }
-    .rule-table .k-tag  { font-family: var(--mono); font-size: 12px; }
+    .rule-table .k-deny    { color: var(--red); font-family: var(--mono); }
+    .rule-table .k-ro      { color: var(--amber); font-family: var(--mono); }
+    .rule-table .k-confirm { color: var(--cyan); font-family: var(--mono); }
+    .rule-table .k-tag     { font-family: var(--mono); font-size: 12px; }
+    .main h3 { margin-top: 24px; }
 
     .step-grid {
       display: grid; gap: 12px;
@@ -72,14 +74,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html" class="active">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.63.0</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -90,14 +96,20 @@
       <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
       <a href="#rules"           class="sidebar-link"><span class="icon">📐</span> Rules &amp; semantics</a>
       <a href="#builtins"        class="sidebar-link"><span class="icon">🔒</span> Built-in protections</a>
-      <a href="#refusals"        class="sidebar-link"><span class="icon">✋</span> Refusal messages</a>
+      <a href="#confirm"         class="sidebar-link"><span class="icon">✋</span> Confirm — ask me first</a>
+      <a href="#overrides"       class="sidebar-link"><span class="icon">📨</span> Override Requests</a>
+      <a href="#cross-project"   class="sidebar-link"><span class="icon">🏢</span> Per-project &amp; the Hub</a>
+      <a href="#shell-scan"      class="sidebar-link"><span class="icon">🐚</span> Shell command scan</a>
+      <a href="#refusals"        class="sidebar-link"><span class="icon">🚫</span> Refusal messages</a>
       <a href="#coverage"        class="sidebar-link"><span class="icon">🗺️</span> Coverage — honest limits</a>
+      <a href="#discipline"      class="sidebar-link"><span class="icon">📋</span> Tool discipline</a>
       <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
-      <a href="#ui"              class="sidebar-link"><span class="icon">🖥️</span> UI tab &amp; probe</a>
+      <a href="#ui"              class="sidebar-link"><span class="icon">🖥️</span> UI &amp; probe</a>
       <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Related</div>
+      <a href="masking.html"         class="sidebar-link">Mask Guard</a>
       <a href="credentials.html"     class="sidebar-link">Credential Vault</a>
       <a href="workflow.html"        class="sidebar-link">Standard workflow</a>
       <a href="getting-started.html" class="sidebar-link">First-time setup</a>
@@ -108,24 +120,24 @@
   <main class="main">
     <h1 id="overview">Access Guard</h1>
     <p class="lead">
-      Mark the paths an AI agent must never read, or never write — and have
-      every C3 surface enforce it. Two glob lists in your project (or global)
-      config, one evaluator, refusals that tell the agent exactly why and
-      what to do instead.
+      Mark the paths an AI agent must never read, never write, or may only
+      touch after you say so — and have every C3 surface enforce it. Four
+      rule kinds in your project (or global) config, one evaluator, refusals
+      that tell the agent exactly why and what to do instead.
     </p>
 
     <div class="pill-row">
-      <span class="pill pill-red">deny — no read, no write</span>
+      <span class="pill pill-red">deny — no read, no write, no enumerate</span>
       <span class="pill pill-amber">read_only — no write</span>
-      <span class="pill pill-green">tighten-only</span>
-      <span class="pill pill-accent">v2.62.0+</span>
+      <span class="pill pill-accent">confirm — write pauses for a human</span>
+      <span class="pill pill-green">mask — transformed view (own guide)</span>
     </div>
 
     <div class="callout callout-warn">
       <p><strong>What this is — and is not.</strong> Access Guard protects a
       <em>cooperative</em> agent against mistakes and prompt-injection: an
       agent that names a protected path gets a firm, reasoned refusal at
-      every C3 surface. It is <strong>not a sandbox</strong> — it governs
+      every C3 surface. It is <strong>not a sandbox</strong>. It governs
       file actions invoked through C3's tools and hooks, but does not
       isolate raw OS processes or external editors. See
       <a href="#coverage">Coverage</a> for exactly where each layer
@@ -140,15 +152,22 @@
         <pre><code>c3 access add "secrets/**" --kind deny</code></pre>
       </div>
       <div class="step-card">
-        <span class="step-num">2</span><h4>Test a path</h4>
+        <span class="step-num">2</span><h4>Or pause instead of block</h4>
+        <p>A <code>confirm</code> rule lets writes through only after you
+        approve them, one at a time:</p>
+        <pre><code>c3 access add "infra/**" --kind confirm</code></pre>
+      </div>
+      <div class="step-card">
+        <span class="step-num">3</span><h4>Test a path</h4>
         <p>Use the tab's <strong>Test path</strong> probe, or:</p>
         <pre><code>c3 access check secrets/key.txt</code></pre>
       </div>
       <div class="step-card">
-        <span class="step-num">3</span><h4>Let it work</h4>
-        <p>Agent attempts on protected paths return
-        <code>[c3-access:denied]</code> refusals that name the rule and tell
-        the agent not to retry.</p>
+        <span class="step-num">4</span><h4>Let it work</h4>
+        <p>A <code>deny</code>/<code>read_only</code> attempt returns a firm
+        <code>[c3-access:denied]</code> refusal. A <code>confirm</code> write
+        pauses and asks you. See <a href="#confirm">Confirm — ask me
+        first</a>.</p>
       </div>
     </div>
 
@@ -159,15 +178,33 @@
     <pre><code>{
   "access": {
     "deny":      ["secrets/**", "*.pem"],
-    "read_only": ["docs/legal/**", "migrations/**"]
+    "read_only": ["docs/legal/**", "migrations/**"],
+    "confirm":   ["infra/**", "*.tf"]
   }
 }</code></pre>
     <table class="rule-table">
       <tr><th>Rule kind</th><th>Read</th><th>Write / create / delete</th><th>Appears in search?</th></tr>
       <tr><td class="k-deny">deny</td><td>✗</td><td>✗</td><td>✗ (never listed or hinted)</td></tr>
       <tr><td class="k-ro">read_only</td><td>✓ (unless another rule denies)</td><td>✗</td><td>✓</td></tr>
+      <tr><td class="k-confirm">confirm</td><td>✓ (reads are never gated)</td><td>pauses for your approval</td><td>✓</td></tr>
     </table>
+    <p>There is a fourth kind, <code>mask</code> — reads stay open but come
+    back transformed. It's its own subsystem with its own guide:
+    <a href="masking.html">Mask Guard</a>.</p>
     <ul>
+      <li><strong>Precedence: <code>deny &gt; mask &gt; read_only &gt;
+        confirm</code>.</strong> Confirm is the loosest non-allow outcome:
+        a hold can be approved into a write, a <code>read_only</code>
+        cannot. Everything stricter wins when rules overlap. A user's
+        <code>read_only</code> rule is never softened into a pause by a
+        <code>confirm</code> rule beside it, and mask beats confirm because
+        an edit made against a transformed view can never be trusted
+        against the real file.</li>
+      <li><strong>confirm is write-only, by design.</strong> There's no
+        read-confirm knob. Pausing on read already exists as
+        <code>deny</code> plus an Override Request. A confirm hold files
+        that request for you automatically; see <a href="#confirm">Confirm
+        — ask me first</a>.</li>
       <li><strong>Tighten-only.</strong> There is no <code>allow</code> list.
         Scopes merge as a union — a rule anywhere applies everywhere. A
         project config can only add protection, never grant access; an
@@ -196,20 +233,412 @@
         rules do not travel with a cloned repo.</li>
     </ul>
 
-    <h2 id="builtins">Built-in protections (always on)</h2>
-    <p>These apply in every C3 project, with no configuration, and cannot be
-    overridden. If the access config is corrupt or unparseable, that scope
+    <h2 id="builtins">Built-in protections</h2>
+    <p>These apply in every C3 project with no configuration. Tier 0 is
+    absolute: nothing turns it off. Tier 1 is on by default, but each guard
+    now takes an independent <strong>mode</strong>: <code>deny</code>
+    (tighten to a full block), <code>confirm</code> (pause and ask),
+    <code>allow</code> (off), or <code>default</code> (the shipped
+    behaviour). If the access config is corrupt or unparseable, that scope
     fails <em>closed</em> — everything in it is denied until fixed.</p>
+
+    <h3>Tier 0 — absolute, no mode, no opt-out</h3>
     <table class="rule-table">
       <tr><th>Paths</th><th>Protection</th><th>Why</th></tr>
-      <tr><td class="k-tag">**/.env*</td><td class="k-deny">deny</td><td>Secrets never enter agent context</td></tr>
-      <tr><td class="k-tag">.c3/secrets.enc · .c3/cred_state.json</td><td class="k-deny">deny</td><td>Credential vault sidecars</td></tr>
-      <tr><td class="k-tag">.c3/** · ~/.c3/**</td><td class="k-ro">write-deny</td><td>Config self-tampering (incl. access rules + credential registry)</td></tr>
-      <tr><td class="k-tag">.claude/settings*.json</td><td class="k-ro">write-deny</td><td>Hook/permission self-modification</td></tr>
-      <tr><td class="k-tag">.git/**</td><td class="k-ro">write-deny</td><td>git hooks are a code-execution vector (reads stay open)</td></tr>
-      <tr><td class="k-tag">C3 install directory</td><td class="k-ro">write-deny</td><td>Agent self-modification (installed layouts only)</td></tr>
-      <tr><td class="k-tag">*.pem · id_rsa* · *.key</td><td class="k-deny">default rule</td><td>Seeded in global scope — visible and removable, unlike builtins</td></tr>
+      <tr><td class="k-tag">.c3/secrets.enc</td><td class="k-deny">deny</td><td>Credential vault, encrypted at rest</td></tr>
+      <tr><td class="k-tag">.c3/cred_state.json</td><td class="k-deny">deny</td><td>Credential registry sidecar</td></tr>
+      <tr><td class="k-tag">.c3/vault_backup.json</td><td class="k-deny">deny</td><td>Passphrase-sealed vault backup (v2.145.0)</td></tr>
     </table>
+    <p>These already carry their own guard (the vault's own encryption) and
+    their own human-only escalation, so an opt-out here would only be a
+    shorter route to the same secrets. <code>c3 access builtin mode</code>
+    refuses to touch them at any scope, and even an approved
+    <code>**/.c3/**</code> write or a <code>confirm</code>-mode
+    <code>.c3/**</code> can never reach them — see
+    <a href="#overrides">Override Requests</a>.</p>
+
+    <h3>Tier 1 — mode-governable</h3>
+    <table class="rule-table">
+      <tr><th>Paths</th><th>Default mode</th><th>What each mode does</th></tr>
+      <tr><td class="k-tag">**/.env*</td><td class="k-deny">deny (all ops)</td>
+          <td><code>confirm</code> pauses every op, not just writes — a
+          write-only confirm on a full-deny guard would silently become
+          allow-read. <code>allow</code> turns it off.</td></tr>
+      <tr><td class="k-tag">**/.c3/** · **/.claude/settings*.json ·<br>
+          **/.git/** · **/.grok/hooks/**</td><td class="k-ro">read_only (write-deny)</td>
+          <td><code>deny</code> tightens to a full block; <code>confirm</code>
+          pauses the write; <code>allow</code> turns the write-deny off.
+          Reads stay open in every mode here.</td></tr>
+    </table>
+    <p><code>**/.grok/hooks/**</code> is Grok Build's hook <em>registration</em>
+    (the command lines it runs) — the same role
+    <code>**/.claude/settings*.json</code> plays for Claude Code.</p>
+
+    <div class="callout callout-warn">
+      <p><strong>Two keys, on purpose.</strong> Loosening a Tier 1 guard
+      needs a config entry <em>and</em> a matching keyring attestation —
+      either alone leaves the builtin enforcing. An agent that manages to
+      write <code>config.json</code> (exactly the move a prompt-injected one
+      would try) still cannot produce the attestation. Loosening
+      <code>**/.env*</code> also prints one advisory line pointing at the
+      vault: <code>c3_credentials(action='import_env')</code> reads the file
+      server-side, so the agent gets names, lengths and fingerprints and
+      never a value.</p>
+    </div>
+
+    <pre><code># every project on this machine
+c3 access builtin mode "**/.env*" confirm
+
+# THIS project only — replaces the global mode for that glob
+c3 access builtin mode "**/.c3/**" allow --project
+
+# back to shipped behaviour
+c3 access builtin mode "**/.env*" default</code></pre>
+    <p>A project-scope mode is attested under its own keyring realm, so a
+    cloned repo that carries <code>access.builtin_mode</code> in its config
+    changes nothing on a machine that never ran the attestation — the mode
+    lives in <em>this</em> machine's keyring, not in the checkout. See
+    <a href="#cross-project">Per-project &amp; the Hub</a>.</p>
+
+    <h3>Tier 1, confirm-by-default — the agent-config surfaces</h3>
+    <p>Until v2.100.0 these files were fully writable — only after-the-fact
+    artifact capture watched them. An agent could add itself an MCP server,
+    rewrite a hook's body, or edit its own instructions, and nothing paused
+    it. Now every write to any of them holds for your one-tap approval;
+    reads stay open, because an agent must always be able to read its own
+    instructions.</p>
+    <table class="rule-table">
+      <tr><th>Group</th><th>Paths</th></tr>
+      <tr><td>Instructions</td><td class="k-tag">**/claude.md · **/agents.md · **/gemini.md · **/AGENTS.override.md · **/.cursorrules</td></tr>
+      <tr><td>MCP config</td><td class="k-tag">**/.mcp.json · **/.vscode/mcp.json · **/.cursor/mcp.json · **/.codex/config.toml · **/.codex/hooks.json · **/.gemini/settings.json · **/.grok/config.toml</td></tr>
+      <tr><td>Claude Code bodies</td><td class="k-tag">**/.claude/hooks/** · **/.claude/skills/** · **/.claude/agents/** · **/.claude/commands/** · **/.claude/plugins/**</td></tr>
+      <tr><td>Other IDEs</td><td class="k-tag">**/.github/copilot-instructions.md · **/.grok/skills/** · **/.grok/agents/** · **/.grok/rules/**</td></tr>
+    </table>
+    <p><code>**/.claude/settings*.json</code> stays in the harder Tier 1 row
+    above, not here: hook <em>registration</em> stays a full write-deny
+    while hook <em>bodies</em> pause, because registration is what decides
+    code execution. This tier is mode-governable too: <code>deny</code>
+    hardens it to a write-deny and <code>allow</code> restores the pre-2.100
+    behaviour, through the same <code>c3 access builtin mode</code>. See
+    <a href="#confirm">Confirm — ask me first</a> for what actually happens
+    when a write here pauses.</p>
+
+    <p>Two more paths stay a plain, non-configurable write-deny: the C3
+    install directory (agent self-modification, installed layouts only) and
+    the credential-vault write guard, which is unconditional and keys off a
+    fixed tool set — no mode reaches it.</p>
+
+    <p><code>*.pem</code>, <code>id_rsa*</code> and <code>*.key</code> are
+    not builtins — they're a default rule <em>seeded</em> into global scope
+    on install, visible in <code>c3 access list</code> and removable like
+    any other rule.</p>
+
+    <h2 id="confirm">Confirm — ask me first</h2>
+    <p>A <code>confirm</code> rule is the middle mode between "always
+    allowed" and "always refused": the agent may change these files, but
+    every change goes past you first. Reads are untouched. A write refuses
+    softly, and C3 itself (not the agent) files an Override Request the
+    moment the write is blocked.</p>
+
+    <pre><code>c3 access add "infra/**" --kind confirm</code></pre>
+
+    <h3>What happens when a write hits a confirm rule</h3>
+    <ol>
+      <li>The write is refused with tag <code>[c3-access:confirm]</code>
+        instead of your file being touched.</li>
+      <li><strong>C3 auto-files the request.</strong> The agent cannot
+        forget to ask and cannot word the ask — the card is built from the
+        trusted denial (tool, operation, path, rule), never from anything
+        the agent composed. This happens at the PreToolUse hook for native
+        tools and inside <code>c3_edit</code>; every other
+        <code>c3_*</code> tool refuses without filing and says so.</li>
+      <li>You decide on your phone, in the Hub, or with
+        <code>c3 override approve &lt;id&gt;</code> — see
+        <a href="#overrides">Override Requests</a> for all three.</li>
+      <li>One tap mints a single-use, session-bound, path-exact grant. The
+        agent retries the <em>exact same call, on the same surface</em> — a
+        grant matches on tool, so a hook-filed native <code>Edit</code>
+        hold is not satisfied by a <code>c3_edit</code> retry.</li>
+    </ol>
+
+    <div class="callout">
+      <p><strong>The refusal names the request and tells the agent what to
+      do</strong> — wait on the id (<code>c3_override(action='wait',
+      request_id=..., timeout_s=180)</code>), that a "still pending" answer
+      is not a denial, and, when no request could be filed, to follow that
+      reason's own instruction (a deny+mute means don't ask again; a rate
+      limit means withdraw or wait) rather than defaulting to "ask in
+      chat."</p>
+    </div>
+
+    <h3>Precedence</h3>
+    <p><code>confirm</code> is the loosest non-<code>allow</code> outcome:
+    a hold can be approved into a write, a <code>read_only</code> cannot.
+    So <code>deny &gt; mask &gt; read_only &gt; confirm</code>. A user's
+    <code>read_only</code> rule is never shadowed by the agent-config
+    confirm tier, and a confirm rule you write over <code>**/.c3/**</code>
+    does not outrank the Tier 1 <code>**/.c3/**</code> write-deny. Use
+    <code>c3 access builtin mode "**/.c3/**" confirm</code> for that instead
+    (<a href="#builtins">Built-in protections</a>).</p>
+
+    <h3>access_confirm defaults on</h3>
+    <p>Override Requests as a whole default off — a project has to opt in
+    before an agent may ask for anything. Confirm rules are the one
+    deliberate exception: writing a <code>confirm</code> rule is itself the
+    opt-in, so the <code>access_confirm</code> layer defaults
+    <strong>on</strong> and doesn't need <code>override.enabled</code>. Turn
+    it off explicitly with <code>override.layers.access_confirm: false</code>
+    if you want confirm rules to refuse silently, with no auto-filed
+    request, instead.</p>
+
+    <h3>Shell writes pause too</h3>
+    <p>A confirm rule (and <code>read_only</code>, and the Tier 1
+    write-denies) governs the write class, and since v2.102.0 that includes
+    <strong><code>c3_shell</code> and native <code>Bash</code></strong>, not
+    just <code>c3_edit</code>. <code>echo &gt;&gt; CLAUDE.md</code>,
+    <code>sed -i</code> on <code>.mcp.json</code>, or a heredoc into a hook
+    body all evaluate the files the command writes as a write and pause the
+    same way an editor write would. See
+    <a href="#shell-scan">Shell command scan</a> for how the scan finds
+    those targets, and its limits.</p>
+
+    <h2 id="overrides">Override Requests</h2>
+    <p>Every guard on this page is terminal by default: the only way past a
+    block used to be a human weakening a rule permanently. Override
+    Requests add the missing primitive — a <strong>grant</strong> that lets
+    one blocked call succeed once, without touching policy. The rule that
+    denied the call is still in force the instant the grant is spent.</p>
+
+    <div class="callout callout-warn">
+      <p><strong>Off by default, one layer excepted.</strong> Every
+      escalatable layer defaults to off. A project must opt in with
+      <code>override.enabled</code> and turn on the specific layer, except
+      <code>access_confirm</code>, which is on because a human writing a
+      <code>confirm</code> rule already is the opt-in.</p>
+    </div>
+
+    <h3>What can ever be escalated</h3>
+    <table class="rule-table">
+      <tr><th>Layer</th><th>What it covers</th></tr>
+      <tr><td class="k-tag">discipline</td><td>Native Edit/Write blocked by tool discipline (not path policy)</td></tr>
+      <tr><td class="k-tag">access_readonly</td><td>A <code>read_only</code> rule</td></tr>
+      <tr><td class="k-tag">access_deny</td><td>A user <code>deny</code> rule — needs the glob retyped by hand to approve</td></tr>
+      <tr><td class="k-tag">access_builtin</td><td>A Tier 1 builtin — same typed-glob challenge</td></tr>
+      <tr><td class="k-tag">access_confirm</td><td>A <code>confirm</code> rule — one tap, no typed challenge (default ON)</td></tr>
+      <tr><td class="k-tag">mask</td><td>Not really escalatable in practice — a masked path is a different view being served, not a refusal waiting to be lifted</td></tr>
+      <tr><td class="k-tag">shell_warn</td><td>The <code>c3_shell</code> soft-warn caveat — replaces the warning line, never unblocks the catastrophic-command tier</td></tr>
+    </table>
+    <p><strong>Never escalatable, at any setting, by any approval:</strong>
+    the credential vault, <code>.c3/secrets.enc</code>,
+    <code>.c3/cred_state.json</code>, <code>.c3/vault_backup.json</code>,
+    the Tier-0 absolute denies, the dispatcher's fail-closed deny, and the
+    catastrophic <code>c3_shell</code> blocks. A denial from one of those
+    never reaches the grants file, and the refusal never mentions that a
+    request surface exists.</p>
+
+    <h3>The loop: ask, decide, retry</h3>
+    <div class="step-grid">
+      <div class="step-card">
+        <span class="step-num">1</span><h4>Agent asks</h4>
+        <p>Blocked, escalatable, opted-in: the agent calls
+        <code>c3_override(action='request', path=..., why=...)</code>. Rate
+        limited: 3 pending per session, 20/hour per project. A
+        duplicate ask returns the existing card.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">2</span><h4>You decide</h4>
+        <p>Phone, Hub, or CLI — see below. Approving <code>access_deny</code>
+        or <code>access_builtin</code> needs the rule glob retyped by hand;
+        every other layer is one tap.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">3</span><h4>Agent retries</h4>
+        <p>The grant is single-use, session-bound, path-exact and
+        short-lived (15 min by default). The agent must wait or poll
+        (<code>c3_override(action='wait', request_id=...,
+        timeout_s=180)</code>), then retry the exact call once.</p>
+      </div>
+    </div>
+
+    <h3>The agent's tool — <code>c3_override</code></h3>
+    <table class="rule-table">
+      <tr><th>action</th><th>Does</th></tr>
+      <tr><td class="k-tag">request</td><td>File a request for one blocked <code>path</code> (+ <code>op</code>, <code>why</code>)</td></tr>
+      <tr><td class="k-tag">status</td><td>Check a <code>request_id</code> without blocking</td></tr>
+      <tr><td class="k-tag">wait</td><td>Block up to <code>timeout_s</code> (default 60, max 180) for a decision</td></tr>
+      <tr><td class="k-tag">list</td><td>This session's requests</td></tr>
+      <tr><td class="k-tag">withdraw</td><td>Cancel a request this session filed</td></tr>
+    </table>
+    <p><strong>There is no <code>approve</code> action, anywhere in this
+    tool, on purpose.</strong> Asking for one by name gets a refusal that
+    says so — approval is human-only, from the phone, the Hub, or
+    <code>c3 override approve</code>.</p>
+
+    <h3>Who answers</h3>
+    <ul>
+      <li><strong>Desktop CLI</strong> — <code>c3 override requests</code>
+        lists pending cards; <code>c3 override approve &lt;id&gt; [--mode
+        once|session|rule] [--confirm &lt;glob&gt;]</code> and
+        <code>c3 override deny &lt;id&gt; [--mute]</code> decide.</li>
+      <li><strong>Phone</strong> — the mobile app's inbox, Bearer auth on
+        every route, an inbox across every project. The typed-confirm
+        challenge is the rule glob itself, not a nonce: retyping
+        <code>**/.env*</code> costs more than a habit-tap. A requested TTL
+        is clamped and the client is told when it was.</li>
+      <li><strong>Desktop Hub</strong> — the Access tab, pending cards
+        across every project on the machine, the same typed-glob challenge
+        re-enforced server-side. Under the cards, a read-only policy matrix
+        shows any project's effective rules and override-layer switches.
+        See <a href="#cross-project">Per-project &amp; the Hub</a>.</li>
+    </ul>
+
+    <h3>Mute</h3>
+    <p><code>c3 override deny &lt;id&gt; --mute</code> denies and
+    suppresses identical requests (same project, session, layer, rule,
+    tool, operation and path) for the rest of the session. A new session
+    gets to ask again. The mute store fails <em>open</em> (the opposite of
+    the grant store): a lost mute costs one extra notification, never a
+    capability.</p>
+
+    <h3>Session and rule-scoped grants</h3>
+    <p>The default grant (<code>mode=once</code>) covers one exact call.
+    Two looser modes exist, both opt-in and both needing their own typed
+    confirmation:</p>
+    <table class="rule-table">
+      <tr><th>Mode</th><th>Covers</th><th>Needs</th><th>Lifetime</th></tr>
+      <tr><td class="k-tag">once</td><td>This exact tool + path, one use</td><td>Nothing extra</td><td>Up to 15 min</td></tr>
+      <tr><td class="k-tag">session</td><td>Unlimited uses of this exact call, this session</td><td><code>override.allow_session_grants</code> + retype <code>session</code></td><td>Up to 15 min</td></tr>
+      <tr><td class="k-tag">rule</td><td>Every path the rule matches, any tool in the same op class (read/write/shell)</td><td><code>override.allow_rule_grants</code> + retype the rule glob</td><td>4h default, 8h hard ceiling, or 30 min idle — whichever comes first</td></tr>
+    </table>
+    <p>A rule grant relaxes exactly two of the nine match conditions: the
+    exact tool becomes any tool in the same declared class (an unclassed
+    tool, like <code>c3_artifacts</code> or <code>c3_project</code>, never
+    widens), and the exact path becomes the path set the rule glob
+    describes. It still cannot reach a Tier-0 file or the override
+    policy/grant store, even under a <code>**/.c3/**</code> rule — proven
+    live: such a grant covers <code>.c3/notes.txt</code> and never
+    <code>override_grants.json</code>. Rule grants are visible and killable,
+    not just logged: the Hub's Access tab lists active grants with what
+    each one reaches, and can revoke one.</p>
+
+    <h3>What it costs you</h3>
+    <p>A rule that keeps generating requests is a signal, not just noise.
+    <code>c3 override costs [--days N] [--all]</code> and the Hub's
+    "costing you" strip surface it: how many times a rule held the agent in
+    the trailing window, how you answered, and a suggestion —
+    <em>convert to allow</em> (mostly approved), <em>tighten or deny</em>
+    (mostly denied), or <em>review</em>.</p>
+
+    <pre><code>c3 override costs --days 7</code></pre>
+
+    <h2 id="cross-project">Per-project control &amp; the Hub</h2>
+    <p>Two things used to be global-only and are now settable per project:
+    which builtin guards apply, and what override policy a project runs. A
+    third is new outright: editing Access Guard rules across every
+    registered project from one screen.</p>
+
+    <h3>A project can loosen (or tighten) its own builtins</h3>
+    <p>Global scope used to be the only place that could change a Tier 1
+    builtin's mode. A project-scope mode now <strong>replaces</strong> the
+    global one for that glob, loosening included — attested under its own
+    keyring realm (<code>builtin_mode|proj|&lt;path&gt;|&lt;glob&gt;</code>),
+    so cloning the repo never carries the loosened mode to a machine that
+    never attested it.</p>
+    <pre><code>c3 access builtin mode "**/.env*" confirm --project
+c3 access list   # prints [project] / [global] beside each mode</code></pre>
+
+    <h3>Inherit again, or see one project's whole policy in one read</h3>
+    <p>Setting a mode or an override policy at project scope used to be a
+    one-way trip: nothing meant "go back to whatever global says" except
+    hand-editing the config out. <code>c3 override policy</code> and the
+    enforcement mode now both take a <code>clear</code>, which drops the
+    project's own section and falls back to global (and global falls back
+    to the built-in default). The Hub reads a project's whole effective
+    override policy for every key, whether it's corrupt or even
+    initialized, in one call instead of one request per key.</p>
+
+    <h3>Access Guard rules across every project, from the Hub</h3>
+    <p>The Hub's Access tab can add or remove a <code>deny</code> /
+    <code>read_only</code> / <code>confirm</code> rule on any registered
+    project, or on global scope, without opening that project. Adding
+    tightens, so it needs no confirmation; removing a <code>deny</code>
+    rule, or any global-scope rule, needs the glob retyped as a
+    confirmation. A folder with no <code>.c3/</code> is refused rather than
+    silently initialized — a rule C3 does not read protects nothing while
+    claiming to. Every real write lands in the target project's own edit
+    ledger.</p>
+
+    <h3>"May agents ask?"</h3>
+    <p>The Hub's Access tab also exposes <code>override.enabled</code>
+    itself (the switch that decides whether a request may exist at all),
+    with the seven escalatable layers listed individually and the same two
+    caveats always on screen: policy merges by tightening only, and the
+    credential vault and the catastrophic blocks are never escalatable at
+    any setting. Turning the feature on, or turning a layer on, needs a
+    typed confirmation; turning either off never does.</p>
+
+    <h2 id="shell-scan">Shell command scan</h2>
+    <p><code>c3_shell</code> and native <code>Bash</code> (via the
+    PreToolUse hook) both read a command's tokens and judge each one
+    against Access Guard, per command segment (split on
+    <code>&amp;&amp;</code>, <code>||</code>, <code>;</code>,
+    <code>|</code>, and newlines) so a leading <code>cd</code> updates
+    which directory later segments resolve against. Reads are checked
+    against <code>deny</code>-kind rules only; since v2.102.0, the files a
+    command <em>writes</em> (redirects, <code>tee</code>,
+    <code>sed -i</code>, <code>cp</code>/<code>mv</code>, inline Python
+    <code>open(...,'w')</code>) are extracted and evaluated as writes, so a
+    <code>read_only</code>, <code>confirm</code> or write-deny rule holds a
+    shell write exactly like an editor write would.</p>
+
+    <div class="callout callout-danger">
+      <p><strong>Best-effort, stated plainly in the refusal.</strong>
+      Subshells, variables and globs are invisible to a token scan. A clean
+      scan is not enforcement — it is mistake-and-injection containment. It
+      errs toward under-flagging: a token it misses is still caught by the
+      real path check on the tool that follows; a token it flags wrongly is
+      a hard deny on a command that may name no file at all.</p>
+    </div>
+
+    <h3>Spelling rules (no glob — a refusal cites these by name)</h3>
+    <table class="rule-table">
+      <tr><th>Name</th><th>Means</th></tr>
+      <tr><td class="k-tag">&lt;unc&gt;</td><td>UNC / network path outside the project</td></tr>
+      <tr><td class="k-tag">&lt;unresolvable&gt;</td><td>Path could not be resolved</td></tr>
+      <tr><td class="k-tag">&lt;empty-component&gt;</td><td>A path component empties after normalization</td></tr>
+      <tr><td class="k-tag">&lt;8.3-alias&gt;</td><td>8.3 short-name component on a non-existing target</td></tr>
+      <tr><td class="k-tag">&lt;ads&gt;</td><td>NTFS alternate-data-stream syntax (Windows only)</td></tr>
+    </table>
+    <p><code>&lt;ads&gt;</code> caused the most false positives while the
+    scan matured, all fixed and worth knowing if a command you expect to
+    run gets denied by a rule <code>c3 access list</code> doesn't show:</p>
+    <ul>
+      <li><strong>URLs and IPv6 (v2.64.0).</strong> A residual colon reads
+        as NTFS stream syntax, so <code>https://example.com</code> and
+        <code>fc00::/7</code> used to hard-deny any command that mentioned
+        one — <code>git commit</code> messages about networking,
+        <code>curl</code>, <code>gh pr create</code>. Scheme-prefixed and
+        IPv6 literal/CIDR tokens are now skipped before evaluation.</li>
+      <li><strong>Pytest node ids and git revspecs (v2.76.2).</strong>
+        <code>a/b.py::Thing</code> is a node id, never a stream. But a
+        genuine <code>file::$DATA</code> stream still denies, because the
+        discriminator is the <code>$</code>-prefixed type slot. A git
+        <code>&lt;rev&gt;:&lt;path&gt;</code> revspec now has its path half
+        checked instead of the whole token — <code>git show
+        HEAD:.env</code> still denies on <code>.env</code>'s own rule.</li>
+      <li><strong>The revspec rewrite, for real commands (v2.76.3).</strong>
+        The git-revspec fix above only fired when a command started with
+        <code>git</code> — <code>cd /repo &amp;&amp; git show
+        origin/main:pyproject.toml</code> was still denied, because that's
+        how the idiom actually arrives. Segment-by-segment fixed it.</li>
+      <li><strong>The cwd the command actually runs in (v2.77.0).</strong>
+        The existence gate judged every path against the session's project
+        root even after a <code>cd</code> moved somewhere else, so
+        <code>cd &lt;elsewhere&gt; &amp;&amp; cat .env</code> was not
+        flagged. Fixed alongside the segment-aware rewrite above — and as a
+        result, a project-scoped rule now correctly stops binding once you
+        <code>cd</code> into a different repo.</li>
+    </ul>
 
     <h2 id="refusals">Refusal messages</h2>
     <p>Every denial carries a stable machine tag, the matched rule and scope,
@@ -219,42 +648,114 @@
       <tr><th>Tag</th><th>Meaning</th></tr>
       <tr><td class="k-tag">[c3-access:denied]</td><td>Operation refused by a deny rule (or a write refused where read_only applies via hooks). Policy, not an error — the agent is told not to retry or route around it.</td></tr>
       <tr><td class="k-tag">[c3-access:read_only]</td><td>Write refused; reads remain separately evaluated.</td></tr>
+      <tr><td class="k-tag">[c3-access:confirm]</td><td>"S8": a pause, not a refusal. Names the auto-filed request id and the exact <code>c3_override(action='wait', ...)</code> call, or says why no request was filed and what to do about it. See <a href="#confirm">Confirm — ask me first</a>.</td></tr>
       <tr><td class="k-tag">[c3-access:limited]</td><td>Search/listing footer: results may omit protected paths — a file that doesn't appear may still exist.</td></tr>
       <tr><td class="k-tag">[c3-access:error]</td><td>The enforcement hook itself failed — native write tools are denied until it loads (fail-closed). See <a href="#troubleshooting">Troubleshooting</a>.</td></tr>
+      <tr><td class="k-tag">[c3-override:granted]</td><td>An approved grant covered this retry — the caveat line an agent sees in place of a block.</td></tr>
+      <tr><td class="k-tag">[c3-override:spent]</td><td>A grant existed but was consumed by a concurrent call between the check and the write; the retry is refused rather than let through ungranted.</td></tr>
+      <tr><td class="k-tag">[c3-override:not-escalatable]</td><td>A <code>c3_override(action='request')</code> for a layer that can never be asked about (vault, Tier-0, catastrophic shell). Never shown for a denial that didn't offer to escalate.</td></tr>
     </table>
+    <p>Masked-path tags (<code>[c3-mask:transformed]</code>,
+    <code>[c3-mask:limited]</code>, <code>[c3-mask:unsupported]</code>) are
+    documented on the <a href="masking.html">Mask Guard</a> page.</p>
 
     <h2 id="coverage">Coverage — honest limits</h2>
     <div class="callout callout-good">
-      <p><strong>Enforced:</strong> C3 MCP tools (any agent that uses C3 —
-      Claude Code, Codex, Gemini, Oracle-connected models) · Claude Code
-      native tools (PreToolUse hooks, fail-closed) · <code>c3_shell</code>
-      (best-effort command scan, advisory).</p>
+      <p><strong>Enforced:</strong> C3 MCP tools (any agent that uses C3:
+      Claude Code, Codex, Gemini, Grok Build, Oracle-connected models) ·
+      Claude Code native tools (PreToolUse hooks, fail-closed) ·
+      <code>c3_shell</code> and native <code>Bash</code> (best-effort
+      per-segment token scan: reads against deny rules, writes against
+      every write-class outcome; see <a href="#shell-scan">Shell command
+      scan</a>).</p>
     </div>
     <div class="callout callout-danger">
       <p><strong>Not enforced:</strong> a non-Claude agent's raw shell or
-      direct file APIs — including native file tools in non-Claude CLI
-      environments unless they route through C3 tools — external editors,
+      direct file APIs (including native file tools in non-Claude CLI
+      environments unless they route through C3 tools), external editors,
       and OS-level access. Renames/moves via shell commands are a known
-      v1 gap. Access Guard is a guardrail
-      for cooperative agents — pair it with OS permissions when you need a
-      real boundary.</p>
+      v1 gap. In an IDE with no PreToolUse hooks (Codex, Antigravity,
+      Copilot) only the c3_* tools are covered; a native write there is not
+      intercepted. Access Guard is a guardrail for cooperative agents.
+      Pair it with OS permissions when you need a real boundary.</p>
     </div>
 
+    <h2 id="discipline">Tool discipline is a separate knob</h2>
+    <p>Access Guard governs <em>paths</em>. A neighboring layer, tool
+    discipline (<code>c3 enforce</code>), governs whether native
+    <code>Edit</code>/<code>Write</code> are blocked in favour of
+    <code>c3_edit</code> at all — a workflow preference, not a security
+    boundary. Loosening it never reaches Access Guard rules, the credential
+    vault, or agent locks; those enforce at every discipline mode.</p>
+    <pre><code>c3 enforce                    # show the current mode
+c3 enforce advisory           # allow native writes, with a nudge
+c3 enforce strict             # block until a c3_* call ran first
+c3 enforce off                # no nudging
+c3 enforce --global advisory  # default for every project on this machine</code></pre>
+    <p><code>c3 access stats</code> labels each denial with its layer
+    (path policy vs. tool discipline) and names the exact command that
+    clears it. Full reference: <code>docs/enforcement.md</code>.</p>
+
     <h2 id="cli">CLI commands</h2>
-    <pre><code>c3 access list                        # rules by scope, builtins included
+    <pre><code># rules
+c3 access list                                    # rules by scope, builtins, coverage
 c3 access add "secrets/**" --kind deny            # project scope
+c3 access add "infra/**" --kind confirm           # pause writes, don't block them
 c3 access add "*.pem" --kind deny --global        # global scope
 c3 access remove "secrets/**" --kind deny
 c3 access check secrets/key.txt                   # probe: verdict + matched rule
-c3 access check docs/x.md --op write</code></pre>
+c3 access check docs/x.md --op write
+c3 access stats                                   # what got denied, how often, how to clear it
+c3 access stats --clear
 
-    <h2 id="ui">UI tab &amp; probe</h2>
-    <p>Each project's UI gains an <strong>Access Guard</strong> tab: rules
-    grouped by scope (builtins shown locked), an add-rule form, delete with
-    typed confirmation for deny rules, and a <strong>Test path</strong>
-    probe that shows the verdict, matched rule, and the exact refusal the
-    agent would see. The coverage matrix above is pinned at the bottom of
-    the tab.</p>
+# builtins
+c3 access builtin mode "**/.env*" confirm         # deny | confirm | allow | default
+c3 access builtin mode "**/.c3/**" allow --project
+c3 access builtin disable "**/.git/**"            # legacy spelling of mode allow
+c3 access builtin enable "**/.git/**"
+
+# override requests (see Override Requests above)
+c3 override policy                                # effective policy + escalatable layers
+c3 override requests [--status pending] [--all]
+c3 override approve &lt;id&gt; [--mode once|session|rule] [--confirm &lt;glob&gt;]
+c3 override deny &lt;id&gt; [--mute]
+c3 override list [--session &lt;id&gt;] [--audit N]  # live grants
+c3 override grant &lt;path&gt; --session &lt;id&gt; [...]  # mint one directly, no request
+c3 override check &lt;path&gt; --session &lt;id&gt;        # would a grant cover this now?
+c3 override revoke &lt;grant_id&gt;
+c3 override sweep                                 # drop expired/spent grants
+c3 override costs [--days 7] [--all]
+
+# Mask Guard — see masking.html
+c3 access mask add "data/**" --preset sample_rows --params "count=20,strategy=first"</code></pre>
+
+    <h2 id="ui">UI &amp; probe</h2>
+    <h3>Project Access tab</h3>
+    <p>Rules grouped by scope (builtins shown with their mode, not just
+    locked), an add-rule form with all three glob-list kinds, delete with
+    typed confirmation for <code>deny</code> rules, a mode selector and
+    scope picker for builtins, and a <strong>Test path</strong> probe that
+    shows the verdict, matched rule, and the exact refusal the agent would
+    see. The coverage matrix is pinned at the bottom of the tab.</p>
+
+    <h3>Hub Access tab (desktop, cross-project)</h3>
+    <ul>
+      <li><strong>Pending request cards</strong> — approve, deny, or
+        deny+mute, across every project on the machine; typed-glob
+        challenge for <code>deny</code>/<code>builtin</code> approvals.</li>
+      <li><strong>Costing you</strong> — rules generating the most requests
+        this week, with a suggestion and a jump to that rule.</li>
+      <li><strong>Active grants</strong> — every live grant, what a rule
+        grant's reach actually covers, and a revoke button.</li>
+      <li><strong>Rules panel</strong> — add or remove a rule on any
+        registered project, or global scope, without opening it.</li>
+      <li><strong>Policy panel</strong> — read-only view of any project's
+        effective rules and override-layer switches, plus the "May agents
+        ask?" enable toggle and per-layer switches.</li>
+    </ul>
+    <p>The Hub edits policy and rules; it does not replace the per-project
+    UI — day-to-day rule authoring still happens in the per-project Access
+    tab or <code>c3 access</code>.</p>
 
     <h2 id="troubleshooting">Troubleshooting</h2>
     <table class="kv-table rule-table">
@@ -274,13 +775,34 @@ c3 access check docs/x.md --op write</code></pre>
           <td>Globs are POSIX-style: use forward slashes; remember
           <code>*</code> does not cross directories — use <code>**</code>.
           Probe with <code>c3 access check</code>.</td></tr>
+      <tr><td class="k-tag">Agent says "wait" never returns / times out</td>
+          <td>The default <code>c3_override</code> wait is 60s; the agent
+          should pass <code>timeout_s=180</code> and treat "still pending"
+          as not-a-denial, waiting again rather than giving up.</td></tr>
+      <tr><td class="k-tag">A retry after approval is still refused</td>
+          <td>A grant matches the tool that filed the request — retry the
+          <em>same</em> surface (a hook-filed native <code>Edit</code> hold
+          needs a native retry, not <code>c3_edit</code>). Check
+          <code>c3 override list</code> for whether the grant still has
+          uses left.</td></tr>
+      <tr><td class="k-tag">"May I ask?" offer never appears in a refusal</td>
+          <td>Override Requests are off by default; a project must set
+          <code>override.enabled</code> and turn the specific layer on
+          (<code>c3 override policy</code> shows both). The offer line only
+          ever appears on the hook surface, not on a bare <code>c3_*</code>
+          refusal.</td></tr>
+      <tr><td class="k-tag">A builtin mode won't stick</td>
+          <td>Both a config entry and a keyring attestation are required;
+          <code>c3 access builtin mode</code> writes both together. A
+          hand-edited config entry with no matching attestation is ignored
+          and the builtin keeps enforcing its shipped default.</td></tr>
     </table>
 
     <div class="callout">
       <p><strong>Relationship to the Credential Vault.</strong> Credentials
       protect <em>values</em> (never in agent context, injected at the
       subprocess boundary); Access Guard protects <em>files and folders</em>.
-      The vault's registry and sidecars are covered by Access Guard builtins,
+      The vault's registry and sidecars are covered by Access Guard Tier 0,
       and both systems log every mutation to the same edit ledger.</p>
     </div>
   </main>

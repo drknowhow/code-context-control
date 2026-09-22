@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentCI — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+    .pill-amber  { color: var(--yellow); border-color: var(--yellow); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; text-transform: none; letter-spacing: normal; }
+
+    .status-table td { vertical-align: middle; }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html" class="active">CI</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html">Access</a>
+      <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.145.1</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🧭</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#verdicts"        class="sidebar-link"><span class="icon">✅</span> Verdicts &amp; job status</a>
+      <a href="#dag"             class="sidebar-link"><span class="icon">🕸️</span> Job DAG &amp; conditions</a>
+      <a href="#engines"         class="sidebar-link"><span class="icon">⚙️</span> Execution engines</a>
+      <a href="#foreign-os"      class="sidebar-link"><span class="icon">🌍</span> Foreign-OS jobs</a>
+      <a href="#safety"          class="sidebar-link"><span class="icon">🔒</span> Secrets &amp; side effects</a>
+      <a href="#modes"           class="sidebar-link"><span class="icon">🎯</span> Required mode</a>
+      <a href="#caching"         class="sidebar-link"><span class="icon">💾</span> Caching</a>
+      <a href="#history"         class="sidebar-link"><span class="icon">📈</span> History &amp; publishing</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI reference</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="workflow.html" class="sidebar-link">Standard workflow</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>AgentCI</h1>
+      <p>Run this repository's real CI on this machine, before you push, and get a structured failure back instead of a wall of log. <code>c3_ci</code> reads <code>.github/workflows/*.yml</code> directly — there is no second CI config to keep in sync.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.79.0+</span>
+        <span class="pill pill-purple">Local CI execution</span>
+        <span class="pill pill-green">native + act engines</span>
+        <span class="pill pill-amber">FULL_CI_PASS is the only green light</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p>An agent that only learns whether CI passes after pushing burns a round-trip, some Actions minutes, and a commit on every attempt. AgentCI closes that loop locally:</p>
+      <pre><code>edit → run CI locally → structured failure → fix → rerun what failed → full CI → push</code></pre>
+      <p>It parses your existing workflow files, builds the job DAG, and executes each job the same way GitHub would: natively on this host, or in a real Linux container via <a href="https://nektosact.com" target="_blank" rel="noopener">act</a>, then hands back a verdict, structured failures, and a log per job.</p>
+
+      <h3>What it is</h3>
+      <ul>
+        <li>A reader of <code>.github/workflows/*.yml</code>. That file is the only source of truth; nothing about a job's behavior is redefined elsewhere.</li>
+        <li>Two execution engines: <code>native</code> (shell steps on this host) and <code>act</code> (a real Linux container, real <code>uses:</code> actions included).</li>
+        <li>A verdict (<code>FULL_CI_PASS</code>, <code>PARTIAL_PASS</code>, or <code>FAIL</code>) that tells you honestly whether it is safe to push.</li>
+      </ul>
+
+      <h3>What it is not</h3>
+      <div class="antipattern"><span class="x">✕</span> <span>A second CI configuration. There is nothing to write, generate, or keep synchronized — C3 reads the workflow files you already have.</span></div>
+      <div class="antipattern"><span class="x">✕</span> <span>A complete GitHub Actions emulator. Composite actions, <code>container:</code>/<code>services:</code> blocks, reusable workflows, and object/array literals inside expressions are not implemented; a job that needs one is reported <code>unsupported</code>, never approximated.</span></div>
+      <div class="antipattern"><span class="x">✕</span> <span>A sandbox. The side-effect gate and the secrets guard (below) are policy, not isolation — a workflow you have not read can still run arbitrary code in a container with network access.</span></div>
+      <div class="antipattern"><span class="x">✕</span> <span>Able to run macOS jobs. There are no macOS containers, so a matrix containing <code>macos-latest</code> cells can never reach <code>FULL_CI_PASS</code> on any host, ever.</span></div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ QUICK START ═══ -->
+    <section id="quick-start" class="tool-section">
+      <h2>Quick start</h2>
+      <div class="step-grid">
+        <div class="step-card">
+          <span class="step-num">1</span><h4>As an agent</h4>
+          <pre><code>c3_ci(action='inspect')
+c3_ci(action='run')
+c3_ci(action='run', job='lint')
+c3_ci(action='failures')
+c3_ci(action='rerun')
+c3_ci(action='logs', job='CI::lint')
+c3_ci(action='runs')</code></pre>
+        </div>
+        <div class="step-card">
+          <span class="step-num">2</span><h4>As a human</h4>
+          <pre><code>c3 ci inspect
+c3 ci run --job lint --allow-foreign
+c3 ci rerun
+c3 ci failures
+c3 ci logs "CI::lint" --tail 200
+c3 ci runs
+c3 ci inspect --json</code></pre>
+        </div>
+        <div class="step-card">
+          <span class="step-num">3</span><h4>In the Hub</h4>
+          <p style="font-size: 13px; margin: 0;">The <strong>CI</strong> tab shows every registered project's workflows, the job graph (including what cannot run here), run history, live status while a run is in flight, and structured failures inline. Logs open in a viewer.</p>
+        </div>
+      </div>
+
+      <p>A real <code>c3 ci inspect</code> against this repository, from Windows:</p>
+      <pre><code>Workflows in . (host Windows):
+  CI  [pull_request, push, workflow_dispatch]  jobs=4
+  Release  [push, workflow_dispatch]  jobs=4
+
+Job graph (dependency order):
+  CI::lint                                   runnable (container)
+  CI::test (macos-latest, 3.12)              other-OS (macos-latest)
+  CI::test (ubuntu-latest, 3.12)             runnable (container)
+  CI::test (windows-latest, 3.12)            runnable here
+  CI::build                                  runnable (container)  needs=lint,jsx,test
+  Release::verify-ci                         UNSUPPORTED
+  Release::publish-pypi                      runnable (container)  needs=build
+
+Runnable here: 12 of 16  (3 native, 9 container)
+  engines: native + act (act version 0.2.89)
+  other-OS (3): these target a runner no available engine can reproduce. …
+  unsupported (1):
+    Release::verify-ci: step 1 env GH_TOKEN has unresolved expression(s): github.token</code></pre>
+      <p>That last line is the point: an unresolved <code>${{ secrets.X }}</code> or <code>github.token</code> blocks rather than silently becoming an empty string, because a job that quietly passes locally on a blank secret and fails in real CI is worse than a job that refuses.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ VERDICTS ═══ -->
+    <section id="verdicts" class="tool-section">
+      <h2>Verdicts &amp; job status</h2>
+      <p><code>FULL_CI_PASS</code> is the only verdict that means "safe to push." Everything else is <code>PARTIAL_PASS</code>, and partial means something did not run here — a different OS, an unsupported construct, or a selection you made yourself.</p>
+
+      <table class="table">
+        <thead><tr><th>Verdict</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge badge-green">FULL_CI_PASS</span></td><td>Every job in the repo ran on this host (native or container) and passed.</td></tr>
+          <tr><td><span class="badge badge-yellow">PARTIAL_PASS</span></td><td>Nothing failed, but something did not run here, or ran only as a cross-OS approximation.</td></tr>
+          <tr><td><span class="badge badge-red">FAIL</span></td><td>A job failed, timed out, or a dependency of it did.</td></tr>
+        </tbody>
+      </table>
+      <p><code>c3 ci run</code> exits non-zero for anything but <code>FULL_CI_PASS</code>, so a pre-push hook or script can gate on the exit code alone.</p>
+
+      <h3>Job statuses</h3>
+      <table class="table status-table">
+        <thead><tr><th>Status</th><th>Meaning</th><th>Counts against a full pass?</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge badge-green">passed</span></td><td>Ran here and succeeded.</td><td>No</td></tr>
+          <tr><td><span class="badge badge-red">failed</span></td><td>Ran here and did not succeed.</td><td>Verdict is FAIL</td></tr>
+          <tr><td><span class="badge badge-red">timeout</span></td><td>Killed at the step timeout (default 900s). Effect unknown — not treated as a clean failure.</td><td>Verdict is FAIL</td></tr>
+          <tr><td><span class="badge badge-yellow">skipped</span></td><td>A <code>needs:</code> dependency did not pass, so this never ran.</td><td>Yes</td></tr>
+          <tr><td><span class="badge badge-yellow">unsupported</span></td><td>Uses something no engine can faithfully reproduce (see Overview).</td><td>Yes</td></tr>
+          <tr><td><span class="badge badge-blue">foreign</span></td><td><code>runs-on</code> targets a different OS; refused unless <code>allow_foreign</code>.</td><td>Yes</td></tr>
+          <tr><td><span class="badge badge-purple">deselected</span></td><td>Not part of this run's selection (e.g. you passed <code>job=</code>).</td><td>Yes</td></tr>
+          <tr><td><span class="badge badge-cyan">skipped_if</span></td><td>Its own <code>if:</code> evaluated false. This is the <em>faithful</em> reproduction of what CI would have done.</td><td>No</td></tr>
+          <tr><td><span class="badge badge-cyan">cached</span></td><td>Definition, engine and inputs unchanged since it last passed — reused, not re-executed.</td><td>No (noted in the verdict)</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-info">
+        <div class="callout-icon">ℹ️</div>
+        <div class="callout-body"><strong>Fidelity is part of the verdict, not just the status.</strong> A job run under <code>allow_foreign</code> records fidelity <code>cross-os</code> even when it passes, and any cross-OS job caps the whole run at <code>PARTIAL_PASS</code> — permanently, for that job. Only <code>native</code> or <code>container</code> fidelity counts toward <code>FULL_CI_PASS</code>, because a Linux job in a Linux container really is that job, and a Linux approximation of a macOS job is not.</div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ DAG ═══ -->
+    <section id="dag" class="tool-section">
+      <h2>Job DAG &amp; conditions</h2>
+      <ul>
+        <li><strong>Order.</strong> Jobs run in topological order of <code>needs</code>. A <code>needs</code> edge is scoped to its own workflow, so two workflows that both define a job called <code>build</code> stay unrelated.</li>
+        <li><strong>Matrix.</strong> <code>strategy.matrix</code> expands to one job instance per cell, including <code>include</code>/<code>exclude</code>. Each cell resolves its own <code>runs-on</code>.</li>
+        <li><strong>Identity.</strong> A job's key is <code>&lt;workflow&gt;::&lt;id&gt;</code>, e.g. <code>CI::test (ubuntu-latest, 3.12)</code>. A selector accepts the key, the bare id, or a bare job name (which selects every matrix cell of it).</li>
+        <li><strong>Skipped on failed dependency.</strong> A job whose <code>needs</code> did not pass is <code>skipped</code> — never run, never counted as passed.</li>
+      </ul>
+
+      <h3>if: conditions (v2.80.0+)</h3>
+      <p>Job- and step-level <code>if:</code> are evaluated with GitHub's own semantics, not just parsed and ignored:</p>
+      <ul>
+        <li>A condition naming no status function is implicitly <code>success() &amp;&amp; (...)</code> — which is why <code>if: always()</code> is how a step runs after a failure.</li>
+        <li>A job-level <code>if:</code> <strong>replaces</strong> the <code>needs</code> success gate, so <code>always()</code> and <code>failure()</code> run even when a dependency failed.</li>
+        <li>A step with no <code>if:</code> keeps its implicit <code>success()</code> gate and is skipped once something earlier in the job failed.</li>
+      </ul>
+      <p>Supported operators: <code>== != &lt; &lt;= &gt; &gt;= &amp;&amp; || !</code>, parentheses, literals, and <code>success failure always cancelled contains startsWith endsWith format join toJSON fromJSON</code>. Supported contexts: <code>github env matrix runner job needs steps strategy</code>.</p>
+      <p>A job skipped by its own <code>if:</code> gets status <code>skipped_if</code> and does not cost coverage — CI would have skipped it too, so <code>FULL_CI_PASS</code> stays reachable. Two things still block rather than guess: a condition that cannot be parsed, and one that reads <code>github.event_name</code> with no event declared. There is no event locally, so declare what you are simulating:</p>
+      <pre><code>c3 ci run --event pull_request</code></pre>
+      <p><code>github.ref</code>, <code>ref_name</code> and <code>sha</code> are read from git and always available.</p>
+
+      <h3>Job outputs &amp; run-time needs.* (v2.130.0+)</h3>
+      <p>A workflow shaped like a <code>changes</code> job feeding a gate (<code>if: needs.changes.outputs.code == 'true'</code>) into shards, then an aggregator reading <code>needs.&lt;job&gt;.result</code>, now resolves end to end:</p>
+      <ul>
+        <li>Every native step gets its own <code>GITHUB_OUTPUT</code> file (<code>k=v</code> and <code>k&lt;&lt;EOF</code> forms); a job's declared <code>outputs:</code> resolve from <code>steps.&lt;id&gt;.outputs.&lt;k&gt;</code>. Under <code>act</code> the same values come from its <code>::set-output::</code> log lines.</li>
+        <li>An output that is declared but never written is <strong>refused</strong>, not blanked — a blank standing in for a real value is exactly the bug this exists to catch.</li>
+        <li><code>needs.*</code> and <code>steps.*</code> references inside <code>run:</code> text are deferred at DAG-build time and filled in just before each step executes; a leftover at run time still refuses the step.</li>
+        <li>A job that publishes outputs is never served from the cache — a cache hit replays a verdict, not the values a dependent needs.</li>
+        <li><code>github.event.*</code> fields read <code>""</code> when an event is declared but the field is absent from the local (nonexistent) payload — matching what GitHub itself sends for a sparse payload. Without a declared event it still blocks the native engine (act resolves it itself).</li>
+      </ul>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ ENGINES ═══ -->
+    <section id="engines" class="tool-section">
+      <h2>Execution engines (v2.81.0+)</h2>
+      <p>Two engines, picked per job. <code>c3 ci doctor</code> says which are available.</p>
+
+      <table class="table">
+        <thead><tr><th>Engine</th><th>Runs</th><th>Fidelity</th><th><code>uses:</code> actions</th></tr></thead>
+        <tbody>
+          <tr><td><code>native</code></td><td>Shell steps directly on this host</td><td><code>native</code> when <code>runs-on</code> matches the host, else <code>cross-os</code></td><td>Shimmed (checkout / setup-*/ cache / artifacts) or blocked</td></tr>
+          <tr><td><code>act</code></td><td>The job in a real Linux container via <a href="https://nektosact.com" target="_blank" rel="noopener">nektos/act</a></td><td><code>container</code></td><td>Really executed</td></tr>
+        </tbody>
+      </table>
+
+      <p><code>engine='auto'</code> (the default) runs a job natively when <code>runs-on</code> matches the host, hands Linux jobs to <code>act</code> when act and Docker are present, and refuses otherwise. <code>engine='act'</code> forces containers and <strong>fails the run</strong> if act is unavailable — it does not fall back silently, because you asked for container fidelity and would not have gotten it.</p>
+
+      <h3>Setup</h3>
+      <pre><code><span class="com"># Windows</span>
+winget install nektos.act
+<span class="com"># macOS</span>
+brew install act
+<span class="com"># plus a running Docker daemon</span></code></pre>
+      <p>Images come from <code>catthehacker/ubuntu:act-*</code> (~1 GB on first pull), which mirror much of the GitHub runner's preinstalled toolchain. A bare <code>ubuntu:24.04</code> does not, and a job assuming a preinstalled tool would fail locally while passing in real CI.</p>
+
+      <h3><code>c3 ci doctor</code> — a real run on this repo</h3>
+      <pre><code>Local CI execution engines:
+
+  native    available — runs jobs whose runs-on matches Windows
+  act       available — act version 0.2.89, docker 29.6.2
+            runs Linux jobs in a container (catthehacker/ubuntu:act-latest), real `uses:` actions included
+            a runner failure before any step runs is reported as a container-setup failure, not as 0 parsed failures
+
+macOS jobs cannot run locally on any engine — there are no macOS containers, so a matrix containing them can never reach FULL_CI_PASS here.</code></pre>
+
+      <h3>Two things worth knowing</h3>
+      <ul>
+        <li><strong><code>--bind</code> is always used.</strong> act's default copy-mode workspace arrives empty against a Windows host path, so every step then fails on missing files. Binding means the container writes into your real working tree — the same thing the native engine already does.</li>
+        <li><strong>Network is on</strong> by default (act's own default). Pass <code>network='none'</code> (<code>c3_ci</code>) or <code>--network none</code> (CLI) to cut egress.</li>
+      </ul>
+
+      <h3>Blockers are per engine</h3>
+      <p>An unknown <code>uses:</code> action is fatal to the native shell and routine for act, so <code>inspect</code> reports both answers separately. A missing <code>${{ secrets.X }}</code> or <code>${{ vars.X }}</code> blocks on <strong>either</strong> engine — no engine can reproduce a job whose input does not exist.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ FOREIGN OS ═══ -->
+    <section id="foreign-os" class="tool-section">
+      <h2>Foreign-OS jobs</h2>
+      <p><code>runs-on: macos-latest</code> on a Windows or Linux box is not that job — by default it is refused and reported <code>foreign</code>.</p>
+      <pre><code>c3_ci(action='run', allow_foreign=true)
+c3 ci run --allow-foreign</code></pre>
+      <p><code>allow_foreign</code> runs it anyway on this host's OS, labels the result <code>cross-os</code>, and caps the verdict at <code>PARTIAL_PASS</code> — permanently, no matter how many times it passes. That is what makes the feature honest rather than merely optimistic: an indicative pass on the wrong OS is not evidence the real job would pass.</p>
+      <div class="callout callout-warning">
+        <div class="callout-icon">⚠️</div>
+        <div class="callout-body"><strong>macOS is a hard floor.</strong> There are no macOS containers, so <code>act</code> cannot help either. A workflow with any <code>macos-latest</code> (or similar) cell can never reach <code>FULL_CI_PASS</code> on a Windows or Linux machine — that is a property of the world, not a gap C3 will close.</div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ SAFETY ═══ -->
+    <section id="safety" class="tool-section">
+      <h2>Secrets &amp; side effects</h2>
+      <p>Running real <code>uses:</code> actions under act means a publishing job goes from unrunnable to one command away from actually publishing. Two things stand in the way — a mechanism and a policy, and neither is a sandbox.</p>
+
+      <h3>No secrets, ever</h3>
+      <p>act reads <code>.secrets</code> and <code>.env</code> from the repository by default; C3 points both at an empty file. A publish step therefore runs and fails at authentication rather than silently succeeding with real credentials it should never have had.</p>
+
+      <h3>The side-effect gate</h3>
+      <p>Jobs using known publishing actions (<code>pypa/gh-action-pypi-publish</code>, <code>softprops/action-gh-release</code>, …) or running publishing-shaped commands (<code>twine upload</code>, <code>npm publish</code>, <code>docker push</code>, …) are refused unless you pass <code>allow_side_effects=true</code> (<code>--allow-side-effects</code> on the CLI).</p>
+
+      <h3>The native engine has no isolation</h3>
+      <p>Running this repository's own test job natively once genuinely uninstalled C3 mid-run, because the job's own steps included <code>pip install -e .</code> against the same environment the agent was running in. The native engine now refuses steps that would reconfigure this machine (<code>pip install</code>, <code>npm -g</code>, <code>apt</code>, <code>brew install</code>, and the like) unless you pass <code>allow_host_mutation=true</code>. Prefer <code>engine='act'</code> for jobs that install things — the container absorbs the mutation instead of your machine.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ MODES ═══ -->
+    <section id="modes" class="tool-section">
+      <h2>Required mode (v2.83.0+)</h2>
+      <p>By default (<code>mode='full'</code>) every runnable job executes. <code>mode='required'</code> narrows the run to the jobs a change could plausibly have broken.</p>
+      <pre><code>c3 ci plan                     <span class="com"># what a change requires, and WHY, per job</span>
+c3 ci plan --base origin/main  <span class="com"># diff against a ref instead of the working tree</span>
+c3 ci run --required           <span class="com"># execute just those jobs</span></code></pre>
+      <p>The planner is conservative: it reasons from changed paths, a workflow's own <code>paths:</code> filters, and an explicit <code>ci.required_map</code> in <code>.c3/config.json</code>. Anything it cannot reason about <strong>runs</strong> — on a repo with no filters and no map it selects everything, because guessing which jobs a change cannot affect, with no real dependency graph, is how a skipped job becomes a shipped bug.</p>
+      <pre><code>{ <span class="key">"ci"</span>: { <span class="key">"required_map"</span>: { <span class="key">"unit"</span>: [<span class="str">"src/**"</span>], <span class="key">"docs"</span>: [<span class="str">"docs/**"</span>, <span class="str">"*.md"</span>] } } }</code></pre>
+      <p>A narrowed run is always <code>PARTIAL_PASS</code> — required mode is for the inner edit loop, never the final check before a push.</p>
+      <p>A real <code>c3 ci plan</code> against this repo, with no <code>required_map</code> configured yet:</p>
+      <pre><code>Required-mode plan (16 run / 0 skip) vs the working tree
+changed files: 1
+  cli/guide/credentials.html
+
+  RUN  CI::lint
+       no path filter or required_map rule covers this job — running it, because skipping on a guess risks a false pass
+  …</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CACHING ═══ -->
+    <section id="caching" class="tool-section">
+      <h2>Caching (v2.84.0+)</h2>
+      <p>A job whose definition, engine and <strong>inputs</strong> are unchanged since it last passed is reused: status <code>cached</code>, nothing executed, and the verdict note says how many. <code>no_cache=true</code> (<code>--no-cache</code>) forces execution of every selected job regardless.</p>
+      <p><code>ci.required_map</code> pays for itself twice: a job that declares its inputs is fingerprinted over only those paths, so unrelated edits stop invalidating it. Without a map, the fingerprint covers the whole tree and any edit invalidates every cached result.</p>
+      <p><code>actions/cache</code> is honored for real — restore at the step, save only after the job passes, keys immutable. A job that publishes outputs (v2.130.0+) is never served from cache, since a cache hit replays a verdict, not the values a dependent needs.</p>
+      <pre><code>c3 ci cache            <span class="com"># size + whether required_map narrows invalidation</span>
+c3 ci cache --clear     <span class="com"># drop every cached result and dependency cache</span></code></pre>
+      <p>A real <code>c3 ci cache</code> on this repo, before any run has happened:</p>
+      <pre><code>Cached results: 0
+Dependency cache keys: 0
+Location: .c3\ci\cache
+
+A job is reused when its definition, engine and inputs are all unchanged since it last passed.
+No ci.required_map: every job is fingerprinted over the whole tree, so any edit invalidates every cached result.</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ HISTORY ═══ -->
+    <section id="history" class="tool-section">
+      <h2>Run history, flakes &amp; publishing (v2.85.0+)</h2>
+
+      <h3><code>c3 ci history</code></h3>
+      <p>Per-job pass/fail counts, average duration, and flake detection: a job that both passed <strong>and</strong> failed on the identical fingerprint (same definition, same inputs) changed its mind without the world changing. That is the only local flake signal that is not a guess. Sample sizes under five executions are labelled <code>(low n)</code> rather than presented as a rate, and cached results are never counted as observations, because reuse is not evidence about behavior.</p>
+
+      <h3><code>c3 ci publish</code></h3>
+      <p>Posts a GitHub <strong>commit status</strong> through your existing <code>gh</code> authentication — no App to register, no token for C3 to hold. It refuses three things, because a status is a claim other people act on:</p>
+      <ul>
+        <li>a <strong>dirty tree</strong> — the status attaches to a commit, and a differing working tree means the thing that ran is not the thing being labelled;</li>
+        <li>an <strong>unpushed commit</strong>, which has nothing to attach to;</li>
+        <li>a <strong><code>PARTIAL_PASS</code></strong>, unless forced — GitHub's states are success/failure/pending/error and none of them honestly mean "we checked some of it," so it refuses, or on <code>--force</code> posts <code>pending</code> with the reason attached.</li>
+      </ul>
+      <pre><code>c3 ci publish --dry-run
+c3 ci publish
+c3 ci publish --force   <span class="com"># posts a PARTIAL_PASS as `pending`, reason included</span></code></pre>
+      <p>The context is <code>agentci/local</code>, so nobody mistakes a laptop run for hosted CI.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CLI ═══ -->
+    <section id="cli" class="tool-section">
+      <h2><code>c3 ci</code> CLI reference</h2>
+      <p>The human mirror of <code>c3_ci</code> — same handler, so the two surfaces can never drift into disagreeing about what a verdict means. Common flags on every subcommand: <code>--path</code> (project directory, default current), <code>--json</code> (machine-readable, same shape the Hub reads), <code>--event</code> (simulate <code>push</code> / <code>pull_request</code> for an <code>if:</code> that reads <code>github.event_name</code>).</p>
+      <table class="table">
+        <thead><tr><th>Subcommand</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>inspect</code></td><td>Workflows, the job DAG, and what runs on this host.</td></tr>
+          <tr><td><code>run</code></td><td>Execute jobs. <code>--job</code>, <code>--workflow</code>, <code>--allow-foreign</code>, <code>--timeout</code>, <code>--engine {auto,native,act}</code>, <code>--allow-side-effects</code>, <code>--required</code>, <code>--base</code>, <code>--allow-host-mutation</code>, <code>--no-cache</code>, <code>--network</code>.</td></tr>
+          <tr><td><code>rerun</code></td><td>Re-run only the jobs that failed in the last run. <code>--run</code> (run id, default latest), <code>--allow-foreign</code>, <code>--timeout</code>.</td></tr>
+          <tr><td><code>status</code></td><td>Last run's verdict and jobs. <code>--run</code>.</td></tr>
+          <tr><td><code>failures</code></td><td>Structured <code>{file, line, message}</code> failures from the last run. <code>--run</code>.</td></tr>
+          <tr><td><code>logs</code></td><td>Tail one job's log: <code>c3 ci logs "CI::lint" --tail 200</code>. <code>--run</code>, <code>--tail</code>.</td></tr>
+          <tr><td><code>runs</code></td><td>Recent local CI runs.</td></tr>
+          <tr><td><code>plan</code></td><td>Which jobs a change requires, and why. <code>--base</code>.</td></tr>
+          <tr><td><code>publish</code></td><td>Post the last run as a GitHub commit status. <code>--run</code>, <code>--dry-run</code>, <code>--force</code>.</td></tr>
+          <tr><td><code>history</code></td><td>Per-job pass/fail history and flake detection.</td></tr>
+          <tr><td><code>cache</code></td><td>Cached-result store: size, or <code>--clear</code> it.</td></tr>
+          <tr><td><code>doctor</code></td><td>Which execution engines are available on this machine.</td></tr>
+        </tbody>
+      </table>
+      <p>Exit code follows the verdict: <code>c3 ci run</code> / <code>rerun</code> exit non-zero for anything but <code>FULL_CI_PASS</code>, so a pre-push hook can gate on <code>$?</code>. Run <code>python -m cli.c3 ci &lt;subcommand&gt; --help</code> from a checkout to see the live flag list for yourself.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+      <table class="table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Everything is <code>UNSUPPORTED</code></td>
+            <td>Read the blocker <code>c3 ci inspect</code> prints for that job — usually an unresolved <code>${{ secrets.* }}</code>/<code>${{ vars.* }}</code>, a <code>container:</code>/<code>services:</code> block, a reusable workflow, or a third-party <code>uses:</code> the native engine cannot run (try <code>engine='act'</code>, which really executes it).</td>
+          </tr>
+          <tr>
+            <td>A failed job reports "0 parsed failures" (fixed v2.129.1)</td>
+            <td>Before this fix, an act runner that died <em>before any workflow step ran</em> (registry auth, missing image, dead Docker daemon) was handed to the log parsers like an ordinary failure and came back empty. It is now classified <code>parser: container-setup</code> with the real cause. <code>c3 ci doctor</code> reports whether the runner image is present locally without pulling it, but that is not a guarantee the pull will succeed — only a real run proves that (act sends the stored registry credential on a pull where the plain CLI sends none, issue #173).</td>
+          </tr>
+          <tr>
+            <td>act run fails immediately with an image "authentication required" even though the image is already on disk (fixed v2.130.0)</td>
+            <td>Every run used to pass <code>--pull=true</code> to act unconditionally. C3 now checks <code>docker image inspect</code> first and pulls only what is actually missing.</td>
+          </tr>
+          <tr>
+            <td>Two act runs collide: "bind: Only one usage of each socket address" (fixed v2.130.0)</td>
+            <td>act's artifact server used to bind a fixed port (34567), so a second concurrent run on the same box failed outright. Each run now gets a free port.</td>
+          </tr>
+          <tr>
+            <td><code>job=</code> a single job and its own <code>if: needs.&lt;dep&gt;.outputs.*</code> becomes unjudgeable (fixed v2.130.0)</td>
+            <td>Selecting one job used to drop its own transitive <code>needs</code>, so a gate reading a dependency's output had nothing to read. A selected job (and a <code>rerun</code>) now brings its transitive <code>needs</code> along automatically; everything else stays <code>deselected</code> and the verdict stays <code>PARTIAL_PASS</code>.</td>
+          </tr>
+          <tr>
+            <td>A job stays <code>foreign</code> / verdict stuck at <code>PARTIAL_PASS</code></td>
+            <td>Expected for any OS this host cannot reproduce — most commonly <code>macos-latest</code>. <code>allow_foreign</code> gives you an indicative cross-OS run, but the verdict is capped at <code>PARTIAL_PASS</code> forever for that job; there is no flag that lifts the cap.</td>
+          </tr>
+          <tr>
+            <td><code>act</code> unavailable</td>
+            <td>Run <code>c3 ci doctor</code> for the exact reason. Install with <code>winget install nektos.act</code> (Windows) or <code>brew install act</code> (macOS), and make sure a Docker daemon is running.</td>
+          </tr>
+          <tr>
+            <td>"No CI runs recorded yet" from <code>status</code> / <code>failures</code> / <code>logs</code> / <code>publish</code></td>
+            <td>Those actions read the last recorded run. Run <code>c3 ci run</code> (or <code>rerun</code>) at least once first.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Full design detail lives in <code>docs/agent-ci.md</code> and <code>AgentCI_Product_Architecture_PRD_Roadmap.md</code>.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Delegate — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+
+    .kv-table td { padding: 6px 12px; font-size: 13px; }
+    .kv-table td:first-child {
+      font-family: var(--mono); color: var(--text-dim); width: 230px; vertical-align: top;
+    }
+
+    .measure-table th, .measure-table td { padding: 6px 10px; font-size: 12.5px; }
+    .measure-table td:first-child { font-family: var(--mono); }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html" class="active">Delegate</a>
+      <a href="ci.html">CI</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html">Access</a>
+      <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.145.1</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🤖</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#backends"        class="sidebar-link"><span class="icon">🔀</span> Backends</a>
+      <a href="#tiers"           class="sidebar-link"><span class="icon">🎚️</span> Tiers, effort &amp; thinking caps</a>
+      <a href="#scout"           class="sidebar-link"><span class="icon">🔎</span> scout=true</a>
+      <a href="#write-paths"     class="sidebar-link"><span class="icon">✏️</span> write_paths</a>
+      <a href="#auto"            class="sidebar-link"><span class="icon">🪄</span> Delegation without deciding</a>
+      <a href="#eval"            class="sidebar-link"><span class="icon">📊</span> Telemetry &amp; delegate-eval</a>
+      <a href="#grok"            class="sidebar-link"><span class="icon">🛰️</span> Grok Build backend</a>
+      <a href="#agent"           class="sidebar-link"><span class="icon">🔗</span> c3_agent</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="tools.html"    class="sidebar-link">Tools reference</a>
+      <a href="sessions.html" class="sidebar-link">Sessions</a>
+      <a href="workflow.html" class="sidebar-link">Standard workflow</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Delegate</h1>
+      <p><code>c3_delegate</code> hands a bounded task (summarize a diff, explain a function, triage a traceback, draft a docstring or test cases) to another model instead of spending the calling agent's own context and rate on it. The default, <code>backend='host'</code>, routes to your own provider one tier down: Claude Code delegates to Haiku, Codex and Grok Build step down reasoning effort, Antigravity steps down to a smaller Gemini model. <code>scout=true</code> lets the delegate read the project itself for a lookup; <code>write_paths</code> lets a Claude worker make a change you've already decided and hand back a diff.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.145.0</span>
+        <span class="pill pill-purple">host · claude · codex · gemini · grok · ollama · auto</span>
+        <span class="pill pill-green">Measured with c3 delegate-eval, not assumed</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p><code>c3_delegate</code> is one MCP tool with one Python entry point, <code>cli.tools.delegate.handle_delegate</code>. Every call is scored by <code>c3 delegate-eval</code> against the same suite, so a routing default here is a measured choice, not a guess — the CHANGELOG entries for 2.131 through 2.140 are a sequence of measurements, one change at a time (a "delegate remediation" that started from a bad baseline: of 44,038 C3 tool calls across 65 projects, only 19 were delegations, and 10 of the 12 with a logged outcome had errored).</p>
+
+      <div class="callout callout-info">
+        <p><strong>What it is not.</strong> <code>c3_delegate</code> is not a subagent. The delegate has no memory of this conversation, no tools unless <code>scout</code> or <code>write_paths</code> is set, and answers only from the <code>context</code> and <code>file_path</code> C3 packs for it (or, in scout/write mode, what it reads itself under Access Guard). For multi-step work that needs the session's full tool set, use an <code>Agent</code> call or the <code>c3-scout</code> / <code>c3-worker</code> subagents (see <a href="#auto">below</a>).</p>
+      </div>
+
+      <h3>Signature</h3>
+      <pre><code>c3_delegate(
+  task: str, task_type: str = <span class="str">"ask"</span>, context: str = <span class="str">""</span>,
+  file_path: str = <span class="str">""</span>, backend: str = <span class="str">"host"</span>,
+  allow_write_delegation: bool = <span class="kw">False</span>,
+  tier: str = <span class="str">""</span>, model: str = <span class="str">""</span>, scout: bool = <span class="kw">False</span>,
+  write_paths: str = <span class="str">""</span>,
+)</code></pre>
+      <table class="params-table">
+        <thead><tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="param-name">task</td><td class="param-default">required</td><td class="param-desc">The task or question to delegate</td></tr>
+          <tr><td class="param-name">task_type</td><td class="param-default">"ask"</td><td class="param-desc"><code>auto</code>, <code>summarize</code>, <code>explain</code>, <code>review</code>, <code>ask</code>, <code>test</code>, <code>diagnose</code>, <code>ping</code> (one live call to check backend/tier/model/wall time/cost), <code>available</code> (CLI version check only, no model call), plus the backend health checks <code>codex_check</code> / <code>gemini_check</code> / <code>grok_check</code> and <code>codex_resume</code>. <code>auto</code> is inferred from the task text (error/traceback words → diagnose, review/audit → review, test words → test, docstring/document → docstring, summarize/tl;dr → summarize, improve/refactor → improve, else explain).</td></tr>
+          <tr><td class="param-name">context</td><td class="param-default">""</td><td class="param-desc">The text the delegate answers from</td></tr>
+          <tr><td class="param-name">file_path</td><td class="param-default">""</td><td class="param-desc">Comma-separated files C3 reads under Access Guard and packs into the prompt. A denied path raises (surfaced as a <code>blocked</code> response, not an exception — since 2.136.0); a masked path refuses, since a delegate answer cannot carry the mask's disclosure; a file over the packing threshold (8k tokens for claude, <code>delegate.file_max_tokens</code> for the others) goes as its structural map instead of full text, so a line-level question on a big file needs an excerpt or <code>scout=true</code>.</td></tr>
+          <tr><td class="param-name">backend</td><td class="param-default">"host"</td><td class="param-desc">See <a href="#backends">Backends</a></td></tr>
+          <tr><td class="param-name">tier</td><td class="param-default">"small"</td><td class="param-desc">See <a href="#tiers">Tiers</a></td></tr>
+          <tr><td class="param-name">model</td><td class="param-default">""</td><td class="param-desc">A model alias or id; overrides the tier on every backend</td></tr>
+          <tr><td class="param-name">scout</td><td class="param-default">false</td><td class="param-desc">See <a href="#scout">scout=true</a></td></tr>
+          <tr><td class="param-name">write_paths</td><td class="param-default">""</td><td class="param-desc">See <a href="#write-paths">write_paths</a></td></tr>
+          <tr><td class="param-name">allow_write_delegation</td><td class="param-default">false</td><td class="param-desc">Explicit opt-in for backends that can write outside C3's control (gemini always; grok in write mode; codex_resume) while Access Guard rules are active. Not needed for claude write mode (<code>write_paths</code>), which runs under the guard in-band.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ QUICK START ═══ -->
+    <section id="quick-start" class="tool-section">
+      <h2>Quick start</h2>
+      <div class="step-grid">
+        <div class="step-card">
+          <span class="step-num">1</span><h4>A bounded question</h4>
+          <pre><code>c3_delegate(
+  task=<span class="str">'Summarize this diff for a changelog in three bullets'</span>,
+  context=<span class="str">'&lt;diff&gt;'</span>, task_type=<span class="str">'summarize'</span>,
+)</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Runs on your host's backend, one tier down (Claude Code → Haiku).</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">2</span><h4>A lookup you can't name files for</h4>
+          <pre><code>c3_delegate(
+  task=<span class="str">'Which functions call charge_card, and where?'</span>,
+  scout=<span class="kw">True</span>,
+)</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">The delegate reads the project itself, read-only, under Access Guard.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">3</span><h4>A change you've already decided</h4>
+          <pre><code>c3_delegate(
+  task=<span class="str">'Rename calc_total to order_total: its '</span>
+       <span class="str">'definition and every use. No alias.'</span>,
+  write_paths=<span class="str">'inv/orders.py, inv/report.py, '</span>
+              <span class="str">'tests/test_orders.py'</span>,
+)</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">A Sonnet worker makes the edits and returns a diff. You review it and run the tests.</p>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ BACKENDS ═══ -->
+    <section id="backends" class="tool-section">
+      <h2>Backends</h2>
+      <p><code>backend='host'</code> (the default since 2.134.0) routes to the provider the calling agent runs on:</p>
+      <table class="params-table">
+        <thead><tr><th>Host (<code>svc.ide_name</code>)</th><th>Maps to backend</th></tr></thead>
+        <tbody>
+          <tr><td><code>claude-code</code></td><td><code>claude</code></td></tr>
+          <tr><td><code>codex</code></td><td><code>codex</code></td></tr>
+          <tr><td><code>grok</code> (Grok Build)</td><td><code>grok</code></td></tr>
+          <tr><td><code>antigravity</code></td><td><code>gemini</code></td></tr>
+        </tbody>
+      </table>
+      <p>A host with no mapped backend, or whose mapped backend Access Guard would block, falls back to <code>auto</code> with a note in the response. <code>host</code> runs at <code>delegate.default_tier</code> (<code>small</code>).</p>
+
+      <h3>Explicit backends</h3>
+      <table class="params-table">
+        <thead><tr><th>Backend</th><th>Runs</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>claude</code></td>
+            <td><code>claude -p --safe-mode --strict-mcp-config --tools ""</code>, prompt on stdin, in a throwaway directory with Claude Code's nesting variables removed</td>
+            <td>Tool-less since 2.133.0, so it cannot write and an active Access Guard no longer blocks it. <code>scout=true</code> or <code>write_paths</code> add tools back under fences (see below). Usage (tokens, cache, cost, model, turns) lands in telemetry.</td>
+          </tr>
+          <tr>
+            <td><code>codex</code></td>
+            <td>Codex CLI, sandboxed, reasoning effort per tier</td>
+            <td>Its sandbox is read-only in the project by default — the only backend besides a claude scout that passed every lookup case in the eval. <code>codex_default_model</code> no longer pins a spark model that ChatGPT logins reject (2.132.0 measured 25/25 calls failing on the old default); empty uses the CLI's own default.</td>
+          </tr>
+          <tr>
+            <td><code>gemini</code></td>
+            <td>Gemini CLI, <code>--approval-mode yolo</code></td>
+            <td>Always write-capable — needs <code>allow_write_delegation=true</code> while Access Guard rules are active.</td>
+          </tr>
+          <tr>
+            <td><code>grok</code></td>
+            <td>Grok Build CLI, headless</td>
+            <td>Read-only by default, in a throwaway temp directory (see <a href="#grok">Grok Build backend</a>). <code>delegate.grok_allow_write=true</code> switches to <code>--yolo</code> in the project and also needs <code>allow_write_delegation</code>.</td>
+          </tr>
+          <tr>
+            <td><code>ollama</code></td>
+            <td>A local model, chosen per <code>task_type</code> (<code>DELEGATE_TASKS</code> default models: e.g. <code>gemma3n</code> for summarize/docstring, <code>llama3.2:3b</code> for explain/review/test/diagnose/improve, <code>deepseek-r1:1.5b</code> for ask)</td>
+            <td>Free, local, no cloud login required. The internal default for callers that don't pass <code>backend</code> at all. Never picks an Ollama Cloud tag (a name ending <code>:cloud</code>) unless it is configured by its exact name.</td>
+          </tr>
+          <tr>
+            <td><code>auto</code></td>
+            <td>Cascades over the other backends</td>
+            <td>Tries the host's own backend first when known. Then, by <code>task_type</code>: a heavy type (<code>review</code>, <code>diagnose</code>, <code>improve</code>, <code>test</code> by default, configurable per backend via <code>*_task_types</code>) prefers the cloud CLIs and degrades: <code>codex → gemini → grok → ollama</code>. A light type stays local-first: <code>ollama → codex → gemini → grok</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout-warning">
+        <p><strong>An unknown backend name is an error</strong> (2.134.0), not a silent fall-through to Ollama. A per-backend runtime circuit breaker (<code>breaker_failure_threshold</code>, default 3; <code>breaker_cooldown_seconds</code>, default 60) skips a backend that just failed repeatedly instead of re-spawning a 90–120s CLI on every call, and raises a notification when it trips.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TIERS ═══ -->
+    <section id="tiers" class="tool-section">
+      <h2>Tiers, effort &amp; thinking caps</h2>
+      <p><code>tier</code> is a size, not a model id — a pinned id goes stale, an alias follows the CLI to the current model of that size. Aliases fold to a tier: <code>haiku→small</code>, <code>sonnet→medium</code>, <code>opus→large</code>, <code>parent→default</code>. An explicit <code>model</code> always overrides the tier.</p>
+      <table class="params-table">
+        <thead><tr><th>Tier</th><th>claude</th><th>codex / grok</th><th>gemini</th></tr></thead>
+        <tbody>
+          <tr><td><code>small</code> (default)</td><td>haiku</td><td>reasoning effort <code>low</code></td><td>gemini-2.5-flash-lite</td></tr>
+          <tr><td><code>medium</code></td><td>sonnet</td><td>reasoning effort <code>medium</code></td><td>gemini-2.5-flash</td></tr>
+          <tr><td><code>large</code></td><td>opus</td><td>reasoning effort <code>high</code></td><td>gemini-2.5-pro</td></tr>
+          <tr><td><code>default</code></td><td colspan="3">Omit <code>--model</code> / effort flag — the CLI's own configured default answers</td></tr>
+        </tbody>
+      </table>
+      <p>Codex and Grok keep the account's own model and step reasoning effort instead of the model itself (a pinned model id goes stale — 2.132.0 measured the old Codex default rejected outright by ChatGPT logins); <code>delegate.codex_tier_models</code> / <code>delegate.grok_tier_models</code> can still name a model per tier for a project that wants that. <code>delegate.claude_tier_models</code> overrides the claude table.</p>
+
+      <h3>Which default tier applies</h3>
+      <table class="kv-table">
+        <tr><td><code>delegate.claude_default_tier</code></td><td>A plain delegation (no <code>scout</code>, no <code>write_paths</code>). Falls back to <code>delegate.default_tier</code>, then <code>small</code>.</td></tr>
+        <tr><td><code>delegate.claude_scout_default_tier</code></td><td><code>scout=true</code> with no explicit tier. Default <strong>medium</strong> (2.137.0) — a Haiku scout took 28 turns and $0.24 to find one function that Sonnet found in 8 turns for $0.046.</td></tr>
+        <tr><td><code>delegate.claude_write_default_tier</code></td><td><code>write_paths</code> with no explicit tier. Default <strong>medium</strong> (2.139.0) — see the write-mode measurements below.</td></tr>
+      </table>
+
+      <h3>Effort and thinking caps (claude only)</h3>
+      <p>Two different knobs, measured separately. <code>--effort</code> had no measurable effect on Haiku 4.5; the thinking-token cap is what actually moves cost.</p>
+      <table class="kv-table">
+        <tr><td><code>delegate.claude_effort</code></td><td>Passes <code>--effort</code> (<code>low</code>/<code>medium</code>/<code>high</code>/<code>xhigh</code>/<code>max</code>) for every tier. Empty by default (2.137.0): over 22 core eval cases, Haiku with <code>--effort low</code> cost the same as without it, same pass rate, same mean output tokens.</td></tr>
+        <tr><td><code>delegate.claude_tier_effort</code></td><td>Per-tier override, e.g. <code>{"medium": "low"}</code>. <code>claude_effort</code> wins over this table when both are set.</td></tr>
+        <tr><td><code>delegate.claude_thinking_tokens</code></td><td>Sets <code>MAX_THINKING_TOKENS</code> for every tier; 0 turns thinking off entirely. A delegate never inherits the caller's own thinking budget.</td></tr>
+        <tr><td><code>delegate.claude_tier_thinking_tokens</code></td><td>Per-tier override. Default <strong><code>{"small": 1024}</code></strong> (2.138.0) — only Haiku is capped; Sonnet and Opus run uncapped by default.</td></tr>
+      </table>
+
+      <h3>Measured (2.138.0) — why Haiku is capped at 1024 and Sonnet is not</h3>
+      <table class="params-table measure-table">
+        <thead><tr><th>Target</th><th>Core pass (22 cases)</th><th>Core cost</th><th>p95 wall</th></tr></thead>
+        <tbody>
+          <tr><td>Haiku, no cap</td><td>22/22</td><td>$0.1233</td><td>21.1s</td></tr>
+          <tr><td>Haiku, cap 1024</td><td>21/22</td><td>$0.0957</td><td>17.2s</td></tr>
+          <tr><td>Haiku, cap 0</td><td>22/22</td><td>$0.0634</td><td>5.6s</td></tr>
+          <tr><td>Sonnet, no cap</td><td>22/22</td><td>$0.2247</td><td>10.9s</td></tr>
+          <tr><td>Sonnet, cap 0</td><td>22/22</td><td>$0.1862</td><td>7.0s</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size: 12.5px; color: var(--text-dim);">On two real-file reviews, capping Haiku at 1024 cut cost ~55% and wall time 2.6× with no false finding, while cap-0 Haiku produced one false finding and Sonnet at any nonzero cap ignored the cap (9.4k output tokens regardless) — Sonnet's depth is the reason it stays uncapped. Config target syntax for comparing caps yourself: <code>c3 delegate-eval --targets claude:small,claude:small+think=0 --targets claude:small+effort=low</code>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ SCOUT ═══ -->
+    <section id="scout" class="tool-section">
+      <h2><code>scout=true</code> <span class="badge badge-cyan">v2.135.0</span></h2>
+      <p>A tool-less delegate answers only from what it's given — no backend but Codex passed the eval's lookup cases. A scout may read the project itself: on claude, <code>claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob --permission-mode dontAsk --settings …</code>, run in the project; on codex, its own read-only sandbox (already project-scoped).</p>
+
+      <div class="callout callout-warning">
+        <p><strong>scout works only on <code>claude</code> and <code>codex</code></strong> (<code>_SCOUT_BACKENDS</code>). <code>host</code> or <code>auto</code> combined with <code>scout=true</code> picks only those two; any other explicit backend with <code>scout=true</code> is an error.</p>
+      </div>
+
+      <h3>How the fence was built</h3>
+      <p>Measured before shipping it (Claude Code 2.1.270, a <code>.env</code> canary, a repository-wide Grep): with no controls the value leaked; a PreToolUse hook alone still leaked it (a hook sees a Grep's arguments, never its hits); permission denies (<code>Read(**/.env*)</code>, <code>Read(./secrets/**)</code>) stopped it; an absolute <code>Read(//C:/…)</code> deny did not; CLAUDE.md is not loaded under <code>--restricted</code> anyway.</p>
+      <ul>
+        <li>Every Access Guard deny, confirm-held read, and mask rule becomes a <code>Read()</code> permission deny in the scout's <code>--settings</code>.</li>
+        <li><code>--restricted</code> ignores every settings file except this one, so the read denies are the only permissions the scout runs with.</li>
+        <li>A corrupt rule scope refuses the scout outright rather than running it unfenced.</li>
+        <li>Scout answers are never cached. Timeout: <code>delegate.claude_scout_timeout</code> (240s).</li>
+      </ul>
+
+      <h3>Measured (2.135.0)</h3>
+      <table class="params-table measure-table">
+        <thead><tr><th>Target</th><th>Lookup pass (4 cases)</th><th>Canary leaked</th><th>Mean cost</th><th>p50 / p95 wall</th></tr></thead>
+        <tbody>
+          <tr><td>claude:small+scout (Haiku 4.5)</td><td>4/4</td><td>no</td><td>$0.0142</td><td>9.1s / 48.5s</td></tr>
+          <tr><td>claude:medium+scout (Sonnet 5)</td><td>4/4</td><td>no</td><td>$0.0110</td><td>7.1s / 8.1s</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size: 12.5px; color: var(--text-dim);">Haiku spent 15 turns and a minute hunting for the denied value before giving up; Sonnet stopped after 2 — which is why a scout defaults to <code>medium</code>, not <code>small</code>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ WRITE PATHS ═══ -->
+    <section id="write-paths" class="tool-section">
+      <h2><code>write_paths</code> <span class="badge badge-cyan">v2.139.0</span></h2>
+      <p>The stronger model decides a change and describes it; a cheaper Claude worker makes it and hands back a diff. <strong>Claude only</strong>, never cascades, defaults to Sonnet. Full design: <code>docs/delegate-write.md</code>.</p>
+
+      <h3>When to use it</h3>
+      <p>The change is already decided and can be written down: which files, what behavior, the edge cases. Rename across three files, fix a named bug, add a function to a spec, write tests for a given function. Not for open-ended work ("improve this module") or anything that needs commands — the worker cannot run tests, so you run them after reading the diff. For multi-step work that needs commands, the <code>c3-worker</code> subagent fits better (see <a href="#auto">below</a>).</p>
+
+      <table class="params-table">
+        <thead><tr><th>Parameter / config</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>write_paths</code></td><td>Comma-separated, project-relative globs the worker may edit or create. <code>**</code> crosses directories, <code>*</code> does not. A bare name is that file at the project root, never a basename match anywhere. Absolute paths, <code>..</code>, <code>.git/</code> and <code>.c3/</code> are refused before anything runs. At most 50 entries.</td></tr>
+          <tr><td><code>delegate.claude_write_default_tier</code></td><td>Default <code>medium</code> (Sonnet)</td></tr>
+          <tr><td><code>delegate.claude_write_timeout</code></td><td>600s, but always inside the MCP client's own limit when <code>MCP_TOOL_TIMEOUT</code> is set (105s under Claude Code's 120s) — C3's own deadline fires first so an abandoned worker doesn't keep writing.</td></tr>
+          <tr><td><code>delegate.claude_write_diff_max_chars</code></td><td>24000 — the edit ledger keeps every change regardless of what's shown</td></tr>
+        </tbody>
+      </table>
+
+      <h3>The worker and its fences</h3>
+      <p>The worker is <code>claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob,Edit,Write --permission-mode dontAsk --settings &lt;json&gt;</code>, in the project directory, with no MCP servers and no user or project settings. Four layers:</p>
+      <ol>
+        <li><strong>Claude Code permission rules.</strong> <code>Edit(./&lt;glob&gt;)</code> allows are the write set; <code>Read()</code> / <code>Edit()</code> denies come from every Access Guard deny, read_only, confirm and mask rule. Deny beats allow, so a broad write set cannot reopen a held path.</li>
+        <li><strong><code>--restricted</code>.</strong> No command-running tools; file tools confined to the project; writes to settings, git and tool-configuration files refused.</li>
+        <li><strong>The guard hook in worker mode</strong> (<code>hook_access_guard.py --worker-state</code>), on every file tool: inside the project; not under <code>.git/</code> or <code>.c3/</code>; not a credential-vault file; Access Guard with <strong>no grants and no filed override requests</strong> (a confirm hold is a refusal here — a headless worker cannot wait for a human); the write set; and no other agent's file lock. Any hook error denies.</li>
+        <li><strong>Pre-images.</strong> The same hook saves each file's content before its first write in the run. C3 diffs against these afterward, so the answer is right even when the worker's own report is not.</li>
+      </ol>
+
+      <h3>What comes back</h3>
+      <pre><code>[delegate:write] claude medium (sonnet) changed 3 file(s) in 21.4s. Review the diff and run the tests before relying on it.
+  M inv/orders.py (+1 -1)
+  M inv/report.py (+2 -2)
+  M tests/test_orders.py (+2 -2)
+Refused (1): Edit inv/money.py
+
+--- worker report ---
+<span class="com">&lt;the worker's own summary: what it changed, what it could not do, assumptions&gt;</span>
+
+--- diff ---
+<span class="com">&lt;unified diff of every change, capped at delegate.claude_write_diff_max_chars&gt;</span></code></pre>
+      <p>Each changed file is logged to the edit ledger (tags <code>c3_delegate</code>, <code>claude</code>, the tier). A worker stopped at its deadline still answers <code>[delegate:write-failed]</code> and lists what it changed. A literal write path Access Guard already refuses (<code>.env</code>, <code>CLAUDE.md</code>) is dropped before the worker starts; if every path is refused, nothing runs (<code>[delegate:blocked]</code>).</p>
+
+      <h3>Measured (2026-09-14, 66 worker runs) — why Sonnet is the default</h3>
+      <table class="params-table measure-table">
+        <thead><tr><th>Target</th><th>Pass</th><th>Cost/run</th><th>Wall p50</th><th>Tokens the lead reads</th></tr></thead>
+        <tbody>
+          <tr><td>Haiku, thinking cap 1024</td><td>30/33</td><td>$0.032</td><td>23.2s</td><td>836</td></tr>
+          <tr><td>Sonnet</td><td><strong>33/33</strong></td><td>$0.034</td><td><strong>15.4s</strong></td><td><strong>582</strong></td></tr>
+          <tr><td>Haiku, no thinking cap (hard cases)</td><td>8/10</td><td>$0.039</td><td>42.0s</td><td>1000</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size: 12.5px; color: var(--text-dim);">Haiku failed where the spec was subtle (a CSV line-number off-by-one twice, a <code>$-0.05</code> parsed as +5 once). No run, Haiku or Sonnet, touched a file outside its write set or reached <code>.env</code>; both reported the part they couldn't do. Cost is close to a wash; the lead's own reading cost is not, since Sonnet's diffs were smaller.</p>
+
+      <div class="callout callout-tip">
+        <p><strong>Telemetry.</strong> Every write call's detail carries <code>mode: write</code>, <code>files_changed</code>, <code>lines_added</code>, <code>lines_removed</code> and <code>denied</code>; the <code>[delegate:7d]</code> status line adds <code>N file(s) written</code>.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUTO ═══ -->
+    <section id="auto" class="tool-section">
+      <h2>Delegation without the agent deciding <span class="badge badge-cyan">v2.136.0 / v2.140.0</span></h2>
+      <p><code>c3_delegate</code> only saves anything when an agent calls it, and agents rarely do (19 of 44,038 calls at the start of this work). Two mechanisms close that gap without needing a decision. Design: <code>docs/delegate-auto.md</code>.</p>
+
+      <h3>Downshift subagents <span class="badge">v2.136.0</span></h3>
+      <p><code>c3 install-mcp</code> (Claude Code) writes two subagents to <code>.claude/agents</code>:</p>
+      <table class="params-table">
+        <thead><tr><th>Subagent</th><th>Model</th><th>Tools</th><th>For</th></tr></thead>
+        <tbody>
+          <tr><td><code>c3-scout</code></td><td>Haiku</td><td>Read, Grep, Glob, and C3's read tools — never edits</td><td>Bounded lookups</td></tr>
+          <tr><td><code>c3-worker</code></td><td>Sonnet</td><td>The session's own tools</td><td>Well-specified changes</td></tr>
+        </tbody>
+      </table>
+      <p>They run inside your session, so Access Guard, the edit ledger and discipline hooks apply to them as they do to the parent. Install rewrites only files carrying C3's marker; a file without it is yours and is left alone. Skip both with <code>--no-agents</code>.</p>
+
+      <h3>Subagent downshift (the hook) <span class="badge">v2.140.0</span></h3>
+      <p>Measured over <code>~/.claude/projects</code> transcripts since 2026-07-01: 963 of 991 <code>Agent</code> calls had no <code>model</code>, and on Claude Code 2.1.270 such a call runs on the parent's own model — a probe with a Sonnet parent put an entire <code>Explore</code> run, and a <code>general-purpose</code> run, on Sonnet. So an Opus or Fable session paid its own rate for every search-and-summarize branch it spawned.</p>
+      <p>A PreToolUse hook (<code>cli/hook_agent_model.py</code>, policy in <code>services/agent_downshift.py</code>) fills a model-less <code>Agent</code>/<code>Task</code> call's <code>model</code> one tier down, via <code>hookSpecificOutput.updatedInput</code>. Verified live: an Opus parent's model-less <code>Explore</code> call ran on Sonnet.</p>
+      <table class="kv-table">
+        <tr><td><code>delegate.agent_downshift</code></td><td>Default <code>"one_down"</code> (Fable → Opus → Sonnet). <code>"off"</code> disables it. A fixed alias (e.g. <code>"sonnet"</code>) applies only when it is below the parent.</td></tr>
+        <tr><td><code>delegate.agent_downshift_floor</code></td><td>Default <code>"sonnet"</code> — never below this. A Haiku scout took 28 turns where Sonnet took 8 on the eval, and missed subtle write specs Sonnet got right.</td></tr>
+        <tr><td><code>delegate.agent_downshift_skip</code></td><td>Default <code>["fork", "Plan"]</code> — a fork ignores <code>model</code> anyway, and planning is where the parent's own strength matters.</td></tr>
+        <tr><td><code>delegate.agent_models</code></td><td>Default <code>{}</code> — <code>{subagent_type: alias}</code>, applied whenever it is below the parent.</td></tr>
+        <tr><td><code>C3_AGENT_DOWNSHIFT=0</code></td><td>Turns it off for one shell.</td></tr>
+      </table>
+      <p>Never touched: a call that passes <code>model</code> explicitly; a subagent whose own definition sets <code>model:</code> (like <code>c3-scout</code>/<code>c3-worker</code>); plugin agents; non-Claude hosts. The parent's model is read, in order, from the transcript's last assistant row, then the last model this project saw in the past 14 days, then Claude settings — if none is known, nothing changes.</p>
+
+      <h3>Delegation hints <span class="badge">v2.140.0</span></h3>
+      <p><code>services/delegate_hints.py</code> watches a per-session window and adds one <code>[c3:delegate-hint]</code> line to a successful c3_edit, c3_read, c3_search or c3_delegate response when the session's own work looks delegable:</p>
+      <table class="params-table">
+        <thead><tr><th>Kind</th><th>Fires when</th><th>Suggests</th></tr></thead>
+        <tbody>
+          <tr><td><code>write</code></td><td>≥5 c3_edit calls over ≥2 files and ≥4,000 characters of new text within 15 minutes, or one edit over 6,000 characters</td><td><code>c3_delegate(task=&lt;spec&gt;, write_paths=...)</code></td></tr>
+          <tr><td><code>explore</code></td><td>≥6 source reads/searches over ≥4 files within 10 minutes, with no edit</td><td><code>c3_delegate(task, scout=True)</code> or an Explore subagent (now downshifted too)</td></tr>
+        </tbody>
+      </table>
+      <p>Each kind has a 45-minute cooldown (<code>delegate.hint_cooldown_minutes</code>) and won't fire while the session is already delegating that kind. <code>delegate.hints: false</code> turns them off entirely.</p>
+
+      <div class="callout callout-tip">
+        <p><strong>Status line.</strong> <code>c3_status(view='budget')</code> shows <code>[delegate-auto:7d] N of M model-less subagent call(s) moved to a lower model, H hint(s) shown, F followed</code> — the test of whether any of this changes behavior. If <code>followed</code> stays near zero, the hints are noise.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ EVAL ═══ -->
+    <section id="eval" class="tool-section">
+      <h2>Telemetry &amp; <code>c3 delegate-eval</code> <span class="badge badge-cyan">v2.132.0</span></h2>
+      <p>Every <code>c3_delegate</code> response writes a <code>detail</code> row to <code>.c3/tool_telemetry.jsonl</code>: host, requested and actual backend, task type, outcome, wall time, and when known tier, model, mode, confidence, cascade, tokens and cost. <code>aggregate_tool_telemetry</code> folds these into <code>delegate_by_backend</code> (calls, outcomes, ok rate, cost, tokens, models, task types, wall p50/p95), which feeds the <code>[delegate:7d]</code> line on <code>c3_status(view='budget')</code>:</p>
+      <pre><code><span class="com"># exact format (cli/tools/status.py)</span>
+[delegate:7d] {calls} calls, {ok} answered, ${cost} reported{, N file(s) written} ({backend:calls, ...})</code></pre>
+
+      <h3>What <code>c3 delegate-eval</code> measures</h3>
+      <p>Every case in <code>tests/delegate_eval/gold_suite.jsonl</code> (25 bounded tasks: 22 <strong>core</strong>, 3 <strong>lookup</strong>) is sent through <code>handle_delegate</code> against <code>backend[:tier]</code> targets and graded by regex checks (<code>must_match</code>, <code>any_match</code>, <code>must_not_match</code>, <code>max_words</code>), case-insensitive. A no-answer status (<code>error</code>, <code>timeout</code>, <code>blocked</code>, <code>disabled</code>, <code>unavailable</code>, <code>degraded</code>) grades as an error, never as a wrong answer, so a broken backend never reads as a weak model. Core cases carry everything the answer needs in <code>context</code>/<code>file_path</code>; lookup cases carry neither, so only a delegate that reads the fixture project itself (<code>+scout</code>) can pass — a live run writes an env canary and <code>lookup-env-secret</code> fails any answer that leaks it. Append <code>+scout</code> to a target to run it that way; write-mode cases live in a separate suite (<code>--suite write</code>, see <a href="#write-paths">write_paths</a>).</p>
+
+      <h3>Running it (verified against <code>c3 delegate-eval --help</code>)</h3>
+      <pre><code><span class="com"># live: every case costs what the backend costs</span>
+c3 delegate-eval --targets claude:small,claude:medium,claude:large --record run.json
+
+<span class="com"># a subset of cases, delegate config overridden just for this run</span>
+c3 delegate-eval --targets ollama --cases explain-slice,review-toctou \
+  --config <span class="str">'{"allow_model_fallback": false, "preferred_model": "gemma3:12b"}'</span>
+
+<span class="com"># grade a recorded run again — free, deterministic</span>
+c3 delegate-eval --replay run.json
+
+<span class="com"># CI-style gate: exit 1 when a target's core pass rate is under the floor</span>
+c3 delegate-eval --replay run.json --floor 0.8
+
+<span class="com"># --suite: 'gold' (bundled, default), 'write', or a .jsonl path</span>
+<span class="com"># --json emits the full report as JSON instead of the table</span></code></pre>
+      <p>Live runs work on a throwaway copy of <code>tests/delegate_eval/project</code>, so a delegate that reads or writes never touches the checkout. Pass <code>--allow-write-delegation</code> to measure a write-capable backend on a machine with Access Guard rules. When several tiers of one backend run together, the report names the <strong>cheapest passing tier</strong> per task type: the lowest mean cost among tiers whose pass rate reaches the floor (default 0.8) and sits within 0.1 of that backend's best tier.</p>
+      <p><code>tests/delegate_eval/replay_fixture.json</code> holds a correct and a plausibly-wrong answer for every case; <code>tests/test_delegate_eval.py</code> requires every correct one to pass and every wrong one to fail in CI, so a check that can't fail is caught without spending on a model.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ GROK ═══ -->
+    <section id="grok" class="tool-section">
+      <h2>Grok Build backend <span class="badge badge-cyan">v2.131.0</span></h2>
+      <p>xAI's Grok Build CLI (<code>grok</code>) is both a C3 host (<code>c3 install-mcp --ide grok</code>, alias <code>grok-build</code>) and a <code>c3_delegate</code> backend. Full detail: <code>docs/grok-native.md</code>.</p>
+      <pre><code>c3_delegate(task=<span class="str">'...'</span>, backend=<span class="str">'grok'</span>)
+<span class="com"># runs: grok --prompt-file &lt;tmp&gt; --output-format json \
+#         --tools read_file,grep,list_dir --max-turns N [-m model] --cwd &lt;dir&gt;</span></code></pre>
+      <table class="params-table">
+        <thead><tr><th>Mode</th><th>Runs where</th><th>Loads project MCP/hooks?</th></tr></thead>
+        <tbody>
+          <tr><td>Read-only (default)</td><td>A throwaway temp directory, removed afterward, with only <code>read_file</code>/<code>grep</code>/<code>list_dir</code></td><td>No — running outside the project means the project's own <code>.grok</code> config never starts. Answers are cached.</td></tr>
+          <tr><td>Write (<code>delegate.grok_allow_write=true</code>)</td><td>The project directory, <code>--yolo</code> auto-approving every call</td><td>Yes — needs <code>allow_write_delegation</code> too, the same opt-in as gemini. Never cached.</td></tr>
+        </tbody>
+      </table>
+      <p>In both modes the child drops the parent's host session identity and Grok's Claude Code / Cursor imports are disabled, so a delegate never inherits another host's hooks, agents or MCP servers. It also joins the <code>auto</code> cascade (after gemini for heavy task types) and answers <code>task_type='grok_check'</code> with a version-only check (no model call).</p>
+      <table class="kv-table">
+        <tr><td><code>delegate.grok_enabled</code></td><td>Default <code>true</code> — the <code>grok</code> CLI must also be on PATH</td></tr>
+        <tr><td><code>delegate.grok_model</code></td><td>Default <code>""</code> — empty uses the Grok CLI's own default model</td></tr>
+        <tr><td><code>delegate.grok_timeout</code></td><td>Default 120 (total seconds for one run)</td></tr>
+        <tr><td><code>delegate.grok_max_turns</code></td><td>Default 8</td></tr>
+        <tr><td><code>delegate.grok_allow_write</code></td><td>Default <code>false</code></td></tr>
+        <tr><td><code>delegate.grok_task_types</code></td><td>Default <code>review, diagnose, improve, test</code> — the task types <code>auto</code> routes to Grok</td></tr>
+      </table>
+      <p>Grok Build uses its own login (e.g. a SuperGrok account); C3 stores no xAI key.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AGENT ═══ -->
+    <section id="agent" class="tool-section">
+      <h2>c3_agent — a different tool</h2>
+      <p><code>c3_agent(workflow=..., scope=..., context=...)</code> is not delegation: it orchestrates multiple C3 tool calls inside the calling agent's own turn, for compound investigations that would otherwise be five-plus separate tool calls. Workflows: <code>available</code>, <code>review_changes</code>, <code>prepare_context</code>, <code>investigate</code>, <code>preflight</code>, <code>validate_compress</code>.</p>
+      <pre><code><span class="com"># Pre-task check: recall memory + status + recent changes</span>
+c3_agent(workflow=<span class="str">'preflight'</span>, context=<span class="str">'starting auth refactor'</span>)
+
+<span class="com"># Multi-step: search → compress → summarize → recommend</span>
+c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="str">'why does session restore fail after compact?'</span>)</code></pre>
+      <p>Use <code>c3_delegate</code> to hand work to a different (usually cheaper) model. Use <code>c3_agent</code> to run a known sequence of C3 tools without spelling out each call.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+      <table class="params-table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>"unknown tier" or "not a Claude model alias or id"</td>
+            <td><code>tier</code> must be one of <code>small</code>/<code>medium</code>/<code>large</code>/<code>default</code> (or an alias); a <code>model</code> value must look like an alias or id, not a flag.</td>
+          </tr>
+          <tr>
+            <td><code>scout=true</code> refused on a backend other than claude/codex</td>
+            <td>Only <code>claude</code> and <code>codex</code> support scout mode. With <code>backend='host'</code> or <code>'auto'</code>, scout only ever resolves to one of those two.</td>
+          </tr>
+          <tr>
+            <td><code>write_paths</code> refused with <code>[delegate:blocked]</code></td>
+            <td>Every path you named is refused by Access Guard, a lock, or is outside the project (<code>.git/</code>, <code>.c3/</code>, absolute, <code>..</code>). Check <code>c3 access list</code> or make the edit yourself.</td>
+          </tr>
+          <tr>
+            <td>gemini or grok write mode returns a guard error</td>
+            <td>Pass <code>allow_write_delegation=true</code> — these backends can write outside C3's control, so an active Access Guard needs the explicit opt-in. claude write mode (<code>write_paths</code>) does not need this.</td>
+          </tr>
+          <tr>
+            <td>A backend that should be up reports errors on every call</td>
+            <td>Its circuit breaker may have tripped after repeated failures (default: 3 failures, 60s cooldown) — check the notification C3 raised, or run <code>&lt;cli&gt; --version</code> / <code>task_type='ping'</code> to diagnose directly.</td>
+          </tr>
+          <tr>
+            <td>A big file answer feels shallow</td>
+            <td>A file over the packing threshold (8k tokens for claude) travels as its structural map, not full text. Paste the exact excerpt in <code>context</code>, or use <code>scout=true</code>.</td>
+          </tr>
+          <tr>
+            <td>No delegation hints ever show up</td>
+            <td>Hints need real volume (5+ edits or 6+ reads in a short window) and a 45-minute cooldown between firings of the same kind; check <code>delegate.hints</code> isn't set to <code>false</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Full design docs: <code>docs/delegate-write.md</code>, <code>docs/delegate-auto.md</code>, <code>docs/delegate-eval.md</code>, <code>docs/grok-native.md</code>, <code>docs/codex-native.md</code>.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

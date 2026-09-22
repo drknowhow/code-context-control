@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jira Integration — C3 Guide</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .pill {
+      padding: 4px 12px; border-radius: 999px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--bg-3);
+    }
+    .pill-accent { color: var(--cyan); border-color: var(--cyan); }
+    .pill-green  { color: var(--green); border-color: var(--green); }
+    .pill-purple { color: var(--purple); border-color: var(--purple); }
+    .pill-amber  { color: var(--amber); border-color: var(--amber); }
+
+    .action-table th, .action-table td { padding: 8px 12px; }
+    .action-table tr:hover { background: var(--bg-3); }
+    .action-table .grp-read  { color: var(--green); }
+    .action-table .grp-write { color: var(--amber); }
+
+    .callout {
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-2);
+      padding: 12px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+    }
+    .callout-warn   { border-color: var(--amber); }
+    .callout-danger { border-color: var(--red);   }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout strong { color: var(--text); }
+
+    .step-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin: 16px 0;
+    }
+    .step-card {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .step-card .step-num {
+      display: inline-block; width: 22px; height: 22px;
+      background: var(--cyan); color: #000;
+      border-radius: 50%;
+      text-align: center; line-height: 22px;
+      font-size: 11px; font-weight: 700;
+      margin-right: 8px;
+    }
+    .step-card h4 { display: inline; font-size: 14px; }
+
+    .kv-table td { padding: 6px 12px; font-size: 13px; }
+    .kv-table td:first-child {
+      font-family: var(--mono); color: var(--text-dim); width: 200px; vertical-align: top;
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Header -->
+  <header class="header">
+    <a href="index.html" class="header-logo">
+      <span class="logo-badge">C3</span>
+      Claude Code Companion
+    </a>
+    <nav class="header-nav">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Get Started</a>
+      <a href="workflow.html">Workflow</a>
+      <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
+      <a href="credentials.html">Credentials</a>
+      <a href="access.html">Access</a>
+      <a href="masking.html">Masking</a>
+      <a href="jira.html" class="active">Jira</a>
+      <a href="bitbucket.html">Bitbucket</a>
+      <a href="oracle.html">Oracle</a>
+      <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
+    </nav>
+    <span class="header-version">v2.145.1</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">On this page</div>
+      <a href="#overview"        class="sidebar-link"><span class="icon">🎫</span> Overview</a>
+      <a href="#quick-start"     class="sidebar-link"><span class="icon">🚀</span> Quick start</a>
+      <a href="#auth"            class="sidebar-link"><span class="icon">🔐</span> Authentication</a>
+      <a href="#actions"         class="sidebar-link"><span class="icon">⚙️</span> Action reference</a>
+      <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
+      <a href="#hub-ui"          class="sidebar-link"><span class="icon">🖥️</span> Dashboard tab</a>
+      <a href="#audit"           class="sidebar-link"><span class="icon">📝</span> Audit trail</a>
+      <a href="#config"          class="sidebar-link"><span class="icon">📂</span> Configuration</a>
+      <a href="#examples"        class="sidebar-link"><span class="icon">📚</span> Examples</a>
+      <a href="#troubleshooting" class="sidebar-link"><span class="icon">🛠️</span> Troubleshooting</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Related</div>
+      <a href="tools.html#c3_jira" class="sidebar-link">Tool reference card</a>
+      <a href="workflow.html"      class="sidebar-link">Standard workflow</a>
+      <a href="bitbucket.html"     class="sidebar-link">Bitbucket integration</a>
+      <a href="credentials.html"   class="sidebar-link">Credential vault</a>
+      <a href="getting-started.html" class="sidebar-link">First-time setup</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="page-hero">
+      <h1>Jira — Cloud &amp; Data Center</h1>
+      <p>One tool for Jira Cloud and self-hosted Jira Data Center / Server — issues, epics, links, sprints, worklogs, and attachments from inside C3.</p>
+      <div class="pill-row">
+        <span class="pill pill-accent">v2.56.0 integration</span>
+        <span class="pill pill-accent">v2.89.0 epics · links · sprints · worklogs</span>
+        <span class="pill pill-purple">Issue tracking</span>
+        <span class="pill pill-green">Read &amp; write</span>
+        <span class="pill">REST v3 (Cloud) / v2 (Data Center)</span>
+        <span class="pill">OS keyring</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
+    <section id="overview" class="tool-section">
+      <h2>Overview</h2>
+      <p><code>c3_jira</code> is a single MCP tool that talks to <strong>Jira Cloud</strong> (REST v3, email + API token, ADF-aware) and <strong>Jira Data Center / Server</strong> (REST v2, Personal Access Token, plain-text bodies) behind one action-dispatched interface. Claude Code (and you, via the project dashboard) reads and writes issues without a browser context-switch.</p>
+
+      <div class="callout">
+        <p><strong>Both deployments, one DTO.</strong> <code>services/jira_client.py</code> is a facade over two strategy backends (<code>jira_cloud.py</code> / <code>jira_data_center.py</code>) that normalize both APIs' responses into one shape, with an opaque pagination cursor covering Cloud's <code>nextPageToken</code> and Data Center's <code>startAt</code> offset. The deployment is inferred as <code>cloud</code> for <code>*.atlassian.net</code> / <code>*.jira.com</code> URLs; anything else requires <code>--deployment data_center</code> explicitly.</p>
+      </div>
+
+      <h3>What you get</h3>
+      <table class="params-table">
+        <thead><tr><th>Surface</th><th>Where</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>c3_jira</code> MCP tool</td>
+            <td>Claude Code</td>
+            <td>Action-dispatched issue, sprint, and worklog operations from inside an AI session</td>
+          </tr>
+          <tr>
+            <td><code>c3 jira</code> CLI</td>
+            <td>Terminal</td>
+            <td>One-time login, account switching, default-project pinning</td>
+          </tr>
+          <tr>
+            <td>Jira tab</td>
+            <td>Project dashboard (per-project)</td>
+            <td>My Work board, JQL search, an issue drawer, and an activity view</td>
+          </tr>
+          <tr>
+            <td><code>/api/jira/*</code></td>
+            <td>Project server</td>
+            <td>REST endpoints backing the dashboard tab</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ QUICK START ═══ -->
+    <section id="quick-start" class="tool-section">
+      <h2>Quick start</h2>
+      <p>Three commands to connect a Jira site and pin a working project.</p>
+
+      <div class="step-grid">
+        <div class="step-card">
+          <span class="step-num">1</span><h4>Log in</h4>
+          <pre><code>c3 jira login \
+  --url https://yoursite.atlassian.net</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Cloud is inferred from the <code>*.atlassian.net</code> host. Prompts for your email and an API token (<code>getpass</code> masked); the token goes straight into the OS keyring.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">2</span><h4>Pin a default project</h4>
+          <pre><code>c3 jira set-default --project PROJ</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Lets <code>c3_jira</code> calls that accept <code>project=</code> skip it — <code>my_issues</code>, <code>list_boards</code>, <code>get_create_metadata</code>, <code>create_issue</code>.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-num">3</span><h4>Verify</h4>
+          <pre><code>c3 jira status</code></pre>
+          <p style="font-size: 12px; color: var(--text-dim); margin: 8px 0 0;">Lists every configured account and, for the active one, a server-version + identity probe.</p>
+        </div>
+      </div>
+
+      <p>Self-hosted Data Center needs the deployment spelled out:</p>
+      <pre><code>c3 jira login --url https://jira.example.com --deployment data_center</code></pre>
+
+      <p>Anything you want reusable across every project (a personal Cloud account) belongs in the global config:</p>
+      <pre><code>c3 jira login --global --url https://yoursite.atlassian.net</code></pre>
+
+      <h3>First call from Claude Code</h3>
+      <pre><code><span class="com"># Connection + account probe, then your open work</span>
+c3_jira(action=<span class="str">'status'</span>)
+c3_jira(action=<span class="str">'my_issues'</span>)
+
+<span class="com"># Raw JQL</span>
+c3_jira(action=<span class="str">'search'</span>, jql=<span class="str">'project = PROJ AND status != Done ORDER BY updated DESC'</span>)
+
+<span class="com"># Full detail on one issue</span>
+c3_jira(action=<span class="str">'get_issue'</span>, issue=<span class="str">'PROJ-123'</span>)</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUTHENTICATION ═══ -->
+    <section id="auth" class="tool-section">
+      <h2>Authentication &amp; security</h2>
+
+      <h3>API tokens / PATs</h3>
+      <p><strong>Cloud</strong> uses your email plus an API token from <code>id.atlassian.com</code> → <em>Security</em> → <em>API tokens</em> (Basic auth over HTTPS). <strong>Data Center</strong> uses a username plus a Personal Access Token from your profile's <em>Personal Access Tokens</em> page (Bearer auth). Neither surface scopes the token independently of the account's own Jira permissions — whatever that user can do in the browser, <code>c3_jira</code> can do through the API. Use a dedicated service account with only the project access you intend to grant the agent, especially before enabling <code>delete_issue</code>.</p>
+
+      <div class="callout callout-danger">
+        <p><strong>HTTPS-only, enforced.</strong> <code>validate_base_url</code> rejects any <code>base_url</code> that isn't <code>https://</code> unless <code>--insecure</code> is passed — storing a token against a plaintext endpoint invites interception. <code>--insecure</code> is meant for local development servers only.</p>
+      </div>
+
+      <h3>Where the token lives</h3>
+      <table class="kv-table">
+        <tr>
+          <td>OS keyring</td>
+          <td>Token text, under service <code>c3-jira</code>, account <code>{base_url}|{username}</code>. Backed by <strong>Windows Credential Manager</strong>, <strong>macOS Keychain</strong>, or <strong>Linux Secret Service</strong>.</td>
+        </tr>
+        <tr>
+          <td><code>.c3/config.json</code></td>
+          <td>Non-secret <code>jira</code> section: a <strong>named registry</strong> of accounts (<code>{base_url, username, deployment, default_project, verify_tls, ca_bundle}</code>) plus which one is the default. <strong>Never</strong> the token.</td>
+        </tr>
+      </table>
+
+      <h3>Deployment inference</h3>
+      <p><code>_jira_deployment_for</code> checks the host: <code>*.atlassian.net</code> or <code>*.jira.com</code> infers <code>cloud</code> automatically. Any other host needs <code>--deployment data_center</code> on the command line — <code>c3 jira login</code> refuses with an explicit error rather than guessing.</p>
+
+      <h3>TLS verification</h3>
+      <p>Default: <code>verify_tls = true</code>. <code>--insecure</code> on <code>c3 jira login</code> disables verification (and allows <code>http://</code>); <code>--ca-bundle &lt;path&gt;</code> points at a custom CA bundle for a self-signed enterprise certificate without disabling verification entirely.</p>
+
+      <h3>Named accounts, multiple sites</h3>
+      <p>Every login is stored under a <strong>name</strong> (<code>--name work</code>, <code>--name internal</code>), defaulting to the URL's host label when omitted. Pass <code>account=&lt;name&gt;</code> on any <code>c3_jira</code> call to use a non-default account for that one call; switch the default with <code>c3 jira use --name &lt;name&gt;</code>.</p>
+
+      <h3>Reusable across projects</h3>
+      <p><code>c3 jira login --global</code> writes the account to <code>~/.c3/config.json</code>. Resolution mirrors Bitbucket: the project's <code>jira</code> section wins when its <code>default_account</code> resolves against its <strong>own</strong> <code>accounts</code> registry; otherwise C3 falls back to the home config. The section is taken <strong>wholesale from exactly one file</strong> — project fields are never merged over a home-registered account. That's a deliberate security invariant: a repository's committed config must not be able to override the credential-bound <code>base_url</code>, <code>username</code>, <code>deployment</code>, or TLS settings of an account it did not register. Tokens are additionally keyed by <code>(base_url, username)</code> in the keyring, so a rewritten <code>base_url</code> can never retrieve the original server's token.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ ACTION REFERENCE ═══ -->
+    <section id="actions" class="tool-section">
+      <h2>Action reference</h2>
+      <p>The MCP tool dispatches by <code>action</code>. Twenty-five actions, grouped below by capability. <code>project</code> falls back to the account's <code>default_project</code> when the action takes one and omits it.</p>
+
+      <h3>Read &amp; discovery</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-read"><code>status</code></td>             <td>—</td>                                                       <td>Every configured account, and for the active one a server-version + identity probe. Works without a valid token.</td></tr>
+          <tr><td class="grp-read"><code>whoami</code></td>             <td>—</td>                                                       <td>Authenticated user — display name, deployment-native id, email</td></tr>
+          <tr><td class="grp-read"><code>search</code></td>             <td><code>jql, fields_list?, limit?, cursor?</code></td>          <td>Raw JQL, unquoted and passed straight through. <code>limit</code> default 25.</td></tr>
+          <tr><td class="grp-read"><code>my_issues</code></td>          <td><code>project?, status_category?, limit?, cursor?</code></td> <td>Builds <code>assignee = currentUser()</code>, optionally narrowed by project and status category</td></tr>
+          <tr><td class="grp-read"><code>get_issue</code></td>          <td><code>issue</code></td>                                       <td>Full detail: type, status, priority, parent, links (with ids), attachments (id/filename/size), comments, description</td></tr>
+          <tr><td class="grp-read"><code>list_projects</code></td>      <td><code>query?, limit?</code></td>                              <td>Projects visible to the account, optionally filtered. <code>limit</code> default 50.</td></tr>
+          <tr><td class="grp-read"><code>list_transitions</code></td>   <td><code>issue</code></td>                                       <td>Available workflow transitions — id, name, target status</td></tr>
+          <tr><td class="grp-read"><code>get_create_metadata</code></td><td><code>project?, issue_type</code></td>                       <td>Field configuration for a project + issue type — see <a href="#troubleshooting">the createmeta caveat</a></td></tr>
+          <tr><td class="grp-read"><code>search_users</code></td>       <td><code>query, limit?</code></td>                               <td>Users matching a name/email fragment; returns the deployment-native id <code>assign</code> needs. <code>limit</code> default 10.</td></tr>
+          <tr><td class="grp-read"><code>list_link_types</code></td>    <td>—</td>                                                       <td>Every issue-link type with its outward/inward phrasing</td></tr>
+          <tr><td class="grp-read"><code>list_boards</code></td>        <td><code>project?, limit?</code></td>                            <td>Agile boards, optionally scoped to a project. <code>limit</code> default 50.</td></tr>
+          <tr><td class="grp-read"><code>list_sprints</code></td>       <td><code>board_id, sprint_state?, limit?</code></td>             <td>Sprints on a board; <code>sprint_state</code> is <code>active</code>, <code>future</code>, or <code>closed</code></td></tr>
+          <tr><td class="grp-read"><code>list_worklogs</code></td>      <td><code>issue</code></td>                                       <td>Time entries logged on an issue</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Issue writes</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-write"><code>create_issue</code></td> <td><code>project?, issue_type, summary, description?, fields?, parent?</code></td><td>Pre-validated against create metadata — missing required fields come back as machine-readable JSON instead of a guess. <code>fields</code> is a JSON object of field <em>ids</em> → values.</td></tr>
+          <tr><td class="grp-write"><code>update_issue</code></td> <td><code>issue, summary?, description?, parent?, fields?</code></td><td>Needs at least one of these. <code>parent='none'</code> clears the epic/parent link.</td></tr>
+          <tr><td class="grp-write"><code>comment</code></td>      <td><code>issue, body, body_format?</code></td><td>Adds a comment. <code>body_format</code> defaults to <code>text</code>.</td></tr>
+          <tr><td class="grp-write"><code>transition</code></td>   <td><code>issue, transition, body?, fields?</code></td><td>Moves the issue along its workflow. <code>transition</code> is an id or a name (resolved via <code>list_transitions</code>).</td></tr>
+          <tr><td class="grp-write"><code>assign</code></td>       <td><code>issue, user</code></td><td><code>user</code> is the deployment-native id — <code>accountId</code> on Cloud, username on Data Center. Find it via <code>search_users</code>.</td></tr>
+          <tr><td class="grp-write"><code>link_issues</code></td>  <td><code>issue, link_type, target</code></td><td>Typed link reading <code>&lt;issue&gt; &lt;link_type&gt; &lt;target&gt;</code>. <code>link_type</code> accepts a catalog name or either directional phrasing — an inward match flips the pair automatically.</td></tr>
+          <tr><td class="grp-write"><code>unlink_issues</code></td><td><code>link_id</code></td><td>Removes one typed link. Ids appear on <code>get_issue</code>'s link lines.</td></tr>
+          <tr><td class="grp-write"><code>delete_issue</code></td> <td><code>issue, delete_subtasks?</code></td><td>Permanent, not recoverable via the API. Refuses an issue that still has subtasks unless <code>delete_subtasks=true</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Sprints, worklogs, attachments</h3>
+      <table class="params-table action-table">
+        <thead><tr><th>Action</th><th>Args</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="grp-write"><code>move_to_sprint</code></td>  <td><code>issue, sprint_id</code></td><td><code>issue</code> is one key or a comma-list. Backed by <code>/rest/agile/1.0</code>, identical on Cloud and Data Center.</td></tr>
+          <tr><td class="grp-write"><code>move_to_backlog</code></td> <td><code>issue</code></td><td>Comma-list ok. Moves issues out of any sprint.</td></tr>
+          <tr><td class="grp-write"><code>add_worklog</code></td>     <td><code>issue, time_spent, body?</code></td><td><code>time_spent</code> is Jira duration syntax — <code>'2h 30m'</code>, <code>'1d'</code>. <code>body</code> is the worklog comment.</td></tr>
+          <tr><td class="grp-write"><code>attach_file</code></td>     <td><code>issue, file_path</code></td><td>Uploads one local file, multipart. Capped at 20MB locally — Jira's own server-side cap still applies on top.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <p><strong>Argument fall-back.</strong> <code>my_issues</code>, <code>list_boards</code>, <code>get_create_metadata</code>, and <code>create_issue</code> fall back to the account's <code>default_project</code> from <code>.c3/config.json</code> when the call omits <code>project=</code>. Use <code>c3 jira set-default --project</code> to pin it.</p>
+      </div>
+
+      <p>The full parameter reference also lives on the <a href="tools.html#c3_jira">tool card</a>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CLI ═══ -->
+    <section id="cli" class="tool-section">
+      <h2>CLI commands</h2>
+      <p>Five subcommands cover account lifecycle and project defaults. Run any with <code>--help</code> for full flags.</p>
+
+      <table class="params-table">
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>c3 jira login --url &lt;URL&gt; [--deployment cloud|data_center] [--name &lt;N&gt;] [--username &lt;U&gt;] [--token &lt;T&gt;] [--no-set-default] [--no-verify-login] [--insecure] [--ca-bundle &lt;PATH&gt;] [--global]</code></td><td>Interactive token prompt (<code>getpass</code> masked). Writes to keyring, registers the account under <code>--name</code> (derived from the host if omitted), and makes it the default unless <code>--no-set-default</code>. Runs a connection probe unless <code>--no-verify-login</code>.</td></tr>
+          <tr><td><code>c3 jira logout [--name &lt;N&gt;]</code></td><td>Removes an account from keyring + registry. Defaults to the default account.</td></tr>
+          <tr><td><code>c3 jira status</code></td><td>Lists every configured account, marks the default, and probes connectivity.</td></tr>
+          <tr><td><code>c3 jira use --name &lt;N&gt;</code></td><td>Switch the default account (no token re-entry — it's already in the keyring).</td></tr>
+          <tr><td><code>c3 jira set-default --project &lt;KEY&gt; [--name &lt;N&gt;]</code></td><td>Pin the project key used by <code>c3_jira</code> calls that accept <code>project=</code> when it's omitted.</td></tr>
+        </tbody>
+      </table>
+
+      <p>Every subcommand also takes a positional <code>project_path</code> (default: current directory) — the C3 project whose <code>.c3/config.json</code> to write, unless <code>--global</code> redirects <code>login</code> to <code>~/.c3</code>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ DASHBOARD TAB ═══ -->
+    <section id="hub-ui" class="tool-section">
+      <h2>Project dashboard tab</h2>
+      <div class="callout callout-warn">
+        <p><strong>This is the per-project dashboard, not the multi-project Hub.</strong> Run <code>c3 serve</code> (or open a project's session server) to see it — the <strong>Jira</strong> tab sits in that sidebar, after <em>Bitbucket</em> and before <em>Credentials</em>. The multi-project Hub (<code>c3 hub</code>) has no Jira view of its own.</p>
+      </div>
+
+      <table class="params-table">
+        <thead><tr><th>View</th><th>Shows</th></tr></thead>
+        <tbody>
+          <tr><td>My Work board</td> <td>Your assigned issues grouped by status category into three columns — To Do, In Progress, Done</td></tr>
+          <tr><td>Search</td>        <td>Free-form JQL against <code>/api/jira/search</code></td></tr>
+          <tr><td>Issue drawer</td>  <td>Opens on click: full detail, transition buttons, a comment box, assignment</td></tr>
+          <tr><td>Activity</td>      <td>Edit-ledger work linked to issue keys — <code>PROJ-123</code> detected in branch names and edit summaries. Works even before you log in.</td></tr>
+        </tbody>
+      </table>
+
+      <p>Endpoints powering the tab live in <code>cli/server.py</code> under <code>/api/jira/*</code>: <code>status</code>, <code>issues/my</code>, <code>board</code>, <code>search</code>, <code>issue/&lt;key&gt;</code> (GET and POST for create), <code>issue/&lt;key&gt;/transition</code>, <code>issue/&lt;key&gt;/comment</code>, <code>issue/&lt;key&gt;/assign</code>, and <code>activity</code>.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ AUDIT TRAIL ═══ -->
+    <section id="audit" class="tool-section">
+      <h2>Audit trail — edit ledger integration</h2>
+      <p>State changes on the Jira side aren't in your local working tree, so they're still appended to the C3 edit ledger. The path is virtual:</p>
+      <pre><code>jira://&lt;issue-or-project-key&gt;</code></pre>
+
+      <p>Logged actions — identifiers only, <strong>bodies and arbitrary field contents are never logged</strong>:</p>
+      <table class="params-table">
+        <thead><tr><th>Action</th><th>Why it's logged</th></tr></thead>
+        <tbody>
+          <tr><td><code>create_issue</code> / <code>update_issue</code></td><td>Issue opened or its summary/description/parent/fields edited</td></tr>
+          <tr><td><code>comment</code></td><td>Discussion contribution worth recovering on</td></tr>
+          <tr><td><code>transition</code></td><td>Workflow state changed</td></tr>
+          <tr><td><code>assign</code></td><td>Ownership changed</td></tr>
+          <tr><td><code>link_issues</code> / <code>unlink_issues</code></td><td>Relationship to another issue created or removed</td></tr>
+          <tr><td><code>delete_issue</code></td><td>Permanent — worth remembering happened at all</td></tr>
+          <tr><td><code>move_to_sprint</code> / <code>move_to_backlog</code></td><td>Sprint membership changed</td></tr>
+          <tr><td><code>add_worklog</code></td><td>Time logged against the issue</td></tr>
+          <tr><td><code>attach_file</code></td><td>Evidence attached</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <p><strong>Validation failures never log.</strong> <code>_log_mutation</code> skips any response starting with <code>[jira:error]</code> or <code>[jira:missing-fields]</code> — nothing actually changed in Jira, so nothing is recorded as a mutation. Read-only actions and <code>status</code> are never logged either.</p>
+      </div>
+
+      <p>Read it back with <code>c3_edits(action='history', file='jira://PROJ-123')</code>, or via the activity log's <code>jira_action</code> events (also what powers the dashboard's Activity view).</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ CONFIGURATION ═══ -->
+    <section id="config" class="tool-section">
+      <h2><code>.c3/config.json</code> — jira section</h2>
+      <p>Default shape (created on first <code>c3 jira login</code>):</p>
+      <pre><code>{
+  <span class="str">"jira"</span>: {
+    <span class="str">"default_account"</span>: <span class="str">"yoursite"</span>,
+    <span class="str">"accounts"</span>: {
+      <span class="str">"yoursite"</span>: {
+        <span class="str">"base_url"</span>: <span class="str">"https://yoursite.atlassian.net"</span>,
+        <span class="str">"username"</span>: <span class="str">"alice@example.com"</span>,
+        <span class="str">"deployment"</span>: <span class="str">"cloud"</span>,
+        <span class="str">"default_project"</span>: <span class="str">"PROJ"</span>,
+        <span class="str">"verify_tls"</span>: <span class="num">true</span>,
+        <span class="str">"ca_bundle"</span>: <span class="str">""</span>
+      }
+    }
+  }
+}</code></pre>
+
+      <table class="kv-table">
+        <tr><td><code>default_account</code></td> <td>Which entry in <code>accounts</code> a call resolves to when it doesn't pass <code>account=</code>.</td></tr>
+        <tr><td><code>accounts</code></td>        <td>Named registry — one entry per <code>(base_url, username)</code> pair you've logged in as. Never the token.</td></tr>
+        <tr><td><code>base_url</code></td>        <td>Site URL, no trailing slash, always <code>https://</code> unless the account was created with <code>--insecure</code>.</td></tr>
+        <tr><td><code>deployment</code></td>      <td><code>cloud</code> or <code>data_center</code> — picks the REST v3 vs v2 backend and the auth header shape.</td></tr>
+        <tr><td><code>default_project</code></td> <td>Project key used when a call omits <code>project=</code>. Set via <code>c3 jira set-default</code>.</td></tr>
+        <tr><td><code>verify_tls</code></td>      <td><code>false</code> when the account was created with <code>--insecure</code>.</td></tr>
+        <tr><td><code>ca_bundle</code></td>       <td>Path to a custom CA bundle, if one was passed at login.</td></tr>
+      </table>
+
+      <div class="callout callout-warn">
+        <p><strong>Taken wholesale, never field-merged.</strong> When C3 falls back from a project's <code>jira</code> section to the home one, it uses the home section <em>entirely</em> — it never takes <code>base_url</code> from one file and <code>verify_tls</code> from the other. A repository's config can't selectively override a globally registered account's credential-bound fields. See <a href="#auth">Authentication</a>.</p>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ EXAMPLES ═══ -->
+    <section id="examples" class="tool-section">
+      <h2>Example workflows</h2>
+
+      <h3>Triage your open work</h3>
+      <pre><code>c3_jira(action=<span class="str">'my_issues'</span>, status_category=<span class="str">'indeterminate'</span>)
+c3_jira(action=<span class="str">'get_issue'</span>, issue=<span class="str">'PROJ-123'</span>)</code></pre>
+
+      <h3>File a bug — pre-validated against metadata</h3>
+      <pre><code><span class="com"># See what the project + issue type actually require</span>
+c3_jira(action=<span class="str">'get_create_metadata'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Bug'</span>)
+
+<span class="com"># Create — missing required fields come back instead of a guess</span>
+c3_jira(action=<span class="str">'create_issue'</span>, project=<span class="str">'PROJ'</span>, issue_type=<span class="str">'Bug'</span>,
+        summary=<span class="str">'Login redirect loops on Safari'</span>,
+        description=<span class="str">'Repro steps in thread'</span>)</code></pre>
+
+      <h3>Put an issue under an epic, then link two issues</h3>
+      <pre><code>c3_jira(action=<span class="str">'update_issue'</span>, issue=<span class="str">'PROJ-124'</span>, parent=<span class="str">'PROJ-42'</span>)
+c3_jira(action=<span class="str">'link_issues'</span>, issue=<span class="str">'PROJ-1'</span>, link_type=<span class="str">'blocks'</span>, target=<span class="str">'PROJ-2'</span>)</code></pre>
+
+      <h3>A field gets rejected on create</h3>
+      <pre><code><span class="com"># [jira:api-error] ... It is not on the appropriate screen</span>
+<span class="com"># Create without the field, then set it separately:</span>
+c3_jira(action=<span class="str">'update_issue'</span>, issue=<span class="str">'PROJ-124'</span>,
+        fields=<span class="str">'{"customfield_10014": "value"}'</span>)</code></pre>
+
+      <h3>Sprint flow: board → sprint → move an issue</h3>
+      <pre><code>c3_jira(action=<span class="str">'list_boards'</span>)
+c3_jira(action=<span class="str">'list_sprints'</span>, board_id=<span class="num">7</span>, sprint_state=<span class="str">'active'</span>)
+c3_jira(action=<span class="str">'move_to_sprint'</span>, issue=<span class="str">'PROJ-1,PROJ-2'</span>, sprint_id=<span class="num">42</span>)</code></pre>
+
+      <h3>Log time and attach evidence</h3>
+      <pre><code>c3_jira(action=<span class="str">'add_worklog'</span>, issue=<span class="str">'PROJ-1'</span>, time_spent=<span class="str">'2h 30m'</span>, body=<span class="str">'Pairing on the redirect fix'</span>)
+c3_jira(action=<span class="str">'attach_file'</span>, issue=<span class="str">'PROJ-1'</span>, file_path=<span class="str">'logs/repro.log'</span>)</code></pre>
+
+      <h3>Move an issue through its workflow</h3>
+      <pre><code>c3_jira(action=<span class="str">'list_transitions'</span>, issue=<span class="str">'PROJ-123'</span>)
+c3_jira(action=<span class="str">'transition'</span>, issue=<span class="str">'PROJ-123'</span>, transition=<span class="str">'In Progress'</span>)
+c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ-123'</span>, body=<span class="str">'Deployed to staging'</span>)</code></pre>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ═══════════════════════════════════════ TROUBLESHOOTING ═══ -->
+    <section id="troubleshooting" class="tool-section">
+      <h2>Troubleshooting</h2>
+
+      <div class="callout callout-warn">
+        <p><strong>createmeta is not the create screen.</strong> <code>get_create_metadata</code> returns Jira's <em>field configuration</em> for a project + issue type, not what the create screen actually accepts. Jira can list a field as required or optional (Epic Link is the classic case) that <code>create_issue</code> then rejects with <em>"cannot be set. It is not on the appropriate screen."</em> When that happens: create the issue without the field, then set it afterward with <code>update_issue</code> — the edit screen is configured separately from the create screen in Jira itself, and C3 can't see that difference ahead of time. The tool's own error message repeats this hint. Field entries in the metadata response carry both <code>id</code> and <code>name</code>; the <code>fields</code> JSON you pass to <code>create_issue</code>/<code>update_issue</code> takes <strong>ids</strong> (<code>customfield_…</code>), never display names.</p>
+      </div>
+
+      <table class="params-table">
+        <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>[jira:no-account]</code></td>
+            <td>No default account configured (or the named <code>account=</code> doesn't exist). Run <code>c3 jira login --url &lt;URL&gt;</code>.</td>
+          </tr>
+          <tr>
+            <td><code>[jira:no-token]</code></td>
+            <td>The account is registered but the keyring entry is missing (e.g. <code>.c3/</code> copied to a different machine). Re-run <code>c3 jira login</code> for that account to put the token back.</td>
+          </tr>
+          <tr>
+            <td><code>--deployment cloud|data_center is required for self-hosted URLs</code></td>
+            <td>The host isn't <code>*.atlassian.net</code> / <code>*.jira.com</code>, so C3 can't infer it. Pass <code>--deployment data_center</code> explicitly.</td>
+          </tr>
+          <tr>
+            <td>HTTP 401</td>
+            <td>Bad or expired token, or the token belongs to a different site than <code>base_url</code>. Generate a fresh API token / PAT.</td>
+          </tr>
+          <tr>
+            <td>HTTP 403 on a write action</td>
+            <td>The Jira account itself lacks the project permission — <code>c3_jira</code> has no separate scope model, it acts as that user. Grant the permission in Jira, or use an account that has it.</td>
+          </tr>
+          <tr>
+            <td><code>get_create_metadata</code> 404s on a Data Center 9.0–11.x server</td>
+            <td>Fixed: newer Data Center versions split the monolithic createmeta endpoint into a paginated pair. The client tries the split endpoints first and falls back to the legacy one on 404, so this should no longer surface — if it does, the server may be older still.</td>
+          </tr>
+          <tr>
+            <td><code>SSL: CERTIFICATE_VERIFY_FAILED</code></td>
+            <td>Self-signed enterprise CA. Pass <code>--ca-bundle &lt;path&gt;</code> at login (preferred), or <code>--insecure</code> for local dev only.</td>
+          </tr>
+          <tr>
+            <td><code>The 'keyring' package is required</code></td>
+            <td><code>pip install keyring</code>. Declared dependency, but an in-place upgrade can leave it missing.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Where to look</h3>
+      <ul>
+        <li><strong>Activity log:</strong> project dashboard → Jira tab → Activity, plus <code>.c3/activity_log.jsonl</code> for raw events tagged <code>jira_action</code>.</li>
+        <li><strong>Edit ledger:</strong> <code>c3_edits(action='history', file='jira://&lt;issue-or-project-key&gt;')</code> for every mutation.</li>
+        <li><strong>Tool calls:</strong> <code>c3_session(action='log')</code> entries record every <code>c3_jira</code> dispatch with its action name and (sanitized) args.</li>
+      </ul>
+    </section>
+
+    <hr class="divider">
+
+    <p style="color: var(--text-dim); font-size: 12px; text-align: center; margin: 24px 0 48px;">
+      Need an action this surface doesn't cover? File an issue or pull request — the integration is intentionally thin around <code>services/jira_client.py</code> and its Cloud / Data Center backends.
+    </p>
+
+  </main>
+</div>
+
+</body>
+</html>

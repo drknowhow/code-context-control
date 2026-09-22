@@ -4,6 +4,33 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.145.1] - 2026-09-22
+
+### Changed — the in-app guide describes the C3 you have installed
+
+The guide (`/guide/` on the Hub, `cli/guide/*.html`) had stopped tracking C3
+between 2.62 and 2.140 depending on the page. Access Guard and Mask Guard
+still described July's two-rule model, the tool reference listed
+`c3_compress` and eighteen tools, and AgentCI, delegation, sessions and Jira
+had no page at all. Every page was checked against the code and `--help`
+output at 2.145.0.
+
+- **New pages:** `sessions.html` (session catalog, `c3_session`, `c3_task`),
+  `delegate.html` (backends, tiers, `scout`, `write_paths`, downshift
+  subagents, `c3 delegate-eval`), `ci.html` (AgentCI verdicts, engines,
+  required mode, caching, history) and `jira.html`.
+- **Rewritten:** `access.html` (confirm holds, override requests, builtin
+  modes, per-project policy, the shell scan), `tools.html` (all 23 MCP tools
+  and their current actions), `workflow.html` (the managed workflow as C3
+  writes it today), `index.html` and `getting-started.html` (every host,
+  real install and upgrade paths, correct ports and permission tiers).
+- **Updated:** `credentials.html` (audit trail, re-entry, backup),
+  `oracle.html` (mobile and desktop gateway), `bitbucket.html` (35 actions,
+  global login), `masking.html`.
+- Every page carries the same navigation and version badge.
+- `docs/agent-ci.md` §7 no longer lists shipped features as "not built", and
+  the global `CLAUDE.md` template stops naming `c3_compress`.
+
 ## [2.145.0] - 2026-09-22
 
 ### Added — a vault backup that survives an OS keychain wipe

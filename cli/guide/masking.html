@@ -77,14 +77,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html" class="active">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.63.0</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <aside class="sidebar">
@@ -130,9 +134,14 @@
       Mask Guard answers a different one: <em>what should the agent see when
       it does?</em> A <code>deny</code> rule hides a file. A <code>mask</code>
       rule keeps it discoverable and searchable, but every byte the agent
-      receives comes from a <strong>materialized view</strong> — a transformed
+      receives comes from a <strong>materialized view</strong>: a transformed
       copy built once, validated, and stored under
-      <code>~/.c3/masked/</code>. Your real file is never modified.
+      <code>~/.c3/masked/</code>. Your real file is never modified. Precedence
+      across all four rule kinds is <code>deny &gt; mask &gt; read_only &gt;
+      confirm</code> — mask beats even a <code>confirm</code> rule
+      (<a href="access.html#confirm">Access Guard: Confirm</a>), because an
+      edit made against a transformed view can never be trusted against the
+      real file.
     </p>
 
     <div class="callout callout-warn">
@@ -203,9 +212,9 @@ withheld by mask policy (sample_rows:first:2)</code></pre>
         <tr>
           <td class="k-tag">redact_secrets</td>
           <td>—</td>
-          <td>Replaces detected secrets — AWS keys, GitHub/OpenAI/Slack tokens,
+          <td>Replaces detected secrets (AWS keys, GitHub/OpenAI/Slack tokens,
               JWTs, PEM blocks, connection strings, <code>*_PASSWORD=</code>
-              assignments — plus a high-entropy sweep, with inert placeholders.
+              assignments) plus a high-entropy sweep, with inert placeholders.
               Surrounding code stays readable.</td>
           <td>Config files, <code>.tfvars</code>, logs, fixtures</td>
         </tr>
@@ -293,8 +302,8 @@ withheld by mask policy (sample_rows:first:2)</code></pre>
           for the other 412,906.</li>
     </ul>
     <p>
-      Placeholders are deliberately spelled <code>«c3:redacted:kind»</code> —
-      not valid in any language — so that even in the impossible case where
+      Placeholders are deliberately spelled <code>«c3:redacted:kind»</code>
+      (not valid in any language), so that even in the impossible case where
       one reached a real file, the compiler or linter trips immediately
       instead of the value being silently committed.
     </p>
@@ -303,14 +312,14 @@ withheld by mask policy (sample_rows:first:2)</code></pre>
     <table class="rule-table">
       <thead><tr><th>Surface</th><th>Behaviour</th></tr></thead>
       <tbody>
-        <tr><td class="k-tag">c3_read</td><td>Serves the view with its banner. Line/symbol selection is ignored — positions in a view don't map to the original.</td></tr>
-        <tr><td class="k-tag">c3_compress</td><td>Compresses the view. Cache keys include the view hash, so a rule change can never be answered from a pre-mask cache entry.</td></tr>
+        <tr><td class="k-tag">c3_read</td><td>Serves the view with its banner, for a file read and for the file <em>map</em> (<code>c3_read(file_path)</code> with no symbols, also what <code>c3_compress</code> used to serve; that tool left the MCP surface in v2.124.0). Line/symbol selection is ignored — positions in a view don't map to the original.</td></tr>
         <tr><td class="k-tag">c3_search</td><td>Masked files stay discoverable; snippets and the index come from the view. Results carry a <code>[c3-mask:limited]</code> footer.</td></tr>
         <tr><td class="k-tag">c3_edit</td><td>Refuses — masked is read-only.</td></tr>
         <tr><td class="k-tag">c3_shell</td><td>Refuses content reads over masked paths. Post-filtering stdout is not offered: it could strip a secret but could never reconstruct a crop, so it would be a guarantee C3 cannot make.</td></tr>
         <tr><td class="k-tag">c3_validate</td><td>Refuses — type checkers quote source lines verbatim.</td></tr>
         <tr><td class="k-tag">c3_impact, c3_filter</td><td>Refuse — they depend on real line numbers and raw content.</td></tr>
-        <tr><td class="k-tag">c3_delegate</td><td>Refuses — subprocess backends open the real file themselves.</td></tr>
+        <tr><td class="k-tag">c3_delegate</td><td>Refuses — every backend packs <code>file_path</code> through the same Access Guard read verdict, and a masked path refuses there. A delegate's answer can't carry the mask's disclosure, so this is deliberate, not incidental to how a particular backend happens to read files.</td></tr>
+        <tr><td class="k-tag">c3_project(action='compress'/'read'/...)</td><td>The cross-project proxy re-evaluates against the target project's own rules — a mask (or deny) on the far side refuses the same way a local call would.</td></tr>
         <tr><td class="k-tag">Native Read/Grep/Glob</td><td>Denied by the PreToolUse hooks — they cannot render a view.</td></tr>
       </tbody>
     </table>
@@ -324,7 +333,7 @@ withheld by mask policy (sample_rows:first:2)</code></pre>
       safe. The agent is never told what was removed or where the real value is.
     </p>
     <p>
-      The alternative — masking silently — is worse: an agent that
+      The alternative, masking silently, is worse: an agent that
       confidently reasons over synthetic data and ships code built on it, with
       neither of you aware. Stable machine tags:
       <code>[c3-mask:transformed]</code>, <code>[c3-mask:limited]</code>,

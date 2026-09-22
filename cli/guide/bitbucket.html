@@ -77,14 +77,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html" class="active">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.30.0</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -96,7 +100,7 @@
       <a href="#auth"            class="sidebar-link"><span class="icon">🔐</span> Authentication</a>
       <a href="#actions"         class="sidebar-link"><span class="icon">⚙️</span> Action reference</a>
       <a href="#cli"             class="sidebar-link"><span class="icon">💻</span> CLI commands</a>
-      <a href="#hub-ui"          class="sidebar-link"><span class="icon">🖥️</span> Hub UI</a>
+      <a href="#hub-ui"          class="sidebar-link"><span class="icon">🖥️</span> Dashboard tab</a>
       <a href="#audit"           class="sidebar-link"><span class="icon">📝</span> Audit trail</a>
       <a href="#config"          class="sidebar-link"><span class="icon">📂</span> Configuration</a>
       <a href="#examples"        class="sidebar-link"><span class="icon">📚</span> Examples</a>
@@ -107,6 +111,8 @@
       <a href="tools.html#c3_bitbucket" class="sidebar-link">Tool reference card</a>
       <a href="workflow.html"           class="sidebar-link">Standard workflow</a>
       <a href="getting-started.html#bitbucket" class="sidebar-link">First-time setup</a>
+      <a href="jira.html"               class="sidebar-link">Jira integration</a>
+      <a href="credentials.html"        class="sidebar-link">Credential vault</a>
     </div>
   </aside>
 
@@ -117,7 +123,8 @@
       <h1>Bitbucket Data Center / Server</h1>
       <p>First-class integration with self-hosted enterprise Bitbucket — see and act on pull requests, branches, builds, and repository administration from inside C3.</p>
       <div class="pill-row">
-        <span class="pill pill-accent">v2.30.0</span>
+        <span class="pill pill-accent">v2.30.0 integration</span>
+        <span class="pill pill-accent">v2.89.0 PR edits + tasks</span>
         <span class="pill pill-purple">SCM integration</span>
         <span class="pill pill-green">Read &amp; write</span>
         <span class="pill">REST API 1.0</span>
@@ -244,6 +251,8 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
 
       <h3>Multiple servers / accounts</h3>
       <p><code>save_credentials</code> appends each <code>(base_url, username)</code> pair to the accounts index. Switch with <code>c3 bitbucket use --url ... --username ...</code>. The <em>active</em> account is what every <code>c3_bitbucket</code> call resolves to.</p>
+
+      <p><strong>Reusable across projects.</strong> <code>c3 bitbucket login --global</code> writes the account to <code>~/.c3/config.json</code> instead of the project's. Resolution precedence is <strong>project → home</strong>: <code>load_bitbucket_config</code> reads the project's <code>.c3/config.json</code> first, and only falls back to the home config when the project has no active account set. So a one-time global login covers every C3 project, and a project can still override it with its own <code>c3 bitbucket login</code>.</p>
     </section>
 
     <hr class="divider">
@@ -251,7 +260,7 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
     <!-- ═══════════════════════════════════════ ACTION REFERENCE ═══ -->
     <section id="actions" class="tool-section">
       <h2>Action reference</h2>
-      <p>The MCP tool dispatches by <code>action</code>. Twenty-seven actions are grouped below by capability. Project + repo default from <code>bitbucket.default_project</code> / <code>default_repo</code> when not provided.</p>
+      <p>The MCP tool dispatches by <code>action</code>. Thirty-five actions are grouped below by capability. Project + repo default from <code>bitbucket.default_project</code> / <code>default_repo</code> when not provided.</p>
 
       <h3>Read &amp; discovery</h3>
       <table class="params-table action-table">
@@ -331,7 +340,7 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
       <table class="params-table">
         <thead><tr><th>Command</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td><code>c3 bitbucket login --url &lt;URL&gt; [--username &lt;U&gt;] [--token &lt;T&gt;] [--insecure]</code></td><td>Interactive PAT prompt (<code>getpass</code> masked). Writes to keyring, appends to accounts index, sets active. Runs a connection probe.</td></tr>
+          <tr><td><code>c3 bitbucket login --url &lt;URL&gt; [--username &lt;U&gt;] [--token &lt;T&gt;] [--insecure] [--no-set-active] [--global]</code></td><td>Interactive PAT prompt (<code>getpass</code> masked). Writes to keyring, appends to accounts index, sets active unless <code>--no-set-active</code>. <code>--global</code> stores in <code>~/.c3/config.json</code> so it's reusable across every C3 project. Runs a connection probe.</td></tr>
           <tr><td><code>c3 bitbucket logout [--url &lt;URL&gt;] [--username &lt;U&gt;]</code></td>                          <td>Removes from keyring and accounts index. Falls back to the active account when args are omitted.</td></tr>
           <tr><td><code>c3 bitbucket status</code></td>                                                                      <td>Lists accounts, marks the active one, runs an <code>application-properties</code> probe.</td></tr>
           <tr><td><code>c3 bitbucket use --url &lt;URL&gt; --username &lt;U&gt;</code></td>                                   <td>Switch active account (no token re-entry needed if the keyring already has it).</td></tr>
@@ -344,8 +353,11 @@ c3_bitbucket(action=<span class="str">'get_pr'</span>, pr_id=<span class="num">4
 
     <!-- ═══════════════════════════════════════ HUB UI ═══ -->
     <section id="hub-ui" class="tool-section">
-      <h2>Hub UI tab</h2>
-      <p>The per-project Hub UI gains a <strong>Bitbucket</strong> tab in its sidebar (between <em>Edits</em> and <em>Instructions</em>). Five sub-views:</p>
+      <h2>Project dashboard tab</h2>
+      <div class="callout callout-warn">
+        <p><strong>This is the per-project dashboard, not the multi-project Hub.</strong> Run <code>c3 serve</code> (or open a project's session server) to see it — the <strong>Bitbucket</strong> tab sits in that sidebar, after <em>Edits</em> and before <em>Jira</em>/<em>Credentials</em>/<em>Instructions</em>. The multi-project Hub (<code>c3 hub</code>) has no Bitbucket view of its own; it manages the credential vault and cross-project concerns instead.</p>
+      </div>
+      <p>Five sub-views:</p>
 
       <table class="params-table">
         <thead><tr><th>Sub-view</th><th>Shows</th></tr></thead>
