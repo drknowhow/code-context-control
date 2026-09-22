@@ -6,6 +6,7 @@
   <title>Tools Reference — C3 Guide</title>
   <link rel="stylesheet" href="shared.css">
   <style>
+    .params-table td.param-list { white-space: normal; }
     .tools-toc {
       background: var(--bg-2);
       border: 1px solid var(--border);
@@ -858,9 +859,9 @@ c3_shell_job(action=<span class="str">'list'</span>)</code></pre>
           <table class="params-table">
             <thead><tr><th>Action</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="param-name">inspect, plan</td><td class="param-desc">Job DAG and runnability on this host; <code>plan</code> shows the run/skip decision for <code>mode='required'</code></td></tr>
-              <tr><td class="param-name">run, rerun</td><td class="param-desc">Execute in <code>needs</code> order; <code>job=</code> selects one job or matrix cell; <code>rerun</code> retries only last run's failures</td></tr>
-              <tr><td class="param-name">status, failures, logs, runs</td><td class="param-desc">Last run's state; structured failures; raw logs; run history</td></tr>
+              <tr><td class="param-name param-list">inspect, plan</td><td class="param-desc">Job DAG and runnability on this host; <code>plan</code> shows the run/skip decision for <code>mode='required'</code></td></tr>
+              <tr><td class="param-name param-list">run, rerun</td><td class="param-desc">Execute in <code>needs</code> order; <code>job=</code> selects one job or matrix cell; <code>rerun</code> retries only last run's failures</td></tr>
+              <tr><td class="param-name param-list">status, failures, logs, runs</td><td class="param-desc">Last run's state; structured failures; raw logs; run history</td></tr>
               <tr><td class="param-name">history</td><td class="param-desc">Per-job fail rates; flags FLAKY jobs (passed and failed on identical inputs)</td></tr>
               <tr><td class="param-name">cache</td><td class="param-desc">A job whose inputs are unchanged since it last passed is reused (status <code>cached</code>); <code>no_cache=true</code> forces a re-run</td></tr>
               <tr><td class="param-name">publish</td><td class="param-desc">Posts the last run as a GitHub commit status via your <code>gh</code> auth; refuses a dirty tree, an unpushed commit, and (unless forced) a PARTIAL result</td></tr>
@@ -1190,7 +1191,7 @@ c3_session(action=<span class="str">'compact'</span>)</code></pre>
               <tr><td class="param-name">update</td><td>—</td><td class="param-desc">Update an existing fact by ID</td></tr>
               <tr><td class="param-name">delete</td><td>—</td><td class="param-desc">Delete a fact by ID</td></tr>
               <tr><td class="param-name">review</td><td>✓</td><td class="param-desc">Review facts for staleness / deduplication</td></tr>
-              <tr><td class="param-name">consolidate, consolidate_deep</td><td>—</td><td class="param-desc">Merge duplicate/redundant facts; <code>_deep</code> is the heavier pass</td></tr>
+              <tr><td class="param-name param-list">consolidate, consolidate_deep</td><td>—</td><td class="param-desc">Merge duplicate/redundant facts; <code>_deep</code> is the heavier pass</td></tr>
               <tr><td class="param-name">score</td><td>✓</td><td class="param-desc">Show salience scores for all facts</td></tr>
               <tr><td class="param-name">trends</td><td>✓</td><td class="param-desc">Show memory usage trends over time</td></tr>
               <tr><td class="param-name">graph</td><td>✓</td><td class="param-desc">Show fact relationships graph</td></tr>
@@ -1553,17 +1554,17 @@ c3_edits(action=<span class="str">'verify'</span>, file=<span class="str">'servi
             <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
             <tbody>
               <tr><td class="param-name">add</td><td>Write</td><td class="param-desc">Create a task: <code>title</code> + optional description / priority p0-p3 / due_date (YYYY-MM-DD) / tags (CSV) / milestone / <code>parent</code> (subtask)</td></tr>
-              <tr><td class="param-name">update, done, archive</td><td>Write</td><td class="param-desc"><code>task_id</code> + changed fields (incl. <code>status</code>); <code>done</code> stamps completion; <code>parent='none'</code> clears a subtask link</td></tr>
-              <tr><td class="param-name">list, get, board</td><td>Read</td><td class="param-desc">Filtered list (status/priority/tags/milestone/query), full detail, kanban columns + milestone progress</td></tr>
-              <tr><td class="param-name">link, unlink</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>link_type</code> (file | commit | edit | session) + <code>ref</code> — <code>ref='current'</code> links this conversation</td></tr>
-              <tr><td class="param-name">block, unblock</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>ref</code>=blocking task id; cycle-safe. Completing the last open blocker auto-releases dependents to backlog</td></tr>
+              <tr><td class="param-name param-list">update, done, archive</td><td>Write</td><td class="param-desc"><code>task_id</code> + changed fields (incl. <code>status</code>); <code>done</code> stamps completion; <code>parent='none'</code> clears a subtask link</td></tr>
+              <tr><td class="param-name param-list">list, get, board</td><td>Read</td><td class="param-desc">Filtered list (status/priority/tags/milestone/query), full detail, kanban columns + milestone progress</td></tr>
+              <tr><td class="param-name param-list">link, unlink</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>link_type</code> (file | commit | edit | session) + <code>ref</code> — <code>ref='current'</code> links this conversation</td></tr>
+              <tr><td class="param-name param-list">block, unblock</td><td>Write</td><td class="param-desc"><code>task_id</code> + <code>ref</code>=blocking task id; cycle-safe. Completing the last open blocker auto-releases dependents to backlog</td></tr>
               <tr><td class="param-name">report</td><td>Read</td><td class="param-desc">Overdue tasks, blocked chains + aging, ready-to-unblock, milestone health/at-risk, throughput</td></tr>
               <tr><td class="param-name">milestone_add / _update / _list</td><td>Both</td><td class="param-desc">Milestones with target dates; list shows progress %</td></tr>
-              <tr><td class="param-name">milestone_complete, milestone_reopen</td><td>Write</td><td class="param-desc"><strong>v2.86.0</strong> — close a shipped milestone (tasks KEEP their link, unlike archive); refuses while open tasks remain. <code>_reopen</code> undoes it</td></tr>
+              <tr><td class="param-name param-list">milestone_complete, milestone_reopen</td><td>Write</td><td class="param-desc"><strong>v2.86.0</strong> — close a shipped milestone (tasks KEEP their link, unlike archive); refuses while open tasks remain. <code>_reopen</code> undoes it</td></tr>
               <tr><td class="param-name">milestone_archive</td><td>Write</td><td class="param-desc">Removal — detaches its tasks</td></tr>
-              <tr><td class="param-name">time_add, time_update, time_delete</td><td>Write</td><td class="param-desc">Manual time entries: <code>minutes</code> 1-1440 [+note/due_date/task_id]; update/delete by <code>ref</code>=entry id</td></tr>
-              <tr><td class="param-name">time_list, time_summary</td><td>Read</td><td class="param-desc">Manual entries + recent auto-tracked sessions; today/7d/30d totals (auto vs manual). Server startup + tool calls auto-ping <code>.c3/time</code>; idle gaps &gt;15min close a session</td></tr>
-              <tr><td class="param-name">note_add, note_list</td><td>Both</td><td class="param-desc">Dated notes; <code>kind='decision'</code> for the decision log</td></tr>
+              <tr><td class="param-name param-list">time_add, time_update, time_delete</td><td>Write</td><td class="param-desc">Manual time entries: <code>minutes</code> 1-1440 [+note/due_date/task_id]; update/delete by <code>ref</code>=entry id</td></tr>
+              <tr><td class="param-name param-list">time_list, time_summary</td><td>Read</td><td class="param-desc">Manual entries + recent auto-tracked sessions; today/7d/30d totals (auto vs manual). Server startup + tool calls auto-ping <code>.c3/time</code>; idle gaps &gt;15min close a session</td></tr>
+              <tr><td class="param-name param-list">note_add, note_list</td><td>Both</td><td class="param-desc">Dated notes; <code>kind='decision'</code> for the decision log</td></tr>
               <tr><td class="param-name">history</td><td>Read</td><td class="param-desc">Append-only event log ([+task_id] [+limit]), newest first — who/what/when, before→after</td></tr>
             </tbody>
           </table>
@@ -1659,14 +1660,14 @@ c3_artifacts(action=<span class="str">'show'</span>, artifact=<span class="str">
             <tbody>
               <tr><td class="param-name">status</td><td>Read</td><td class="param-desc">Active account, accounts list, defaults, server-version probe</td></tr>
               <tr><td class="param-name">whoami</td><td>Read</td><td class="param-desc">Current authenticated user (PAT owner)</td></tr>
-              <tr><td class="param-name">list_projects, list_repos, get_repo</td><td>Read</td><td class="param-desc">Project / repository discovery</td></tr>
-              <tr><td class="param-name">list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits</td><td>Read</td><td class="param-desc">PR browsing + diff + activity feed + commit list</td></tr>
-              <tr><td class="param-name">create_pr, update_pr, comment_pr, approve_pr, unapprove_pr, needs_work_pr, decline_pr, merge_pr</td><td>Write</td><td class="param-desc">PR write actions. <code>update_pr</code> edits title/description/reviewers/to_branch (unchanged fields preserved); <code>merge_pr</code>, <code>decline_pr</code>, and <code>update_pr</code> auto-fetch the PR's current version; <code>needs_work_pr</code> marks "needs work" as the current user</td></tr>
-              <tr><td class="param-name">update_pr_comment, delete_pr_comment</td><td>Write</td><td class="param-desc">Edit or remove a PR comment by <code>comment_id</code> — the comment's current version is fetched automatically</td></tr>
-              <tr><td class="param-name">list_pr_tasks, create_pr_task, resolve_pr_task</td><td>Tasks</td><td class="param-desc">PR tasks (Bitbucket 7.2+ model: a task is a BLOCKER-severity comment). <code>list_pr_tasks</code> filters by <code>state=OPEN|RESOLVED</code>; resolve takes the task's <code>comment_id</code></td></tr>
-              <tr><td class="param-name">list_branches, create_branch, delete_branch</td><td>Branch</td><td class="param-desc">Branch listing and admin (uses the <code>branch-utils</code> API)</td></tr>
-              <tr><td class="param-name">list_commits, list_activity, build_status</td><td>Read</td><td class="param-desc">Recent commits, activity, build/CI status (defaults to default-branch HEAD)</td></tr>
-              <tr><td class="param-name">repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook, list_permissions</td><td>Admin</td><td class="param-desc">Repository administration</td></tr>
+              <tr><td class="param-name param-list">list_projects, list_repos, get_repo</td><td>Read</td><td class="param-desc">Project / repository discovery</td></tr>
+              <tr><td class="param-name param-list">list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits</td><td>Read</td><td class="param-desc">PR browsing + diff + activity feed + commit list</td></tr>
+              <tr><td class="param-name param-list">create_pr, update_pr, comment_pr, approve_pr, unapprove_pr, needs_work_pr, decline_pr, merge_pr</td><td>Write</td><td class="param-desc">PR write actions. <code>update_pr</code> edits title/description/reviewers/to_branch (unchanged fields preserved); <code>merge_pr</code>, <code>decline_pr</code>, and <code>update_pr</code> auto-fetch the PR's current version; <code>needs_work_pr</code> marks "needs work" as the current user</td></tr>
+              <tr><td class="param-name param-list">update_pr_comment, delete_pr_comment</td><td>Write</td><td class="param-desc">Edit or remove a PR comment by <code>comment_id</code> — the comment's current version is fetched automatically</td></tr>
+              <tr><td class="param-name param-list">list_pr_tasks, create_pr_task, resolve_pr_task</td><td>Tasks</td><td class="param-desc">PR tasks (Bitbucket 7.2+ model: a task is a BLOCKER-severity comment). <code>list_pr_tasks</code> filters by <code>state=OPEN|RESOLVED</code>; resolve takes the task's <code>comment_id</code></td></tr>
+              <tr><td class="param-name param-list">list_branches, create_branch, delete_branch</td><td>Branch</td><td class="param-desc">Branch listing and admin (uses the <code>branch-utils</code> API)</td></tr>
+              <tr><td class="param-name param-list">list_commits, list_activity, build_status</td><td>Read</td><td class="param-desc">Recent commits, activity, build/CI status (defaults to default-branch HEAD)</td></tr>
+              <tr><td class="param-name param-list">repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook, list_permissions</td><td>Admin</td><td class="param-desc">Repository administration</td></tr>
             </tbody>
           </table>
 
@@ -1761,19 +1762,19 @@ c3_credentials(action=<span class="str">'import_env'</span>, file_path=<span cla
           <table class="params-table">
             <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="param-name">status, whoami</td><td>Read</td><td class="param-desc">Active account, deployment, defaults, server probe / authenticated user</td></tr>
+              <tr><td class="param-name param-list">status, whoami</td><td>Read</td><td class="param-desc">Active account, deployment, defaults, server probe / authenticated user</td></tr>
               <tr><td class="param-name">search</td><td>Read</td><td class="param-desc">Raw JQL, paginated (helper-built JQL elsewhere is always quoted)</td></tr>
               <tr><td class="param-name">my_issues</td><td>Read</td><td class="param-desc">Open issues assigned to the token's user (statusCategory-aware)</td></tr>
-              <tr><td class="param-name">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments, parent, and typed links / project discovery / legal transitions for an issue</td></tr>
-              <tr><td class="param-name">get_create_metadata, search_users, list_link_types</td><td>Read</td><td class="param-desc">Field configuration per project/type (ids + names; the create screen may accept fewer — Jira over-reports, Epic Link is the classic case); user lookup for assignment; the server's issue-link type catalog</td></tr>
-              <tr><td class="param-name">list_boards, list_sprints, list_worklogs</td><td>Read</td><td class="param-desc">Agile boards (project fallback applies) &rarr; sprints per board (<code>sprint_state=active|future|closed</code>); an issue's logged time</td></tr>
-              <tr><td class="param-name">move_to_sprint, move_to_backlog</td><td>Write</td><td class="param-desc">Sprint assignment via the Agile API — <code>issue</code> takes one key or a comma-list; <code>sprint_id</code> comes from <code>list_sprints</code></td></tr>
-              <tr><td class="param-name">add_worklog, attach_file</td><td>Write</td><td class="param-desc">Log time (<code>time_spent='2h 30m'</code>, optional <code>body</code> comment); upload one local file as an attachment (20MB local cap)</td></tr>
-              <tr><td class="param-name">unlink_issues, delete_issue</td><td>Write</td><td class="param-desc">Remove a typed link by <code>link_id</code> (shown on get_issue); permanently delete an issue — refuses one with subtasks unless <code>delete_subtasks=true</code></td></tr>
+              <tr><td class="param-name param-list">get_issue, list_projects, list_transitions</td><td>Read</td><td class="param-desc">Issue detail with comments, parent, and typed links / project discovery / legal transitions for an issue</td></tr>
+              <tr><td class="param-name param-list">get_create_metadata, search_users, list_link_types</td><td>Read</td><td class="param-desc">Field configuration per project/type (ids + names; the create screen may accept fewer — Jira over-reports, Epic Link is the classic case); user lookup for assignment; the server's issue-link type catalog</td></tr>
+              <tr><td class="param-name param-list">list_boards, list_sprints, list_worklogs</td><td>Read</td><td class="param-desc">Agile boards (project fallback applies) &rarr; sprints per board (<code>sprint_state=active|future|closed</code>); an issue's logged time</td></tr>
+              <tr><td class="param-name param-list">move_to_sprint, move_to_backlog</td><td>Write</td><td class="param-desc">Sprint assignment via the Agile API — <code>issue</code> takes one key or a comma-list; <code>sprint_id</code> comes from <code>list_sprints</code></td></tr>
+              <tr><td class="param-name param-list">add_worklog, attach_file</td><td>Write</td><td class="param-desc">Log time (<code>time_spent='2h 30m'</code>, optional <code>body</code> comment); upload one local file as an attachment (20MB local cap)</td></tr>
+              <tr><td class="param-name param-list">unlink_issues, delete_issue</td><td>Write</td><td class="param-desc">Remove a typed link by <code>link_id</code> (shown on get_issue); permanently delete an issue — refuses one with subtasks unless <code>delete_subtasks=true</code></td></tr>
               <tr><td class="param-name">create_issue</td><td>Write</td><td class="param-desc">Pre-validates against create metadata and returns machine-readable missing required fields instead of guessing defaults. <code>parent=EPIC-KEY</code> files the new issue under an epic (deployment-mapped)</td></tr>
               <tr><td class="param-name">update_issue</td><td>Write</td><td class="param-desc">Edit an existing issue: summary, description, <code>parent</code> (epic/parent key; <code>'none'</code> clears), or a fields JSON of field ids &rarr; values — the fallback when the create screen rejects a field ("not on the appropriate screen")</td></tr>
               <tr><td class="param-name">link_issues</td><td>Write</td><td class="param-desc">Typed link reading <code>&lt;issue&gt; &lt;link_type&gt; &lt;target&gt;</code> — accepts a type name or either directional phrasing (an inward match flips the pair); unknown types answer with the catalog</td></tr>
-              <tr><td class="param-name">comment, transition, assign</td><td>Write</td><td class="param-desc">Comment on / move (accepts transition id <em>or</em> name) / assign an issue</td></tr>
+              <tr><td class="param-name param-list">comment, transition, assign</td><td>Write</td><td class="param-desc">Comment on / move (accepts transition id <em>or</em> name) / assign an issue</td></tr>
             </tbody>
           </table>
 
@@ -1844,11 +1845,11 @@ c3_jira(action=<span class="str">'comment'</span>, issue=<span class="str">'PROJ
             <tbody>
               <tr><td class="param-name">list</td><td>Discover</td><td class="param-desc">Registered projects (fast; registry only)</td></tr>
               <tr><td class="param-name">scan</td><td>Discover</td><td class="param-desc">Registry + bounded filesystem scan for unregistered <code>.c3</code> projects nearby</td></tr>
-              <tr><td class="param-name">info, register, unregister</td><td>Discover</td><td class="param-desc">Project details / add to / remove from the registry</td></tr>
-              <tr><td class="param-name">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project (<code>compress</code> is the map, same as <code>read</code> with no symbols — it has no standalone top-level tool any more)</td></tr>
-              <tr><td class="param-name">subprojects, sub_tree, sub_inspect</td><td>Read</td><td class="param-desc">Direct children; the whole hierarchy; a read-only report on any path (what is there, who already claims it, what it claims, which nested projects under it are unlinked)</td></tr>
-              <tr><td class="param-name">sub_add, sub_link, sub_remove, sub_cascade</td><td>Write</td><td class="param-desc">Designate / link by path / unlink / cascade across the subtree — require <code>allow_write=true</code> (<code>sub_cascade</code> with <code>mode='health'</code> is a read)</td></tr>
-              <tr><td class="param-name">edit, shell, memory(add/update/delete)</td><td>Write</td><td class="param-desc">Mutate the target project — require <code>allow_write=true</code></td></tr>
+              <tr><td class="param-name param-list">info, register, unregister</td><td>Discover</td><td class="param-desc">Project details / add to / remove from the registry</td></tr>
+              <tr><td class="param-name param-list">search, read, compress, status, memory, impact, edits, validate, filter</td><td>Read</td><td class="param-desc">Proxy the matching c3_* tool against the target project (<code>compress</code> is the map, same as <code>read</code> with no symbols — it has no standalone top-level tool any more)</td></tr>
+              <tr><td class="param-name param-list">subprojects, sub_tree, sub_inspect</td><td>Read</td><td class="param-desc">Direct children; the whole hierarchy; a read-only report on any path (what is there, who already claims it, what it claims, which nested projects under it are unlinked)</td></tr>
+              <tr><td class="param-name param-list">sub_add, sub_link, sub_remove, sub_cascade</td><td>Write</td><td class="param-desc">Designate / link by path / unlink / cascade across the subtree — require <code>allow_write=true</code> (<code>sub_cascade</code> with <code>mode='health'</code> is a read)</td></tr>
+              <tr><td class="param-name param-list">edit, shell, memory(add/update/delete)</td><td>Write</td><td class="param-desc">Mutate the target project — require <code>allow_write=true</code></td></tr>
             </tbody>
           </table>
 
