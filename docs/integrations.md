@@ -100,7 +100,7 @@ a wipe and the values do not; `c3 creds list` then shows `VALUE MISSING`.
 that depends on neither the keyring nor DPAPI:
 
 ```bash
-c3 creds backup init      # choose a passphrase (keep it in a password manager)
+c3 creds backup init      # choose a passphrase, 16+ chars (keep it in a password manager)
 c3 creds backup status    # held / restorable / lost / not backed up yet
 c3 creds backup restore   # after a wipe: asks for the passphrase, refills lost values
 c3 creds backup sync      # copy every live value now (init already did this once)

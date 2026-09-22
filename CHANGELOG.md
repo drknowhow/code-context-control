@@ -17,7 +17,7 @@ the only way back was finding each secret again. See
   are sealed to an X25519 public key (ephemeral ECDH, HKDF-SHA256, AES-GCM
   bound to `realm|name`), so every value write copies itself without a
   prompt. The private key is wrapped under a scrypt key from a passphrase
-  the user chooses.
+  the user chooses (16 characters minimum).
 - **`c3 creds backup init | status | sync | restore | passphrase`.** Restore
   refills only registered entries whose value is gone. It never overwrites a
   live value, never recreates a deleted entry and brings reveal-enabled

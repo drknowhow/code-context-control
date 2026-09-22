@@ -30,7 +30,7 @@ BACKUP_NAME = "vault_backup.json"
 SCRYPT_N = 2 ** 17
 SCRYPT_R = 8
 SCRYPT_P = 1
-MIN_PASSPHRASE = 10
+MIN_PASSPHRASE = 16
 _HKDF_INFO = FORMAT.encode("ascii")
 _WRAP_AAD = (FORMAT + "|private-key").encode("ascii")
 
