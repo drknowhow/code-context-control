@@ -1381,7 +1381,10 @@ function CredSourcesStrip({ sources, onResync, busy }) {
 
 // path=null → the global vault (~/.c3): scope locked to 'global'.
 // path=string → that project's merged view (global entries + project shadows).
-function CredsManager({ path, projectName, onChanged, bindSlash }) {
+// Global vault (path null): rows arrive as `globalEntries` (null while the
+// page's overview loads) and `onChanged` refills them; loading the overview
+// here as well fetched the whole cross-project index twice.
+function CredsManager({ path, projectName, onChanged, bindSlash, globalEntries }) {
   const isGlobal = !path;
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1408,14 +1411,10 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
   const withPath = (obj) => (path ? Object.assign({ path }, obj) : obj);
 
   const load = useCallback(async () => {
+    if (!path) return;
     try {
-      if (path) {
-        const data = await api.get('/api/projects/credentials?path=' + encodeURIComponent(path));
-        setEntries((data && data.entries) || []);
-      } else {
-        const data = await api.get('/api/hub/credentials/overview');
-        setEntries((((data || {}).global) || {}).entries || []);
-      }
+      const data = await credApi.listProject(path);
+      setEntries((data && data.entries) || []);
       setError('');
     } catch (e) { setError(String(e)); }
     setLoading(false);
@@ -1425,6 +1424,14 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
     setLoading(true); setChecks({}); setSelected({}); setSelectMode(false);
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (path) return;
+    setEntries(globalEntries || []);
+    setLoading(globalEntries == null);
+  }, [path, globalEntries]);
+
+  const refresh = () => { load(); if (onChanged) onChanged(); };
 
   // `/` focuses the filter, as it does on every other hub board — but only
   // where nothing above already claims the key. The hub Credentials page owns
@@ -1447,7 +1454,7 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [bindSlash, drawer, menu, confirm]);
 
-  const done = (msg) => { notify(msg); load(); if (onChanged) onChanged(); };
+  const done = (msg) => { notify(msg); refresh(); };
 
   const saveForm = async () => {
     if (!form || !form.name.trim()) return;
@@ -1507,8 +1514,7 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
       if (resp && resp.error) setError(resp.error);
       else {
         notify(`${field === 'inject' ? 'Auto-inject' : 'Agent access'} ${next ? 'enabled' : 'disabled'} for '${entry.name}'`);
-        load();
-        if (onChanged) onChanged();
+        refresh();
       }
     } catch (e) { setError(apiErr(e)); }
   };
@@ -1619,7 +1625,7 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
       } else {
         notify(`${label}: ${ok} ${ok === 1 ? 'entry' : 'entries'}`);
       }
-      if (action !== 'check') { exitSelect(); load(); if (onChanged) onChanged(); }
+      if (action !== 'check') { exitSelect(); refresh(); }
     } catch (e) { notify(apiErr(e), 'err'); }
     setBulkBusy(false);
   };
@@ -2012,7 +2018,7 @@ function CredsManager({ path, projectName, onChanged, bindSlash }) {
         <CredDrawer entry={drawer} path={path} projectName={projectName}
           initialReplace={replaceOnOpen}
           onClose={() => { setDrawer(null); setReplaceOnOpen(false); }}
-          onChanged={() => { load(); if (onChanged) onChanged(); }} />
+          onChanged={refresh} />
       )}
       {confirm && <CredConfirm spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
@@ -2420,7 +2426,8 @@ function HubCredentials({ projects, onOpenDrill }) {
         <CredAuditView path={null} initialName={auditName}
           onOpenDrill={onOpenDrill} />
       ) : sub === 'global' ? (
-        <CredsManager path={null} onChanged={loadOverview} />
+        <CredsManager path={null} onChanged={loadOverview}
+          globalEntries={ov ? ((ov.global || {}).entries || []) : null} />
       ) : !ov ? (
         <div style={{ color: T.textMuted, fontSize: 13 }}>Loading…</div>
       ) : (ov.projects || []).length === 0 ? (

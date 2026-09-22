@@ -50,7 +50,10 @@ function App() {
   }, []);
 
   useEffect(() => { loadConfig(); loadProjects(); }, []);
-  usePoll(loadProjects, 5000);
+  // Live status matters on the project list and in a drill-in. Elsewhere it
+  // only refreshes the sidebar and top-bar counts, which may lag 30 s, and
+  // each poll reads every project's activity log.
+  usePoll(loadProjects, mainView === 'projects' || drill ? 5000 : 30000);
 
   // Persisted preferences
   const toggleTheme = () => {

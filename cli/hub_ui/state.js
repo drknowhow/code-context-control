@@ -24,11 +24,15 @@ const IDE_OPTIONS = [
 
 const ideLabel = (ide) => IDE_LABELS[ide] || ide || 'unknown';
 
-// Repeating poll that pauses while the tab is hidden.
+// Repeating poll that pauses while the tab is hidden and skips a tick while
+// the previous call is still running, so a slow route never stacks requests.
 const usePoll = (fn, ms) => {
   React.useEffect(() => {
-    const iv = setInterval(() => {
-      if (!document.hidden) fn();
+    let running = false;
+    const iv = setInterval(async () => {
+      if (document.hidden || running) return;
+      running = true;
+      try { await fn(); } finally { running = false; }
     }, ms);
     return () => clearInterval(iv);
   }, [fn, ms]);
