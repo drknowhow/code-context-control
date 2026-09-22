@@ -4,6 +4,32 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.145.0] - 2026-09-22
+
+### Added — a vault backup that survives an OS keychain wipe
+
+The keyring held the only copy of every value. When Windows emptied
+Credential Manager on a restart, fourteen global credentials were gone and
+the only way back was finding each secret again. See
+`docs/integrations.md` → Credential vault → Backup.
+
+- **`services/credential_backup.py`** keeps `~/.c3/vault_backup.json`. Values
+  are sealed to an X25519 public key (ephemeral ECDH, HKDF-SHA256, AES-GCM
+  bound to `realm|name`), so every value write copies itself without a
+  prompt. The private key is wrapped under a scrypt key from a passphrase
+  the user chooses.
+- **`c3 creds backup init | status | sync | restore | passphrase`.** Restore
+  refills only registered entries whose value is gone. It never overwrites a
+  live value, never recreates a deleted entry and brings reveal-enabled
+  entries back injection-only (`credential_store.restore_value`). `init`,
+  `restore` and `passphrase` refuse to run without a terminal.
+- `c3 creds set` says when no backup is configured or the copy failed. The
+  missing-value message on injection names `c3 creds backup restore`.
+- `vault_backup.json` joins the Tier-0 Access Guard paths, the vault write
+  guard and the never-grantable override targets.
+- `cryptography` is now a declared dependency. It was already needed for
+  values over 1 KB and arrived transitively on most installs.
+
 ## [2.144.0] - 2026-09-22
 
 ### Fixed — re-entering a lost credential no longer resets it, and lost values show

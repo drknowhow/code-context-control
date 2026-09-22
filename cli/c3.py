@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.144.0"
+__version__ = "2.145.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -6371,7 +6371,7 @@ def cmd_creds(args):
     """Credential vault management (global + per-project scopes)."""
     sub = getattr(args, "creds_cmd", None)
     if not sub:
-        print("Usage: c3 creds {set,get,list,rm,import,usage,audit} [args]")
+        print("Usage: c3 creds {set,get,list,rm,import,usage,audit,backup} [args]")
         return
 
     project_path = getattr(args, "project_path", ".") or "."
@@ -6390,6 +6390,8 @@ def cmd_creds(args):
         _creds_cmd_usage(args, project_path)
     elif sub == "audit":
         _creds_cmd_audit(args, project_path)
+    elif sub == "backup":
+        _creds_cmd_backup(args, project_path)
     else:
         print(f"Unknown creds subcommand: {sub}")
 
@@ -6502,6 +6504,111 @@ def _creds_cmd_set(args, project_path: str) -> None:
     if entry["agent_readable"]:
         print("[warn] agent_readable=true -- the agent can read this value "
               "into its context and transcripts.")
+    _creds_print_backup_note(entry.get("backup", ""))
+
+
+def _creds_print_backup_note(backup: str) -> None:
+    if backup == "off":
+        print("[note] no vault backup: this value exists only in the OS keychain. "
+              "`c3 creds backup init` keeps a copy that survives a keychain wipe.")
+    elif backup.startswith("failed"):
+        print(f"[warn] the vault backup was not updated ({backup}); "
+              "run `c3 creds backup sync`.")
+
+
+def _creds_known_projects(project_path: str) -> list:
+    """The current project plus every project the hub knows about."""
+    from services.project_manager import ProjectManager
+    paths = [str(Path(project_path).resolve())]
+    paths += [str(p.get("path")) for p in ProjectManager().list_projects()
+              if p.get("path")]
+    return paths
+
+
+def _creds_read_passphrase(prompt: str, *, confirm: bool = False) -> str:
+    import getpass
+    first = getpass.getpass(prompt)
+    if confirm and getpass.getpass("Repeat it: ") != first:
+        print("[error] the passphrases did not match -- nothing changed.")
+        return ""
+    return first
+
+
+def _creds_cmd_backup(args, project_path: str) -> None:
+    from services import credential_backup as backup
+
+    action = args.backup_cmd
+    if action in ("init", "restore", "passphrase") and not sys.stdin.isatty():
+        print("[error] run this in your own terminal: the passphrase is read from "
+              "the keyboard, never from a pipe or an argument.")
+        return
+    try:
+        if action == "init":
+            print("Choose a passphrase for the vault backup. Without it the backup "
+                  "cannot be opened -- keep it in your password manager.")
+            passphrase = _creds_read_passphrase(
+                f"New passphrase (min {backup.MIN_PASSPHRASE} chars): ", confirm=True)
+            if not passphrase:
+                return
+            backup.init(passphrase)
+            done = backup.sync(_creds_known_projects(project_path))
+            print(f"[OK] Vault backup on: {backup.backup_path()} -- "
+                  f"{done['saved']} value(s) copied. Every value you set from now "
+                  "on is copied automatically.")
+            if done["missing"]:
+                print(f"  no value to copy (re-enter these): {', '.join(done['missing'])}")
+        elif action == "sync":
+            done = backup.sync(_creds_known_projects(project_path))
+            print(f"[OK] {done['saved']} value(s) copied to the vault backup.")
+            for label, names in (("no value to copy", done["missing"]),
+                                 ("failed", done["failed"])):
+                if names:
+                    print(f"  {label}: {', '.join(names)}")
+        elif action == "status":
+            st = backup.status(_creds_known_projects(project_path))
+            if st["enabled"]:
+                print(f"Vault backup: on ({st['path']}, created {st['created']}) -- "
+                      f"{st['backed_up']} value(s) held.")
+            else:
+                print("Vault backup: off -- values live only in the OS keychain. "
+                      "Turn it on with `c3 creds backup init`.")
+            for label, key in (("restorable (`c3 creds backup restore`)", "restorable"),
+                               ("lost, no copy (re-enter with `c3 creds set`)", "lost"),
+                               ("not backed up yet (`c3 creds backup sync`)", "not_backed_up")):
+                if st[key] and (st["enabled"] or key == "lost"):
+                    print(f"  {label}: {', '.join(st[key])}")
+        elif action == "restore":
+            passphrase = _creds_read_passphrase("Backup passphrase: ")
+            only = [n.strip() for n in (args.only or "").split(",") if n.strip()]
+            out = backup.restore(passphrase, only=only or None)
+            print(f"[OK] Restored {len(out['restored'])} value(s)"
+                  + (f": {', '.join(out['restored'])}" if out["restored"] else "."))
+            for label, key in (("still in the keychain, left alone", "present"),
+                               ("entry or project gone, skipped", "orphaned"),
+                               ("failed", "failed")):
+                if out[key]:
+                    print(f"  {label}: {', '.join(out[key])}")
+            if out["restored"]:
+                _creds_log_restore(out["restored"])
+        else:  # passphrase
+            old = _creds_read_passphrase("Current passphrase: ")
+            new = _creds_read_passphrase(
+                f"New passphrase (min {backup.MIN_PASSPHRASE} chars): ", confirm=True)
+            if old and new:
+                backup.change_passphrase(old, new)
+                print("[OK] Backup passphrase changed.")
+    except backup.BackupError as exc:
+        print(f"[error] {exc}")
+
+
+def _creds_log_restore(names: list) -> None:
+    """Names only, to the global activity log that `c3 creds audit` reads."""
+    from services import credential_store as cred_store
+    from services.activity_log import ActivityLog
+    home = cred_store.global_base()
+    if home is not None:
+        ActivityLog(str(home)).log("cred_action", {
+            "kind": "creds", "action": "restore", "names": names, "via": "cli"})
 
 
 def _creds_count_show(refs, project_path: str) -> None:
