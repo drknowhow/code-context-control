@@ -20,14 +20,18 @@
       <a href="getting-started.html" class="active">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.x</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -43,6 +47,7 @@
       <a href="#hub" class="sidebar-link"><span class="icon">🌐</span> Web UI &amp; Hub</a>
       <a href="#credentials" class="sidebar-link"><span class="icon">🔐</span> Credentials</a>
       <a href="#bitbucket" class="sidebar-link"><span class="icon">🪣</span> Bitbucket</a>
+      <a href="#sub-projects" class="sidebar-link"><span class="icon">🌳</span> Sub-projects</a>
       <a href="#uninstall" class="sidebar-link"><span class="icon">🗑️</span> Uninstall</a>
     </div>
     <div class="sidebar-section">
@@ -75,14 +80,14 @@
             <td>Used to run the MCP server and CLI</td>
           </tr>
           <tr>
-            <td>Claude Code CLI</td>
+            <td>An IDE/CLI host</td>
             <td>latest</td>
-            <td>Primary IDE C3 is designed for</td>
+            <td>Claude Code, native Codex CLI, Grok Build, VS Code (Copilot), Cursor, or Antigravity</td>
           </tr>
           <tr>
-            <td>pip</td>
+            <td>pip or pipx</td>
             <td>any</td>
-            <td>For installing Python dependencies</td>
+            <td><code>pipx</code> is the recommended installer</td>
           </tr>
           <tr>
             <td>Git</td>
@@ -107,26 +112,35 @@
     <section class="section" id="install">
       <div class="section-title"><span class="icon">📦</span> Installation</div>
 
-      <h3>1. Clone the repository</h3>
-      <pre><code>git clone https://github.com/your-org/claude-companion.git
-cd claude-companion</code></pre>
+      <h3>1. Install the package</h3>
+      <p>Published to PyPI as <code>code-context-control</code>. <a href="https://pipx.pypa.io">pipx</a> is recommended — it isolates C3's dependencies from your other Python tools:</p>
+      <pre><code>pipx install code-context-control
 
-      <h3>2. Install C3</h3>
-      <pre><code>pip install .</code></pre>
+<span class="com"># or, with pip</span>
+pip install code-context-control
 
-      <h3>3. Make the CLI available (optional)</h3>
-      <p>On Windows, add the project root to your PATH, or use the provided batch file:</p>
-      <pre><code><span class="com"># Windows — run from the project root</span>
+<span class="com"># with the optional Textual terminal UI</span>
+pip install "code-context-control[tui]"</code></pre>
+
+      <h3>2. Initialize a project</h3>
+      <pre><code>c3 init /path/to/your/project</code></pre>
+      <p>MCP is wired through the installed <code>c3-mcp</code> console-script entry point, so a later <code>c3 upgrade</code> needs no per-project MCP reconfiguration.</p>
+
+      <h3>3. From source (contributors)</h3>
+      <pre><code>git clone https://github.com/drknowhow/code-context-control.git
+cd code-context-control
+pip install -e ".[dev]"          <span class="com"># tests, linters, build tools</span>
+
+<span class="com"># Windows helper</span>
 c3.bat init
-
-<span class="com"># Unix/Mac — install the CLI</span>
+<span class="com"># Unix/Mac helper</span>
 bash install.sh</code></pre>
 
       <div class="callout callout-tip">
         <span class="callout-icon">✅</span>
         <div class="callout-body">
           <strong>Verify the install</strong>
-          Run <code>python cli/c3.py --help</code> (or <code>c3 --help</code> after PATH setup). You should see a list of all available commands.
+          Run <code>c3 --help</code>. You should see a list of all available commands.
         </div>
       </div>
     </section>
@@ -169,6 +183,10 @@ c3 init</code></pre>
             <td>Persistent memory fact store</td>
           </tr>
           <tr>
+            <td><code>.c3/MAP.md</code></td>
+            <td>Live repo map — tree, commands, entry points, module one-liners; auto-refreshed by edit hooks and the first tool call of a session</td>
+          </tr>
+          <tr>
             <td><code>CLAUDE.md</code></td>
             <td>Project instructions file (mandatory workflow injected here)</td>
           </tr>
@@ -190,6 +208,19 @@ c3 init</code></pre>
           The <code>.c3/</code> directory contains session data and should generally not be committed. C3 will prompt you about this during init.
         </div>
       </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">🗺️</span>
+        <div class="callout-body">
+          <strong>Keep the repo map fresh</strong>
+          <code>.c3/MAP.md</code> is what an agent is told to read before any file discovery. It refreshes itself on edits and on session start; if it looks stale, run <code>c3 map refresh</code> (<code>c3 map status</code> shows freshness, tracked in <code>.c3/map.meta.json</code>).
+        </div>
+      </div>
+
+      <h3>What kind of project is this?</h3>
+      <p>
+        <code>c3 init</code> classifies the project as <code>code</code>, <code>mixed</code>, <code>prose</code>, or <code>empty</code> (fewer than 20 source/document files judged, no opinion) by counting source files against prose/office documents, and prints the result (v2.92.0). For a <code>prose</code>-kind project (a documentation repo with near-zero source), the symbol-aware tools (<code>c3_impact</code>, <code>c3_validate</code>, <code>c3_ci</code>) have little to act on, so a non-interactive install with no explicit <code>--enforcement</code> writes <code>advisory</code> instead of the tier-derived mode (never over an explicit <code>c3 enforce</code> choice or flag). The interactive Step 5/5 suggests the same for a <code>prose</code> repo, with the reason stated. Switch back any time with <code>c3 enforce strict</code>.
+      </p>
 
       <h3>Re-init / upgrade</h3>
       <p>Running <code>c3 init</code> on an existing project is safe — it merges new config without overwriting your customizations.</p>
@@ -225,7 +256,11 @@ c3 init</code></pre>
 
       <h3>VS Code Copilot</h3>
       <pre><code>c3 install-mcp vscode</code></pre>
-      <p>Updates <code>.vscode/mcp.json</code> and <code>.github/copilot-instructions.md</code>.</p>
+      <p>Updates <code>.vscode/mcp.json</code> and <code>.github/copilot-instructions.md</code>. No PreToolUse hooks in this host — VS Code hides MCP tools until the agent searches for them, so the generated instructions open with a tool-load step, and the c3-first rule is a workflow requirement rather than an enforced block.</p>
+
+      <h3>Cursor</h3>
+      <pre><code>c3 install-mcp cursor</code></pre>
+      <p>Updates <code>.cursor/mcp.json</code> and <code>.cursorrules</code>. No hooks in this host either.</p>
 
       <h3>Codex</h3>
       <pre><code>c3 install-mcp codex</code></pre>
@@ -241,46 +276,62 @@ grok --trust
 c3 doctor --ide grok</code></pre>
       <p>Updates <code>.grok/config.toml</code> (<code>[mcp_servers.c3]</code>), writes C3's hooks to <code>.grok/hooks/c3.json</code>, and refreshes the C3 block in <code>AGENTS.md</code>. Grok loads none of them until the folder is trusted, so launch <code>grok --trust</code> once in the project (or run <code>/hooks-trust</code> inside Grok). C3 never writes Grok's trust store or <code>~/.grok/config.toml</code>. In Grok, C3's tools are reached through <code>search_tool</code> / <code>use_tool</code> as <code>c3__c3_search</code> and so on. Details and limitations: <code>docs/grok-native.md</code>.</p>
 
-      <p><em>The Gemini CLI profile was removed in v2.52 — use Antigravity instead. <code>c3 uninstall</code> still cleans up legacy <code>.gemini/settings.json</code> and <code>GEMINI.md</code> files.</em></p>
+      <p><em>The Gemini CLI profile was removed in v2.52 — use Antigravity instead. <code>c3 mcp-remove</code> still cleans up legacy <code>.gemini/settings.json</code> and <code>GEMINI.md</code> files.</em></p>
 
-      <h3>All IDEs at once</h3>
-      <pre><code>c3 install-mcp all</code></pre>
+      <h3>Using more than one host in the same project</h3>
+      <p>There is no single "install for every IDE" command — <code>--ide</code> accepts exactly one of <code>auto, claude, vscode, cursor, codex, antigravity, grok</code> per call, and each writes that host's own MCP config file. Run <code>c3 install-mcp</code> once per host you use:</p>
+      <pre><code>c3 install-mcp claude
+c3 install-mcp codex</code></pre>
+      <p>You do not need to keep <code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>.github/copilot-instructions.md</code> in sync by hand — every <code>install-mcp</code> run regenerates all of a project's instruction docs from one source of truth, not just the target host's.</p>
 
       <div class="callout callout-info">
         <span class="callout-icon">🔗</span>
         <div class="callout-body">
           <strong>MCP modes</strong>
-          The default mode is <code>direct</code> (stdio). A <code>proxy</code> mode is also available for environments that require HTTP-based MCP. Pass <code>--mode proxy</code> if needed.
+          The default mode is <code>direct</code> (stdio). A <code>proxy</code> mode is also available for environments that require HTTP-based MCP. Pass <code>--mcp-mode proxy</code> if needed.
         </div>
       </div>
 
-      <h3>Hooks (Claude Code only)</h3>
-      <p>C3 includes several hook scripts that enforce the c3 discipline:</p>
+      <h3>Hooks (Claude Code and Codex/Grok — not VS Code, Cursor or Antigravity)</h3>
+      <p>C3 registers one dispatcher, <code>cli/hook_dispatch.py</code>, per lifecycle event; it routes internally to focused sub-hooks so only one process spawns per event:</p>
       <table class="table">
-        <thead><tr><th>Hook</th><th>Effect</th></tr></thead>
+        <thead><tr><th>Event</th><th>Sub-hooks (effect)</th></tr></thead>
         <tbody>
           <tr>
-            <td><code>hook_pretool_enforce.py</code></td>
-            <td>Blocks native Read/Grep/Glob/Edit if no prior c3_* call</td>
+            <td>PreToolUse</td>
+            <td><code>hook_pretool_enforce.py</code>: blocks native Read/Grep/Glob/Edit/Write if no prior c3_* call; <code>hook_access_guard.py</code> — enforces Access Guard deny/read-only/confirm rules</td>
           </tr>
           <tr>
-            <td><code>hook_edit_ledger.py</code></td>
-            <td>Logs every edit to the edit ledger (PostToolUse)</td>
+            <td>PostToolUse</td>
+            <td><code>hook_edit_ledger.py</code> (logs edits), <code>hook_ghost_files.py</code> (blocks 0-byte/invalid Write paths), <code>hook_c3read.py</code> (routes native Read through c3_read), <code>hook_edit_unlock.py</code>, <code>hook_filter.py</code>, <code>hook_c3_signal.py</code>, <code>hook_artifact.py</code> (agent-config version capture)</td>
           </tr>
           <tr>
-            <td><code>hook_ghost_files.py</code></td>
-            <td>Blocks Write to 0-byte or invalid paths (anti-ghost-file)</td>
+            <td>Stop</td>
+            <td><code>hook_session_stats.py</code> (tool usage/metrics), <code>hook_auto_snapshot.py</code>, <code>hook_terse_advisor.py</code></td>
           </tr>
           <tr>
-            <td><code>hook_session_stats.py</code></td>
-            <td>Tracks tool usage and session metrics</td>
+            <td>SessionStart / SessionEnd</td>
+            <td><code>hook_session_open.py</code> / <code>hook_session_end.py</code> — session-boundary rows and notifications (v2.126.0)</td>
           </tr>
           <tr>
-            <td><code>hook_read.py</code></td>
-            <td>Intercepts native Read to route through c3_read</td>
+            <td>UserPromptSubmit</td>
+            <td><code>hook_prompt_recall.py</code></td>
           </tr>
         </tbody>
       </table>
+      <p style="font-size:13px; color:var(--text-muted);">Codex gets the same dispatcher through <code>.codex/hooks.json</code> (v2.119.0); Grok Build through <code>.grok/hooks/c3.json</code> (v2.131.0). VS Code, Cursor and Antigravity have no PreToolUse hook mechanism, so the c3-first rule there is a written workflow requirement, not a technical block.</p>
+    </section>
+
+    <hr class="divider">
+
+    <!-- Sub-projects -->
+    <section class="section" id="sub-projects">
+      <div class="section-title"><span class="icon">🌳</span> Sub-projects (optional)</div>
+      <p>A sub-project is a C3 project declared a child of another — a service in a monorepo, or a second checkout that lives elsewhere entirely (even another drive). It keeps its own <code>.c3/</code>; retrieval fans out across the hierarchy only when you ask for it (v2.96.0):</p>
+      <pre><code>c3 sub link ../billing-service      <span class="com"># link an existing project anywhere on disk</span>
+c3 sub tree                         <span class="com"># the whole hierarchy</span>
+c3_search(query='retry policy', scope='all')   <span class="com"># parent + every descendant</span></code></pre>
+      <p>Hierarchy is a strict tree — one parent per project, up to 8 levels deep. See <code>docs/sub-projects.md</code> for the full CLI and Hub UI reference.</p>
     </section>
 
     <hr class="divider">
@@ -318,9 +369,9 @@ c3_memory(action='recall', query='your task topic')</code></pre>
           <div class="step-content">
             <div class="step-title">Search and read</div>
             <div class="step-body">
-              Claude discovers and reads files using c3_search + c3_compress + c3_read — never raw file reads.
+              Claude discovers and reads files using c3_search + c3_read — never raw file reads. <code>c3_read(file_path)</code> with no <code>symbols</code>/<code>lines</code> returns a structural map first (<code>c3_compress</code> did this before v2.124.0 and is gone from the MCP surface); then read the exact symbol.
               <pre><code>c3_search(query='auth middleware', action='code')
-c3_compress(file_path='src/auth.py', mode='map')
+c3_read(file_path='src/auth.py')
 c3_read(file_path='src/auth.py', symbols=['AuthMiddleware'])</code></pre>
             </div>
           </div>
@@ -356,26 +407,39 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
     <section class="section" id="permissions">
       <div class="section-title"><span class="icon">🔒</span> Permission Tiers</div>
 
-      <p>C3 provides three permission tiers that control what Claude Code is allowed to do. Apply them with:</p>
-      <pre><code>c3 permissions &lt;tier&gt;</code></pre>
+      <p>C3 provides four permission tiers, Claude Code only, that control what native tools and Bash commands are pre-approved. Apply them with:</p>
+      <pre><code>c3 permissions &lt;tier&gt;      <span class="com"># show | preview | diff | clean | apply a tier</span></code></pre>
 
       <table class="table">
-        <thead><tr><th>Tier</th><th>Bash access</th><th>Use case</th></tr></thead>
+        <thead><tr><th>Tier</th><th>Alias</th><th>Native tools</th><th>Bash access</th><th>Use case</th></tr></thead>
         <tbody>
           <tr>
+            <td><code>read-only</code></td>
             <td><code>readonly</code></td>
-            <td>None</td>
-            <td>Code review, exploration — no writes, no shell</td>
+            <td>Claude's read-only built-ins</td>
+            <td>Safe read-only commands</td>
+            <td>Code review, exploration — no writes</td>
+          </tr>
+          <tr>
+            <td><code>c3-strict</code></td>
+            <td><code>strict</code></td>
+            <td>Read/Grep/Glob/Edit/Write/NotebookEdit denied</td>
+            <td>Safe read-only commands</td>
+            <td>Force every file operation through c3_* tools</td>
           </tr>
           <tr>
             <td><code>standard</code></td>
-            <td>Safe read-only commands only</td>
-            <td>Normal development — safe git, test runners</td>
+            <td>—</td>
+            <td>Full built-ins</td>
+            <td>Safe commands only (blocks <code>rm -rf</code>, <code>sudo</code>, <code>curl|sh</code>, <code>eval</code>)</td>
+            <td>Normal day-to-day development (default)</td>
           </tr>
           <tr>
+            <td><code>permissive</code></td>
             <td><code>unrestricted</code></td>
-            <td>Full bash access</td>
-            <td>Power use — trusted, local-only sessions</td>
+            <td>Full built-ins</td>
+            <td>Full Bash access, no deny list</td>
+            <td>Trusted, local-only sessions</td>
           </tr>
         </tbody>
       </table>
@@ -384,7 +448,7 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
         <span class="callout-icon">⚠️</span>
         <div class="callout-body">
           <strong>Default is standard</strong>
-          The <code>standard</code> tier blocks destructive shell commands (rm -rf, git reset --hard, etc.) while allowing safe operations. Upgrade to <code>unrestricted</code> only when needed.
+          The <code>standard</code> tier blocks destructive shell commands (rm -rf, sudo, curl/wget piped to a shell, eval) while allowing safe operations. Move to <code>c3-strict</code> to enforce the c3-first workflow technically, or to <code>permissive</code> only when needed.
         </div>
       </div>
 
@@ -406,12 +470,12 @@ c3_session(action='snapshot')   <span class="com"># before /clear</span></code><
       <h3>Session UI</h3>
       <p>A real-time session dashboard showing tool calls, memory facts, edit ledger, and budget.</p>
       <pre><code>c3 ui</code></pre>
-      <p>Opens at <code>http://localhost:5000</code> by default.</p>
+      <p>Opens at <code>http://localhost:3333</code> by default (auto-picks the next free port if taken).</p>
 
       <h3>Project Hub</h3>
       <p>A multi-project dashboard for managing all C3-enabled projects, viewing cross-session stats, and browsing notifications.</p>
       <pre><code>c3 hub</code></pre>
-      <p>Opens at <code>http://localhost:5001</code> by default.</p>
+      <p>Opens at <code>http://localhost:3330</code> by default.</p>
 
       <div class="callout callout-info">
         <span class="callout-icon">ℹ️</span>
@@ -484,11 +548,15 @@ c3 bitbucket status</code></pre>
     <section class="section" id="uninstall">
       <div class="section-title"><span class="icon">🗑️</span> Removing C3</div>
 
-      <p>To remove the MCP configuration from all IDEs without deleting your data:</p>
-      <pre><code>c3 mcp-remove</code></pre>
+      <p>To remove C3's MCP server entry from the current host's config without deleting your data:</p>
+      <pre><code>c3 mcp-remove c3</code></pre>
 
-      <p>To fully remove C3 from a project (including the <code>.c3/</code> directory):</p>
-      <pre><code>rm -rf .c3/ CLAUDE.md AGENTS.md .gemini/settings.json .mcp.json</code></pre>
+      <p>To fully remove C3 from a project (including the <code>.c3/</code> directory), delete the data directory plus whichever host config files this project has — not every project has every file:</p>
+      <pre><code>rm -rf .c3/ CLAUDE.md AGENTS.md .mcp.json .claude/settings.local.json \
+       .vscode/mcp.json .github/copilot-instructions.md \
+       .cursor/mcp.json .cursorrules \
+       .codex/config.toml .codex/hooks.json \
+       .grok/config.toml .grok/hooks/</code></pre>
 
       <div class="callout callout-warning">
         <span class="callout-icon">⚠️</span>

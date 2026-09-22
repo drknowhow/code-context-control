@@ -222,14 +222,18 @@
       <a href="getting-started.html">Get Started</a>
       <a href="workflow.html">Workflow</a>
       <a href="tools.html">Tools</a>
+      <a href="sessions.html">Sessions</a>
+      <a href="delegate.html">Delegate</a>
+      <a href="ci.html">CI</a>
       <a href="credentials.html">Credentials</a>
       <a href="access.html">Access</a>
       <a href="masking.html">Masking</a>
+      <a href="jira.html">Jira</a>
       <a href="bitbucket.html">Bitbucket</a>
       <a href="oracle.html">Oracle</a>
       <a href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener" style="color:#EA4AAA">&#9829; Sponsor</a>
     </nav>
-    <span class="header-version">v2.x</span>
+    <span class="header-version">v2.145.1</span>
   </header>
 
   <!-- Sidebar -->
@@ -257,6 +261,15 @@
       <a href="tools.html" class="sidebar-link">
         <span class="icon">🔧</span> Tools Reference
       </a>
+      <a href="sessions.html" class="sidebar-link">
+        <span class="icon">📋</span> Sessions &amp; Tasks
+      </a>
+      <a href="delegate.html" class="sidebar-link">
+        <span class="icon">🤖</span> Delegation
+      </a>
+      <a href="ci.html" class="sidebar-link">
+        <span class="icon">✅</span> Local CI
+      </a>
       <a href="credentials.html" class="sidebar-link">
         <span class="icon">🔐</span> Credential Vault
       </a>
@@ -266,12 +279,12 @@
       <a href="masking.html" class="sidebar-link">
         <span class="icon">🎭</span> Mask Guard
       </a>
-      <a href="bitbucket.html" class="sidebar-link">
-        <span class="icon">🪣</span> Bitbucket
-      </a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Integrations</div>
+      <a href="jira.html" class="sidebar-link">
+        <span class="icon">📌</span> Jira
+      </a>
       <a href="bitbucket.html" class="sidebar-link">
         <span class="icon">🪣</span> Bitbucket Data Center
       </a>
@@ -298,7 +311,7 @@
       <div class="hero-eyebrow">Documentation</div>
       <h1>Claude Code <span>Companion</span></h1>
       <p>
-        C3 is a local intelligence layer for Claude Code — adding token-efficient code search, structural file reading, persistent memory, session management, and multi-model delegation directly into your AI coding workflow.
+        C3 is a local MCP server that adds token-efficient code search, structural file reading, persistent memory, session management, and multi-model delegation to Claude Code — and, natively, to Codex, Grok Build, VS Code Copilot, Cursor, and Antigravity.
       </p>
       <div class="hero-actions">
         <a href="getting-started.html" class="btn btn-primary">Get Started →</a>
@@ -317,12 +330,32 @@
       <a href="workflow.html" class="nav-card">
         <span class="nav-card-icon">🔄</span>
         <div class="nav-card-title">Workflow</div>
-        <div class="nav-card-desc">The mandatory 7-step workflow Claude must follow every session</div>
+        <div class="nav-card-desc">The mandatory workflow Claude must follow every session</div>
       </a>
       <a href="tools.html" class="nav-card">
         <span class="nav-card-icon">🔧</span>
         <div class="nav-card-title">Tools Reference</div>
-        <div class="nav-card-desc">Full reference for all 18 MCP tools — params, examples, notes</div>
+        <div class="nav-card-desc">Full reference for all 23 MCP tools — params, examples, notes</div>
+      </a>
+      <a href="sessions.html" class="nav-card">
+        <span class="nav-card-icon">📋</span>
+        <div class="nav-card-title">Sessions &amp; Tasks</div>
+        <div class="nav-card-desc">Find an old session, mark one stale, resume where you left off — plus durable tasks and milestones via c3_task</div>
+      </a>
+      <a href="delegate.html" class="nav-card">
+        <span class="nav-card-icon">🤖</span>
+        <div class="nav-card-title">Delegation</div>
+        <div class="nav-card-desc">Offload bounded work to a smaller tier or another provider via c3_delegate — scout mode, write_paths, subagent downshift</div>
+      </a>
+      <a href="ci.html" class="nav-card">
+        <span class="nav-card-icon">✅</span>
+        <div class="nav-card-title">Local CI</div>
+        <div class="nav-card-desc">Run this repo's real GitHub Actions workflows locally instead of pushing to find out</div>
+      </a>
+      <a href="jira.html" class="nav-card">
+        <span class="nav-card-icon">📌</span>
+        <div class="nav-card-title">Jira</div>
+        <div class="nav-card-desc">Jira Cloud + Data Center: search, create, transition and link issues via c3_jira</div>
       </a>
       <a href="credentials.html" class="nav-card">
         <span class="nav-card-icon">🔐</span>
@@ -485,12 +518,7 @@
           <tr>
             <td><code>c3_read</code></td>
             <td><span class="badge badge-blue">Read</span></td>
-            <td>Targeted symbol or line-range reads (not whole files)</td>
-          </tr>
-          <tr>
-            <td><code>c3_compress</code></td>
-            <td><span class="badge badge-blue">Read</span></td>
-            <td>Structural file map — 40–70% token savings</td>
+            <td>No symbols/lines: structural file (or directory) map. With symbols/lines: exact source. <code>c3_compress</code> did the map role before v2.124.0 and is gone from the MCP surface</td>
           </tr>
           <tr>
             <td><code>c3_edit</code></td>
@@ -548,6 +576,36 @@
             <td>Structured shell exec — tests, git, build (auto-filtered)</td>
           </tr>
           <tr>
+            <td><code>c3_shell_job</code></td>
+            <td><span class="badge badge-green">Execute</span></td>
+            <td>Detached long-running shell command — start, poll, tail, cancel</td>
+          </tr>
+          <tr>
+            <td><code>c3_ci</code></td>
+            <td><span class="badge badge-green">Execute</span></td>
+            <td>Run this repo's real GitHub Actions workflows locally instead of pushing to find out</td>
+          </tr>
+          <tr>
+            <td><code>c3_locks</code></td>
+            <td><span class="badge badge-cyan">Collab</span></td>
+            <td>Agent leases — who is editing which file, so two agents don't collide</td>
+          </tr>
+          <tr>
+            <td><code>c3_override</code></td>
+            <td><span class="badge badge-purple">Access</span></td>
+            <td>Request, grant, and consult one-time exceptions to a blocked call</td>
+          </tr>
+          <tr>
+            <td><code>c3_jira</code></td>
+            <td><span class="badge badge-orange">PM</span></td>
+            <td>Jira Cloud / Data Center: search, create, transition, link issues and sprints</td>
+          </tr>
+          <tr>
+            <td><code>c3_credentials</code></td>
+            <td><span class="badge badge-yellow">Vault</span></td>
+            <td>Named secret vault — inject by name at the subprocess boundary, never reveal a value</td>
+          </tr>
+          <tr>
             <td><code>c3_task</code></td>
             <td><span class="badge badge-yellow">PM</span></td>
             <td>Durable tasks, milestones, and decision notes per project</td>
@@ -587,35 +645,63 @@
         <div class="quick-grid">
           <div class="quick-item">
             <code>c3 init</code>
-            <span>Initialize C3 for a project (.c3/, index, CLAUDE.md)</span>
+            <span>Initialize C3 for a project (.c3/, index, CLAUDE.md/AGENTS.md)</span>
           </div>
           <div class="quick-item">
-            <code>c3 install-mcp claude</code>
-            <span>Wire C3 MCP server into Claude Code</span>
+            <code>c3 install-mcp &lt;claude|vscode|cursor|codex|antigravity|grok&gt;</code>
+            <span>Wire the C3 MCP server into one host — run once per host you use</span>
           </div>
           <div class="quick-item">
-            <code>c3 install-mcp vscode</code>
-            <span>Wire C3 MCP server into VS Code Copilot</span>
+            <code>c3 doctor</code>
+            <span>Inspect native Codex or Grok Build integration, no model call</span>
           </div>
           <div class="quick-item">
-            <code>c3 install-mcp codex</code>
-            <span>Wire C3 MCP server into Codex</span>
+            <code>c3 upgrade [--check]</code>
+            <span>Upgrade C3 to the latest PyPI release, or just check for one</span>
           </div>
           <div class="quick-item">
-            <code>c3 benchmark</code>
-            <span>Run local token efficiency benchmark</span>
+            <code>c3 map {status|ensure|refresh}</code>
+            <span>Inspect or rebuild the live repo map at .c3/MAP.md</span>
           </div>
           <div class="quick-item">
             <code>c3 hub</code>
-            <span>Launch the Project Hub web dashboard</span>
+            <span>Launch the Project Hub web dashboard (localhost:3330)</span>
           </div>
           <div class="quick-item">
             <code>c3 ui</code>
-            <span>Launch the session web UI</span>
+            <span>Launch the per-project session web UI (localhost:3333)</span>
           </div>
           <div class="quick-item">
-            <code>c3 permissions readonly</code>
-            <span>Apply read-only permission tier</span>
+            <code>c3 oracle serve [--install]</code>
+            <span>Run (or register at login) the Oracle dashboard + Discovery API</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 permissions &lt;read-only|c3-strict|standard|permissive&gt;</code>
+            <span>Apply a Claude Code permission tier</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 sub &lt;list|tree|link|inspect&gt;</code>
+            <span>Manage linked sub-projects (nested or elsewhere on disk)</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 ci &lt;inspect|run|failures&gt;</code>
+            <span>Run this repo's real GitHub Actions workflows locally</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 creds &lt;set|list|get&gt;</code>
+            <span>Named secret vault — store once, inject by name</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 bitbucket login</code> / <code>c3 jira login</code>
+            <span>Connect self-hosted Bitbucket or Jira, token in the OS keyring</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 access list</code>
+            <span>Show Access Guard deny/read-only/confirm rules</span>
+          </div>
+          <div class="quick-item">
+            <code>c3 locks list</code>
+            <span>See who holds which file lease, release a stuck one</span>
           </div>
           <div class="quick-item">
             <code>c3 terse [dismiss|later|reset|status]</code>
@@ -625,7 +711,8 @@
       </div>
 
       <div class="quick-ref">
-        <h2>Mandatory Workflow (7 Steps)</h2>
+        <h2>Mandatory Workflow</h2>
+        <p style="margin-top:-6px; font-size:13px; color:var(--text-muted);">The core order, enforced by hooks in Claude Code. Specialized steps for CI, Bitbucket, Jira, credentials, cross-project work, masked paths, confirm holds and agent-config sit on top of these — see the full guide.</p>
         <div class="quick-grid">
           <div class="quick-item">
             <code>1. c3_memory(action='recall')</code>
@@ -637,27 +724,39 @@
           </div>
           <div class="quick-item">
             <code>3. c3_read(file_path) + c3_read(symbols=…)</code>
-            <span>Map then surgically read — never start with native Read</span>
+            <span>Map (file or directory) then surgically read — never start with native Read</span>
           </div>
           <div class="quick-item">
-            <code>4. c3_edit(file, old, new, summary)</code>
+            <code>4. c3_impact(target=…)</code>
+            <span>Blast-radius check before editing a shared symbol</span>
+          </div>
+          <div class="quick-item">
+            <code>5. c3_edit(file, old, new, summary)</code>
             <span>Atomic read-patch-write-log — never use native Edit</span>
           </div>
           <div class="quick-item">
-            <code>5. c3_filter(text=…)</code>
+            <code>6. c3_filter(text=…)</code>
             <span>Filter terminal output >10 lines or log files</span>
           </div>
           <div class="quick-item">
-            <code>6. c3_validate(file_path)</code>
-            <span>Syntax-check after every edit</span>
+            <code>6.5. c3_shell(cmd, cwd, timeout)</code>
+            <span>Structured shell exec for tests, git, build</span>
           </div>
           <div class="quick-item">
-            <code>7. c3_session(action='log')</code>
-            <span>Log decisions; snapshot before /clear</span>
+            <code>7. c3_validate(file_path)</code>
+            <span>Syntax/type-check after every edit</span>
+          </div>
+          <div class="quick-item">
+            <code>8. c3_session(action='log'|'note'|'stale')</code>
+            <span>Log decisions, leave a note before stopping, snapshot before /clear</span>
+          </div>
+          <div class="quick-item">
+            <code>9. c3_delegate(task, tier='small')</code>
+            <span>Offload bounded work one tier down; c3_agent for multi-model pipelines</span>
           </div>
         </div>
         <p style="margin-top:12px; font-size:13px;">
-          <a href="workflow.html">→ Full workflow guide with examples and anti-patterns</a>
+          <a href="workflow.html">→ Full workflow guide with every step, examples and anti-patterns</a>
         </p>
       </div>
     </section>
