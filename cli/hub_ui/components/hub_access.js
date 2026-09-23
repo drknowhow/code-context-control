@@ -19,8 +19,9 @@
 //     hand — the server enforces that regardless of what this UI believes);
 //   - a request that lapsed while the page showed it refreshes to its real
 //     status (the decide route answers 409), never silently mints a grant;
-//   - rule MUTATION stays on the per-project server and `c3 access` — this
-//     tab approves and reads, it does not edit policy.
+//   - path-rule MUTATION stays on the per-project server and `c3 access`.
+//     Builtin guards may be TIGHTENED here; loosening one needs C3 Desk or
+//     the CLI, because this page holds no proof that a person clicked.
 
 const ACC_KIND_COLOR = (kind) => (
   kind === 'deny' ? T.error : kind === 'mask' ? T.blue
@@ -381,6 +382,89 @@ function AccRulesPanel({ projects, focus }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Builtin guards ─────────────────────────────────────────────────────────
+// The global mode of every Tier-1 builtin. Picking a stricter mode applies
+// it; picking a looser one is refused by the server without a Desk token,
+// and the panel shows the CLI command instead.
+const ACC_BUILTIN_MODES = ['default', 'deny', 'confirm', 'allow'];
+
+function AccBuiltinPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+  const [needs, setNeeds] = useState(null);
+
+  const load = useCallback(async () => {
+    try { setData(await api.get('/api/hub/access/builtin')); setErr(''); }
+    catch (e) { setErr(apiErr(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const setMode = async (g, mode) => {
+    setBusy(g.glob); setNeeds(null);
+    try {
+      await api.post('/api/hub/access/builtin/mode', { scope: 'global', glob: g.glob, mode });
+      notify(`${g.glob} is now ${mode} everywhere`, 'ok');
+    } catch (e) {
+      const body = e && e.payload;
+      if (body && body.needs_human) setNeeds({ glob: g.glob, command: body.command });
+      else notify(apiErr(e), 'err');
+    }
+    setBusy('');
+    load();
+  };
+
+  const projects = (data && data.projects) || [];
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
+      padding: '12px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>Built-in guards</div>
+        <span style={{ fontSize: 10.5, color: T.textDim }}>
+          global mode — a stricter mode applies here; loosening one needs C3 Desk or the CLI
+        </span>
+      </div>
+      {err && <div style={{ marginTop: 8, fontSize: 11.5, color: T.error }}>{err}</div>}
+      {needs && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: T.warn }}>
+          Loosening <span className="mono">{needs.glob}</span> needs C3 Desk, or run:{' '}
+          <span className="mono" style={{ color: T.text }}>{needs.command}</span>
+        </div>
+      )}
+      {data && (
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: '4px 12px', alignItems: 'center' }}>
+          {data.guards.map(g => (
+            <React.Fragment key={g.glob}>
+              <span className="mono" style={{ fontSize: 11.5, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.glob}</span>
+              <select value={g.global} disabled={busy === g.glob}
+                onChange={e => setMode(g, e.target.value)}
+                style={{
+                  background: T.surfaceAlt, color: g.global === 'default' ? T.textMuted : T.warn,
+                  border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11.5, padding: '2px 6px',
+                }}>
+                {ACC_BUILTIN_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+      {projects.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: T.textDim }}>
+          Set per project:{' '}
+          {projects.map(p => (
+            <span key={p.path} className="mono" style={{ marginRight: 10 }}>
+              {p.name}: {p.error ? `unreadable (${p.error})`
+                : Object.entries(p.modes).map(([g, m]) => `${g}=${m}`).join(', ')}
+            </span>
+          ))}
         </div>
       )}
     </div>
@@ -762,6 +846,7 @@ function HubAccess({ projects }) {
       )}
 
       <AccGrantsPanel projects={projects} />
+      <AccBuiltinPanel />
       <AccRulesPanel projects={projects} focus={ruleFocus} />
       {confirmSpec && (
         <CredConfirm spec={confirmSpec} onClose={() => setConfirmSpec(null)} />

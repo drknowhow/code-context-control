@@ -3839,6 +3839,115 @@ def api_hub_access_rule_remove():
     return jsonify(result)
 
 
+# ── Builtin guard modes (v2.147.0) ─────────────────────────────────────────
+
+def _hub_human():
+    """The Desk client behind ``Authorization: Bearer``, else ``None``.
+
+    Loopback and the CSRF guard stop a browser, not a process on this
+    machine: an agent can POST here as easily as a person. A Desk client
+    token is minted only with ``bootstrap.key``, which Access Guard denies
+    to agents, and is stored as a hash, so presenting one is the proof a
+    loosening builtin change needs. A phone token does not count: builtin
+    guards are not loosened from a device that leaves the building.
+    """
+    from oracle.services import client_tokens
+    scheme, _, token = (request.headers.get("Authorization") or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    who = client_tokens.principal_for(token.strip())
+    return who if who and who.get("kind") == "desk" else None
+
+
+@app.route("/api/hub/access/builtin", methods=["GET"])
+def api_hub_access_builtin():
+    """Every Tier-1 builtin with its live global mode, and each project's own.
+
+    Modes are read through the keyring (config and attestation must agree),
+    so a mode listed here is one evaluation honours. ``projects`` holds only
+    projects that set a mode of their own, or could not be read.
+    ``strictness`` ranks each mode 0 (allow) to 3 (full deny), so a client
+    can tell loosening from tightening without knowing the tiers.
+    """
+    try:
+        global_modes = access_guard._scope_modes("global")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    home = access_guard._global_base()
+    guards = []
+    for glob in access_guard.DISABLEABLE_BUILTINS:
+        canon = access_guard._norm_builtin(glob)
+        guards.append({
+            "glob": canon,
+            "global": global_modes.get(canon, "default"),
+            "strictness": {m: access_guard.builtin_strictness(canon, m)
+                           for m in (*access_guard.BUILTIN_MODES, "default")},
+        })
+    projects = []
+    for p in _pm().list_registered():
+        ppath = str(p.get("path") or "")
+        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
+               "modes": {}, "error": None}
+        try:
+            base = Path(ppath).resolve()
+            if (base / ".c3").is_dir() and base != home:
+                row["modes"] = access_guard._scope_modes("project", ppath)
+        except Exception as e:
+            row["error"] = str(e)
+        if row["modes"] or row["error"]:
+            projects.append(row)
+    return jsonify({"guards": guards, "projects": projects})
+
+
+@app.route("/api/hub/access/builtin/mode", methods=["POST"])
+def api_hub_access_builtin_mode():
+    """Set a Tier-1 builtin's mode in the global realm or one project's.
+
+    Body: ``{scope, path?, glob, mode, confirm?}``. A mode at least as strict
+    as the live one needs nothing more. A looser one needs a Desk client
+    token (403 ``needs_human`` without it) and ``confirm`` equal to the glob
+    (400 ``needs_confirmation``). A project is judged against what its
+    agents see today, which is the global mode unless it set its own.
+    """
+    data = request.get_json(silent=True) or {}
+    scope, project, err = _hub_access_target(data)
+    if err:
+        return err
+    glob = str(data.get("glob") or "")
+    mode = str(data.get("mode") or "").strip()
+    canon = access_guard._norm_builtin(glob)
+    try:
+        new = access_guard.builtin_strictness(canon, mode)
+        live = (access_guard._scope_modes("global") if scope == "global"
+                else access_guard.effective_builtin_modes(project))
+        old = access_guard.builtin_strictness(canon, live.get(canon, "default"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if new < old:
+        if _hub_human() is None:
+            return jsonify({
+                "error": "loosening a built-in guard needs C3 Desk",
+                "needs_human": True,
+                "command": f'c3 access builtin mode "{canon}" {mode}'
+                           + (f' --project --path "{project}"'
+                              if scope == "project" else ""),
+            }), 403
+        if access_guard._norm_builtin(data.get("confirm")) != canon:
+            return jsonify({
+                "error": "loosening a built-in guard weakens protection",
+                "needs_confirmation": True, "confirm_with": canon,
+            }), 400
+    try:
+        result = access_guard.set_builtin_mode(canon, mode, scope,
+                                               project or ".")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result["changed"]:
+        _hub_access_audit(f"builtin_mode_{result['mode']}", result["glob"],
+                          "builtin", scope, project)
+    return jsonify({**result, "loosened": new < old})
+
+
 # ── Project management: tasks / milestones / notes (v2.45.0) ──────────────
 # Direct TaskStore per request (reload-per-op store — no runtime build needed
 # for mutations); every write audited to the target project's activity log.
