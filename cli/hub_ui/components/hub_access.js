@@ -405,6 +405,7 @@ function AccBuiltinPanel() {
     catch (e) { setErr(apiErr(e)); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  usePoll(load, 15000);
 
   const setMode = async (g, mode) => {
     setBusy(g.glob); setNeeds(null);
@@ -420,7 +421,18 @@ function AccBuiltinPanel() {
     load();
   };
 
+  const revoke = async (l) => {
+    setBusy(l.id);
+    try {
+      await api.post('/api/hub/access/builtin/lease/revoke', { id: l.id });
+      notify(`Ended the ${l.mode} lease on ${l.glob}`, 'ok');
+    } catch (e) { notify(apiErr(e), 'err'); }
+    setBusy('');
+    load();
+  };
+
   const projects = (data && data.projects) || [];
+  const leases = (data && data.leases) || [];
   return (
     <div style={{
       background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
@@ -453,6 +465,26 @@ function AccBuiltinPanel() {
                 {ACC_BUILTIN_MODES.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </React.Fragment>
+          ))}
+        </div>
+      )}
+      {leases.length > 0 && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: T.warn }}>
+            temporary changes
+          </div>
+          {leases.map(l => (
+            <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+              <span className="mono" style={{ color: T.text }}>{l.glob}</span>
+              <span style={{ color: T.warn }}>{l.mode}</span>
+              <span style={{ color: T.textMuted }}>
+                {l.scope === 'project' ? l.project_path : 'all projects'}
+                {' · '}{l.session_id ? <>session <span className="mono">{l.session_id.slice(0, 8)}</span></> : 'all sessions'}
+                {' · '}ends in {accExpiresIn(l.expires_at) || '—'}
+              </span>
+              <div style={{ flex: 1 }} />
+              <Btn variant="ghost" disabled={busy === l.id} onClick={() => revoke(l)}>Revoke</Btn>
+            </div>
           ))}
         </div>
       )}

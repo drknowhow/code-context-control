@@ -23,9 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastmcp import Context, FastMCP
 
+from cli.tools import _grants
 from core.host import resolve_host
 from core.ide import get_profile
-from services import delegate_hints
+from services import access_guard, delegate_hints
 from services.auto_memory import AutoMemory
 from services.context_snapshot import ContextSnapshot
 from services.runtime import C3Runtime, build_runtime, start_runtime, stop_runtime
@@ -508,6 +509,7 @@ def _ensure_repo_map_once(rt) -> None:
 def _svc(ctx: Context) -> C3Runtime:
     rt = ctx.request_context.lifespan_context
     _ensure_repo_map_once(rt)
+    access_guard.bind_session(_grants.session_id(rt))
     return rt
 
 

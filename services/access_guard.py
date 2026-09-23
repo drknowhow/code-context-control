@@ -60,6 +60,14 @@ BUILTIN_MODES = ("deny", "confirm", "allow")
 # (or, worse, silently disable one).
 _ACCESS_KEYRING_SERVICE = "c3-access"
 
+# Temporary and per-session builtin modes (services/builtin_leases.py), in
+# ~/.c3. Named here so the hot path can skip the lease module when no file
+# exists.
+LEASES_FILE = "builtin_leases.json"
+
+# The agent session this process evaluates for; see bind_session().
+_SESSION_ID = ""
+
 # Mask presets (docs/mask-guard.md §4). Names + param schema live here so the
 # hook subprocess can validate config without importing the transform engines;
 # the engines themselves are in services/mask_presets.py.
@@ -600,10 +608,33 @@ def effective_builtin_modes(project_path: str = ".") -> dict:
     """
     out = _scope_modes("global")
     proj_base = _scope_base("project", project_path)
-    if proj_base is None or proj_base == _global_base():
-        return out  # the home directory IS the project; one scope, not two
-    out.update(_scope_modes("project", project_path))
-    return out
+    # When the home directory IS the project there is one scope, not two.
+    if proj_base is not None and proj_base != _global_base():
+        out.update(_scope_modes("project", project_path))
+    return _lease_overlay(out, project_path)
+
+
+def bind_session(session_id: str) -> None:
+    """Name the agent session this process evaluates for, so leases bound to
+    that session apply. The hook binds per call from its payload; the MCP
+    server binds before each tool call. Unbound, only all-session leases
+    apply."""
+    global _SESSION_ID
+    _SESSION_ID = str(session_id or "")
+
+
+def _lease_overlay(modes: dict, project_path: str) -> dict:
+    """*modes* with live leases applied. A lease only loosens: one that is
+    stricter than the standing mode is ignored."""
+    home = _global_base()
+    if home is None or not (home / ".c3" / LEASES_FILE).is_file():
+        return modes
+    from services import builtin_leases  # noqa: PLC0415 — only when leases exist
+    for glob, mode in builtin_leases.live_modes(project_path, _SESSION_ID).items():
+        if builtin_strictness(glob, mode) < builtin_strictness(
+                glob, modes.get(glob, "default")):
+            modes[glob] = mode
+    return modes
 
 
 def builtin_mode_realms(project_path: str = ".") -> dict:

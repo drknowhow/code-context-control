@@ -447,6 +447,7 @@ def run(payload: dict, project_path: Path | None = None,
     tool_input = payload.get("tool_input", {}) or {}
     base = str(project_path if project_path is not None else Path.cwd())
     session_id = str(payload.get("session_id") or "")
+    ag.bind_session(session_id)
 
     if tool in _WRITE_TOOLS or tool in _READ_TOOLS:
         fp = _target(tool_input)
