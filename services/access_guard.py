@@ -621,6 +621,31 @@ def builtin_mode_realms(project_path: str = ".") -> dict:
     return out
 
 
+_KIND_RANK = {_KIND_CONFIRM: 1, _KIND_READ_ONLY: 2, _KIND_DENY: 3}
+
+
+def builtin_strictness(glob, mode: str) -> int:
+    """How strict *mode* makes a Tier-1 builtin: 0 (allow) to 3 (full deny).
+
+    The same mode word means different rules per tier — ``default`` is a full
+    deny on ``**/.env*`` and read-only on ``**/.git/**`` — so loosening is
+    only comparable through this. Raises ValueError for a glob that is not
+    Tier 1 or an unknown mode.
+    """
+    canon = _norm_builtin(glob)
+    variants = _BUILTIN_VARIANTS.get(canon)
+    if variants is None:
+        raise ValueError(f"'{_norm_glob(glob)}' is not a disableable builtin "
+                         f"— expected one of: {', '.join(DISABLEABLE_BUILTINS)}")
+    if mode not in BUILTIN_MODES + ("default",):
+        raise ValueError(f"unknown mode '{mode}' — expected one of: "
+                         f"{', '.join(BUILTIN_MODES + ('default',))}")
+    if mode == "allow":
+        return 0
+    return _KIND_RANK[variants[mode if mode in ("deny", "confirm")
+                               else "default"].kind]
+
+
 def disabled_builtins(project_path: str = ".") -> frozenset:
     """Canonical globs of builtins that are genuinely OFF right now — the
     legacy two-key opt-out plus mode="allow" entries. Callers that only ask

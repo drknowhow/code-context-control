@@ -4,6 +4,31 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.147.0] - 2026-09-23
+
+### Added — built-in guards can be changed from the Hub and C3 Desk
+
+Built-in guards (`**/.env*`, `**/.git/**`, the agent-config tier and the rest)
+could only be changed with `c3 access builtin mode`. The Hub now reads every
+guard's live mode, in the global realm and in each project that set its own,
+and can change it:
+
+- `GET /api/hub/access/builtin` lists each guard's global mode, the projects
+  with a mode of their own, and a 0–3 strictness per mode so a client can tell
+  loosening from tightening.
+- `POST /api/hub/access/builtin/mode` sets one. A mode at least as strict as
+  the live one applies directly. A looser one needs a C3 Desk client token
+  (403 `needs_human` otherwise, with the CLI command to run instead) and the
+  glob typed back (400 `needs_confirmation`).
+
+The token requirement exists because loopback and the CSRF guard stop a
+browser, not a process on the machine: an agent can POST to the Hub. Desk
+tokens are minted with `bootstrap.key`, which agents cannot read. Phone tokens
+are refused, so the mobile API still cannot loosen a built-in guard.
+
+The Hub's Access tab gains a Built-in guards panel that tightens in place and
+shows the CLI command for loosening.
+
 ## [2.146.0] - 2026-09-22
 
 ### Changed — the Hub's cross-project pages stop re-reading every activity log
