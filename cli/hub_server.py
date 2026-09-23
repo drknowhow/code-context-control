@@ -3896,7 +3896,9 @@ def api_hub_access_builtin():
             row["error"] = str(e)
         if row["modes"] or row["error"]:
             projects.append(row)
-    return jsonify({"guards": guards, "projects": projects})
+    from services import builtin_leases
+    return jsonify({"guards": guards, "projects": projects,
+                    "leases": builtin_leases.active()})
 
 
 @app.route("/api/hub/access/builtin/mode", methods=["POST"])
@@ -3946,6 +3948,59 @@ def api_hub_access_builtin_mode():
         _hub_access_audit(f"builtin_mode_{result['mode']}", result["glob"],
                           "builtin", scope, project)
     return jsonify({**result, "loosened": new < old})
+
+
+@app.route("/api/hub/access/builtin/lease", methods=["POST"])
+def api_hub_access_builtin_lease():
+    """Loosen a builtin for a while: every session, or one.
+
+    Body: ``{scope, path?, glob, mode, ttl_s, session_id?, confirm}``. A
+    lease only ever loosens, so it always needs a Desk client token and the
+    glob typed back, and a lease no looser than the live mode is a 400
+    rather than a row that would never apply. ``ttl_s`` is 60 s to 8 h.
+    """
+    from services import builtin_leases
+    data = request.get_json(silent=True) or {}
+    scope, project, err = _hub_access_target(data)
+    if err:
+        return err
+    who = _hub_human()
+    if who is None:
+        return jsonify({"error": "a temporary built-in change needs C3 Desk",
+                        "needs_human": True}), 403
+    canon = access_guard._norm_builtin(data.get("glob"))
+    mode = str(data.get("mode") or "").strip()
+    if access_guard._norm_builtin(data.get("confirm")) != canon or not canon:
+        return jsonify({"error": "a temporary change weakens protection",
+                        "needs_confirmation": True, "confirm_with": canon}), 400
+    try:
+        live = access_guard.effective_builtin_modes(project or ".") \
+            if scope == "project" else access_guard._scope_modes("global")
+        if access_guard.builtin_strictness(canon, mode) >= \
+                access_guard.builtin_strictness(canon, live.get(canon, "default")):
+            return jsonify({"error": f"{canon} is already {live.get(canon, 'default')}"
+                            f" — a {mode} lease would change nothing"}), 400
+        row = builtin_leases.mint(
+            canon, mode, scope=scope, project_path=project or ".",
+            session_id=str(data.get("session_id") or ""),
+            ttl_s=data.get("ttl_s"), created_by=who["client_id"])
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    _hub_access_audit(f"builtin_lease_{mode}", canon, "builtin", scope, project)
+    return jsonify({"lease": row})
+
+
+@app.route("/api/hub/access/builtin/lease/revoke", methods=["POST"])
+def api_hub_access_builtin_lease_revoke():
+    """End a lease now. Tightening, so no token. Body: ``{id}``."""
+    from services import builtin_leases
+    lease_id = str((request.get_json(silent=True) or {}).get("id") or "")
+    gone = builtin_leases.revoke(lease_id) if lease_id else None
+    if gone is None:
+        return jsonify({"error": "unknown or already-expired lease"}), 404
+    _hub_access_audit("builtin_lease_revoke", gone["glob"], "builtin",
+                      gone["scope"], gone.get("project_path") or None)
+    return jsonify({"revoked": lease_id})
 
 
 # ── Project management: tasks / milestones / notes (v2.45.0) ──────────────

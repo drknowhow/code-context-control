@@ -4,6 +4,33 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.148.0] - 2026-09-23
+
+### Added — loosen a built-in guard for a while, or for one session
+
+A lease loosens one built-in guard to `confirm` or `allow` for 1 minute to
+8 hours, for every session or for one agent session, in one project or all of
+them. The permanent mode is never touched, so when the lease ends the guard is
+back where it was with nothing to undo.
+
+- `POST /api/hub/access/builtin/lease` mints one. Leases only loosen, so every
+  mint needs a C3 Desk client token and the glob typed back. A lease that would
+  change nothing is refused.
+- `POST /api/hub/access/builtin/lease/revoke` ends one early, with no token
+  needed.
+- `GET /api/hub/access/builtin` lists live leases, and the Hub's Built-in
+  guards panel shows them with a countdown and a Revoke button.
+
+Leases live in `~/.c3/builtin_leases.json` and are two-key, like modes. A row
+counts only while the keyring holds the sha256 of that exact row, so a row
+written, edited or copied back by hand is ignored. A lease stricter than the
+standing mode is ignored too: leases never tighten.
+
+A per-session lease needs the evaluating process to know its session. The
+PreToolUse hook takes it from the payload, and the MCP server binds it before
+each tool call (`access_guard.bind_session`). The Hub, CLI and mobile API have
+no session, so only all-session leases apply there.
+
 ## [2.147.0] - 2026-09-23
 
 ### Added — built-in guards can be changed from the Hub and C3 Desk
