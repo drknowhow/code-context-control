@@ -119,6 +119,15 @@ class TestRevert(RevertBase):
         self.assertIn(second, out)
         self.assertEqual(self.file.read_bytes(), after_second)
 
+    def test_edit_after_revert_is_not_refused_as_stale(self):
+        from services import read_stamps
+        read_stamps.record(self.file)
+        self.edit("return 1", "return 2")
+        self.revert(self.last_id())
+        out = self.edit("return 1", "return 3")
+        self.assertNotIn("[c3_edit:stale]", out)
+        self.assertIn(b"return 3", self.file.read_bytes())
+
     def test_revert_of_revert_reapplies_the_edit(self):
         self.edit("return 1", "return 2")
         edited = self.file.read_bytes()

@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from cli.tools import _edit_report, _grants
-from services import access_guard, agent_locks, edit_blobs
+from services import access_guard, agent_locks, edit_blobs, read_stamps
 from services import credential_store as _cs
 from services.atomic_json import write_bytes_atomic
 from services.task_store import _FileLock
@@ -411,6 +411,12 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
     where: text from ``_edit_report.locate`` appended after a success line.
     """
+    stale = read_stamps.check(path, svc.project_path, file_path, old_string,
+                              edits, replace_all, norm=_norm)
+    if stale.refusal:
+        return finalize("c3_edit", {"file": file_path}, stale.refusal, "stale read")
+    finalize = stale.wrap(finalize)
+
     # ── Create mode ───────────────────────────────────────────────────────────
     # File doesn't exist + single-edit mode + empty old_string → create file.
     # Batch mode always requires an existing file.
@@ -425,6 +431,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
         try:
             write_bytes_atomic(path, new_string.encode("utf-8"))
+            stale.written()
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Create error: {e}", "create error")
@@ -526,6 +533,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         if changed:
             try:
                 _write_preserving_newlines(path, content)
+                stale.written()
             except Exception as e:
                 return finalize("c3_edit", {"file": file_path},
                                 f"Write error: {e}", "write error")
@@ -609,6 +617,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
     try:
         _write_preserving_newlines(path, new_content)
+        stale.written()
     except Exception as e:
         return finalize("c3_edit", {"file": file_path},
                         f"Write error: {e}", "write error")
