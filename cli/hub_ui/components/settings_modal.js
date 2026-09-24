@@ -14,6 +14,7 @@ function SettingsModal({ onClose, onChanged }) {
   const [port, setPort] = useState('');
   const [autoBrowser, setAutoBrowser] = useState(true);
   const [oracleUrl, setOracleUrl] = useState('');
+  const [agentCmd, setAgentCmd] = useState('');   // ide_cmds['claude-code']
   const [cacheSize, setCacheSize] = useState(8);
   const [saving, setSaving] = useState(false);
   const [svc, setSvc] = useState(null);            // hub: {installed, running, method, port, log_path} | {error}
@@ -51,6 +52,7 @@ function SettingsModal({ onClose, onChanged }) {
         setPort(d.port || 3330);
         setAutoBrowser(!!d.auto_open_browser);
         setOracleUrl(d.oracle_url || '');
+        setAgentCmd(((d.ide_cmds || {})['claude-code']) || '');
         setCacheSize(d.runtime_cache_size || 8);
       } catch {
         notify('Could not load hub config', 'err');
@@ -70,9 +72,14 @@ function SettingsModal({ onClose, onChanged }) {
     const cache = Math.max(1, parseInt(cacheSize, 10) || 8);
     setSaving(true);
     try {
+      // Blank restores the stock `claude`; other IDE overrides are left alone.
+      const ideCmds = { ...((cfg && cfg.ide_cmds) || {}) };
+      if (agentCmd.trim()) ideCmds['claude-code'] = agentCmd.trim();
+      else delete ideCmds['claude-code'];
       await api.post('/api/hub/config', {
         port: portVal, auto_open_browser: autoBrowser,
         oracle_url: oracleUrl.trim(), runtime_cache_size: cache,
+        ide_cmds: ideCmds,
       });
       const portChanged = cfg && portVal !== cfg.port;
       notify(portChanged
@@ -222,6 +229,10 @@ function SettingsModal({ onClose, onChanged }) {
         <input type="number" value={cacheSize} onChange={e => setCacheSize(e.target.value)}
           min={1} className="mono" style={inputStyle(110)} />
       ), 'Max project runtimes kept warm for drill-in and global search.')}
+      {fieldRow('Agent command', (
+        <input value={agentCmd} onChange={e => setAgentCmd(e.target.value)}
+          placeholder="claude" className="mono" style={inputStyle(220)} />
+      ), 'Default command for "Claude Code CLI" launches — e.g. yep for a wrapper script. A project can override it in Open in IDE.')}
       {fieldRow('Oracle URL', (
         <input value={oracleUrl} onChange={e => setOracleUrl(e.target.value)}
           placeholder="http://localhost:3331" className="mono" style={inputStyle(220)} />
