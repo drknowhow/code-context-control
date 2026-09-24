@@ -934,7 +934,9 @@ async def c3_edits(action: str, file: str = "", change_type: str = "modified",
              ctx: Context = None) -> str:
     """EDIT HISTORY — inspect the ledger. Different from c3_edit (which writes); this one reads.
     actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id),
-    verify (did an edit land?).
+    verify (did an edit land?), revert (edit_id: put the file back to that c3_edit's pre-image).
+    revert refuses when the file changed since that edit (revert the later edit_ids it lists first)
+    or when no pre-image was kept (native Edit/shell rows, big or read-denied files, evicted).
     branch: filter history to edits stamped with a given git branch.
     verify: pass the SAME file/old_string/new_string (or edits) you gave the c3_edit that errored or
     timed out. Answers APPLIED (do not retry) / NOT_APPLIED (safe to retry) / INCONCLUSIVE (read the

@@ -91,7 +91,7 @@ BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json",
 
 # Tier 1 — a human may switch these off, but only through the two-key opt-out
 # below: a config entry AND a keyring attestation. Default is all enforced.
-BUILTIN_DENY = ("**/.env*",)
+BUILTIN_DENY = ("**/.env*", "**/.c3/edit_blobs/**")
 # .grok/hooks/*.json is Grok Build's hook REGISTRATION (the command lines it
 # runs), the same role .claude/settings*.json plays for Claude Code, and Grok's
 # folder trust is granted per folder, not per hook file.
