@@ -794,11 +794,19 @@ class ProjectManager:
             "initialized": bool(cfg),
         }
 
+    def get_ide_cmd(self, path: str) -> str:
+        """Per-project launch command override (e.g. `yep` instead of `claude`)."""
+        path = str(Path(path).resolve())
+        for p in self._read_projects():
+            if p["path"] == path:
+                return str(p.get("ide_cmd") or "").strip()
+        return ""
+
     def update_project(self, path: str, **fields) -> bool:
-        """Update editable project fields: name, tags, notes."""
+        """Update editable project fields: name, tags, notes, ide_cmd."""
         path = str(Path(path).resolve())
         projects = self._read_projects()
-        allowed = {"name", "tags", "notes", "autostart_ui"}
+        allowed = {"name", "tags", "notes", "autostart_ui", "ide_cmd"}
         for p in projects:
             if p["path"] == path:
                 for k, v in fields.items():

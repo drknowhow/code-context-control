@@ -4,6 +4,26 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.149.0] - 2026-09-24
+
+### Added — the hub launches YOUR agent, not a command named `claude`
+
+"Claude Code CLI" was hard-coded to the binary `claude`, so a box that starts
+its agent through a wrapper (`yep`, a project-specific launcher) could only
+reach it via the Custom slot — which was never stored, so the project card's
+launch button kept running the stock command.
+
+- **`ide_cmds` in `~/.c3/hub_config.json`**: per-IDE command overrides, e.g.
+  `{"claude-code": "yep"}`. Editable from Hub Settings → Agent command.
+- **`ide_cmd` per project** (`projects.json`, set from Open in IDE): overrides
+  the hub-wide value for that project and is what the card's launch button
+  uses, so one-click launch and the picker agree.
+- **Resolution order** in `POST /api/projects/launch-ide`: the request's
+  `custom_cmd` → the project's `ide_cmd` → `ide_cmds[ide]` → the stock
+  command. An override replaces the binary only; a terminal CLI is still
+  launched in a terminal and a GUI editor still receives the path argument.
+- `POST /api/projects/update` accepts `ide_cmd`; blank clears the override.
+
 ## [2.148.0] - 2026-09-23
 
 ### Added — loosen a built-in guard for a while, or for one session
@@ -306,7 +326,6 @@ same asymmetry.
   does not read protects nothing while claiming to.
 - Every real write lands in the target's activity log and edit ledger
   (`via: hub`); global writes land in `~/.c3`.
-
 ## [2.141.0] - 2026-09-18
 
 ### Added — inherit again, and every project's approval policy in one read

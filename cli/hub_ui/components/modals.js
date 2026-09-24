@@ -528,24 +528,41 @@ function ReparentModal({ project, projects, onClose, onChanged }) {
 
 // ── IDE picker ─────────────────────────────────────────────────
 // POST /api/projects/launch-ide {path, ide, custom_cmd?}
+// The command is editable per project (stored as ide_cmd via
+// /api/projects/update) so an agent started through a wrapper — `yep` rather
+// than `claude` — launches from the card too, not just from here.
 function IdePickerModal({ project, onClose, onChanged }) {
   const known = IDE_OPTIONS.some(o => o.id === (project && project.ide));
   const [selected, setSelected] = useState(known ? project.ide : 'claude-code');
-  const [customCmd, setCustomCmd] = useState('');
+  const savedCmd = ((project && project.ide_cmd) || '').trim();
+  const [customCmd, setCustomCmd] = useState(savedCmd);
+  const [remember, setRemember] = useState(!!savedCmd);
   const [busy, setBusy] = useState(false);
 
+  const stockCmd = (id) => {
+    const opt = IDE_OPTIONS.find(o => o.id === id);
+    return opt && opt.cmd !== '...' ? opt.cmd : '';
+  };
+  const effectiveCmd = customCmd.trim() || stockCmd(selected);
+
   const launch = async () => {
-    if (selected === 'custom' && !customCmd.trim()) {
+    const cmd = customCmd.trim();
+    if (selected === 'custom' && !cmd) {
       notify('Enter a custom command first.', 'err');
       return;
     }
     setBusy(true);
     try {
+      // Persist first: the project card launches with no command of its own.
+      const wanted = remember ? cmd : '';
+      if (wanted !== savedCmd) {
+        await api.post('/api/projects/update', { path: project.path, ide_cmd: wanted });
+      }
       await api.post('/api/projects/launch-ide', {
-        path: project.path, ide: selected,
-        custom_cmd: selected === 'custom' ? customCmd.trim() : '',
+        path: project.path, ide: selected, custom_cmd: cmd,
       });
-      notify(`Launched ${ideLabel(selected)} in ${project.name || project.path}`);
+      notify(`Launched ${ideLabel(selected)} (${effectiveCmd}) in ${project.name || project.path}`);
+      if (onChanged) onChanged();
       onClose();
     } catch (e) {
       notify(`Launch failed: ${e.message}`, 'err');
@@ -575,13 +592,18 @@ function IdePickerModal({ project, onClose, onChanged }) {
           );
         })}
       </div>
-      {selected === 'custom' && (
-        <div>
-          <MdlLabel>Custom command</MdlLabel>
-          <input value={customCmd} onChange={e => setCustomCmd(e.target.value)}
-            placeholder="e.g. nvim ." className="mono" style={mdlInputStyle()} />
-        </div>
-      )}
+      <div>
+        <MdlLabel>Command{selected === 'custom' ? '' : ' (leave blank for the default)'}</MdlLabel>
+        <input value={customCmd} onChange={e => setCustomCmd(e.target.value)}
+          placeholder={selected === 'custom' ? 'e.g. nvim .' : `${stockCmd(selected)} — override with e.g. yep`}
+          className="mono" style={mdlInputStyle()} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+          fontSize: 11, color: T.textMuted, cursor: 'pointer' }}>
+          <input type="checkbox" checked={remember}
+            onChange={e => setRemember(e.target.checked)} />
+          Remember for this project (used by the card's launch button too)
+        </label>
+      </div>
       <MdlFooter>
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
         <Btn onClick={launch} disabled={busy}>

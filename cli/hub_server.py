@@ -72,6 +72,10 @@ _HUB_CONFIG_DEFAULTS = {
     "projects_view": "list",
     "main_view": "projects",
     "oracle_url": "",
+    # Per-IDE launch command overrides, e.g. {"claude-code": "yep"} when the
+    # agent is started through a wrapper script instead of the stock binary.
+    # A project's own `ide_cmd` (projects.json) wins over this.
+    "ide_cmds": {},
     # Minutes of project silence, with no session heartbeat left, before a UI
     # server that an IDE session launched is stopped. 0 = never reap.
     "ui_reap_minutes": 30,
@@ -80,6 +84,48 @@ _HUB_CONFIG_DEFAULTS = {
 # Top-bar tabs a persisted ``main_view`` may name (cli/hub_ui/components/topbar.js).
 _MAIN_VIEWS = {"projects", "board", "ci", "creds", "tokens", "locks", "access",
                "enforce", "sessions"}
+
+# Stock command per IDE id, and whether it takes the project path as an
+# argument (GUI) instead of being run inside a terminal at that path.
+_IDE_DEFAULT_CMDS = {
+    "claude-code":  ("claude",      False),
+    "claude-app":   ("claude-app",  True),
+    "codex":        ("codex",       False),
+    "grok":         ("grok",        False),
+    "gemini":       ("gemini",      False),
+    "antigravity":  ("antigravity", False),
+    "vscode":       ("code",        True),
+    "cursor":       ("cursor",      True),
+}
+
+
+def _resolve_ide_cmd(ide: str, path: str, custom_cmd: str = "") -> tuple:
+    """Resolve the command to launch for `ide` in `path`.
+
+    Precedence: explicit custom_cmd (this launch) → the project's stored
+    `ide_cmd` → hub config `ide_cmds[ide]` → the stock command.
+    Returns (cmd, is_gui, error) — error is a message when nothing resolves.
+    """
+    default_cmd, is_gui = _IDE_DEFAULT_CMDS.get(ide, ("", False))
+    if ide != "custom" and not default_cmd:
+        return "", False, f"Unknown IDE: {ide}"
+    cmd = (custom_cmd or "").strip()
+    if not cmd:
+        try:
+            cmd = _pm().get_ide_cmd(path)
+        except Exception:
+            cmd = ""
+    if not cmd:
+        overrides = _read_hub_config().get("ide_cmds") or {}
+        if isinstance(overrides, dict):
+            cmd = str(overrides.get(ide) or "").strip()
+    if not cmd:
+        cmd = default_cmd
+    if not cmd:
+        return "", False, "custom_cmd is required for custom IDE"
+    # An overridden command replaces the binary, not the launch style: a
+    # wrapper for a terminal CLI is still a terminal CLI.
+    return cmd, is_gui, ""
 
 # How often the hub reaps orphaned UI servers and chases autostart projects.
 _UI_SWEEP_INTERVAL_S = 60
@@ -460,6 +506,15 @@ def api_hub_config_set():
         cfg["main_view"] = main_view
     if "oracle_url" in data:
         cfg["oracle_url"] = str(data["oracle_url"]).strip()
+    if "ide_cmds" in data:
+        raw = data["ide_cmds"]
+        if not isinstance(raw, dict):
+            return jsonify({"error": "ide_cmds must be an object"}), 400
+        # Empty string = "back to the stock command", so the key is dropped
+        # rather than stored blank.
+        cfg["ide_cmds"] = {
+            str(k): str(v).strip() for k, v in raw.items() if str(v or "").strip()
+        }
     if "sidebar_group" in data:
         cfg["sidebar_group"] = str(data["sidebar_group"]).strip()
     if "sidebar_collapsed" in data:
@@ -718,17 +773,11 @@ def api_projects_open():
 
 @app.route("/api/projects/launch-ide", methods=["POST"])
 def api_launch_ide():
-    """Launch an IDE or CLI tool in the project directory. Body: {path, ide, custom_cmd?}"""
-    _IDE_CMDS = {
-        "claude-code":  ("claude",      False),
-        "claude-app":   ("claude-app",  True),
-        "codex":        ("codex",       False),
-        "grok":         ("grok",        False),
-        "gemini":       ("gemini",      False),
-        "antigravity":  ("antigravity", False),
-        "vscode":       ("code",        True),
-        "cursor":       ("cursor",      True),
-    }
+    """Launch an IDE or CLI tool in the project directory. Body: {path, ide, custom_cmd?}
+
+    The command itself is resolved by _resolve_ide_cmd, so a project or the
+    hub can point `claude-code` at a wrapper such as `yep`.
+    """
     try:
         data = request.get_json(force=True) or {}
         path_str   = (data.get("path")       or "").strip()
@@ -744,14 +793,9 @@ def api_launch_ide():
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path_str}"}), 404
 
-        if ide == "custom":
-            if not custom_cmd:
-                return jsonify({"error": "custom_cmd is required for custom IDE"}), 400
-            cmd, is_gui = custom_cmd, False
-        elif ide in _IDE_CMDS:
-            cmd, is_gui = _IDE_CMDS[ide]
-        else:
-            return jsonify({"error": f"Unknown IDE: {ide}"}), 400
+        cmd, is_gui, err = _resolve_ide_cmd(ide, str(path), custom_cmd)
+        if err:
+            return jsonify({"error": err}), 400
 
         if is_gui:
             # GUI IDEs (VS Code, Cursor) accept a path argument directly
@@ -795,7 +839,7 @@ def api_launch_ide():
 
 @app.route("/api/projects/update", methods=["POST"])
 def api_projects_update():
-    """Update editable project fields (name, tags, notes). Body: {path, name?, tags?, notes?}"""
+    """Update editable project fields. Body: {path, name?, tags?, notes?, ide_cmd?}"""
     data = request.get_json(force=True) or {}
     path = (data.get("path") or "").strip()
     if not path:
@@ -812,6 +856,9 @@ def api_projects_update():
             fields["tags"] = [t.strip() for t in str(raw).split(",") if t.strip()]
     if "notes" in data:
         fields["notes"] = str(data["notes"])
+    if "ide_cmd" in data:
+        # Blank clears the override and falls back to the stock command.
+        fields["ide_cmd"] = str(data["ide_cmd"] or "").strip()
     try:
         ok = _pm().update_project(path, **fields)
         return jsonify({"updated": ok})
