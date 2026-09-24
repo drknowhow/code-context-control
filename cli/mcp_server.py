@@ -192,6 +192,14 @@ def _notify_mcp_ready(svc) -> None:
 async def lifespan(server):
     """Initialize all services, auto-start session, start file watcher."""
     project = PROJECT_PATH
+    # numpy's native module must load before any background thread exists: on
+    # Windows, loading it from c3-initial-index (via chromadb) while this
+    # process starts other threads deadlocks both, and the first tool call
+    # never answers. Absent numpy, nothing here needs it.
+    try:
+        import numpy  # noqa: F401, PLC0415
+    except ImportError:
+        pass
     services = build_runtime(project, ide_name=_IDE_NAME)
     if getattr(services, "time_tracker", None) is not None:
         try:

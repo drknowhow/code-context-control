@@ -4,6 +4,19 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.149.1] - 2026-09-24
+
+### Fixed — the first tool call could hang forever on Windows
+
+When a project's embedding index was being built, the `c3-initial-index`
+thread loaded numpy's native module (through chromadb) while the server was
+starting its other threads. On Windows that deadlocked both, and the first
+tool call, or the first `c3_session save`, never answered. The server now
+imports numpy on the main thread before any background thread starts (about
+75 ms at startup; skipped when numpy is not installed).
+`tests/test_codex_mcp_transport.py` went from 0 of 10 passes to 10 of 10 on
+the machine that showed it.
+
 ## [2.149.0] - 2026-09-24
 
 ### Added — the hub launches YOUR agent, not a command named `claude`
