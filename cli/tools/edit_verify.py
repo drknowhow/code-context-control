@@ -93,8 +93,11 @@ def _read(path: Path):
         raw = path.read_bytes()
     except OSError:
         return None
-    text = raw.decode("utf-8", errors="surrogateescape")
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return _eol_norm(raw.decode("utf-8", errors="surrogateescape"))
+
+
+def _eol_norm(s: str) -> str:
+    return s.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _pairs_from_ledger(entry: dict) -> list:
@@ -151,7 +154,7 @@ def _verify_one(content, old: str, new: str, ledger, rel: str,
         # A deletion: new_string is empty. "Is the replacement present" has no
         # answer, so the ledger is the only positive evidence available.
         entry = _ledger_match(ledger, rel, old, new, limit)
-        if old and old in content:
+        if old and _eol_norm(old) in content:
             return {"verdict": VERDICT_NOT_APPLIED,
                     "why": "the text this edit removes is still present",
                     "entry": None}
@@ -165,7 +168,7 @@ def _verify_one(content, old: str, new: str, ledger, rel: str,
                        "deletion — it may never have been there",
                 "entry": None}
 
-    if new not in content:
+    if _eol_norm(new) not in content:
         return {
             "verdict": VERDICT_NOT_APPLIED,
             "why": "new_string is not in the file; had this edit landed, its "

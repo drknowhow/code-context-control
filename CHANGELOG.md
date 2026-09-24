@@ -4,6 +4,21 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.149.2] - 2026-09-24
+
+### Fixed — c3_edit rewrote line endings and could leave a half-written file
+
+c3_edit now leaves the line endings of every line it does not touch alone.
+CRLF, CR-only and mixed files used to come back with every line converted to
+one style. An old_string with CRLF endings now matches a CRLF file, and the
+replacement takes the endings of the lines it replaces. Writes are published
+atomically (temp file, fsync, retried replace), so a crash or a scanner holding
+the file can no longer leave it empty or truncated, and a read-only file is
+refused with a clear error. An empty old_string on an existing file gets a
+plain error instead of "matches N locations", an edit that changes nothing
+reports "unchanged" without writing or logging, and `edits` accepts a real
+JSON array as well as a string.
+
 ## [2.149.1] - 2026-09-24
 
 ### Fixed — the first tool call could hang forever on Windows

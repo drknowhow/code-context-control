@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import time
 from pathlib import Path
 
@@ -61,9 +62,8 @@ def atomic_tmp_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.tmp{os.getpid()}-{secrets.token_hex(4)}")
 
 
-def write_text_atomic(path, text: str, *, encoding: str = "utf-8",
-                      fsync: bool = True) -> None:
-    """Publish ``text`` at ``path``: unique temp, then a retried ``os.replace``.
+def write_bytes_atomic(path, data: bytes, *, fsync: bool = True) -> None:
+    """Publish exactly ``data`` at ``path``: unique temp, then a retried ``os.replace``.
 
     ``fsync`` flushes the temp's bytes before the replace, so a crash or power
     loss between the two cannot publish a zero-length or half-written file.
@@ -72,19 +72,22 @@ def write_text_atomic(path, text: str, *, encoding: str = "utf-8",
     which wedges the whole session. Callers whose file is ephemeral spill
     state pass ``fsync=False`` rather than pay a disk flush per update.
 
-    Newline translation matches ``Path.write_text`` (the default), so this is
-    a drop-in for the ``write_text`` + ``os.replace`` pairs it replaces and
-    does not churn line endings in files already on disk.
+    The replace publishes a new file, so an existing target's permission bits
+    are copied onto the temp first (POSIX; on Windows the only bit is
+    read-only, and a read-only target refuses the replace anyway). On any
+    failure the target is untouched and the temp is removed.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = atomic_tmp_path(path)
     try:
-        with open(tmp, "w", encoding=encoding) as fh:
-            fh.write(text)
+        with open(tmp, "wb") as fh:
+            fh.write(data)
             if fsync:
                 fh.flush()
                 os.fsync(fh.fileno())
+        if os.name != "nt" and path.exists():
+            shutil.copymode(path, tmp)
         last_exc: OSError | None = None
         for attempt in range(REPLACE_ATTEMPTS):
             try:
@@ -105,6 +108,20 @@ def write_text_atomic(path, text: str, *, encoding: str = "utf-8",
                 tmp.unlink()
         except OSError:
             pass
+
+
+def write_text_atomic(path, text: str, *, encoding: str = "utf-8",
+                      fsync: bool = True) -> None:
+    """``write_bytes_atomic`` over ``text`` encoded with ``encoding``.
+
+    Newline translation matches ``Path.write_text`` (``\\n`` becomes
+    ``os.linesep``), so this is a drop-in for the ``write_text`` +
+    ``os.replace`` pairs it replaced and does not churn line endings in files
+    already on disk.
+    """
+    if os.linesep != "\n":
+        text = text.replace("\n", os.linesep)
+    write_bytes_atomic(path, text.encode(encoding), fsync=fsync)
 
 
 def write_json_atomic(path, data, *, indent: int = 2,
