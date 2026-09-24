@@ -4,7 +4,7 @@ from pathlib import Path
 
 from cli.tools.edit import _edit_lock, _log_to_ledger, _write_gate
 from cli.tools.edit_verify import verify as _verify
-from services import edit_blobs
+from services import edit_blobs, read_stamps
 from services.atomic_json import write_bytes_atomic
 
 _ALL_ROWS = 10 ** 9
@@ -92,6 +92,7 @@ def _revert(edit_id: str, svc, finalize) -> str:
             except OSError as exc:
                 return finalize("c3_edits", args, f"Write error: {exc}",
                                 "write error")
+            read_stamps.record(path)
             images = edit_blobs.record(svc.project_path, path, current, target)
     except TimeoutError:
         return finalize(

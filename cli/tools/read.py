@@ -10,7 +10,7 @@ from cli.tools import _grants
 from cli.tools._helpers import external_banner, finalize_with_tokens, maybe_related_facts, project_key
 from cli.tools.compress import map_detail
 from core import count_tokens
-from services import access_guard
+from services import access_guard, read_stamps
 from services.file_map import render_map
 
 
@@ -296,6 +296,7 @@ def handle_read(file_path: str, symbols: Any = None, lines: Any = None,
             return ""
         return maybe_related_facts(svc, rel_path, top_k=3, context="read")
 
+    read_stamps.record(resolved)
     raw_text = full.read_text(encoding="utf-8", errors="replace")
     # EOL-normalize exactly the way c3_edit's matcher does (\r\n and \r → \n),
     # then split on \n ONLY. splitlines() also breaks on \x0c/\u2028/\x85 etc.,

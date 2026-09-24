@@ -4,6 +4,19 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.152.0] - 2026-09-24
+
+### Added — c3_edit refuses to edit text that changed since you read it
+
+When a file changes outside your session after your c3_read (in your IDE, or
+by another agent) and the change lands in or within three lines of the text
+you are replacing, the edit is refused with `[c3_edit:stale]`. The refusal
+names the changed lines and includes the current text of that region, so you
+can retry straight away without reading the file again. A change elsewhere in
+the file does not block the edit; it applies with a one-line note. Your own
+edits and reverts never trip it. Set `edit.stale_guard` in `.c3/config.json`
+to `"warn"` or `"off"` to relax it.
+
 ## [2.151.0] - 2026-09-24
 
 ### Added — c3_edits can revert a c3_edit
