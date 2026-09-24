@@ -903,11 +903,11 @@ async def c3_agent(workflow: str, scope: str = "", context: str = "",
 @mcp.tool()
 async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
                   summary: str = "", tags: str = "", replace_all: bool = False,
-                  edits: str = "",
+                  edits: str | list[dict] = "",
                   ctx: Context = None) -> str:
     """EDIT — read+patch+write+log in one step. Primary code-change tool; always prefer over native Edit.
     old_string: text to replace. new_string: replacement. summary: ledger description.
-    edits: JSON list of {old_string, new_string, summary?} for multi-hunk batch on one file.
+    edits: list (or JSON string) of {old_string, new_string, summary?} for multi-hunk batch on one file.
     Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
     If this call ERRORS OR TIMES OUT, do not retry blind — a failed c3_edit may still have
     written the file. Re-send the same args to c3_edits(action='verify') for a verdict."""
@@ -930,7 +930,8 @@ async def c3_edits(action: str, file: str = "", change_type: str = "modified",
              summary: str = "", lines_changed: str = "", tags: str = "",
              limit: int = 50, since: str = "", edit_id: str = "",
              tag: str = "", branch: str = "", old_string: str = "",
-             new_string: str = "", edits: str = "", ctx: Context = None) -> str:
+             new_string: str = "", edits: str | list[dict] = "",
+             ctx: Context = None) -> str:
     """EDIT HISTORY — inspect the ledger. Different from c3_edit (which writes); this one reads.
     actions: log (append entry), history (recent edits), versions (per-file), stats, tag (mark edit_id),
     verify (did an edit land?).
