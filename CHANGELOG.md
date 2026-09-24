@@ -4,6 +4,18 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.150.0] - 2026-09-24
+
+### Added — c3_edit shows what it changed and which tree it edited
+
+A successful edit or batch now prints a compact unified diff under the ✓ line:
+two lines of context, hunk headers with real line numbers, capped at 24 lines
+or 1500 characters. Set `edit.show_diff` to false in `.c3/config.json` to turn
+it off. A relative path in a repo with other git worktrees used to edit the
+main checkout without a word; the response now names the absolute path it
+edited and any worktree holding the same file, and a relative path that exists
+only in a worktree is refused with the absolute path to use.
+
 ## [2.149.2] - 2026-09-24
 
 ### Fixed — c3_edit rewrote line endings and could leave a half-written file
