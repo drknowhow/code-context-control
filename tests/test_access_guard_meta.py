@@ -54,6 +54,7 @@ _TOOLS_IO_ALLOWLIST = {
     "bitbucket.py",     # remote API surface, no local user-file I/O paths
     "jira.py",          # remote API surface
     "artifacts.py",     # ArtifactStore raises AccessDenied at service layer
+    "_edit_report.py",  # reads .c3/config.json only; c3_edit guards the target
 }
 
 # Enforcement-adjacent files: direct Path.resolve() banned outside the

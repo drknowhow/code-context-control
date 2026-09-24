@@ -24,7 +24,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from cli.tools import _grants
+from cli.tools import _edit_report, _grants
 from services import access_guard, agent_locks
 from services import credential_store as _cs
 from services.atomic_json import write_bytes_atomic
@@ -341,6 +341,10 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     except ValueError:
         rel = file_path
 
+    wrong_tree, where = _edit_report.locate(file_path, path, svc.project_path)
+    if wrong_tree:
+        return finalize("c3_edit", {"file": file_path}, wrong_tree, "wrong tree")
+
     # Access Guard: write verdict right after path resolution — covers the
     # create/edit/batch modes alike (docs/access-guard.md §3). Sits alongside
     # (never replaces) any dedicated vault-file guard.
@@ -377,7 +381,8 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     try:
         with _edit_lock(path):
             return _edit_locked(path, rel, file_path, old_string, new_string,
-                                summary, tags, replace_all, svc, finalize, edits)
+                                summary, tags, replace_all, svc, finalize, edits,
+                                where)
     except TimeoutError:
         return finalize(
             "c3_edit", {"file": file_path},
@@ -390,8 +395,11 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
 
 def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                  new_string: str, summary: str, tags: str, replace_all: bool,
-                 svc, finalize, edits: str) -> str:
-    """Create / batch / single-edit bodies. Always called under _edit_lock."""
+                 svc, finalize, edits: str, where: str = "") -> str:
+    """Create / batch / single-edit bodies. Always called under _edit_lock.
+
+    where: text from ``_edit_report.locate`` appended after a success line.
+    """
     # ── Create mode ───────────────────────────────────────────────────────────
     # File doesn't exist + single-edit mode + empty old_string → create file.
     # Batch mode always requires an existing file.
@@ -416,7 +424,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         deferred = _log_to_ledger(
             rel, create_summary, tag_list, svc,
             detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP], "created": True})
-        short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "")
+        short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "") + where
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} created")
 
@@ -537,6 +545,9 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             short += "\n" + "\n".join(failed)
             if first_miss:
                 short += first_miss
+        if changed:
+            short += where + _display_safe(
+                _edit_report.diff_block(original, content, svc.project_path))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} patched ({len(edit_list)} patches)")
 
@@ -602,7 +613,9 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     delta = f"-{n_old}+{n_new}L"
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
     norm_tag = " [unicode-normalized]" if used_fallback else ""
-    short = f"✓ {rel} [{delta}]{occ}{norm_tag}" + (f" — {summary}" if summary else "")
+    short = (f"✓ {rel} [{delta}]{occ}{norm_tag}" + (f" — {summary}" if summary else "")
+             + where + _display_safe(
+                 _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
                     f"{rel} patched")
 
