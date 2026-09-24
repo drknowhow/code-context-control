@@ -4,6 +4,23 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.151.0] - 2026-09-24
+
+### Added — c3_edits can revert a c3_edit
+
+c3_edit now saves the file's bytes before and after every write in
+`.c3/edit_blobs/` (content-addressed, zlib, capped at `edit.blob_cap_mb`,
+default 256 MB; files over `edit.blob_max_file_mb`, default 5 MB, get hashes
+only) and records both sha256s on the ledger row. `c3_edits(action='revert',
+edit_id=...)` puts the file back to how it was before that edit, through the
+same Access Guard, confirm-hold, agent-lock and file-lock checks as c3_edit. It
+refuses if the file changed since (and lists the later edits to revert first)
+or if no copy was kept, and logs its own `reverted` row, which can itself be
+reverted. The blob store is a builtin read-deny path, so agents cannot read
+saved contents back. Native Edit/Write and shell writes still get no saved
+copy; `docs/enforcement.md` no longer claims a pre-edit snapshot that never
+existed.
+
 ## [2.150.0] - 2026-09-24
 
 ### Added — c3_edit shows what it changed and which tree it edited

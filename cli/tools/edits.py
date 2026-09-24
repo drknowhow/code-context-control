@@ -1,6 +1,112 @@
-"""c3_edits — AI-tracked edit ledger: log, query, and version file changes."""
+"""c3_edits — AI-tracked edit ledger: log, query, version and revert file changes."""
 
+from pathlib import Path
+
+from cli.tools.edit import _edit_lock, _log_to_ledger, _write_gate
 from cli.tools.edit_verify import verify as _verify
+from services import edit_blobs
+from services.atomic_json import write_bytes_atomic
+
+_ALL_ROWS = 10 ** 9
+
+
+def _later_edits(ledger, row: dict) -> list:
+    return [e["id"] for e in ledger.get_history(file=row["file"], limit=_ALL_ROWS)
+            if e.get("timestamp", "") > row.get("timestamp", "")]
+
+
+def _revert(edit_id: str, svc, finalize) -> str:
+    """Put a file back to the pre-image a ledger row recorded.
+
+    Refuses when the row has no pre-image, or when the file's current bytes
+    are not the row's post-image. Goes through the same write gates and
+    `_edit_lock` as c3_edit, and logs its own `reverted` row carrying its own
+    pre/post images, so a revert is itself revertible.
+    """
+    args = {"action": "revert", "edit_id": edit_id}
+    if not edit_id:
+        return finalize("c3_edits", args, "edit_id is required", "missing edit_id")
+    ledger = svc.edit_ledger
+    row = next((e for e in ledger.get_history(limit=_ALL_ROWS)
+                if e.get("id") == edit_id), None)
+    if row is None:
+        return finalize("c3_edits", args, f"No ledger row {edit_id}", "not found")
+    detail = row.get("detail") or {}
+    rel = row["file"]
+    if "post_sha256" not in detail:
+        return finalize(
+            "c3_edits", args,
+            f"[c3-revert:no-image] {edit_id} ({rel}) has no recorded pre/post "
+            f"image. Only c3_edit writes record one; native Edit/Write (hook), "
+            f"shell writes and older rows do not. Use git to undo it.",
+            "no image")
+
+    target_sha = detail.get("pre_sha256")
+    target = None
+    if target_sha is not None:
+        target = edit_blobs.get(svc.project_path, target_sha)
+        if target is None:
+            why = detail.get("blob", "")
+            why = why if why.startswith("skipped:") else "evicted or missing"
+            return finalize(
+                "c3_edits", args,
+                f"[c3-revert:no-image] {edit_id} ({rel}): the pre-image is not "
+                f"stored ({why}). Use git to undo it.",
+                "no image")
+
+    path = (Path(svc.project_path) / rel).resolve()
+    if target is None:
+        op = "delete"
+    else:
+        op = "write" if path.exists() else "create"
+    refusal = _write_gate(svc, path, rel, rel, op, "c3_edits",
+                          f"revert {edit_id}", finalize)
+    if refusal is not None:
+        return refusal
+
+    try:
+        with _edit_lock(path):
+            try:
+                current = path.read_bytes() if path.exists() else None
+            except OSError as exc:
+                return finalize("c3_edits", args, f"Read error: {exc}",
+                                "read error")
+            current_sha = (edit_blobs.sha256(current)
+                           if current is not None else None)
+            if current_sha != detail["post_sha256"]:
+                later = _later_edits(ledger, row)
+                hint = (f"\n  Later ledger edits to this file (revert newest "
+                        f"first): {', '.join(reversed(later))}" if later else
+                        "\n  No later ledger edit explains it: it was changed "
+                        "outside C3.")
+                return finalize(
+                    "c3_edits", args,
+                    f"[c3-revert:changed] {rel} has changed since {edit_id}; "
+                    f"reverting it would discard those changes.{hint}",
+                    "changed since")
+            try:
+                if target is None:
+                    path.unlink()
+                else:
+                    write_bytes_atomic(path, target)
+            except OSError as exc:
+                return finalize("c3_edits", args, f"Write error: {exc}",
+                                "write error")
+            images = edit_blobs.record(svc.project_path, path, current, target)
+    except TimeoutError:
+        return finalize(
+            "c3_edits", args,
+            f"[c3-lock:busy] {rel} is held by another C3 process and did not "
+            f"free up in time. Retry, or revert later.", "lock busy")
+
+    verb = "deleted" if target is None else "restored"
+    summary = f"Revert {edit_id}"
+    deferred = _log_to_ledger(rel, summary, None, svc,
+                              detail={"reverts": edit_id, **images},
+                              change_type="reverted")
+    return finalize("c3_edits", args,
+                    f"✓ {rel} {verb} to its state before {edit_id}" + deferred,
+                    f"{rel} reverted")
 
 
 def handle_edits(action: str, file: str, change_type: str, summary: str,
@@ -23,6 +129,9 @@ def handle_edits(action: str, file: str, change_type: str, summary: str,
 
     if ledger is None:
         return finalize("c3_edits", {"action": action}, "Edit ledger not available", "ledger disabled")
+
+    if action == "revert":
+        return _revert(edit_id, svc, finalize)
 
     if action == "log":
         if not file:
@@ -135,5 +244,5 @@ def handle_edits(action: str, file: str, change_type: str, summary: str,
     else:
         return finalize("c3_edits", {"action": action},
                         f"Unknown action: {action}. "
-                        "Use: log, history, versions, stats, tag, verify",
+                        "Use: log, history, versions, stats, tag, verify, revert",
                         "unknown action")

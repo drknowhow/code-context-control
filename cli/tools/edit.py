@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from cli.tools import _edit_report, _grants
-from services import access_guard, agent_locks
+from services import access_guard, agent_locks, edit_blobs
 from services import credential_store as _cs
 from services.atomic_json import write_bytes_atomic
 from services.task_store import _FileLock
@@ -345,34 +345,11 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     if wrong_tree:
         return finalize("c3_edit", {"file": file_path}, wrong_tree, "wrong tree")
 
-    # Access Guard: write verdict right after path resolution — covers the
-    # create/edit/batch modes alike (docs/access-guard.md §3). Sits alongside
-    # (never replaces) any dedicated vault-file guard.
     op = "write" if path.exists() else "create"
-    denial = access_guard.check(str(path), op, svc.project_path)
-    if denial and not _grants.allow(svc, denial, tool="c3_edit", op=op,
-                                    path=str(path)):
-        # A confirm hold files its own Override Request so the S8 refusal can
-        # name it; every other kind refuses as before.
-        rid, note = _grants.confirm_request(svc, denial, tool="c3_edit",
-                                            op=op, path=str(path))
-        return finalize("c3_edit", {"file": file_path},
-                        access_guard.refusal(denial, file_path, op,
-                                             request_id=rid,
-                                             request_note=note),
-                        "access-denied")
-
-    # Agent Locks (Layer B). Checked AFTER the policy guards on purpose: an
-    # agent must never be told a file is busy when it was never allowed to
-    # write it in the first place (docs/agent-locks.md §5).
-    session_id = _session_id(svc)
-    holder = agent_locks.check(str(path), svc.project_path, session_id)
-    if holder:
-        return finalize("c3_edit", {"file": file_path},
-                        agent_locks.refusal(holder, rel), "lock held")
-    # Take our own lease before doing the work, not after: a second agent
-    # should be blocked for the duration of the edit, not only once it lands.
-    agent_locks.lease(str(path), svc.project_path, session_id, intent=summary)
+    refusal = _write_gate(svc, path, rel, file_path, op, "c3_edit", summary,
+                          finalize)
+    if refusal is not None:
+        return refusal
 
     # Everything that reads or writes the file runs under one lock, held for
     # the whole read → modify → write cycle. Create mode is inside it too:
@@ -391,6 +368,40 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             f"  This is contention, not an error — do not route around it via "
             f"c3_shell or native Write. Retry, or edit a different file.",
             "lock busy")
+
+
+def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
+                tool: str, intent: str, finalize) -> str | None:
+    """The gates every C3 write to a project file passes before `_edit_lock`.
+
+    Access Guard write verdict for `op` (write|create|delete), honouring a
+    live grant and auto-filing a confirm hold's Override Request; then the
+    agent-lock check; then this session's lease on `path`, taken before the
+    work so a second agent is blocked for its whole duration.
+
+    Returns a finalized refusal under `tool`, or None once the lease is held.
+    """
+    denial = access_guard.check(str(path), op, svc.project_path)
+    if denial and not _grants.allow(svc, denial, tool=tool, op=op,
+                                    path=str(path)):
+        rid, note = _grants.confirm_request(svc, denial, tool=tool,
+                                            op=op, path=str(path))
+        return finalize(tool, {"file": file_path},
+                        access_guard.refusal(denial, file_path, op,
+                                             request_id=rid,
+                                             request_note=note),
+                        "access-denied")
+
+    # Agent Locks (Layer B) come AFTER the policy guards: an agent must never
+    # be told a file is busy when it was never allowed to write it in the
+    # first place (docs/agent-locks.md §5).
+    session_id = _session_id(svc)
+    holder = agent_locks.check(str(path), svc.project_path, session_id)
+    if holder:
+        return finalize(tool, {"file": file_path},
+                        agent_locks.refusal(holder, rel), "lock held")
+    agent_locks.lease(str(path), svc.project_path, session_id, intent=intent)
+    return None
 
 
 def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
@@ -417,13 +428,15 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Create error: {e}", "create error")
+        images = edit_blobs.record_edit(svc.project_path, path, None)
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         n_new = new_string.count("\n") + 1 if new_string else 0
         create_summary = summary or f"Created {rel} ({n_new}L)"
         deferred = _log_to_ledger(
             rel, create_summary, tag_list, svc,
-            detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP], "created": True})
+            detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
+                    "created": True, **images})
         short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "") + where
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} created")
@@ -450,6 +463,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                             "bad edits param")
 
         try:
+            pre_image = path.read_bytes()
             content = _read_preserving_newlines(path)
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
@@ -527,6 +541,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 }
                 for p in edit_list if p.get("old_string") is not None
             ]}
+            batch_detail.update(
+                edit_blobs.record_edit(svc.project_path, path, pre_image))
             deferred = _log_to_ledger(
                 rel, summary or f"Batch edit: {len(edit_list)} patches",
                 tag_list, svc, detail=batch_detail)
@@ -558,6 +574,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                         f"text to replace, or use edits", "empty old_string")
 
     try:
+        pre_image = path.read_bytes()
         content = _read_preserving_newlines(path)
     except Exception as e:
         return finalize("c3_edit", {"file": file_path},
@@ -605,6 +622,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     }
     if used_fallback:
         single_detail["unicode_normalized"] = True
+    single_detail.update(
+        edit_blobs.record_edit(svc.project_path, path, pre_image))
     deferred = _log_to_ledger(rel, auto_summary, tag_list, svc,
                               detail=single_detail)
 
@@ -639,7 +658,7 @@ _DEFERRED_NOTE = (
 
 
 def _log_to_ledger(rel: str, summary: str, tag_list, svc,
-                   detail: dict = None) -> str:
+                   detail: dict = None, change_type: str = "modified") -> str:
     """Record an edit in the ledger, activity log, and session manager.
 
     Never raises, and — since #74 — never blocks the caller indefinitely.
@@ -669,7 +688,8 @@ def _log_to_ledger(rel: str, summary: str, tag_list, svc,
 
     def _record() -> None:
         try:
-            _log_to_ledger_blocking(rel, summary, tag_list, svc, detail)
+            _log_to_ledger_blocking(rel, summary, tag_list, svc, detail,
+                                    change_type)
         finally:
             done.set()
 
@@ -681,14 +701,15 @@ def _log_to_ledger(rel: str, summary: str, tag_list, svc,
 
 
 def _log_to_ledger_blocking(rel: str, summary: str, tag_list, svc,
-                            detail: dict = None) -> None:
+                            detail: dict = None,
+                            change_type: str = "modified") -> None:
     """The bookkeeping itself. Never raises; may block. Always run on a thread."""
     if not svc.edit_ledger:
         return
     try:
         entry = svc.edit_ledger.log_edit(
             file=rel,
-            change_type="modified",
+            change_type=change_type,
             summary=summary,
             tags=tag_list,
             detail=detail,
@@ -696,12 +717,12 @@ def _log_to_ledger_blocking(rel: str, summary: str, tag_list, svc,
         if svc.activity_log:
             svc.activity_log.log("file_change", {
                 "file": rel,
-                "change_type": "modified",
+                "change_type": change_type,
                 "summary": summary,
                 "edit_id": entry.get("id", ""),
             })
         if svc.session_mgr and hasattr(svc.session_mgr, "log_file_change"):
-            svc.session_mgr.log_file_change(rel, "modified")
+            svc.session_mgr.log_file_change(rel, change_type)
     except Exception:
         pass
     # Agent-artifact capture: synchronous, fully attributed (session + summary).

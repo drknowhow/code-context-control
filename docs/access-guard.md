@@ -63,7 +63,8 @@ section `access`:
 
 ### Builtins (hardcoded, always-on, fail-closed)
 
-- deny (read+write): `**/.env*`, `**/.c3/secrets.enc`, `**/.c3/cred_state.json`
+- deny (read+write): `**/.env*`, `**/.c3/edit_blobs/**` (c3_edit's saved
+  pre/post file images), `**/.c3/secrets.enc`, `**/.c3/cred_state.json`
 - write-deny (agent surfaces): `**/.c3/**`, `~/.c3/**`,
   `**/.claude/settings*.json`, the C3 install directory
   (`Path(cli.__file__).parent`), `**/.git/**` (reads stay open)

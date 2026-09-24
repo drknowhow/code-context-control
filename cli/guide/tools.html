@@ -1507,6 +1507,7 @@ c3_agent(workflow=<span class="str">'investigate'</span>, context=<span class="s
               <tr><td class="param-name">stats</td><td class="param-desc">Aggregate stats: most-edited files, change frequency</td></tr>
               <tr><td class="param-name">tag</td><td class="param-desc">Tag an edit entry with a label</td></tr>
               <tr><td class="param-name">verify</td><td class="param-desc"><strong>v2.75.0</strong> — did an edit land? Pass the SAME <code>file</code>/<code>old_string</code>/<code>new_string</code> (or <code>edits</code>) a failed or timed-out <code>c3_edit</code> call took. Answers APPLIED (do not retry) / NOT_APPLIED (safe to retry) / INCONCLUSIVE (read the file)</td></tr>
+              <tr><td class="param-name">revert</td><td class="param-desc">Put a file back to the bytes it had before <code>edit_id</code>, from the pre-image <code>c3_edit</code> stored in <code>.c3/edit_blobs/</code>. Refuses if the file changed since (lists the later edit ids to revert first) or if no pre-image was kept (native Edit/shell rows, files over 5 MB, read-denied or masked paths, evicted blobs). Logs its own <code>reverted</code> row, which can itself be reverted.</td></tr>
             </tbody>
           </table>
 

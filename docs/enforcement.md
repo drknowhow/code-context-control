@@ -33,14 +33,24 @@ c3 enforce --signal-ttl 1800     # keep native tools unlocked longer
 
 | Mode | Native `Edit`/`Write` without a prior `c3_*` call | Edit ledger |
 |---|---|---|
-| `strict` | **denied** | full, including c3_edit's pre-edit snapshot |
+| `strict` | **denied** | full, and every edit goes through `c3_edit`, which keeps a pre-image |
 | `advisory` | allowed, with a one-line hint | full — `hook_edit_ledger` runs PostToolUse regardless |
 | `off` | allowed silently | full |
 
 The ledger is captured by a **PostToolUse** hook, so it does not depend on this
-setting. What `strict` buys you over `advisory` is the pre-edit snapshot that
-`c3_edit` takes, which is what makes a clean revert possible. That is the whole
-trade-off.
+setting. What `strict` buys you over `advisory` is that edits land through
+`c3_edit`, which stores the file's bytes before and after each write in
+`.c3/edit_blobs/` and records their sha256 on the ledger row. That is what
+`c3_edits(action='revert', edit_id=...)` needs. A native `Edit`/`Write` is
+ledgered by the PostToolUse hook after the fact and gets no pre-image, so it
+cannot be reverted from the ledger. That is the whole trade-off.
+
+Revert refuses when the file no longer matches the edit's post-image (revert
+the later edits it lists first), and when no pre-image was kept: files over
+`edit.blob_max_file_mb` (default 5), paths the Access Guard will not let an
+agent read (deny, mask, confirm-on-read), or blobs evicted once the store
+passes `edit.blob_cap_mb` (default 256, oldest first). The blobs are file
+contents; `.c3/` is gitignored and never indexed.
 
 ## Scope: the project root
 
@@ -60,7 +70,7 @@ instead: it reads the command for files it probably writes (`cli/_shell_writes.p
 and `c3_edit` has not just run, adds an advisory hint naming them. After the
 command runs, files it named that exist, are editable and changed within the
 last two minutes are written to the edit ledger as `change_type: "shell"`
-rows carrying the command — after the fact, with no pre-edit snapshot.
+rows carrying the command — after the fact, with no pre-image.
 
 ## Failed calls
 
