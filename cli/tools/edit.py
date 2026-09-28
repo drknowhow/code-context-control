@@ -400,7 +400,7 @@ def _lookalike_payload(content: str, old: str, count: int,
     view, old = _eol_norm(content), _eol_norm(old)
     pos = _norm(view).find(_norm(old))
     lo = view.count("\n", 0, pos) + 1
-    hi = lo + old.count("\n")
+    hi = lo + old.removesuffix("\n").count("\n")
     region = "\n".join(view.split("\n")[lo - 1:hi])
     places = f" ({count} places; the first is shown)" if count > 1 else ""
     return (f"\n  It matches only when curly quotes, dashes and non-breaking "

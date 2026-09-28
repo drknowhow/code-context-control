@@ -122,7 +122,7 @@ class TestHandleEditIntegration(unittest.TestCase):
     def test_lookalike_edit_is_refused_with_the_file_text(self):
         self._write("a.py", "x = 1\nmsg = “hello” — ok\n")
         resp = handle_edit(
-            "a.py", 'msg = "hello" - ok', 'msg = "HELLO" - ok',
+            "a.py", 'msg = "hello" - ok\n', 'msg = "HELLO" - ok\n',
             summary="", tags="", replace_all=False,
             svc=self.svc, finalize=_finalize,
         )
