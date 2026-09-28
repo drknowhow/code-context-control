@@ -282,6 +282,18 @@ class LockStore:
                 return dict(row)
         return None
 
+    def held_by(self, path, session_id: str) -> bool:
+        """True when ``session_id`` has a live lease on ``path``."""
+        try:
+            rel = self._rel(path)
+        except UnsupportedPathError:
+            return False
+        now = self._clock()
+        return any(row.get("relpath") == rel
+                   and row.get("expires_at", 0) > now
+                   and row.get("session_id") == session_id
+                   for row in self._load()["locks"])
+
     # -- mutations ---------------------------------------------------------
 
     def acquire(self, paths, *, agent_id: str, session_id: str,
@@ -503,6 +515,24 @@ def lease(path, project_path=".", session_id: str = "", intent: str = "") -> boo
             [path], agent_id=agent_id_for(session_id),
             session_id=session_id, intent=text)
         return bool(res.get("granted"))
+    except Exception:
+        return False
+
+
+def holds(path, project_path=".", session_id: str = "") -> bool:
+    """True when this session already has a live lease on ``path``. Never raises."""
+    try:
+        return store_for(project_path).held_by(path, session_id)
+    except Exception:
+        return False
+
+
+def give_back(path, project_path=".", session_id: str = "") -> bool:
+    """Drop this session's lease on ``path``, for a c3_edit call that took one
+    and then wrote nothing. Never raises."""
+    try:
+        res = store_for(project_path).release([path], session_id=session_id)
+        return bool(res.get("count"))
     except Exception:
         return False
 

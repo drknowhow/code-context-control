@@ -88,6 +88,11 @@ def get(project_path, sha: str) -> bytes | None:
     return data if sha256(data) == sha else None
 
 
+def has(project_path, sha: str) -> bool:
+    """True when a blob for ``sha`` is in the store."""
+    return bool(sha) and _blob_path(project_path, sha).exists()
+
+
 def sweep(project_path) -> int:
     """Evict oldest blobs until the store is within 90% of its cap.
 
@@ -151,6 +156,17 @@ def _skip_reason(project_path, path, pre: bytes | None,
     if denial is not None:
         return "masked" if denial.kind == "mask" else "read-denied"
     return ""
+
+
+def keep_pre(project_path, path, pre: bytes) -> None:
+    """Store the pre-image of a write that is about to happen, when policy
+    allows, so a crash after the write still leaves it. Never raises."""
+    if _skip_reason(project_path, path, pre, None):
+        return
+    try:
+        put(project_path, pre)
+    except OSError:
+        pass
 
 
 def record(project_path, path, pre: bytes | None,

@@ -177,7 +177,7 @@ class TestEditClosestRegion(_Base):
             edits='[{"old_string":"    return 2","new_string":"    return 3"},'
                   '{"old_string":"    return compute(a, c)","new_string":"    return 0"}]',
         )
-        self.assertIn("1/2 patches applied", resp)
+        self.assertIn("1 of 2 patches could not be placed", resp)
         self.assertIn("NOT FOUND", resp)
         self.assertIn("closest:", resp)
         self.assertIn("return compute(a, b)", resp)

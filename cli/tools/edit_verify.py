@@ -244,12 +244,11 @@ def verify(file_path: str, old_string: str, new_string: str, edits: str,
                             str(patch.get("new_string", "")), ledger, rel, limit)
             verdicts.append(r["verdict"])
             lines.append(f"  patch[{i}]: {r['verdict']} — {r['why']}")
-        # A batch writes once, so a mixed result means individual hunks did not
-        # match — not that the file was left half-written. Say so, rather than
-        # letting the caller infer a torn write that cannot happen.
-        lines.append("  note: c3_edit's batch mode writes the file once after "
-                     "applying every hunk in memory, so a mixed result means "
-                     "some hunks did not match — not a partial write.")
+        # Say what a mixed result means, rather than letting the caller infer
+        # a torn write that cannot happen.
+        lines.append("  note: c3_edit applies a batch whole or not at all, so "
+                     "a mixed result means the batch was refused or the file "
+                     "changed afterwards — not a partial write.")
         counts = {v: verdicts.count(v) for v in sorted(set(verdicts))}
         summary = ", ".join(f"{n} {v.lower()}" for v, n in counts.items())
         return "\n".join(lines), f"{rel}: {summary}"

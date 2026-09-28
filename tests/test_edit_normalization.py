@@ -1,12 +1,4 @@
-"""Tests for c3_edit unicode-lookalike fallback matching.
-
-Regression: c3_edit previously failed when the caller used straight quotes
-but the file contained curly quotes (or vice versa). The fallback path
-normalizes a small, 1:1 table of lookalikes (curly quotes, unicode
-dashes, NBSP) before counting matches, then splices replacements into the
-original content at the matched offsets so unrelated lookalikes in the
-file are preserved.
-"""
+"""c3_edit matching: exact text applies, a lookalike-only match is refused."""
 import sys
 import tempfile
 import unittest
@@ -62,30 +54,35 @@ class TestApplyReplacement(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertFalse(fb)
 
-    def test_curly_double_quote_fallback(self):
-        content = 'x = “hello”'
-        out, count, fb = _apply_replacement(content, 'x = "hello"', 'x = "world"', False)
-        self.assertEqual(out, 'x = "world"')
-        self.assertEqual(count, 1)
-        self.assertTrue(fb)
+    def test_lookalike_only_match_is_not_applied(self):
+        cases = [
+            ('x = “hello”', 'x = "hello"'),
+            ("it’s fine", "it's fine"),
+            ("use --force—really", "force-really"),
+            ("hello world", "hello world"),
+        ]
+        for content, old in cases:
+            with self.subTest(content=content):
+                self.assertEqual(_apply_replacement(content, old, "X", False),
+                                 (None, 1, True))
 
-    def test_curly_single_quote_fallback(self):
-        content = "it’s fine"
-        out, count, fb = _apply_replacement(content, "it's fine", "it was fine", False)
-        self.assertEqual(out, "it was fine")
-        self.assertTrue(fb)
+    def test_exact_typographic_old_string_applies(self):
+        out, count, lookalike = _apply_replacement(
+            "say “hi” — now", "“hi” — now", "“bye” — now", False)
+        self.assertEqual(out, "say “bye” — now")
+        self.assertFalse(lookalike)
 
-    def test_em_dash_fallback(self):
-        content = "use --force—really"
-        out, count, fb = _apply_replacement(content, "force-really", "force now", False)
-        self.assertEqual(out, "use --force now")
-        self.assertTrue(fb)
+    def test_undecodable_byte_matches_its_replacement_char(self):
+        content = b"caf\xe9 = 1".decode("utf-8", errors="surrogateescape")
+        out, count, lookalike = _apply_replacement(
+            content, "caf� = 1", "cafe = 1", False)
+        self.assertEqual(out, "cafe = 1")
+        self.assertFalse(lookalike)
 
-    def test_nbsp_fallback(self):
-        content = "hello world"
-        out, count, fb = _apply_replacement(content, "hello world", "hello there", False)
-        self.assertEqual(out, "hello there")
-        self.assertTrue(fb)
+    def test_replacement_char_is_ambiguous_beside_an_undecodable_byte(self):
+        content = b"A\xef\xbf\xbdB\xffC".decode("utf-8", errors="surrogateescape")
+        self.assertEqual(_apply_replacement(content, "�", "X", False),
+                         (None, 2, False))
 
     def test_not_found_returns_none(self):
         out, count, fb = _apply_replacement("foo bar", "qux", "QUX", False)
@@ -99,27 +96,10 @@ class TestApplyReplacement(unittest.TestCase):
         self.assertEqual(count, 3)
         self.assertFalse(fb)
 
-    def test_ambiguous_via_fallback(self):
-        content = "“hi” “hi”"
-        out, count, fb = _apply_replacement(content, '"hi"', 'X', False)
-        self.assertIsNone(out)
-        self.assertEqual(count, 2)
-        self.assertTrue(fb)
-
-    def test_replace_all_via_fallback(self):
-        content = "“hi” “hi”"
-        out, count, fb = _apply_replacement(content, '"hi"', 'X', True)
-        self.assertEqual(out, "X X")
-        self.assertEqual(count, 2)
-        self.assertTrue(fb)
-
-    def test_fallback_only_touches_matched_region(self):
-        # Unrelated curly quotes elsewhere in the file must not be rewritten.
-        content = "keep “me” :: target “here”"
-        out, count, fb = _apply_replacement(
-            content, 'target "here"', 'target DONE', False)
-        self.assertEqual(out, "keep “me” :: target DONE")
-        self.assertTrue(fb)
+    def test_replace_all_does_not_apply_lookalike_matches(self):
+        self.assertEqual(
+            _apply_replacement("“hi” “hi”", '"hi"', "X", True),
+            (None, 2, True))
 
     def test_no_lookalikes_no_false_positive(self):
         # Both sides pure ASCII, no match — must not silently succeed.
@@ -144,16 +124,17 @@ class TestHandleEditIntegration(unittest.TestCase):
         p.write_text(text, encoding="utf-8")
         return p
 
-    def test_curly_quote_single_edit_succeeds(self):
-        self._write("a.py", "msg = “hello”\n")
+    def test_lookalike_edit_is_refused_with_the_file_text(self):
+        self._write("a.py", "x = 1\nmsg = “hello” — ok\n")
         resp = handle_edit(
-            "a.py", 'msg = "hello"', 'msg = "world"',
+            "a.py", 'msg = "hello" - ok\n', 'msg = "HELLO" - ok\n',
             summary="", tags="", replace_all=False,
             svc=self.svc, finalize=_finalize,
         )
-        self.assertIn("unicode-normalized", resp)
+        self.assertTrue(resp.startswith("[c3_edit:lookalike]"))
+        self.assertIn("⟦L2-L2⟧\nmsg = “hello” — ok\n⟦end⟧", resp)
         self.assertEqual((self.root / "a.py").read_text(encoding="utf-8"),
-                         'msg = "world"\n')
+                         "x = 1\nmsg = “hello” — ok\n")
 
     def test_still_reports_not_found_when_no_match(self):
         self._write("a.py", "msg = “hello”\n")
@@ -164,19 +145,18 @@ class TestHandleEditIntegration(unittest.TestCase):
         )
         self.assertIn("not found", resp)
 
-    def test_batch_mode_with_fallback(self):
-        self._write("b.py", "a = ‘one’\nb = “two”\n")
+    def test_batch_lookalike_patch_is_not_applied(self):
+        self._write("b.py", "a = ‘one’\nb = 2\n")
         resp = handle_edit(
             "b.py", "", "",
             summary="", tags="", replace_all=False,
             svc=self.svc, finalize=_finalize,
-            edits='[{"old_string":"a = \'one\'","new_string":"a = \'ONE\'"},'
-                  '{"old_string":"b = \\"two\\"","new_string":"b = \\"TWO\\""}]',
+            edits='[{"old_string":"a = \'one\'","new_string":"a = \'ONE\'"}]',
         )
-        self.assertIn("2/2 patches applied", resp)
-        self.assertIn("unicode-normalized", resp)
+        self.assertIn("patch[0]: LOOKALIKE ONLY", resp)
+        self.assertIn("⟦L1-L1⟧\na = ‘one’\n⟦end⟧", resp)
         self.assertEqual((self.root / "b.py").read_text(encoding="utf-8"),
-                         "a = 'ONE'\nb = \"TWO\"\n")
+                         "a = ‘one’\nb = 2\n")
 
 
 class TestNewlinePreservation(unittest.TestCase):
@@ -238,10 +218,7 @@ class TestNewlinePreservation(unittest.TestCase):
         self.assertEqual((self.root / "crlf2.txt").read_bytes(), b"A\r\nb\r\nc\r\n")
 
 
-class TestBatchNoOp(unittest.TestCase):
-    """Regression: batch mode wrote the file + logged a ledger entry even
-    when zero patches applied (all NOT FOUND/AMBIGUOUS). Fix: only write +
-    log when at least one patch actually modified the content."""
+class TestBatchIsAllOrNothing(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -268,24 +245,40 @@ class TestBatchNoOp(unittest.TestCase):
             svc=self.svc, finalize=_finalize,
             edits='[{"old_string":"nope","new_string":"X"}]',
         )
-        self.assertIn("0/1 patches applied", resp)
+        self.assertIn("1 of 1 patches could not be placed", resp)
         # File untouched (bytes + mtime unchanged).
         self.assertEqual((self.root / "x.txt").read_bytes(), b"a\nb\nc\n")
         self.assertEqual((self.root / "x.txt").stat().st_mtime_ns, before_mtime)
         # No ledger entry recorded for a no-op batch.
         self.svc.edit_ledger.log_edit.assert_not_called()
 
-    def test_partial_batch_writes_and_logs(self):
+    def test_one_unplaceable_patch_blocks_the_batch(self):
         self._write_bytes("y.txt", b"a\nb\nc\n")
+        for bad in ('{"old_string":"nope","new_string":"X"}',
+                    '{"old_string":"\\n","new_string":"X"}',
+                    '{"old_string":"","new_string":"X"}'):
+            with self.subTest(bad=bad):
+                resp = handle_edit(
+                    "y.txt", "", "",
+                    summary="", tags="", replace_all=False,
+                    svc=self.svc, finalize=_finalize,
+                    edits='[{"old_string":"a","new_string":"A"},' + bad + ']',
+                )
+                self.assertIn("1 of 2 patches could not be placed", resp)
+                self.assertEqual((self.root / "y.txt").read_bytes(), b"a\nb\nc\n")
+        self.svc.edit_ledger.log_edit.assert_not_called()
+
+    def test_patch_that_changes_nothing_does_not_block_the_batch(self):
+        self._write_bytes("w.txt", b"a\nb\nc\n")
         resp = handle_edit(
-            "y.txt", "", "",
+            "w.txt", "", "",
             summary="", tags="", replace_all=False,
             svc=self.svc, finalize=_finalize,
             edits='[{"old_string":"a","new_string":"A"},'
-                  '{"old_string":"nope","new_string":"X"}]',
+                  '{"old_string":"b","new_string":"b"}]',
         )
         self.assertIn("1/2 patches applied", resp)
-        self.assertEqual((self.root / "y.txt").read_bytes(), b"A\nb\nc\n")
+        self.assertEqual((self.root / "w.txt").read_bytes(), b"A\nb\nc\n")
 
     def test_non_dict_element_rejected(self):
         self._write_bytes("z.txt", b"a\nb\nc\n")

@@ -15,20 +15,107 @@ Parallel safety:
 See docs/agent-locks.md §5 (Layer A).
 """
 import bisect
+import codecs
 import difflib
 import hashlib
 import json
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from cli.tools import _edit_report, _grants
+from cli.tools._helpers import finalize_with_tokens
 from services import access_guard, agent_locks, edit_blobs, read_stamps
 from services import credential_store as _cs
 from services.atomic_json import write_bytes_atomic
 from services.task_store import _FileLock
+
+_FAILURES = {
+    "missing param": "invalid",
+    "bad edits param": "invalid",
+    "empty old_string": "invalid",
+    "bad overwrite": "invalid",
+    "vault-protected": "denied",
+    "access-denied": "denied",
+    "wrong tree": "wrong_tree",
+    "lock held": "locked",
+    "lock busy": "locked",
+    "stale read": "stale",
+    "not found": "not_found",
+    "ambiguous": "ambiguous",
+    "lookalike": "lookalike",
+    "encoding": "encoding",
+    "unread": "unread",
+    "read error": "io_error",
+    "write error": "io_error",
+    "create error": "io_error",
+}
+_NOOP = "noop"
+_BATCH_FAILURES = {"miss": "not_found", "ambiguous": "ambiguous",
+                   "lookalike": "lookalike", "skipped": "invalid"}
+
+
+class _Report:
+    """`finalize` for one c3_edit call: records the outcome and wall time of
+    whichever exit is taken, and remembers in `wrote` whether it wrote.
+
+    The outcome is the `outcome` keyword when a call site passes one, else the
+    code `_FAILURES` gives the summary slug, else "success". Other keywords
+    land in the telemetry detail. `ok` reaches the activity log, which the
+    enforcement hook reads to decide whether this call unlocks native Edit.
+    """
+
+    def __init__(self, finalize, svc):
+        self._finalize = finalize
+        self._svc = svc
+        self._started = time.monotonic()
+        self.wrote = False
+
+    def __call__(self, tool, args, text, summary="", **detail):
+        outcome = detail.pop("outcome", "") or _FAILURES.get(summary, "success")
+        self.wrote = outcome == "success"
+        return finalize_with_tokens(
+            self._finalize, self._svc, tool, args, text, summary,
+            duration_ms=round((time.monotonic() - self._started) * 1000, 1),
+            detail={"outcome": outcome, **detail},
+            ok=outcome in ("success", _NOOP))
+
+
+_in_flight: dict[tuple[str, str], dict] = {}
+
+
+@contextmanager
+def _lease_scope(path: Path, project_path: str, session_id: str, report):
+    """Give back the lease on `path` when this process's calls took it and
+    none of them wrote.
+
+    Calls on one path overlap (each runs on its own thread until
+    `_edit_lock`), so they are counted as a group: whether the session held
+    the lease is sampled when the group forms, and the lease is judged when
+    the last call leaves. A call that fails cannot drop the lease a
+    concurrent call is writing under.
+    """
+    key = (session_id, str(path))
+    with _locks_lock:
+        group = _in_flight.get(key)
+        if group is None:
+            group = _in_flight[key] = {
+                "calls": 0,
+                "keep": agent_locks.holds(str(path), project_path, session_id)}
+        group["calls"] += 1
+    try:
+        yield
+    finally:
+        with _locks_lock:
+            group["calls"] -= 1
+            group["keep"] = group["keep"] or report.wrote
+            if group["calls"] == 0:
+                del _in_flight[key]
+                if not group["keep"]:
+                    agent_locks.give_back(str(path), project_path, session_id)
 
 
 def _session_id(svc) -> str:
@@ -107,6 +194,24 @@ def _read_preserving_newlines(path: Path) -> str:
     return path.read_bytes().decode("utf-8", errors="surrogateescape")
 
 
+# UTF-32 first: its little-endian BOM begins with the UTF-16 one.
+_FOREIGN_BOMS = ((codecs.BOM_UTF32_LE, "UTF-32"), (codecs.BOM_UTF32_BE, "UTF-32"),
+                 (codecs.BOM_UTF16_LE, "UTF-16"), (codecs.BOM_UTF16_BE, "UTF-16"))
+
+
+def _encoding_refusal(raw: bytes, file_label: str) -> str:
+    """A refusal when `raw` opens with a UTF-16 or UTF-32 byte-order mark,
+    else "". Read as UTF-8 such a file is NUL-separated characters that no
+    old_string matches."""
+    name = next((n for bom, n in _FOREIGN_BOMS if raw.startswith(bom)), "")
+    if not name:
+        return ""
+    return (f"[c3_edit:encoding] {file_label} is {name} text. c3_edit and "
+            f"c3_read work on UTF-8 only, so nothing was written.\n"
+            f"  Convert the file to UTF-8 first, or change it with the tool "
+            f"that owns it.")
+
+
 def _write_preserving_newlines(path: Path, content: str) -> None:
     """Atomically replace `path` with `content`, encoded the way it was read.
 
@@ -137,10 +242,10 @@ def _dominant_eol(text: str, default: str = "\n") -> str:
     return max(_EOLS, key=counts.__getitem__)
 
 
-# Unicode lookalike substitutions used as a fallback when the literal
-# old_string is not found. Strictly 1:1 (same-length) substitutions so
-# positions are preserved — we locate the match on the normalized string
-# and splice the replacement into the original content at the same offsets.
+# Typographic characters a model tends to retype as ASCII. An old_string that
+# matches only after this fold is refused, not applied: new_string would
+# overwrite the file's characters inside the span with the retyped ones.
+# Strictly 1:1 so a folded offset is also an offset in the file text.
 _LOOKALIKE_TRANS = str.maketrans({
     "‘": "'", "’": "'", "‚": "'", "‛": "'",  # single curly quotes
     "“": '"', "”": '"', "„": '"', "‟": '"',  # double curly quotes
@@ -173,8 +278,7 @@ def _positional_replace(content: str, view: str, crlf_at: list, needle: str,
                         new: str, replace_all: bool, file_eol: str) -> str:
     """Replace `needle` found in `view` by splicing `new` into `content`.
 
-    `view` is `content` with every EOL as ``\\n`` (optionally lookalike-folded,
-    which is 1:1); `crlf_at` holds the sorted view offsets of the ``\\n``
+    `view` is `content` with every EOL as ``\\n``; `crlf_at` holds the sorted view offsets of the ``\\n``
     characters that are ``\\r\\n`` in `content`, so view offset v is raw
     offset v + bisect_left(crlf_at, v). `new` uses ``\\n`` and is written with
     the dominant EOL of the span it replaces (`file_eol` when that span has
@@ -203,15 +307,16 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     """Replace `old` with `new` in `content` without disturbing other bytes.
 
     Matching ignores EOL style (``\\r\\n``, ``\\r`` and ``\\n`` are equal), so a
-    LF old_string matches a CRLF, CR-only or mixed file; on zero matches it
-    retries with unicode-lookalike normalization (curly quotes, unicode
-    dashes, NBSP). Only the matched spans change.
+    LF old_string matches a CRLF, CR-only or mixed file, and reads an
+    undecodable byte as the U+FFFD that c3_read showed for it. Only the
+    matched spans change.
 
-    Returns (new_content, count, used_fallback):
-      - (str, count, bool) when at least one match was applied
-      - (None, 0, False)   when no match is found (even after fallback), or
-                           `old` is empty
-      - (None, count, bool) when count > 1 and replace_all is False
+    Returns (new_content, count, lookalike):
+      - (str, count, False)   when at least one match was applied
+      - (None, 0, False)      when no match is found, or `old` is empty
+      - (None, count, False)  when count > 1 and replace_all is False
+      - (None, count, True)   when `old` matches only after the lookalike
+                              fold; never applied
     """
     if not old:
         return (None, 0, False)
@@ -220,21 +325,18 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     crlf_at = [m.start() - k for k, m in enumerate(re.finditer("\r\n", content))]
     file_eol = _dominant_eol(content)
 
-    used_fallback = False
+    # c3_read shows an undecodable byte and a real U+FFFD alike, so the two
+    # are one character here: an old_string that fits both is ambiguous.
+    view = view.translate(_SURROGATE_TRANS)
+    old = old.translate(_SURROGATE_TRANS)
     count = view.count(old)
     if count == 0:
-        nv, no = _norm(view), _norm(old)
-        if nv == view and no == old:
-            # Neither side contained any lookalike chars — genuinely not found.
-            return (None, 0, False)
-        view, old, used_fallback = nv, no, True
-        count = view.count(old)
-        if count == 0:
-            return (None, 0, False)
+        folded = _norm(view).count(_norm(old))
+        return (None, folded, folded > 0)
     if count > 1 and not replace_all:
-        return (None, count, used_fallback)
+        return (None, count, False)
     return (_positional_replace(content, view, crlf_at, old, new, replace_all,
-                                file_eol), count, used_fallback)
+                                file_eol), count, False)
 
 
 def _closest_region(content: str, old: str,
@@ -293,35 +395,80 @@ def _closest_region(content: str, old: str,
 _REGION_CAP = 4000
 
 
-def _not_found_payload(near, file_label: str) -> str:
-    """Render a _closest_region result as an error-message appendix. The
-    region text is emitted verbatim (no indentation) so it can be copied
-    straight into a retry old_string."""
-    if not near:
-        return ""
-    lo, hi, region, ratio = near
+def _marked_region(lo: int, hi: int, region: str, file_label: str) -> str:
+    """File lines lo..hi between markers, verbatim and unindented so they can
+    be copied straight into a retry old_string."""
     region = _display_safe(region)
     if len(region) > _REGION_CAP:
         region = (region[:_REGION_CAP]
                   + f"\n⟦trimmed — run c3_read(file_path='{file_label}', "
                   f"lines=[{lo},{hi}]) for the rest⟧")
+    return f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n"
+
+
+def _not_found_payload(near, file_label: str) -> str:
+    """Render a _closest_region result as an error-message appendix."""
+    if not near:
+        return ""
+    lo, hi, region, ratio = near
     return (f"\n  closest match: L{lo}-L{hi} ({ratio:.0%} similar). "
             f"Actual file text between the markers:\n"
-            f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n"
-            f"  Retry with old_string copied exactly from the text above "
-            f"(markers excluded) — no need to re-read the file.")
+            + _marked_region(lo, hi, region, file_label)
+            + "  Retry with old_string copied exactly from the text above "
+              "(markers excluded) — no need to re-read the file.")
+
+
+def _revert_note(project_path, images: dict) -> str:
+    """Response text for a write that c3_edits(action='revert') will refuse:
+    no post-image hash on the row, or a pre-image that is not in the store."""
+    blob = images.get("blob") or ""
+    if not blob.startswith("skipped:"):
+        return ""
+    pre = images.get("pre_sha256")
+    if "post_sha256" in images and (
+            pre is None or edit_blobs.has(project_path, pre)):
+        return ""
+    return (f"\n  ⚠ c3_edits cannot revert this edit: the file as it was "
+            f"before is not kept ({blob.partition(':')[2]}).")
+
+
+def _lookalike_payload(content: str, old: str, count: int,
+                       file_label: str) -> str:
+    """The file's own text for the first place `old` matches after the
+    lookalike fold, as an error-message appendix."""
+    view, old = _eol_norm(content), _eol_norm(old)
+    pos = _norm(view).find(_norm(old))
+    lo = view.count("\n", 0, pos) + 1
+    hi = lo + old.removesuffix("\n").count("\n")
+    region = "\n".join(view.split("\n")[lo - 1:hi])
+    places = f" ({count} places; the first is shown)" if count > 1 else ""
+    return (f"\n  It matches only when curly quotes, dashes and non-breaking "
+            f"spaces are read as their ASCII lookalikes{places}. "
+            f"Nothing was written.\n"
+            f"  Actual file text between the markers:\n"
+            + _marked_region(lo, hi, region, file_label)
+            + "  Retry with old_string copied exactly from the text above "
+              "(markers excluded), and keep those characters in new_string "
+              "unless you mean to change them.")
 
 
 def handle_edit(file_path: str, old_string: str, new_string: str,
                 summary: str, tags: str, replace_all: bool,
-                svc, finalize, edits: str = "") -> str:
+                svc, finalize, edits: str = "", overwrite: bool = False) -> str:
     """Find old_string in file, replace with new_string, write back, log to ledger.
 
     edits: optional JSON list of {old_string, new_string, summary?} dicts for
            batch same-file patching in a single read/write cycle.
+    overwrite: replace all of an existing file with new_string. The session
+           must have read the file, and it must not have changed since.
     """
+    finalize = _Report(finalize, svc)
     if not file_path:
         return finalize("c3_edit", {}, "file_path is required", "missing param")
+    if overwrite and (old_string or edits):
+        return finalize("c3_edit", {"file": file_path},
+                        "overwrite replaces the whole file: pass new_string "
+                        "only, without old_string or edits", "bad overwrite")
 
     # Resolve path
     path = Path(file_path)
@@ -345,6 +492,16 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     if wrong_tree:
         return finalize("c3_edit", {"file": file_path}, wrong_tree, "wrong tree")
 
+    with _lease_scope(path, svc.project_path, _session_id(svc), finalize):
+        return _gated_edit(path, rel, file_path, old_string, new_string,
+                           summary, tags, replace_all, svc, finalize, edits,
+                           where, overwrite)
+
+
+def _gated_edit(path: Path, rel: str, file_path: str, old_string: str,
+                new_string: str, summary: str, tags: str, replace_all: bool,
+                svc, finalize, edits: str, where: str, overwrite: bool) -> str:
+    """The write gates, then the edit under `_edit_lock`."""
     op = "write" if path.exists() else "create"
     refusal = _write_gate(svc, path, rel, file_path, op, "c3_edit", summary,
                           finalize)
@@ -357,6 +514,9 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     # loser's content is silently gone.
     try:
         with _edit_lock(path):
+            if overwrite and path.exists():
+                return _overwrite_locked(path, rel, file_path, new_string,
+                                         summary, tags, svc, finalize, where)
             return _edit_locked(path, rel, file_path, old_string, new_string,
                                 summary, tags, replace_all, svc, finalize, edits,
                                 where)
@@ -368,6 +528,9 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             f"  This is contention, not an error — do not route around it via "
             f"c3_shell or native Write. Retry, or edit a different file.",
             "lock busy")
+    finally:
+        if finalize.wrote:
+            _edit_report.note_write(path, svc.project_path)
 
 
 def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
@@ -398,10 +561,67 @@ def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
     session_id = _session_id(svc)
     holder = agent_locks.check(str(path), svc.project_path, session_id)
     if holder:
-        return finalize(tool, {"file": file_path},
+        held_for = round(time.time() - holder.get("acquired_at", time.time()))
+        return finalize(tool, {"file": file_path,
+                               "holder": holder.get("agent_id", ""),
+                               "held_for_s": held_for},
                         agent_locks.refusal(holder, rel), "lock held")
     agent_locks.lease(str(path), svc.project_path, session_id, intent=intent)
     return None
+
+
+def _overwrite_locked(path: Path, rel: str, file_path: str, new_string: str,
+                      summary: str, tags: str, svc, finalize, where: str) -> str:
+    """Replace all of an existing file, keeping its line endings and BOM.
+    Always called under _edit_lock."""
+    args = {"file": file_path, "overwrite": True}
+    try:
+        pre_image = path.read_bytes()
+    except OSError as e:
+        return finalize("c3_edit", args, f"Read error: {e}", "read error")
+    slug = "unread" if read_stamps.get(path) is None else "stale read"
+    guard = read_stamps.check_whole(path, file_path, pre_image)
+    if guard.refusal:
+        return finalize("c3_edit", args, guard.refusal, slug)
+    foreign = _encoding_refusal(pre_image, file_path)
+    if foreign:
+        return finalize("c3_edit", args, foreign, "encoding")
+
+    content = pre_image.decode("utf-8", errors="surrogateescape")
+    eol = _dominant_eol(content)
+    new_content = _eol_norm(new_string)
+    if eol != "\n":
+        new_content = new_content.replace("\n", eol)
+    if content.startswith("﻿") and not new_content.startswith("﻿"):
+        new_content = "﻿" + new_content
+    if new_content == content:
+        return finalize("c3_edit", args,
+                        f"{rel} unchanged — new_string is the file's current "
+                        f"text; nothing was written or logged.",
+                        f"{rel} unchanged", outcome=_NOOP, n_attempted=1,
+                        n_applied=0)
+
+    edit_blobs.keep_pre(svc.project_path, path, pre_image)
+    try:
+        _write_preserving_newlines(path, new_content)
+        guard.written()
+    except Exception as e:
+        return finalize("c3_edit", args, f"Write error: {e}", "write error")
+
+    images = edit_blobs.record_edit(svc.project_path, path, pre_image)
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    n_old = len(content.splitlines())
+    n_new = len(new_content.splitlines())
+    deferred = _log_to_ledger(
+        rel, summary or f"Overwrote {rel} ({n_new}L)", tag_list, svc,
+        detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
+                "overwritten": True, **images})
+    short = (f"✓ {rel} [overwritten, -{n_old}+{n_new}L]"
+             + (f" — {summary}" if summary else "")
+             + where + _revert_note(svc.project_path, images) + _display_safe(
+                 _edit_report.diff_block(content, new_content, svc.project_path)))
+    return finalize("c3_edit", args, short + deferred, f"{rel} overwritten",
+                    n_attempted=1, n_applied=1, blob=images.get("blob"))
 
 
 def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
@@ -444,9 +664,11 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             rel, create_summary, tag_list, svc,
             detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
                     "created": True, **images})
-        short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "") + where
+        short = (f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "")
+                 + where + _revert_note(svc.project_path, images))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
-                        f"{rel} created")
+                        f"{rel} created", n_attempted=1, n_applied=1,
+                        blob=images.get("blob"))
 
     # Parse tag list once
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
@@ -475,11 +697,13 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Read error: {e}", "read error")
+        foreign = _encoding_refusal(pre_image, file_path)
+        if foreign:
+            return finalize("c3_edit", {"file": file_path}, foreign, "encoding")
         original = content
 
         results = []
-        statuses = []   # parallel to results: 'ok' | 'miss' | 'ambiguous' | 'skipped' | 'noop'
-        any_normalized = False
+        statuses = []   # parallel to results: 'ok' | 'miss' | 'lookalike' | 'ambiguous' | 'skipped' | 'noop'
         first_miss = ""
         for i, patch in enumerate(edit_list):
             old = patch.get("old_string", "")
@@ -492,9 +716,22 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 statuses.append("skipped")
                 continue
 
-            new_content, count, used_fallback = _apply_replacement(content, old, new, r_all)
+            new_content, count, lookalike = _apply_replacement(content, old, new, r_all)
+            if lookalike:
+                results.append(f"  patch[{i}]: LOOKALIKE ONLY — {old[:80]!r}")
+                statuses.append("lookalike")
+                if not first_miss:
+                    on_disk = _apply_replacement(original, old, new, r_all)
+                    first_miss = (
+                        _lookalike_payload(original, old, on_disk[1], file_path)
+                        if on_disk[2] else
+                        _lookalike_payload(content, old, count, file_path))
+                continue
             if new_content is None and count == 0:
-                near = _closest_region(_eol_norm(content), _eol_norm(old))
+                # Nothing is written on a miss, so line numbers are the
+                # file's; an earlier patch's result is the second choice.
+                near = (_closest_region(_eol_norm(original), _eol_norm(old))
+                        or _closest_region(_eol_norm(content), _eol_norm(old)))
                 loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
                        if near else "")
                 results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}{loc}")
@@ -503,8 +740,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                     first_miss = _not_found_payload(near, file_path)
                 continue
             if new_content is None:
-                tag = " (unicode-normalized)" if used_fallback else ""
-                results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches){tag} — {old[:60]!r}")
+                results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches) — {old[:60]!r}")
                 statuses.append("ambiguous")
                 continue
             if new_content == content:
@@ -515,65 +751,73 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
             content = new_content
             n = count if r_all else 1
-            if used_fallback:
-                any_normalized = True
 
             n_old = old.count("\n") + 1
             n_new = new.count("\n") + 1
             desc = patch_summary or f"{old[:50]!r} → {new[:50]!r}"
             results.append(f"  patch[{i}]: -{n_old}L +{n_new}L"
                             + (f" ({n}x)" if n > 1 else "")
-                            + (" [norm]" if used_fallback else "")
                             + f" | {desc}")
             statuses.append("ok")
 
-        # Only touch the file when the patches changed it — no rewrite and no
-        # phantom ledger entry when every patch missed or was a no-op.
-        changed = content != original
-        if changed:
-            try:
-                _write_preserving_newlines(path, content)
-                stale.written()
-            except Exception as e:
-                return finalize("c3_edit", {"file": file_path},
-                                f"Write error: {e}", "write error")
+        # All or nothing: the patches that did match are half of a change
+        # once one of them cannot be placed.
+        total = len(edit_list)
+        failed = [r for r, s in zip(results, statuses) if s in _BATCH_FAILURES]
+        if failed:
+            outcome = next(_BATCH_FAILURES[s] for s in statuses
+                           if s in _BATCH_FAILURES)
+            return finalize(
+                "c3_edit", {"file": file_path},
+                f"{rel} unchanged — {len(failed)} of {total} patches could not "
+                f"be placed, so none were applied.\n" + "\n".join(failed)
+                + first_miss
+                + "\n  Resend the whole batch with those patches corrected.",
+                f"{rel} batch refused", outcome=outcome, n_attempted=total,
+                n_applied=0)
 
-        # Log batch to ledger as one entry (store each patch's old/new for diff view)
-        deferred = ""
-        if changed:
-            batch_detail = {"patches": [
-                {
-                    "old_string": p.get("old_string", "")[:_DETAIL_CAP],
-                    "new_string": p.get("new_string", "")[:_DETAIL_CAP],
-                    **({"summary": p["summary"]} if p.get("summary") else {}),
-                }
-                for p in edit_list if p.get("old_string") is not None
-            ]}
-            batch_detail.update(
-                edit_blobs.record_edit(svc.project_path, path, pre_image))
-            deferred = _log_to_ledger(
-                rel, summary or f"Batch edit: {len(edit_list)} patches",
-                tag_list, svc, detail=batch_detail)
+        unchanged = [r for r, s in zip(results, statuses) if s == "noop"]
+        if content == original:
+            return finalize(
+                "c3_edit", {"file": file_path},
+                f"{rel} unchanged — no patch changes the text; nothing was "
+                f"written or logged.\n" + "\n".join(unchanged),
+                f"{rel} unchanged", outcome=_NOOP, n_attempted=total,
+                n_applied=0)
 
-        # Classify from the structured status list, not by substring-scanning
-        # the human-readable result lines — a patch *summary* containing words
-        # like 'NOT FOUND' used to be miscounted as a failure.
+        edit_blobs.keep_pre(svc.project_path, path, pre_image)
+        try:
+            _write_preserving_newlines(path, content)
+            stale.written()
+        except Exception as e:
+            return finalize("c3_edit", {"file": file_path},
+                            f"Write error: {e}", "write error")
+
+        # One ledger entry for the batch, with each patch's old/new for the diff view.
+        batch_detail = {"patches": [
+            {
+                "old_string": p.get("old_string", "")[:_DETAIL_CAP],
+                "new_string": p.get("new_string", "")[:_DETAIL_CAP],
+                **({"summary": p["summary"]} if p.get("summary") else {}),
+            }
+            for p in edit_list if p.get("old_string") is not None
+        ]}
+        batch_detail.update(
+            edit_blobs.record_edit(svc.project_path, path, pre_image))
+        deferred = _log_to_ledger(
+            rel, summary or f"Batch edit: {total} patches",
+            tag_list, svc, detail=batch_detail)
+
         applied = statuses.count("ok")
-        norm_tag = " [unicode-normalized]" if any_normalized else ""
-        short = f"✓ {rel} — {applied}/{len(edit_list)} patches applied{norm_tag}"
-        if not changed:
-            short = (f"{rel} unchanged — {applied}/{len(edit_list)} patches "
-                     f"applied; nothing was written or logged.")
-        if applied < len(edit_list):
-            failed = [r for r, s in zip(results, statuses) if s != "ok"]
-            short += "\n" + "\n".join(failed)
-            if first_miss:
-                short += first_miss
-        if changed:
-            short += where + _display_safe(
-                _edit_report.diff_block(original, content, svc.project_path))
+        short = (f"✓ {rel} — {applied}/{total} patches applied"
+                 + "".join(f"\n{r}" for r in unchanged)
+                 + where + _revert_note(svc.project_path, batch_detail)
+                 + _display_safe(
+                     _edit_report.diff_block(original, content, svc.project_path)))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
-                        f"{rel} patched ({len(edit_list)} patches)")
+                        f"{rel} patched ({applied}/{total} patches)",
+                        n_attempted=total, n_applied=applied,
+                        blob=batch_detail.get("blob"))
 
     # ── Single-edit mode ──────────────────────────────────────────────────────
     if not old_string:
@@ -587,34 +831,41 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     except Exception as e:
         return finalize("c3_edit", {"file": file_path},
                         f"Read error: {e}", "read error")
+    foreign = _encoding_refusal(pre_image, file_path)
+    if foreign:
+        return finalize("c3_edit", {"file": file_path}, foreign, "encoding")
 
-    new_content, count, used_fallback = _apply_replacement(
+    new_content, count, lookalike = _apply_replacement(
         content, old_string, new_string, replace_all)
 
+    if lookalike:
+        return finalize("c3_edit", {"file": file_path},
+                        f"[c3_edit:lookalike] old_string is not in {file_path} "
+                        f"as written."
+                        + _lookalike_payload(content, old_string, count, file_path),
+                        "lookalike")
     if new_content is None and count == 0:
-        hint = ""
-        if _norm(old_string) != old_string or _norm(content) != content:
-            hint = "\n  hint: unicode-lookalike normalization also failed to match."
-        hint += _not_found_payload(
+        hint = _not_found_payload(
             _closest_region(_eol_norm(content), _eol_norm(old_string)), file_path)
         return finalize("c3_edit", {"file": file_path},
                         f"old_string not found in {file_path}\n"
                         f"  searched for: {old_string[:120]!r}{hint}",
                         "not found")
     if new_content is None:
-        hint = " (after unicode-lookalike normalization)" if used_fallback else ""
         return finalize("c3_edit", {"file": file_path},
-                        f"old_string matches {count} locations{hint} — add more context to make it unique, "
+                        f"old_string matches {count} locations — add more context to make it unique, "
                         f"or pass replace_all=true to replace all occurrences.",
                         "ambiguous")
 
     if new_content == content:
         return finalize("c3_edit", {"file": file_path},
                         f"{rel} unchanged — new_string equals old_string; "
-                        f"nothing was written or logged.", f"{rel} unchanged")
+                        f"nothing was written or logged.", f"{rel} unchanged",
+                        outcome=_NOOP, n_attempted=1, n_applied=0)
 
     occurrences = count if replace_all else 1
 
+    edit_blobs.keep_pre(svc.project_path, path, pre_image)
     try:
         _write_preserving_newlines(path, new_content)
         stale.written()
@@ -629,8 +880,6 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         "old_string": old_string[:_DETAIL_CAP],
         "new_string": new_string[:_DETAIL_CAP],
     }
-    if used_fallback:
-        single_detail["unicode_normalized"] = True
     single_detail.update(
         edit_blobs.record_edit(svc.project_path, path, pre_image))
     deferred = _log_to_ledger(rel, auto_summary, tag_list, svc,
@@ -640,12 +889,13 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     n_new = new_string.count("\n") + 1
     delta = f"-{n_old}+{n_new}L"
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
-    norm_tag = " [unicode-normalized]" if used_fallback else ""
-    short = (f"✓ {rel} [{delta}]{occ}{norm_tag}" + (f" — {summary}" if summary else "")
-             + where + _display_safe(
+    short = (f"✓ {rel} [{delta}]{occ}" + (f" — {summary}" if summary else "")
+             + where + _revert_note(svc.project_path, single_detail)
+             + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
-                    f"{rel} patched")
+                    f"{rel} patched", n_attempted=1, n_applied=1,
+                    blob=single_detail.get("blob"))
 
 
 _DETAIL_CAP = 2000  # chars stored per old/new string in the ledger

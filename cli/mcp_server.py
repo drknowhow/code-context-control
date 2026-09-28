@@ -543,7 +543,9 @@ def _with_hint(resp, make_hint) -> str:
 
 def _finalize_response(ctx: Context, tool_name: str, args: dict,
                        response: str, summary: str = "",
-                       response_tokens: int = 0) -> str:
+                       response_tokens: int = 0,
+                       ok: bool | None = None) -> str:
+    """ok: the tool's own verdict on the call; None reads it off the response text."""
     global _last_tool_call_time, _last_badge_count
 
     deferred_snapshot = False
@@ -586,11 +588,14 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     svc.session_mgr.log_tool_call(tool_name, args, summary)
     # ok=False lets hook_pretool_enforce's activity scan skip a failed call
     # (ISSUE-3: "Error: File not found" used to count as "c3 was used").
-    try:
-        from cli._hook_utils import response_text_failed as _failed
-        call_ok = not _failed(response)
-    except Exception:
-        call_ok = True
+    if ok is not None:
+        call_ok = ok
+    else:
+        try:
+            from cli._hook_utils import response_text_failed as _failed
+            call_ok = not _failed(response)
+        except Exception:
+            call_ok = True
     # Both session ids on every tool_call row (D0b): C3's own id joins the
     # row to session_start / the saved session file, the host id joins it to
     # the hooks' session_open / session_end rows. Either may be absent.
@@ -903,12 +908,13 @@ async def c3_agent(workflow: str, scope: str = "", context: str = "",
 @mcp.tool()
 async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
                   summary: str = "", tags: str = "", replace_all: bool = False,
-                  edits: str | list[dict] = "",
+                  edits: str | list[dict] = "", overwrite: bool = False,
                   ctx: Context = None) -> str:
     """EDIT — read+patch+write+log in one step. Primary code-change tool; always prefer over native Edit.
     old_string: text to replace. new_string: replacement. summary: ledger description.
-    edits: list (or JSON string) of {old_string, new_string, summary?} for multi-hunk batch on one file.
-    Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
+    edits: list (or JSON string) of {old_string, new_string, summary?} for multi-hunk batch on one file,
+    applied all or none. Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
+    Rewrite a whole existing file: overwrite=true + new_string=<content>, after a c3_read of it.
     If this call ERRORS OR TIMES OUT, do not retry blind — a failed c3_edit may still have
     written the file. Re-send the same args to c3_edits(action='verify') for a verdict."""
     path_err = validate_file_path(file_path)
@@ -920,7 +926,8 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
         return _finalize_response(ctx, name, args, resp, summ, **kw)
 
     resp = await asyncio.to_thread(handle_edit, file_path, old_string, new_string,
-                                   summary, tags, replace_all, svc, finalize, edits)
+                                   summary, tags, replace_all, svc, finalize, edits,
+                                   overwrite)
     return _with_hint(resp, lambda: delegate_hints.after_edit(
         svc, file_path, delegate_hints.edit_chars(new_string, edits)))
 

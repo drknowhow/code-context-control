@@ -101,10 +101,12 @@ class TestWorktreeAwareness(unittest.TestCase):
                            capture_output=True, stdin=subprocess.DEVNULL)
         (self.wt / "only_wt.py").write_text("b = 1\n", encoding="utf-8")
         _edit_report._worktree_cache.clear()
+        _edit_report._last_tree.clear()
         self.svc = _make_svc(self.main)
 
     def tearDown(self):
         _edit_report._worktree_cache.clear()
+        _edit_report._last_tree.clear()
         shutil.rmtree(self.base, ignore_errors=True)
 
     def test_relative_path_warns_and_names_worktree_copy(self):
@@ -130,6 +132,25 @@ class TestWorktreeAwareness(unittest.TestCase):
         resp = _edit(self.svc, "only_wt.py", "", "c = 1\n")
         self.assertIn("[c3_edit:wrong-tree]", resp)
         self.assertFalse((self.main / "only_wt.py").exists())
+
+    def test_relative_path_after_a_worktree_edit_is_refused(self):
+        _edit(self.svc, str(self.wt / "only_wt.py"), "b = 1", "b = 2")
+        for old, new in (("a = 1", "a = 2"), ("", "e = 1\n")):
+            name = "shared.py" if old else "brand_new.py"
+            with self.subTest(name=name):
+                resp = _edit(self.svc, name, old, new)
+                self.assertIn("[c3_edit:wrong-tree]", resp)
+                self.assertIn(str((self.wt / name).resolve()), resp)
+                self.assertIn("where the same path is" if old
+                              else "where this path would be", resp)
+        self.assertEqual((self.main / "shared.py").read_text(encoding="utf-8"), "a = 1\n")
+        self.assertFalse((self.main / "brand_new.py").exists())
+
+    def test_absolute_edit_in_this_checkout_lets_relative_paths_through_again(self):
+        _edit(self.svc, str(self.wt / "only_wt.py"), "b = 1", "b = 2")
+        _edit(self.svc, str(self.main / "shared.py"), "a = 1", "a = 2")
+        resp = _edit(self.svc, "shared.py", "a = 2", "a = 3")
+        self.assertTrue(resp.startswith("✓ shared.py [-1+1L]"))
 
     def test_relative_create_warns_it_landed_in_main_checkout(self):
         resp = _edit(self.svc, "brand_new.py", "", "d = 1\n")
