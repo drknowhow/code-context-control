@@ -562,10 +562,17 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 results.append(f"  patch[{i}]: LOOKALIKE ONLY — {old[:80]!r}")
                 statuses.append("lookalike")
                 if not first_miss:
-                    first_miss = _lookalike_payload(content, old, count, file_path)
+                    on_disk = _apply_replacement(original, old, new, r_all)
+                    first_miss = (
+                        _lookalike_payload(original, old, on_disk[1], file_path)
+                        if on_disk[2] else
+                        _lookalike_payload(content, old, count, file_path))
                 continue
             if new_content is None and count == 0:
-                near = _closest_region(_eol_norm(content), _eol_norm(old))
+                # Nothing is written on a miss, so line numbers are the
+                # file's; an earlier patch's result is the second choice.
+                near = (_closest_region(_eol_norm(original), _eol_norm(old))
+                        or _closest_region(_eol_norm(content), _eol_norm(old)))
                 loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
                        if near else "")
                 results.append(f"  patch[{i}]: NOT FOUND — {old[:80]!r}{loc}")
@@ -594,63 +601,62 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                             + f" | {desc}")
             statuses.append("ok")
 
-        # Only touch the file when the patches changed it — no rewrite and no
-        # phantom ledger entry when every patch missed or was a no-op.
-        changed = content != original
-        if changed:
-            try:
-                _write_preserving_newlines(path, content)
-                stale.written()
-            except Exception as e:
-                return finalize("c3_edit", {"file": file_path},
-                                f"Write error: {e}", "write error")
+        # All or nothing: the patches that did match are half of a change
+        # once one of them cannot be placed.
+        total = len(edit_list)
+        failed = [r for r, s in zip(results, statuses) if s in _BATCH_FAILURES]
+        if failed:
+            outcome = next(_BATCH_FAILURES[s] for s in statuses
+                           if s in _BATCH_FAILURES)
+            return finalize(
+                "c3_edit", {"file": file_path},
+                f"{rel} unchanged — {len(failed)} of {total} patches could not "
+                f"be placed, so none were applied.\n" + "\n".join(failed)
+                + first_miss
+                + "\n  Resend the whole batch with those patches corrected.",
+                f"{rel} batch refused", outcome=outcome, n_attempted=total,
+                n_applied=0)
 
-        # Log batch to ledger as one entry (store each patch's old/new for diff view)
-        deferred = ""
-        blob = None
-        if changed:
-            batch_detail = {"patches": [
-                {
-                    "old_string": p.get("old_string", "")[:_DETAIL_CAP],
-                    "new_string": p.get("new_string", "")[:_DETAIL_CAP],
-                    **({"summary": p["summary"]} if p.get("summary") else {}),
-                }
-                for p in edit_list if p.get("old_string") is not None
-            ]}
-            batch_detail.update(
-                edit_blobs.record_edit(svc.project_path, path, pre_image))
-            blob = batch_detail.get("blob")
-            deferred = _log_to_ledger(
-                rel, summary or f"Batch edit: {len(edit_list)} patches",
-                tag_list, svc, detail=batch_detail)
+        unchanged = [r for r, s in zip(results, statuses) if s == "noop"]
+        if content == original:
+            return finalize(
+                "c3_edit", {"file": file_path},
+                f"{rel} unchanged — no patch changes the text; nothing was "
+                f"written or logged.\n" + "\n".join(unchanged),
+                f"{rel} unchanged", outcome=_NOOP, n_attempted=total,
+                n_applied=0)
 
-        # Classify from the structured status list, not by substring-scanning
-        # the human-readable result lines — a patch *summary* containing words
-        # like 'NOT FOUND' used to be miscounted as a failure.
+        try:
+            _write_preserving_newlines(path, content)
+            stale.written()
+        except Exception as e:
+            return finalize("c3_edit", {"file": file_path},
+                            f"Write error: {e}", "write error")
+
+        # One ledger entry for the batch, with each patch's old/new for the diff view.
+        batch_detail = {"patches": [
+            {
+                "old_string": p.get("old_string", "")[:_DETAIL_CAP],
+                "new_string": p.get("new_string", "")[:_DETAIL_CAP],
+                **({"summary": p["summary"]} if p.get("summary") else {}),
+            }
+            for p in edit_list if p.get("old_string") is not None
+        ]}
+        batch_detail.update(
+            edit_blobs.record_edit(svc.project_path, path, pre_image))
+        deferred = _log_to_ledger(
+            rel, summary or f"Batch edit: {total} patches",
+            tag_list, svc, detail=batch_detail)
+
         applied = statuses.count("ok")
-        short = f"✓ {rel} — {applied}/{len(edit_list)} patches applied"
-        if not changed:
-            short = (f"{rel} unchanged — {applied}/{len(edit_list)} patches "
-                     f"applied; nothing was written or logged.")
-        if applied < len(edit_list):
-            failed = [r for r, s in zip(results, statuses) if s != "ok"]
-            short += "\n" + "\n".join(failed)
-            if first_miss:
-                short += first_miss
-        if changed:
-            short += where + _display_safe(
-                _edit_report.diff_block(original, content, svc.project_path))
-        if applied == len(edit_list):
-            outcome = "success"
-        elif changed:
-            outcome = "partial"
-        else:
-            outcome = next((_BATCH_FAILURES[s] for s in statuses
-                            if s in _BATCH_FAILURES), _NOOP)
+        short = (f"✓ {rel} — {applied}/{total} patches applied"
+                 + "".join(f"\n{r}" for r in unchanged)
+                 + where + _display_safe(
+                     _edit_report.diff_block(original, content, svc.project_path)))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
-                        f"{rel} patched ({applied}/{len(edit_list)} patches)",
-                        outcome=outcome, n_attempted=len(edit_list),
-                        n_applied=applied, blob=blob)
+                        f"{rel} patched ({applied}/{total} patches)",
+                        n_attempted=total, n_applied=applied,
+                        blob=batch_detail.get("blob"))
 
     # ── Single-edit mode ──────────────────────────────────────────────────────
     if not old_string:

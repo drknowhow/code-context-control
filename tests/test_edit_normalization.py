@@ -213,10 +213,7 @@ class TestNewlinePreservation(unittest.TestCase):
         self.assertEqual((self.root / "crlf2.txt").read_bytes(), b"A\r\nb\r\nc\r\n")
 
 
-class TestBatchNoOp(unittest.TestCase):
-    """Regression: batch mode wrote the file + logged a ledger entry even
-    when zero patches applied (all NOT FOUND/AMBIGUOUS). Fix: only write +
-    log when at least one patch actually modified the content."""
+class TestBatchIsAllOrNothing(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -243,24 +240,40 @@ class TestBatchNoOp(unittest.TestCase):
             svc=self.svc, finalize=_finalize,
             edits='[{"old_string":"nope","new_string":"X"}]',
         )
-        self.assertIn("0/1 patches applied", resp)
+        self.assertIn("1 of 1 patches could not be placed", resp)
         # File untouched (bytes + mtime unchanged).
         self.assertEqual((self.root / "x.txt").read_bytes(), b"a\nb\nc\n")
         self.assertEqual((self.root / "x.txt").stat().st_mtime_ns, before_mtime)
         # No ledger entry recorded for a no-op batch.
         self.svc.edit_ledger.log_edit.assert_not_called()
 
-    def test_partial_batch_writes_and_logs(self):
+    def test_one_unplaceable_patch_blocks_the_batch(self):
         self._write_bytes("y.txt", b"a\nb\nc\n")
+        for bad in ('{"old_string":"nope","new_string":"X"}',
+                    '{"old_string":"\\n","new_string":"X"}',
+                    '{"old_string":"","new_string":"X"}'):
+            with self.subTest(bad=bad):
+                resp = handle_edit(
+                    "y.txt", "", "",
+                    summary="", tags="", replace_all=False,
+                    svc=self.svc, finalize=_finalize,
+                    edits='[{"old_string":"a","new_string":"A"},' + bad + ']',
+                )
+                self.assertIn("1 of 2 patches could not be placed", resp)
+                self.assertEqual((self.root / "y.txt").read_bytes(), b"a\nb\nc\n")
+        self.svc.edit_ledger.log_edit.assert_not_called()
+
+    def test_patch_that_changes_nothing_does_not_block_the_batch(self):
+        self._write_bytes("w.txt", b"a\nb\nc\n")
         resp = handle_edit(
-            "y.txt", "", "",
+            "w.txt", "", "",
             summary="", tags="", replace_all=False,
             svc=self.svc, finalize=_finalize,
             edits='[{"old_string":"a","new_string":"A"},'
-                  '{"old_string":"nope","new_string":"X"}]',
+                  '{"old_string":"b","new_string":"b"}]',
         )
         self.assertIn("1/2 patches applied", resp)
-        self.assertEqual((self.root / "y.txt").read_bytes(), b"A\nb\nc\n")
+        self.assertEqual((self.root / "w.txt").read_bytes(), b"A\nb\nc\n")
 
     def test_non_dict_element_rejected(self):
         self._write_bytes("z.txt", b"a\nb\nc\n")

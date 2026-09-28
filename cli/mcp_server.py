@@ -912,8 +912,8 @@ async def c3_edit(file_path: str, old_string: str = "", new_string: str = "",
                   ctx: Context = None) -> str:
     """EDIT — read+patch+write+log in one step. Primary code-change tool; always prefer over native Edit.
     old_string: text to replace. new_string: replacement. summary: ledger description.
-    edits: list (or JSON string) of {old_string, new_string, summary?} for multi-hunk batch on one file.
-    Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
+    edits: list (or JSON string) of {old_string, new_string, summary?} for multi-hunk batch on one file,
+    applied all or none. Parallel across files. Create new file: non-existent file_path + old_string='' + new_string=<content>.
     If this call ERRORS OR TIMES OUT, do not retry blind — a failed c3_edit may still have
     written the file. Re-send the same args to c3_edits(action='verify') for a verdict."""
     path_err = validate_file_path(file_path)

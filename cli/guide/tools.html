@@ -481,7 +481,7 @@ c3_filter(text=<span class="str">"&lt;webpack build output&gt;"</span>, pattern=
                 <td class="param-name">edits</td>
                 <td class="param-type">array</td>
                 <td class="param-default">null</td>
-                <td class="param-desc">List of <code>{old_string, new_string}</code> objects for batch edits to the same file</td>
+                <td class="param-desc">List of <code>{old_string, new_string}</code> objects for batch edits to the same file. Applied in order, all or none: if one patch cannot be placed, nothing is written</td>
               </tr>
             </tbody>
           </table>
