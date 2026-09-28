@@ -444,7 +444,9 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     finally:
         # A lease exists to keep others off a file this session is changing.
         # One taken by a call that changed nothing protects no work.
-        if not had_lease and not finalize.wrote:
+        if finalize.wrote:
+            _edit_report.note_write(path, svc.project_path)
+        elif not had_lease:
             agent_locks.give_back(str(path), svc.project_path, session_id)
 
 

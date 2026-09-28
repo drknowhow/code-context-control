@@ -4,8 +4,9 @@ Two concerns, both read-only:
 - ``locate``: a RELATIVE file_path resolves against the project root, which is
   the main checkout. When the repo has other git worktrees, the caller may have
   meant one of them, so the response names the resolved path and any worktree
-  holding the same relative path, and refuses outright when the path exists only
-  in a worktree.
+  holding the same relative path. It refuses outright when the path exists only
+  in a worktree, or when this process last wrote to a worktree that the path
+  could equally mean.
 - ``diff_block``: a compact unified diff of the whole file, before → after.
 """
 import difflib
@@ -19,6 +20,7 @@ from pathlib import Path
 _WORKTREE_TTL_S = 60.0
 _GIT_TIMEOUT_S = 3.0
 _worktree_cache: dict[str, tuple[float, list[Path]]] = {}
+_last_tree: dict[str, Path] = {}
 _cache_lock = threading.Lock()
 
 DIFF_MAX_LINES = 24
@@ -98,13 +100,26 @@ def _other_trees(project_root: Path, roots: list[Path]) -> list[tuple[Path, Path
     return [(root, root / prefix) for root in roots if root != own]
 
 
+def note_write(path: Path, project_path: str) -> None:
+    """Record the worktree a write landed in, for ``locate`` to compare the
+    next relative path against."""
+    holding = [r for r in worktree_roots(project_path)
+               if r == path or r in path.parents]
+    if holding:
+        with _cache_lock:
+            _last_tree[str(Path(project_path).resolve())] = max(
+                holding, key=lambda r: len(r.parts))
+
+
 def locate(file_path: str, path: Path, project_path: str) -> tuple[str, str]:
     """Check a resolved edit target against the repo's other worktrees.
 
     Returns ``(refusal, note)``, at most one non-empty. ``refusal`` is set when a
     relative ``file_path`` does not exist in this checkout but does in another
-    worktree. ``note`` is extra response text for a relative path in a repo
-    with other worktrees. Absolute paths always return ``("", "")``.
+    worktree, or when the last write went to another worktree where the path
+    exists or would be created. ``note`` is extra response text for a relative
+    path in a repo with other worktrees. Absolute paths always return
+    ``("", "")``.
     """
     if Path(file_path).is_absolute():
         return "", ""
@@ -117,6 +132,16 @@ def locate(file_path: str, path: Path, project_path: str) -> tuple[str, str]:
     except ValueError:
         return "", ""
     hits = [proj / rel for _, proj in others if (proj / rel).exists()]
+    with _cache_lock:
+        last = _last_tree.get(str(project_root))
+    recent = next((proj / rel for root, proj in others if root == last), None)
+    if recent is not None and (recent.exists() or not path.exists()):
+        return (f"[c3_edit:wrong-tree] {file_path} is relative, so it means "
+                f"{path} in this checkout, but this session's last edit went "
+                f"to another git worktree, where the same path is:\n"
+                f"    {recent}\n"
+                f"  Nothing was written. Pass the absolute path of the one "
+                f"you mean."), ""
     if not path.exists() and hits:
         listed = "\n".join(f"    {h}" for h in hits)
         return (f"[c3_edit:wrong-tree] {file_path} does not exist in this checkout "
