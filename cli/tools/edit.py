@@ -54,24 +54,30 @@ _BATCH_FAILURES = {"miss": "not_found", "ambiguous": "ambiguous",
                    "lookalike": "lookalike", "skipped": "invalid"}
 
 
-def _reporting(finalize, svc):
-    """Wrap `finalize` so every c3_edit exit records its outcome and wall time.
+class _Report:
+    """`finalize` for one c3_edit call: records the outcome and wall time of
+    whichever exit is taken, and remembers in `wrote` whether it wrote.
 
     The outcome is the `outcome` keyword when a call site passes one, else the
     code `_FAILURES` gives the summary slug, else "success". Other keywords
     land in the telemetry detail. `ok` reaches the activity log, which the
     enforcement hook reads to decide whether this call unlocks native Edit.
     """
-    started = time.monotonic()
 
-    def report(tool, args, text, summary="", **detail):
+    def __init__(self, finalize, svc):
+        self._finalize = finalize
+        self._svc = svc
+        self._started = time.monotonic()
+        self.wrote = False
+
+    def __call__(self, tool, args, text, summary="", **detail):
         outcome = detail.pop("outcome", "") or _FAILURES.get(summary, "success")
+        self.wrote = outcome == "success"
         return finalize_with_tokens(
-            finalize, svc, tool, args, text, summary,
-            duration_ms=round((time.monotonic() - started) * 1000, 1),
+            self._finalize, self._svc, tool, args, text, summary,
+            duration_ms=round((time.monotonic() - self._started) * 1000, 1),
             detail={"outcome": outcome, **detail},
             ok=outcome in ("success", _NOOP))
-    return report
 
 
 def _session_id(svc) -> str:
@@ -384,7 +390,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     edits: optional JSON list of {old_string, new_string, summary?} dicts for
            batch same-file patching in a single read/write cycle.
     """
-    finalize = _reporting(finalize, svc)
+    finalize = _Report(finalize, svc)
     if not file_path:
         return finalize("c3_edit", {}, "file_path is required", "missing param")
 
@@ -411,6 +417,8 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
         return finalize("c3_edit", {"file": file_path}, wrong_tree, "wrong tree")
 
     op = "write" if path.exists() else "create"
+    session_id = _session_id(svc)
+    had_lease = agent_locks.holds(str(path), svc.project_path, session_id)
     refusal = _write_gate(svc, path, rel, file_path, op, "c3_edit", summary,
                           finalize)
     if refusal is not None:
@@ -433,6 +441,11 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             f"  This is contention, not an error — do not route around it via "
             f"c3_shell or native Write. Retry, or edit a different file.",
             "lock busy")
+    finally:
+        # A lease exists to keep others off a file this session is changing.
+        # One taken by a call that changed nothing protects no work.
+        if not had_lease and not finalize.wrote:
+            agent_locks.give_back(str(path), svc.project_path, session_id)
 
 
 def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
@@ -463,7 +476,10 @@ def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
     session_id = _session_id(svc)
     holder = agent_locks.check(str(path), svc.project_path, session_id)
     if holder:
-        return finalize(tool, {"file": file_path},
+        held_for = round(time.time() - holder.get("acquired_at", time.time()))
+        return finalize(tool, {"file": file_path,
+                               "holder": holder.get("agent_id", ""),
+                               "held_for_s": held_for},
                         agent_locks.refusal(holder, rel), "lock held")
     agent_locks.lease(str(path), svc.project_path, session_id, intent=intent)
     return None

@@ -401,6 +401,7 @@ producing the denial data that tells you whether Phase 3 is worth building.
 |---|---|
 | Agent never releases | TTL. Assume release never happens. |
 | Agent crashes mid-edit | `_FileLock` is OS-released on process death; the lease expires on TTL. |
+| `c3_edit` takes a lease and writes nothing | The call gives the lease back (not found, stale, ambiguous, refused batch). A lease the session held before the call is kept. |
 | `.c3/locks.json` corrupt | Advisory: log and proceed unlocked. Strict: refuse all writes with `[c3-lock:unavailable]`. Never silently reset to empty. |
 | Two agents, opposite acquisition order | All-or-nothing over a sorted list makes deadlock impossible. |
 | Clock skew | Single machine; `time.time()` is fine. Revisit if state is ever shared across hosts. |

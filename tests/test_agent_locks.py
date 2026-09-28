@@ -421,6 +421,19 @@ class TestEditIntegration(unittest.TestCase):
         self.assertNotIn(al.TAG_HELD, out)
         self.assertEqual(self.target.read_text(encoding="utf-8"), "gamma\n")
 
+    def test_edit_that_wrote_nothing_leaves_no_lease(self):
+        out = self._edit("sess-one", "absent", "beta")
+        self.assertIn("not found", out)
+        self.assertEqual(al.LockStore(self.root).snapshot()["count"], 0)
+        out = self._edit("sess-two", "alpha", "gamma")
+        self.assertNotIn(al.TAG_HELD, out)
+
+    def test_failed_edit_keeps_a_lease_the_session_already_had(self):
+        self._edit("sess-one", "alpha", "beta")
+        self._edit("sess-one", "absent", "gamma")
+        out = self._edit("sess-two", "beta", "gamma")
+        self.assertIn(al.TAG_HELD, out)
+
     def test_release_unblocks_the_other_agent(self):
         self._edit("sess-one", "alpha", "beta")
         al.LockStore(self.root).release(session_id="sess-one")
