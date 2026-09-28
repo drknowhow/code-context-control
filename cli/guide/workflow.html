@@ -623,7 +623,7 @@ c3_impact(target=<span class="str">'MemoryStore'</span>, mode=<span class="str">
         </div>
         <div class="workflow-step-body">
 
-          <p><code>c3_edit</code> does read + patch + write + edit ledger log in one step. It also validates the old_string match before writing. If the literal match fails but the strings differ only by unicode lookalikes (curly quotes, em/en-dashes, NBSP), c3_edit retries with a 1:1 normalized match and tags the response <code>[unicode-normalized]</code>.</p>
+          <p><code>c3_edit</code> does read + patch + write + edit ledger log in one step. It also validates the old_string match before writing. If the literal match fails but the strings differ only by unicode lookalikes (curly quotes, em/en-dashes, NBSP), c3_edit writes nothing and returns the file's exact text under <code>[c3_edit:lookalike]</code>.</p>
 
           <pre><code>c3_edit(
   file_path=<span class="str">'services/auth.py'</span>,

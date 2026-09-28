@@ -83,8 +83,8 @@ class TestLineEndingsAreByteExact(_Base):
         self.check(b"k\r\nv\nk\nv\r\n", "k\nv", "K\nV",
                    b"K\r\nV\nK\nV\r\n", replace_all=True)
 
-    def test_lookalike_fallback_with_crlf(self):
-        self.check("x = “hi”\r\ny\r\nz\n".encode("utf-8"), 'x = "hi"\ny', "q\nr",
+    def test_typographic_text_with_crlf(self):
+        self.check("x = “hi”\r\ny\r\nz\n".encode("utf-8"), "x = “hi”\ny", "q\nr",
                    b"q\r\nr\r\nz\n")
 
     def test_batch_on_mixed_file(self):

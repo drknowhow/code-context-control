@@ -44,13 +44,14 @@ _FAILURES = {
     "stale read": "stale",
     "not found": "not_found",
     "ambiguous": "ambiguous",
+    "lookalike": "lookalike",
     "read error": "io_error",
     "write error": "io_error",
     "create error": "io_error",
 }
 _NOOP = "noop"
 _BATCH_FAILURES = {"miss": "not_found", "ambiguous": "ambiguous",
-                   "skipped": "invalid"}
+                   "lookalike": "lookalike", "skipped": "invalid"}
 
 
 def _reporting(finalize, svc):
@@ -179,10 +180,10 @@ def _dominant_eol(text: str, default: str = "\n") -> str:
     return max(_EOLS, key=counts.__getitem__)
 
 
-# Unicode lookalike substitutions used as a fallback when the literal
-# old_string is not found. Strictly 1:1 (same-length) substitutions so
-# positions are preserved — we locate the match on the normalized string
-# and splice the replacement into the original content at the same offsets.
+# Typographic characters a model tends to retype as ASCII. An old_string that
+# matches only after this fold is refused, not applied: new_string would
+# overwrite the file's characters inside the span with the retyped ones.
+# Strictly 1:1 so a folded offset is also an offset in the file text.
 _LOOKALIKE_TRANS = str.maketrans({
     "‘": "'", "’": "'", "‚": "'", "‛": "'",  # single curly quotes
     "“": '"', "”": '"', "„": '"', "‟": '"',  # double curly quotes
@@ -215,8 +216,7 @@ def _positional_replace(content: str, view: str, crlf_at: list, needle: str,
                         new: str, replace_all: bool, file_eol: str) -> str:
     """Replace `needle` found in `view` by splicing `new` into `content`.
 
-    `view` is `content` with every EOL as ``\\n`` (optionally lookalike-folded,
-    which is 1:1); `crlf_at` holds the sorted view offsets of the ``\\n``
+    `view` is `content` with every EOL as ``\\n``; `crlf_at` holds the sorted view offsets of the ``\\n``
     characters that are ``\\r\\n`` in `content`, so view offset v is raw
     offset v + bisect_left(crlf_at, v). `new` uses ``\\n`` and is written with
     the dominant EOL of the span it replaces (`file_eol` when that span has
@@ -245,15 +245,16 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     """Replace `old` with `new` in `content` without disturbing other bytes.
 
     Matching ignores EOL style (``\\r\\n``, ``\\r`` and ``\\n`` are equal), so a
-    LF old_string matches a CRLF, CR-only or mixed file; on zero matches it
-    retries with unicode-lookalike normalization (curly quotes, unicode
-    dashes, NBSP). Only the matched spans change.
+    LF old_string matches a CRLF, CR-only or mixed file, and reads an
+    undecodable byte as the U+FFFD that c3_read showed for it. Only the
+    matched spans change.
 
-    Returns (new_content, count, used_fallback):
-      - (str, count, bool) when at least one match was applied
-      - (None, 0, False)   when no match is found (even after fallback), or
-                           `old` is empty
-      - (None, count, bool) when count > 1 and replace_all is False
+    Returns (new_content, count, lookalike):
+      - (str, count, False)   when at least one match was applied
+      - (None, 0, False)      when no match is found, or `old` is empty
+      - (None, count, False)  when count > 1 and replace_all is False
+      - (None, count, True)   when `old` matches only after the lookalike
+                              fold; never applied
     """
     if not old:
         return (None, 0, False)
@@ -262,21 +263,18 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     crlf_at = [m.start() - k for k, m in enumerate(re.finditer("\r\n", content))]
     file_eol = _dominant_eol(content)
 
-    used_fallback = False
     count = view.count(old)
     if count == 0:
-        nv, no = _norm(view), _norm(old)
-        if nv == view and no == old:
-            # Neither side contained any lookalike chars — genuinely not found.
-            return (None, 0, False)
-        view, old, used_fallback = nv, no, True
+        view = view.translate(_SURROGATE_TRANS)
+        old = old.translate(_SURROGATE_TRANS)
         count = view.count(old)
-        if count == 0:
-            return (None, 0, False)
+    if count == 0:
+        folded = _norm(view).count(_norm(old))
+        return (None, folded, folded > 0)
     if count > 1 and not replace_all:
-        return (None, count, used_fallback)
+        return (None, count, False)
     return (_positional_replace(content, view, crlf_at, old, new, replace_all,
-                                file_eol), count, used_fallback)
+                                file_eol), count, False)
 
 
 def _closest_region(content: str, old: str,
@@ -335,23 +333,47 @@ def _closest_region(content: str, old: str,
 _REGION_CAP = 4000
 
 
-def _not_found_payload(near, file_label: str) -> str:
-    """Render a _closest_region result as an error-message appendix. The
-    region text is emitted verbatim (no indentation) so it can be copied
-    straight into a retry old_string."""
-    if not near:
-        return ""
-    lo, hi, region, ratio = near
+def _marked_region(lo: int, hi: int, region: str, file_label: str) -> str:
+    """File lines lo..hi between markers, verbatim and unindented so they can
+    be copied straight into a retry old_string."""
     region = _display_safe(region)
     if len(region) > _REGION_CAP:
         region = (region[:_REGION_CAP]
                   + f"\n⟦trimmed — run c3_read(file_path='{file_label}', "
                   f"lines=[{lo},{hi}]) for the rest⟧")
+    return f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n"
+
+
+def _not_found_payload(near, file_label: str) -> str:
+    """Render a _closest_region result as an error-message appendix."""
+    if not near:
+        return ""
+    lo, hi, region, ratio = near
     return (f"\n  closest match: L{lo}-L{hi} ({ratio:.0%} similar). "
             f"Actual file text between the markers:\n"
-            f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n"
-            f"  Retry with old_string copied exactly from the text above "
-            f"(markers excluded) — no need to re-read the file.")
+            + _marked_region(lo, hi, region, file_label)
+            + "  Retry with old_string copied exactly from the text above "
+              "(markers excluded) — no need to re-read the file.")
+
+
+def _lookalike_payload(content: str, old: str, count: int,
+                       file_label: str) -> str:
+    """The file's own text for the first place `old` matches after the
+    lookalike fold, as an error-message appendix."""
+    view, old = _eol_norm(content), _eol_norm(old)
+    pos = _norm(view).find(_norm(old))
+    lo = view.count("\n", 0, pos) + 1
+    hi = lo + old.count("\n")
+    region = "\n".join(view.split("\n")[lo - 1:hi])
+    places = f" ({count} places; the first is shown)" if count > 1 else ""
+    return (f"\n  It matches only when curly quotes, dashes and non-breaking "
+            f"spaces are read as their ASCII lookalikes{places}. "
+            f"Nothing was written.\n"
+            f"  Actual file text between the markers:\n"
+            + _marked_region(lo, hi, region, file_label)
+            + "  Retry with old_string copied exactly from the text above "
+              "(markers excluded), and keep those characters in new_string "
+              "unless you mean to change them.")
 
 
 def handle_edit(file_path: str, old_string: str, new_string: str,
@@ -522,8 +544,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         original = content
 
         results = []
-        statuses = []   # parallel to results: 'ok' | 'miss' | 'ambiguous' | 'skipped' | 'noop'
-        any_normalized = False
+        statuses = []   # parallel to results: 'ok' | 'miss' | 'lookalike' | 'ambiguous' | 'skipped' | 'noop'
         first_miss = ""
         for i, patch in enumerate(edit_list):
             old = patch.get("old_string", "")
@@ -536,7 +557,13 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 statuses.append("skipped")
                 continue
 
-            new_content, count, used_fallback = _apply_replacement(content, old, new, r_all)
+            new_content, count, lookalike = _apply_replacement(content, old, new, r_all)
+            if lookalike:
+                results.append(f"  patch[{i}]: LOOKALIKE ONLY — {old[:80]!r}")
+                statuses.append("lookalike")
+                if not first_miss:
+                    first_miss = _lookalike_payload(content, old, count, file_path)
+                continue
             if new_content is None and count == 0:
                 near = _closest_region(_eol_norm(content), _eol_norm(old))
                 loc = (f" (closest: L{near[0]}-L{near[1]}, {near[3]:.0%} similar)"
@@ -547,8 +574,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                     first_miss = _not_found_payload(near, file_path)
                 continue
             if new_content is None:
-                tag = " (unicode-normalized)" if used_fallback else ""
-                results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches){tag} — {old[:60]!r}")
+                results.append(f"  patch[{i}]: AMBIGUOUS ({count} matches) — {old[:60]!r}")
                 statuses.append("ambiguous")
                 continue
             if new_content == content:
@@ -559,15 +585,12 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
             content = new_content
             n = count if r_all else 1
-            if used_fallback:
-                any_normalized = True
 
             n_old = old.count("\n") + 1
             n_new = new.count("\n") + 1
             desc = patch_summary or f"{old[:50]!r} → {new[:50]!r}"
             results.append(f"  patch[{i}]: -{n_old}L +{n_new}L"
                             + (f" ({n}x)" if n > 1 else "")
-                            + (" [norm]" if used_fallback else "")
                             + f" | {desc}")
             statuses.append("ok")
 
@@ -605,8 +628,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         # the human-readable result lines — a patch *summary* containing words
         # like 'NOT FOUND' used to be miscounted as a failure.
         applied = statuses.count("ok")
-        norm_tag = " [unicode-normalized]" if any_normalized else ""
-        short = f"✓ {rel} — {applied}/{len(edit_list)} patches applied{norm_tag}"
+        short = f"✓ {rel} — {applied}/{len(edit_list)} patches applied"
         if not changed:
             short = (f"{rel} unchanged — {applied}/{len(edit_list)} patches "
                      f"applied; nothing was written or logged.")
@@ -643,23 +665,25 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         return finalize("c3_edit", {"file": file_path},
                         f"Read error: {e}", "read error")
 
-    new_content, count, used_fallback = _apply_replacement(
+    new_content, count, lookalike = _apply_replacement(
         content, old_string, new_string, replace_all)
 
+    if lookalike:
+        return finalize("c3_edit", {"file": file_path},
+                        f"[c3_edit:lookalike] old_string is not in {file_path} "
+                        f"as written."
+                        + _lookalike_payload(content, old_string, count, file_path),
+                        "lookalike")
     if new_content is None and count == 0:
-        hint = ""
-        if _norm(old_string) != old_string or _norm(content) != content:
-            hint = "\n  hint: unicode-lookalike normalization also failed to match."
-        hint += _not_found_payload(
+        hint = _not_found_payload(
             _closest_region(_eol_norm(content), _eol_norm(old_string)), file_path)
         return finalize("c3_edit", {"file": file_path},
                         f"old_string not found in {file_path}\n"
                         f"  searched for: {old_string[:120]!r}{hint}",
                         "not found")
     if new_content is None:
-        hint = " (after unicode-lookalike normalization)" if used_fallback else ""
         return finalize("c3_edit", {"file": file_path},
-                        f"old_string matches {count} locations{hint} — add more context to make it unique, "
+                        f"old_string matches {count} locations — add more context to make it unique, "
                         f"or pass replace_all=true to replace all occurrences.",
                         "ambiguous")
 
@@ -685,8 +709,6 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         "old_string": old_string[:_DETAIL_CAP],
         "new_string": new_string[:_DETAIL_CAP],
     }
-    if used_fallback:
-        single_detail["unicode_normalized"] = True
     single_detail.update(
         edit_blobs.record_edit(svc.project_path, path, pre_image))
     deferred = _log_to_ledger(rel, auto_summary, tag_list, svc,
@@ -696,8 +718,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     n_new = new_string.count("\n") + 1
     delta = f"-{n_old}+{n_new}L"
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
-    norm_tag = " [unicode-normalized]" if used_fallback else ""
-    short = (f"✓ {rel} [{delta}]{occ}{norm_tag}" + (f" — {summary}" if summary else "")
+    short = (f"✓ {rel} [{delta}]{occ}" + (f" — {summary}" if summary else "")
              + where + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
