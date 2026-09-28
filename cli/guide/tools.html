@@ -483,6 +483,12 @@ c3_filter(text=<span class="str">"&lt;webpack build output&gt;"</span>, pattern=
                 <td class="param-default">null</td>
                 <td class="param-desc">List of <code>{old_string, new_string}</code> objects for batch edits to the same file. Applied in order, all or none: if one patch cannot be placed, nothing is written</td>
               </tr>
+              <tr>
+                <td class="param-name">overwrite</td>
+                <td class="param-type">bool</td>
+                <td class="param-default">false</td>
+                <td class="param-desc">Replace all of an existing file with <code>new_string</code>. Refused unless this session has read the file with c3_read and the file has not changed since. Keeps the file's line endings and BOM, stores a pre-image, and can be reverted</td>
+              </tr>
             </tbody>
           </table>
 

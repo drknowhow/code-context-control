@@ -37,6 +37,7 @@ _FAILURES = {
     "missing param": "invalid",
     "bad edits param": "invalid",
     "empty old_string": "invalid",
+    "bad overwrite": "invalid",
     "vault-protected": "denied",
     "access-denied": "denied",
     "wrong tree": "wrong_tree",
@@ -47,6 +48,7 @@ _FAILURES = {
     "ambiguous": "ambiguous",
     "lookalike": "lookalike",
     "encoding": "encoding",
+    "unread": "unread",
     "read error": "io_error",
     "write error": "io_error",
     "create error": "io_error",
@@ -413,15 +415,21 @@ def _lookalike_payload(content: str, old: str, count: int,
 
 def handle_edit(file_path: str, old_string: str, new_string: str,
                 summary: str, tags: str, replace_all: bool,
-                svc, finalize, edits: str = "") -> str:
+                svc, finalize, edits: str = "", overwrite: bool = False) -> str:
     """Find old_string in file, replace with new_string, write back, log to ledger.
 
     edits: optional JSON list of {old_string, new_string, summary?} dicts for
            batch same-file patching in a single read/write cycle.
+    overwrite: replace all of an existing file with new_string. The session
+           must have read the file, and it must not have changed since.
     """
     finalize = _Report(finalize, svc)
     if not file_path:
         return finalize("c3_edit", {}, "file_path is required", "missing param")
+    if overwrite and (old_string or edits):
+        return finalize("c3_edit", {"file": file_path},
+                        "overwrite replaces the whole file: pass new_string "
+                        "only, without old_string or edits", "bad overwrite")
 
     # Resolve path
     path = Path(file_path)
@@ -459,6 +467,9 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     # loser's content is silently gone.
     try:
         with _edit_lock(path):
+            if overwrite and path.exists():
+                return _overwrite_locked(path, rel, file_path, new_string,
+                                         summary, tags, svc, finalize, where)
             return _edit_locked(path, rel, file_path, old_string, new_string,
                                 summary, tags, replace_all, svc, finalize, edits,
                                 where)
@@ -514,6 +525,60 @@ def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
                         agent_locks.refusal(holder, rel), "lock held")
     agent_locks.lease(str(path), svc.project_path, session_id, intent=intent)
     return None
+
+
+def _overwrite_locked(path: Path, rel: str, file_path: str, new_string: str,
+                      summary: str, tags: str, svc, finalize, where: str) -> str:
+    """Replace all of an existing file, keeping its line endings and BOM.
+    Always called under _edit_lock."""
+    args = {"file": file_path, "overwrite": True}
+    slug = "unread" if read_stamps.get(path) is None else "stale read"
+    guard = read_stamps.check_whole(path, file_path)
+    if guard.refusal:
+        return finalize("c3_edit", args, guard.refusal, slug)
+    try:
+        pre_image = path.read_bytes()
+    except OSError as e:
+        return finalize("c3_edit", args, f"Read error: {e}", "read error")
+    foreign = _encoding_refusal(pre_image, file_path)
+    if foreign:
+        return finalize("c3_edit", args, foreign, "encoding")
+
+    content = pre_image.decode("utf-8", errors="surrogateescape")
+    eol = _dominant_eol(content)
+    new_content = _eol_norm(new_string)
+    if eol != "\n":
+        new_content = new_content.replace("\n", eol)
+    if content.startswith("﻿") and not new_content.startswith("﻿"):
+        new_content = "﻿" + new_content
+    if new_content == content:
+        return finalize("c3_edit", args,
+                        f"{rel} unchanged — new_string is the file's current "
+                        f"text; nothing was written or logged.",
+                        f"{rel} unchanged", outcome=_NOOP, n_attempted=1,
+                        n_applied=0)
+
+    edit_blobs.keep_pre(svc.project_path, path, pre_image)
+    try:
+        _write_preserving_newlines(path, new_content)
+        guard.written()
+    except Exception as e:
+        return finalize("c3_edit", args, f"Write error: {e}", "write error")
+
+    images = edit_blobs.record_edit(svc.project_path, path, pre_image)
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    n_old = len(content.splitlines())
+    n_new = len(new_content.splitlines())
+    deferred = _log_to_ledger(
+        rel, summary or f"Overwrote {rel} ({n_new}L)", tag_list, svc,
+        detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
+                "overwritten": True, **images})
+    short = (f"✓ {rel} [overwritten, -{n_old}+{n_new}L]"
+             + (f" — {summary}" if summary else "")
+             + where + _revert_note(images) + _display_safe(
+                 _edit_report.diff_block(content, new_content, svc.project_path)))
+    return finalize("c3_edit", args, short + deferred, f"{rel} overwritten",
+                    n_attempted=1, n_applied=1, blob=images.get("blob"))
 
 
 def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,

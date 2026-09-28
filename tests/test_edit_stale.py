@@ -63,6 +63,46 @@ class StaleGuardTests(unittest.TestCase):
         (self.proj / ".c3" / "config.json").write_text(
             json.dumps({"edit": {"stale_guard": value}}), encoding="utf-8")
 
+    def _overwrite(self, new, old=""):
+        return handle_edit(str(self.f), old, new, "", "", False, self.svc,
+                           _finalize, overwrite=True)
+
+    def test_overwrite_of_an_unread_file_is_refused(self):
+        out = self._overwrite("new\n")
+        self.assertTrue(out.startswith("[c3_edit:unread]"))
+        self.assertEqual(self.f.read_text(encoding="utf-8"), _lines(40))
+
+    def test_overwrite_after_any_external_change_is_refused(self):
+        self._read()
+        self._external("line 30\n", "line 30 CHANGED\n")
+        out = self._overwrite("new\n")
+        self.assertIn(STALE, out)
+        self.assertIn("L30", out)
+        self.assertIn("line 30 CHANGED", self.f.read_text(encoding="utf-8"))
+
+    def test_overwrite_replaces_the_file_and_keeps_crlf_and_bom(self):
+        self.f.write_bytes(b"\xef\xbb\xbfa\r\nb\r\n")
+        self._read()
+        out = self._overwrite("x\ny\nz\n")
+        self.assertIn("[overwritten, -2+3L]", out)
+        self.assertEqual(self.f.read_bytes(), b"\xef\xbb\xbfx\r\ny\r\nz\r\n")
+
+    def test_overwrite_twice_needs_no_second_read(self):
+        self._read()
+        self._overwrite("one\n")
+        self.assertIn("overwritten", self._overwrite("two\n"))
+
+    def test_overwrite_with_old_string_is_rejected(self):
+        self._read()
+        out = self._overwrite("new\n", old="line 1\n")
+        self.assertIn("overwrite replaces the whole file", out)
+        self.assertEqual(self.f.read_text(encoding="utf-8"), _lines(40))
+
+    def test_overwrite_of_a_missing_file_creates_it(self):
+        self.f.unlink()
+        self.assertIn("[created", self._overwrite("new\n"))
+        self.assertEqual(self.f.read_bytes(), b"new\n")
+
     def test_crlf_old_string_is_still_checked(self):
         self.f.write_bytes(_lines(40).replace("\n", "\r\n").encode("utf-8"))
         self._read()

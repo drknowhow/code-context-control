@@ -227,6 +227,37 @@ def _region_block(text: str, lo: int, hi: int, label: str) -> str:
             f"⟦L{lo}-L{hi}⟧\n{region}\n⟦end⟧\n")
 
 
+def check_whole(path, label: str) -> Guard:
+    """Compare `path` to this session's stamp before all of it is replaced.
+
+    Refuses when the session holds no stamp for the file, or when its bytes
+    differ from the stamp at all: every line is in the region being edited.
+    An unreadable file → a Guard with nothing to say.
+    """
+    guard = Guard(path)
+    stamp = get(path)
+    if stamp is None:
+        guard.refusal = (
+            f"[c3_edit:unread] {label} has not been read in this session, and "
+            f"overwrite replaces all of it. Nothing was written.\n"
+            f"  Read it with c3_read, then resend.")
+        return guard
+    try:
+        current, text = _snapshot(Path(path))
+    except OSError:
+        return guard
+    if current.sha256 == stamp.sha256:
+        return guard
+    where = (f": {_fmt(changed_ranges(stamp.text, text))}"
+             if stamp.text is not None else "")
+    guard.refusal = (
+        f"[c3_edit:stale] {label} changed outside this session since your "
+        f"last read{where}.\n"
+        f"  overwrite would discard that change. Nothing was written.\n"
+        f"  Read the file again with c3_read, then resend.")
+    return guard
+
+
 def check(path, project_path, label: str, old_string: str, edits,
           replace_all: bool, norm=None) -> Guard:
     """Compare `path` to this session's stamp before an edit is applied.
