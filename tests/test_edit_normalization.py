@@ -79,6 +79,11 @@ class TestApplyReplacement(unittest.TestCase):
         self.assertEqual(out, "cafe = 1")
         self.assertFalse(lookalike)
 
+    def test_replacement_char_is_ambiguous_beside_an_undecodable_byte(self):
+        content = b"A\xef\xbf\xbdB\xffC".decode("utf-8", errors="surrogateescape")
+        self.assertEqual(_apply_replacement(content, "�", "X", False),
+                         (None, 2, False))
+
     def test_not_found_returns_none(self):
         out, count, fb = _apply_replacement("foo bar", "qux", "QUX", False)
         self.assertIsNone(out)

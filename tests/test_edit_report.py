@@ -141,6 +141,8 @@ class TestWorktreeAwareness(unittest.TestCase):
                 resp = _edit(self.svc, name, old, new)
                 self.assertIn("[c3_edit:wrong-tree]", resp)
                 self.assertIn(str((self.wt / name).resolve()), resp)
+                self.assertIn("where the same path is" if old
+                              else "where this path would be", resp)
         self.assertEqual((self.main / "shared.py").read_text(encoding="utf-8"), "a = 1\n")
         self.assertFalse((self.main / "brand_new.py").exists())
 

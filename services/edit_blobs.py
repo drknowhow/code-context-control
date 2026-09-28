@@ -88,6 +88,11 @@ def get(project_path, sha: str) -> bytes | None:
     return data if sha256(data) == sha else None
 
 
+def has(project_path, sha: str) -> bool:
+    """True when a blob for ``sha`` is in the store."""
+    return bool(sha) and _blob_path(project_path, sha).exists()
+
+
 def sweep(project_path) -> int:
     """Evict oldest blobs until the store is within 90% of its cap.
 

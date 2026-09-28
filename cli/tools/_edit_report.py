@@ -136,9 +136,11 @@ def locate(file_path: str, path: Path, project_path: str) -> tuple[str, str]:
         last = _last_tree.get(str(project_root))
     recent = next((proj / rel for root, proj in others if root == last), None)
     if recent is not None and (recent.exists() or not path.exists()):
+        there = ("where the same path is" if recent.exists()
+                 else "where this path would be")
         return (f"[c3_edit:wrong-tree] {file_path} is relative, so it means "
                 f"{path} in this checkout, but this session's last edit went "
-                f"to another git worktree, where the same path is:\n"
+                f"to another git worktree, {there}:\n"
                 f"    {recent}\n"
                 f"  Nothing was written. Pass the absolute path of the one "
                 f"you mean."), ""

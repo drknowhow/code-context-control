@@ -85,11 +85,22 @@ class TestImagesRecorded(RevertBase):
             self.original)
 
     def test_response_says_so_when_the_edit_cannot_be_reverted(self):
-        self.assertNotIn("cannot revert", self.edit("return 1", "return 2"))
         self.write_config({"edit": {"blob_max_file_mb": 0.00001}})
-        out = self.edit("return 2", "return 3")
+        out = self.edit("return 1", "return 2")
         self.assertIn("c3_edits cannot revert this edit", out)
         self.assertIn("too-large", out)
+        self.assertIn("no-image", self.revert(self.last_id()))
+
+    def test_response_is_silent_when_the_edit_can_be_reverted(self):
+        self.assertNotIn("cannot revert", self.edit("return 1", "return 2"))
+
+    def test_edit_that_grows_past_the_cap_is_still_revertible_and_says_nothing(self):
+        self.write_config({"edit": {"blob_max_file_mb": 0.0001}})
+        out = self.edit("return 1", "return 1" + " " * 200)
+        self.assertEqual(self.rows()[-1]["detail"]["blob"], "skipped:too-large")
+        self.assertNotIn("cannot revert", out)
+        self.assertIn("restored", self.revert(self.last_id()))
+        self.assertEqual(self.file.read_bytes(), self.original)
 
     def test_file_over_size_cap_records_hashes_but_no_blob(self):
         self.write_config({"edit": {"blob_max_file_mb": 0.00001}})

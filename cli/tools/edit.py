@@ -84,6 +84,40 @@ class _Report:
             ok=outcome in ("success", _NOOP))
 
 
+_in_flight: dict[tuple[str, str], dict] = {}
+
+
+@contextmanager
+def _lease_scope(path: Path, project_path: str, session_id: str, report):
+    """Give back the lease on `path` when this process's calls took it and
+    none of them wrote.
+
+    Calls on one path overlap (each runs on its own thread until
+    `_edit_lock`), so they are counted as a group: whether the session held
+    the lease is sampled when the group forms, and the lease is judged when
+    the last call leaves. A call that fails cannot drop the lease a
+    concurrent call is writing under.
+    """
+    key = (session_id, str(path))
+    with _locks_lock:
+        group = _in_flight.get(key)
+        if group is None:
+            group = _in_flight[key] = {
+                "calls": 0,
+                "keep": agent_locks.holds(str(path), project_path, session_id)}
+        group["calls"] += 1
+    try:
+        yield
+    finally:
+        with _locks_lock:
+            group["calls"] -= 1
+            group["keep"] = group["keep"] or report.wrote
+            if group["calls"] == 0:
+                del _in_flight[key]
+                if not group["keep"]:
+                    agent_locks.give_back(str(path), project_path, session_id)
+
+
 def _session_id(svc) -> str:
     """This agent's lease identity — see `cli.tools._grants.session_id`.
 
@@ -291,11 +325,11 @@ def _apply_replacement(content: str, old: str, new: str, replace_all: bool):
     crlf_at = [m.start() - k for k, m in enumerate(re.finditer("\r\n", content))]
     file_eol = _dominant_eol(content)
 
+    # c3_read shows an undecodable byte and a real U+FFFD alike, so the two
+    # are one character here: an old_string that fits both is ambiguous.
+    view = view.translate(_SURROGATE_TRANS)
+    old = old.translate(_SURROGATE_TRANS)
     count = view.count(old)
-    if count == 0:
-        view = view.translate(_SURROGATE_TRANS)
-        old = old.translate(_SURROGATE_TRANS)
-        count = view.count(old)
     if count == 0:
         folded = _norm(view).count(_norm(old))
         return (None, folded, folded > 0)
@@ -384,13 +418,18 @@ def _not_found_payload(near, file_label: str) -> str:
               "(markers excluded) — no need to re-read the file.")
 
 
-def _revert_note(images: dict) -> str:
-    """Response text for a write whose images were not kept."""
+def _revert_note(project_path, images: dict) -> str:
+    """Response text for a write that c3_edits(action='revert') will refuse:
+    no post-image hash on the row, or a pre-image that is not in the store."""
     blob = images.get("blob") or ""
     if not blob.startswith("skipped:"):
         return ""
-    return (f"\n  ⚠ c3_edits cannot revert this edit: its before and after "
-            f"images were not kept ({blob.partition(':')[2]}).")
+    pre = images.get("pre_sha256")
+    if "post_sha256" in images and (
+            pre is None or edit_blobs.has(project_path, pre)):
+        return ""
+    return (f"\n  ⚠ c3_edits cannot revert this edit: the file as it was "
+            f"before is not kept ({blob.partition(':')[2]}).")
 
 
 def _lookalike_payload(content: str, old: str, count: int,
@@ -453,9 +492,17 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     if wrong_tree:
         return finalize("c3_edit", {"file": file_path}, wrong_tree, "wrong tree")
 
+    with _lease_scope(path, svc.project_path, _session_id(svc), finalize):
+        return _gated_edit(path, rel, file_path, old_string, new_string,
+                           summary, tags, replace_all, svc, finalize, edits,
+                           where, overwrite)
+
+
+def _gated_edit(path: Path, rel: str, file_path: str, old_string: str,
+                new_string: str, summary: str, tags: str, replace_all: bool,
+                svc, finalize, edits: str, where: str, overwrite: bool) -> str:
+    """The write gates, then the edit under `_edit_lock`."""
     op = "write" if path.exists() else "create"
-    session_id = _session_id(svc)
-    had_lease = agent_locks.holds(str(path), svc.project_path, session_id)
     refusal = _write_gate(svc, path, rel, file_path, op, "c3_edit", summary,
                           finalize)
     if refusal is not None:
@@ -482,12 +529,8 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
             f"c3_shell or native Write. Retry, or edit a different file.",
             "lock busy")
     finally:
-        # A lease exists to keep others off a file this session is changing.
-        # One taken by a call that changed nothing protects no work.
         if finalize.wrote:
             _edit_report.note_write(path, svc.project_path)
-        elif not had_lease:
-            agent_locks.give_back(str(path), svc.project_path, session_id)
 
 
 def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
@@ -532,14 +575,14 @@ def _overwrite_locked(path: Path, rel: str, file_path: str, new_string: str,
     """Replace all of an existing file, keeping its line endings and BOM.
     Always called under _edit_lock."""
     args = {"file": file_path, "overwrite": True}
-    slug = "unread" if read_stamps.get(path) is None else "stale read"
-    guard = read_stamps.check_whole(path, file_path)
-    if guard.refusal:
-        return finalize("c3_edit", args, guard.refusal, slug)
     try:
         pre_image = path.read_bytes()
     except OSError as e:
         return finalize("c3_edit", args, f"Read error: {e}", "read error")
+    slug = "unread" if read_stamps.get(path) is None else "stale read"
+    guard = read_stamps.check_whole(path, file_path, pre_image)
+    if guard.refusal:
+        return finalize("c3_edit", args, guard.refusal, slug)
     foreign = _encoding_refusal(pre_image, file_path)
     if foreign:
         return finalize("c3_edit", args, foreign, "encoding")
@@ -575,7 +618,7 @@ def _overwrite_locked(path: Path, rel: str, file_path: str, new_string: str,
                 "overwritten": True, **images})
     short = (f"✓ {rel} [overwritten, -{n_old}+{n_new}L]"
              + (f" — {summary}" if summary else "")
-             + where + _revert_note(images) + _display_safe(
+             + where + _revert_note(svc.project_path, images) + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", args, short + deferred, f"{rel} overwritten",
                     n_attempted=1, n_applied=1, blob=images.get("blob"))
@@ -622,7 +665,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
                     "created": True, **images})
         short = (f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "")
-                 + where + _revert_note(images))
+                 + where + _revert_note(svc.project_path, images))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} created", n_attempted=1, n_applied=1,
                         blob=images.get("blob"))
@@ -768,7 +811,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         applied = statuses.count("ok")
         short = (f"✓ {rel} — {applied}/{total} patches applied"
                  + "".join(f"\n{r}" for r in unchanged)
-                 + where + _revert_note(batch_detail) + _display_safe(
+                 + where + _revert_note(svc.project_path, batch_detail)
+                 + _display_safe(
                      _edit_report.diff_block(original, content, svc.project_path)))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} patched ({applied}/{total} patches)",
@@ -846,7 +890,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     delta = f"-{n_old}+{n_new}L"
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
     short = (f"✓ {rel} [{delta}]{occ}" + (f" — {summary}" if summary else "")
-             + where + _revert_note(single_detail) + _display_safe(
+             + where + _revert_note(svc.project_path, single_detail)
+             + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
                     f"{rel} patched", n_attempted=1, n_applied=1,

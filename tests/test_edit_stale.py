@@ -80,6 +80,14 @@ class StaleGuardTests(unittest.TestCase):
         self.assertIn("L30", out)
         self.assertIn("line 30 CHANGED", self.f.read_text(encoding="utf-8"))
 
+    def test_overwrite_guard_judges_the_bytes_it_is_given(self):
+        self._read()
+        on_disk = self.f.read_bytes()
+        self.assertEqual(
+            read_stamps.check_whole(self.f, "a.txt", on_disk).refusal, "")
+        self.assertIn(STALE, read_stamps.check_whole(
+            self.f, "a.txt", on_disk + b"late write\n").refusal)
+
     def test_overwrite_replaces_the_file_and_keeps_crlf_and_bom(self):
         self.f.write_bytes(b"\xef\xbb\xbfa\r\nb\r\n")
         self._read()

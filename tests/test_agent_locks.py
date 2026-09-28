@@ -434,6 +434,31 @@ class TestEditIntegration(unittest.TestCase):
         out = self._edit("sess-two", "beta", "gamma")
         self.assertIn(al.TAG_HELD, out)
 
+    def test_failed_call_does_not_drop_the_lease_a_concurrent_call_wrote_under(self):
+        import threading
+        from unittest import mock
+
+        in_gate, go_on = threading.Event(), threading.Event()
+        real_lease = al.lease
+
+        def lease(*a, **kw):
+            granted = real_lease(*a, **kw)
+            if threading.current_thread().name == "missing":
+                in_gate.set()
+                go_on.wait(10)
+            return granted
+
+        with mock.patch.object(al, "lease", lease):
+            missing = threading.Thread(
+                name="missing", target=self._edit,
+                args=("sess-one", "absent", "x"))
+            missing.start()
+            self.assertTrue(in_gate.wait(10))
+            self._edit("sess-one", "alpha", "beta")
+            go_on.set()
+            missing.join(10)
+        self.assertEqual(al.LockStore(self.root).snapshot()["count"], 1)
+
     def test_release_unblocks_the_other_agent(self):
         self._edit("sess-one", "alpha", "beta")
         al.LockStore(self.root).release(session_id="sess-one")
