@@ -21,14 +21,56 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from cli.tools import _edit_report, _grants
+from cli.tools._helpers import finalize_with_tokens
 from services import access_guard, agent_locks, edit_blobs, read_stamps
 from services import credential_store as _cs
 from services.atomic_json import write_bytes_atomic
 from services.task_store import _FileLock
+
+_FAILURES = {
+    "missing param": "invalid",
+    "bad edits param": "invalid",
+    "empty old_string": "invalid",
+    "vault-protected": "denied",
+    "access-denied": "denied",
+    "wrong tree": "wrong_tree",
+    "lock held": "locked",
+    "lock busy": "locked",
+    "stale read": "stale",
+    "not found": "not_found",
+    "ambiguous": "ambiguous",
+    "read error": "io_error",
+    "write error": "io_error",
+    "create error": "io_error",
+}
+_NOOP = "noop"
+_BATCH_FAILURES = {"miss": "not_found", "ambiguous": "ambiguous",
+                   "skipped": "invalid"}
+
+
+def _reporting(finalize, svc):
+    """Wrap `finalize` so every c3_edit exit records its outcome and wall time.
+
+    The outcome is the `outcome` keyword when a call site passes one, else the
+    code `_FAILURES` gives the summary slug, else "success". Other keywords
+    land in the telemetry detail. `ok` reaches the activity log, which the
+    enforcement hook reads to decide whether this call unlocks native Edit.
+    """
+    started = time.monotonic()
+
+    def report(tool, args, text, summary="", **detail):
+        outcome = detail.pop("outcome", "") or _FAILURES.get(summary, "success")
+        return finalize_with_tokens(
+            finalize, svc, tool, args, text, summary,
+            duration_ms=round((time.monotonic() - started) * 1000, 1),
+            detail={"outcome": outcome, **detail},
+            ok=outcome in ("success", _NOOP))
+    return report
 
 
 def _session_id(svc) -> str:
@@ -320,6 +362,7 @@ def handle_edit(file_path: str, old_string: str, new_string: str,
     edits: optional JSON list of {old_string, new_string, summary?} dicts for
            batch same-file patching in a single read/write cycle.
     """
+    finalize = _reporting(finalize, svc)
     if not file_path:
         return finalize("c3_edit", {}, "file_path is required", "missing param")
 
@@ -446,7 +489,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                     "created": True, **images})
         short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "") + where
         return finalize("c3_edit", {"file": file_path}, short + deferred,
-                        f"{rel} created")
+                        f"{rel} created", n_attempted=1, n_applied=1,
+                        blob=images.get("blob"))
 
     # Parse tag list once
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
@@ -540,6 +584,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
         # Log batch to ledger as one entry (store each patch's old/new for diff view)
         deferred = ""
+        blob = None
         if changed:
             batch_detail = {"patches": [
                 {
@@ -551,6 +596,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             ]}
             batch_detail.update(
                 edit_blobs.record_edit(svc.project_path, path, pre_image))
+            blob = batch_detail.get("blob")
             deferred = _log_to_ledger(
                 rel, summary or f"Batch edit: {len(edit_list)} patches",
                 tag_list, svc, detail=batch_detail)
@@ -572,8 +618,17 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         if changed:
             short += where + _display_safe(
                 _edit_report.diff_block(original, content, svc.project_path))
+        if applied == len(edit_list):
+            outcome = "success"
+        elif changed:
+            outcome = "partial"
+        else:
+            outcome = next((_BATCH_FAILURES[s] for s in statuses
+                            if s in _BATCH_FAILURES), _NOOP)
         return finalize("c3_edit", {"file": file_path}, short + deferred,
-                        f"{rel} patched ({len(edit_list)} patches)")
+                        f"{rel} patched ({applied}/{len(edit_list)} patches)",
+                        outcome=outcome, n_attempted=len(edit_list),
+                        n_applied=applied, blob=blob)
 
     # ── Single-edit mode ──────────────────────────────────────────────────────
     if not old_string:
@@ -611,7 +666,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     if new_content == content:
         return finalize("c3_edit", {"file": file_path},
                         f"{rel} unchanged — new_string equals old_string; "
-                        f"nothing was written or logged.", f"{rel} unchanged")
+                        f"nothing was written or logged.", f"{rel} unchanged",
+                        outcome=_NOOP, n_attempted=1, n_applied=0)
 
     occurrences = count if replace_all else 1
 
@@ -645,7 +701,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
              + where + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
-                    f"{rel} patched")
+                    f"{rel} patched", n_attempted=1, n_applied=1,
+                    blob=single_detail.get("blob"))
 
 
 _DETAIL_CAP = 2000  # chars stored per old/new string in the ledger

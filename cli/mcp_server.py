@@ -543,7 +543,9 @@ def _with_hint(resp, make_hint) -> str:
 
 def _finalize_response(ctx: Context, tool_name: str, args: dict,
                        response: str, summary: str = "",
-                       response_tokens: int = 0) -> str:
+                       response_tokens: int = 0,
+                       ok: bool | None = None) -> str:
+    """ok: the tool's own verdict on the call; None reads it off the response text."""
     global _last_tool_call_time, _last_badge_count
 
     deferred_snapshot = False
@@ -586,11 +588,14 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
     svc.session_mgr.log_tool_call(tool_name, args, summary)
     # ok=False lets hook_pretool_enforce's activity scan skip a failed call
     # (ISSUE-3: "Error: File not found" used to count as "c3 was used").
-    try:
-        from cli._hook_utils import response_text_failed as _failed
-        call_ok = not _failed(response)
-    except Exception:
-        call_ok = True
+    if ok is not None:
+        call_ok = ok
+    else:
+        try:
+            from cli._hook_utils import response_text_failed as _failed
+            call_ok = not _failed(response)
+        except Exception:
+            call_ok = True
     # Both session ids on every tool_call row (D0b): C3's own id joins the
     # row to session_start / the saved session file, the host id joins it to
     # the hooks' session_open / session_end rows. Either may be absent.
