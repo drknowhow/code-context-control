@@ -362,6 +362,15 @@ def _not_found_payload(near, file_label: str) -> str:
               "(markers excluded) — no need to re-read the file.")
 
 
+def _revert_note(images: dict) -> str:
+    """Response text for a write whose images were not kept."""
+    blob = images.get("blob") or ""
+    if not blob.startswith("skipped:"):
+        return ""
+    return (f"\n  ⚠ c3_edits cannot revert this edit: its before and after "
+            f"images were not kept ({blob.partition(':')[2]}).")
+
+
 def _lookalike_payload(content: str, old: str, count: int,
                        file_label: str) -> str:
     """The file's own text for the first place `old` matches after the
@@ -527,7 +536,8 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
             rel, create_summary, tag_list, svc,
             detail={"old_string": "", "new_string": new_string[:_DETAIL_CAP],
                     "created": True, **images})
-        short = f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "") + where
+        short = (f"✓ {rel} [created, +{n_new}L]" + (f" — {summary}" if summary else "")
+                 + where + _revert_note(images))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} created", n_attempted=1, n_applied=1,
                         blob=images.get("blob"))
@@ -644,6 +654,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
                 f"{rel} unchanged", outcome=_NOOP, n_attempted=total,
                 n_applied=0)
 
+        edit_blobs.keep_pre(svc.project_path, path, pre_image)
         try:
             _write_preserving_newlines(path, content)
             stale.written()
@@ -669,7 +680,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         applied = statuses.count("ok")
         short = (f"✓ {rel} — {applied}/{total} patches applied"
                  + "".join(f"\n{r}" for r in unchanged)
-                 + where + _display_safe(
+                 + where + _revert_note(batch_detail) + _display_safe(
                      _edit_report.diff_block(original, content, svc.project_path)))
         return finalize("c3_edit", {"file": file_path}, short + deferred,
                         f"{rel} patched ({applied}/{total} patches)",
@@ -719,6 +730,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
 
     occurrences = count if replace_all else 1
 
+    edit_blobs.keep_pre(svc.project_path, path, pre_image)
     try:
         _write_preserving_newlines(path, new_content)
         stale.written()
@@ -743,7 +755,7 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     delta = f"-{n_old}+{n_new}L"
     occ = f" ({occurrences}x)" if occurrences > 1 else ""
     short = (f"✓ {rel} [{delta}]{occ}" + (f" — {summary}" if summary else "")
-             + where + _display_safe(
+             + where + _revert_note(single_detail) + _display_safe(
                  _edit_report.diff_block(content, new_content, svc.project_path)))
     return finalize("c3_edit", {"file": file_path}, short + deferred,
                     f"{rel} patched", n_attempted=1, n_applied=1,

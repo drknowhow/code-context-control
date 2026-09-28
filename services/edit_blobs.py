@@ -153,6 +153,17 @@ def _skip_reason(project_path, path, pre: bytes | None,
     return ""
 
 
+def keep_pre(project_path, path, pre: bytes) -> None:
+    """Store the pre-image of a write that is about to happen, when policy
+    allows, so a crash after the write still leaves it. Never raises."""
+    if _skip_reason(project_path, path, pre, None):
+        return
+    try:
+        put(project_path, pre)
+    except OSError:
+        pass
+
+
 def record(project_path, path, pre: bytes | None,
            post: bytes | None) -> dict:
     """Ledger ``detail`` fields for a write that took ``path`` from ``pre`` to
