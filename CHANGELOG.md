@@ -4,6 +4,50 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.153.0] - 2026-09-28
+
+### Changed — c3_edit no longer applies a lookalike match
+
+When `old_string` matched the file only after curly quotes, dashes and
+non-breaking spaces were read as ASCII, c3_edit used to write `new_string`
+over the span, which replaced the file's typography with the retyped
+characters. It now writes nothing and answers `[c3_edit:lookalike]` with the
+file's exact text, so the retry can copy it. An undecodable byte still matches
+the U+FFFD that c3_read shows for it.
+
+### Changed — a batch applies every patch or none
+
+If one patch in `edits` cannot be placed (not found, ambiguous, lookalike,
+empty `old_string`), nothing is written and every failure is listed with the
+file's text. Resend the whole batch. A patch that changes nothing does not
+block the others.
+
+### Added — `overwrite=true` rewrites a whole file
+
+`c3_edit(file_path, new_string=<content>, overwrite=true)` replaces an
+existing file. It is refused with `[c3_edit:unread]` unless this session has
+read the file with c3_read, and with `[c3_edit:stale]` if the file changed at
+all since. Line endings and a UTF-8 BOM are kept, a pre-image is stored, and
+`c3_edits(action='revert')` undoes it.
+
+### Fixed
+
+- The activity log recorded `ok: true` for every c3_edit, failures included,
+  and `duration_ms` was never set. Each call now logs `outcome`, `ok`,
+  `duration_ms`, `n_attempted`, `n_applied` and `blob`. A failed c3_edit no
+  longer counts as a C3 call for the native-Edit unlock.
+- A c3_edit that took an agent-lock lease and then wrote nothing kept other
+  sessions off the file for 15 minutes. It now gives the lease back. A lease
+  the session already held is kept.
+- A relative path is refused with `[c3_edit:wrong-tree]` when this session's
+  last edit went to another git worktree that holds the same path. Pass an
+  absolute path.
+- The pre-image is stored before the write, not after it. When the images
+  are not kept (file over `edit.blob_max_file_mb`, read-denied path, store
+  error) the success line says c3_edits cannot revert the edit.
+- UTF-16 and UTF-32 files are refused with `[c3_edit:encoding]`. They used to
+  fail as "not found" with NUL-separated text quoted back.
+
 ## [2.152.0] - 2026-09-24
 
 ### Added — c3_edit refuses to edit text that changed since you read it
