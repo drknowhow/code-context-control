@@ -83,6 +83,19 @@ class TestLineEndingsAreByteExact(_Base):
         self.check(b"k\r\nv\nk\nv\r\n", "k\nv", "K\nV",
                    b"K\r\nV\nK\nV\r\n", replace_all=True)
 
+    def test_utf8_bom_is_kept(self):
+        self.check(b"\xef\xbb\xbfa = 1\r\nb = 2\r\n", "a = 1", "a = 9",
+                   b"\xef\xbb\xbfa = 9\r\nb = 2\r\n")
+
+    def test_utf16_and_utf32_files_are_refused_untouched(self):
+        for codec in ("utf-16", "utf-32"):
+            with self.subTest(codec=codec):
+                raw = "a = 1\n".encode(codec)
+                self.path.write_bytes(raw)
+                out = self.edit("a = 1", "a = 9")
+                self.assertTrue(out.startswith("[c3_edit:encoding]"))
+                self.assertEqual(self.path.read_bytes(), raw)
+
     def test_typographic_text_with_crlf(self):
         self.check("x = “hi”\r\ny\r\nz\n".encode("utf-8"), "x = “hi”\ny", "q\nr",
                    b"q\r\nr\r\nz\n")

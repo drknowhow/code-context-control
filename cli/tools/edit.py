@@ -15,6 +15,7 @@ Parallel safety:
 See docs/agent-locks.md §5 (Layer A).
 """
 import bisect
+import codecs
 import difflib
 import hashlib
 import json
@@ -45,6 +46,7 @@ _FAILURES = {
     "not found": "not_found",
     "ambiguous": "ambiguous",
     "lookalike": "lookalike",
+    "encoding": "encoding",
     "read error": "io_error",
     "write error": "io_error",
     "create error": "io_error",
@@ -154,6 +156,24 @@ def _read_preserving_newlines(path: Path) -> str:
     _write_preserving_newlines instead of raising UnicodeDecodeError.
     """
     return path.read_bytes().decode("utf-8", errors="surrogateescape")
+
+
+# UTF-32 first: its little-endian BOM begins with the UTF-16 one.
+_FOREIGN_BOMS = ((codecs.BOM_UTF32_LE, "UTF-32"), (codecs.BOM_UTF32_BE, "UTF-32"),
+                 (codecs.BOM_UTF16_LE, "UTF-16"), (codecs.BOM_UTF16_BE, "UTF-16"))
+
+
+def _encoding_refusal(raw: bytes, file_label: str) -> str:
+    """A refusal when `raw` opens with a UTF-16 or UTF-32 byte-order mark,
+    else "". Read as UTF-8 such a file is NUL-separated characters that no
+    old_string matches."""
+    name = next((n for bom, n in _FOREIGN_BOMS if raw.startswith(bom)), "")
+    if not name:
+        return ""
+    return (f"[c3_edit:encoding] {file_label} is {name} text. c3_edit and "
+            f"c3_read work on UTF-8 only, so nothing was written.\n"
+            f"  Convert the file to UTF-8 first, or change it with the tool "
+            f"that owns it.")
 
 
 def _write_preserving_newlines(path: Path, content: str) -> None:
@@ -569,6 +589,9 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
         except Exception as e:
             return finalize("c3_edit", {"file": file_path},
                             f"Read error: {e}", "read error")
+        foreign = _encoding_refusal(pre_image, file_path)
+        if foreign:
+            return finalize("c3_edit", {"file": file_path}, foreign, "encoding")
         original = content
 
         results = []
@@ -699,6 +722,9 @@ def _edit_locked(path: Path, rel: str, file_path: str, old_string: str,
     except Exception as e:
         return finalize("c3_edit", {"file": file_path},
                         f"Read error: {e}", "read error")
+    foreign = _encoding_refusal(pre_image, file_path)
+    if foreign:
+        return finalize("c3_edit", {"file": file_path}, foreign, "encoding")
 
     new_content, count, lookalike = _apply_replacement(
         content, old_string, new_string, replace_all)
