@@ -187,8 +187,11 @@ def run_isolated_probe(
     preexec = None
     if psutil is None and os.name != "nt":
         def preexec():  # pragma: no cover - POSIX without psutil
-            import resource
-            resource.setrlimit(resource.RLIMIT_AS, (cap_bytes, cap_bytes))
+            try:  # best effort: macOS refuses to lower RLIMIT_AS
+                import resource
+                resource.setrlimit(resource.RLIMIT_AS, (cap_bytes, cap_bytes))
+            except (ValueError, OSError):
+                pass
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     import tempfile
