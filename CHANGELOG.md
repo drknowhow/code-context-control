@@ -4,6 +4,29 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.153.1] - 2026-10-02
+
+### Fixed — a corrupt embedding store no longer eats the machine's memory (#180)
+
+A damaged HNSW segment made chromadb commit 140 to 200 GB while it failed to
+load, and every C3 server for the project did it again at startup. On one box
+two servers held 170 GB of commit and unrelated programs died on allocation.
+Quarantine made it worse: when another process had the store open, the move
+fell back to a copy and could not delete the original, so each new session
+left another full copy behind (284 copies, 384 GB) and reopened the same
+corrupt store.
+
+- An existing store is first opened in a child process under a memory cap
+  (a Job Object limit on Windows, polling or `RLIMIT_AS` elsewhere). The
+  server opens the store itself only if the child could read it. A pass is
+  remembered until the store's files change.
+- One C3 server per project owns the store, through a lock file next to it.
+  Other servers for the same project run without dense search and say so in
+  `unavailable_reason()`. chromadb's `PersistentClient` is not safe across
+  processes.
+- Quarantine renames the store or raises. It never copies, and it keeps only
+  the two newest quarantines.
+
 ## [2.153.0] - 2026-09-28
 
 ### Changed — c3_edit no longer applies a lookalike match
