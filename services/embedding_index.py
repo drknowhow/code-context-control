@@ -10,8 +10,12 @@ import gc
 import hashlib
 import json
 import logging
+import os
 import shutil
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +31,283 @@ DEFAULT_MIN_SCORE_OTHER = 0.55
 # A redundant build is worth far less than a responsive server, so we give up
 # and degrade rather than block. See _acquire_build_lock().
 _BUILD_LOCK_WAIT_SECONDS = 30.0
+
+# ── Store safety (issue #180) ─────────────────────────────
+# A damaged HNSW segment does not just fail to load. chromadb's loader
+# allocates as it reads, so one bad segment made a single MCP server commit
+# 140-200 GB before the load gave up, and every new session repeated it
+# (measured 2026-10-02: count() on a copy of the store, 165 GB private, 0.25 GB
+# working set, then "Error loading hnsw index"). An in-process probe cannot
+# undo that commit, so an existing store is first opened in a child process
+# under a memory cap, and only opened here if the child could read it.
+_PROBE_TIMEOUT_SECONDS = 180.0
+_PROBE_POLL_SECONDS = 0.1
+_PROBE_MIN_CAP_BYTES = 4 * 1024 ** 3  # floor; scaled up for big stores below
+_PROBE_CAP_STORE_MULTIPLE = 4
+_PROBE_OK_FILE = "store_probe_ok.json"
+_PROBE_OK_MARKER = "C3_STORE_PROBE_OK"
+# Each quarantine keeps a full copy of the store for post-mortem. Unbounded,
+# that reached 284 copies and 384 GB in one project; keep only the newest few.
+_QUARANTINE_KEEP = 2
+_OWNER_LOCK_FILE = "chromadb.owner.lock"
+
+_PROBE_CHILD_CODE = """
+import sys
+import chromadb
+from chromadb.config import Settings
+client = chromadb.PersistentClient(
+    path=sys.argv[1], settings=Settings(anonymized_telemetry=False))
+listed = client.list_collections()
+names = {c if isinstance(c, str) else getattr(c, "name", "") for c in listed}
+if sys.argv[2] in names:
+    client.get_collection(sys.argv[2]).count()
+print("C3_STORE_PROBE_OK", flush=True)
+"""
+
+
+class StoreBusyError(RuntimeError):
+    """Another C3 process owns this project's embedding store."""
+
+
+def _private_bytes(proc) -> int:
+    """Committed (Windows) or resident (POSIX) bytes of a psutil.Process."""
+    info = proc.memory_info()
+    return int(getattr(info, "private", 0) or info.rss)
+
+
+def _windows_job_memory_cap(pid: int, cap_bytes: int):
+    """Put *pid* in a Job Object whose per-process commit limit is *cap_bytes*.
+
+    Polling alone is not enough here: the corrupt-segment loader committed
+    ~100 GB between two 100 ms polls (measured 2026-10-02). Under a job limit
+    the allocation fails inside the child instead. Returns the job handle
+    (keep it open while the child runs) or None when unsupported.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class BASIC(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class EXTENDED(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BASIC),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+        PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
+
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.OpenProcess.restype = wintypes.HANDLE
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = EXTENDED()
+        info.BasicLimitInformation.LimitFlags = (
+            JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+        info.ProcessMemoryLimit = cap_bytes
+        if not k32.SetInformationJobObject(
+                wintypes.HANDLE(job), JobObjectExtendedLimitInformation,
+                ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(wintypes.HANDLE(job))
+            return None
+        proc = k32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+        if not proc:
+            k32.CloseHandle(wintypes.HANDLE(job))
+            return None
+        try:
+            assigned = k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(proc))
+        finally:
+            k32.CloseHandle(wintypes.HANDLE(proc))
+        if not assigned:
+            k32.CloseHandle(wintypes.HANDLE(job))
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def _close_job(job) -> None:
+    if job is None:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        ctypes.WinDLL("kernel32").CloseHandle(wintypes.HANDLE(job))
+    except Exception:
+        pass
+
+
+def run_isolated_probe(
+    args: list,
+    *,
+    cap_bytes: int,
+    timeout: float = _PROBE_TIMEOUT_SECONDS,
+    marker: str = _PROBE_OK_MARKER,
+) -> tuple:
+    """Run ``python <args>`` in a child that is killed if it outgrows *cap_bytes*.
+
+    Returns ``(ok, reason)``. ``ok`` needs a zero exit AND *marker* on stdout,
+    so a child that dies quietly is a failure, not a pass. The cap is enforced
+    by polling the child's memory (psutil when installed; RLIMIT_AS on POSIX
+    otherwise), which bounds the damage to the cap plus one poll interval.
+    """
+    try:
+        import psutil  # optional: C3 does not declare it
+    except Exception:
+        psutil = None
+
+    preexec = None
+    if psutil is None and os.name != "nt":
+        def preexec():  # pragma: no cover - POSIX without psutil
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (cap_bytes, cap_bytes))
+
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    import tempfile
+
+    # Files, not pipes: a child that logs more than a pipe buffer while nobody
+    # reads it would block and be misreported as a timeout.
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        child = subprocess.Popen(
+            [sys.executable, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=out_f,
+            stderr=err_f,
+            preexec_fn=preexec,
+            creationflags=creationflags,
+        )
+        job = _windows_job_memory_cap(child.pid, cap_bytes)
+        try:
+            reason = _watch_probe(child, psutil, cap_bytes, timeout)
+        finally:
+            _close_job(job)
+        if reason:
+            return False, reason
+        out_f.seek(0)
+        err_f.seek(0)
+        text = out_f.read().decode("utf-8", "replace")
+        err = err_f.read().decode("utf-8", "replace")
+    if child.returncode == 0 and marker in text:
+        return True, ""
+    tail = err.strip().splitlines()
+    detail = tail[-1] if tail else f"exit code {child.returncode}"
+    capped = " (under a hard memory cap)" if job is not None else ""
+    return False, f"probe failed{capped}: {detail[:300]}"
+
+
+def _watch_probe(child, psutil, cap_bytes, timeout) -> str:
+    """Wait for *child*; kill it on the cap or the deadline. Returns a reason or ""."""
+    watched = None
+    if psutil is not None:
+        try:
+            watched = psutil.Process(child.pid)
+        except Exception:
+            watched = None
+    deadline = time.monotonic() + timeout
+    peak = 0
+    reason = ""
+    while child.poll() is None:
+        if watched is not None:
+            try:
+                peak = max(peak, _private_bytes(watched))
+            except Exception:
+                pass
+            if peak > cap_bytes:
+                reason = (f"probe exceeded its memory cap "
+                          f"({peak / 1024 ** 3:.1f} GB > {cap_bytes / 1024 ** 3:.1f} GB)")
+                break
+        if time.monotonic() >= deadline:
+            reason = f"probe timed out after {timeout:.0f}s"
+            break
+        time.sleep(_PROBE_POLL_SECONDS)
+    if reason:
+        child.kill()
+    try:
+        child.wait(timeout=30)
+    except Exception:
+        pass
+    return reason
+
+
+class _OwnerLock:
+    """Non-blocking, process-lifetime exclusive lock on one file.
+
+    chromadb's PersistentClient is not safe for several processes at once, yet
+    every C3 MCP server for a project opened the same store. The OS drops the
+    lock when the holder dies, so a crashed server never strands it.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._fh = None
+
+    @property
+    def held(self) -> bool:
+        return self._fh is not None
+
+    def try_acquire(self) -> bool:
+        if self._fh is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self.path, "ab")  # never read/written; fd exists to hold the lock
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            return False
+        self._fh = fh
+        return True
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            fh.close()
 
 
 class EmbeddingIndex:
@@ -62,6 +343,8 @@ class EmbeddingIndex:
         self._chroma_client = None
         self._collection = None
         self._available = False
+        self._unavailable_why = ""  # set when chromadb is installed but unusable
+        self._owner_lock = _OwnerLock(self._index_dir / _OWNER_LOCK_FILE)
         self._ollama_ok = False
         self._ollama_up = False
         self._model_ok = False
@@ -112,8 +395,16 @@ class EmbeddingIndex:
             self._open_chroma()
             self._available = True
             self._drop_legacy_collection()
-        except Exception as e:
+        except StoreBusyError as e:
+            log.info("embedding index disabled in this process: %s", e)
+            self._unavailable_why = str(e)
+            self._available = False
+        except ImportError as e:
             log.debug("chromadb unavailable for embedding index: %s", e)
+            self._available = False
+        except Exception as e:
+            log.warning("embedding store unusable: %s", e)
+            self._unavailable_why = f"embedding store unusable: {e}"
             self._available = False
 
         try:
@@ -144,7 +435,19 @@ class EmbeddingIndex:
         from chromadb.config import Settings
 
         persist_dir = self._index_dir / "chromadb"
+        if not self._owner_lock.try_acquire():
+            raise StoreBusyError(
+                "embedding store is in use by another C3 server for this "
+                "project; dense search is off in this one")
         persist_dir.mkdir(parents=True, exist_ok=True)
+        if not _retried and self._store_has_segments(persist_dir):
+            ok, why = self._probe_store_isolated(persist_dir)
+            if not ok:
+                log.warning(
+                    "embedding store failed its isolated probe (%s); "
+                    "quarantining and rebuilding", why)
+                self._quarantine_store(persist_dir)
+                persist_dir.mkdir(parents=True, exist_ok=True)
         self._chroma_client = chromadb.PersistentClient(
             path=str(persist_dir),
             settings=Settings(anonymized_telemetry=False),
@@ -179,17 +482,92 @@ class EmbeddingIndex:
             pass
         gc.collect()
 
+    @staticmethod
+    def _store_has_segments(persist_dir: Path) -> bool:
+        """True when the store holds at least one on-disk HNSW segment."""
+        try:
+            return any(persist_dir.glob("*/header.bin"))
+        except OSError:
+            return False
+
+    @staticmethod
+    def _store_signature(persist_dir: Path) -> dict:
+        sig = {}
+        for f in sorted(persist_dir.rglob("*")):
+            try:
+                if f.is_file():
+                    st = f.stat()
+                    sig[f.relative_to(persist_dir).as_posix()] = [st.st_size, st.st_mtime_ns]
+            except OSError:
+                continue
+        return sig
+
+    def _probe_store_isolated(self, persist_dir: Path) -> tuple:
+        """Open the store in a capped child first; skip if unchanged since a pass.
+
+        Returns ``(ok, reason)``. A pass is remembered against the files' sizes
+        and mtimes, so an untouched store is not re-probed on every start.
+        """
+        sig = self._store_signature(persist_dir)
+        ok_file = self._index_dir / _PROBE_OK_FILE
+        try:
+            if json.loads(ok_file.read_text(encoding="utf-8")) == sig:
+                return True, ""
+        except Exception:
+            pass
+        store_bytes = sum(v[0] for v in sig.values())
+        cap = max(_PROBE_MIN_CAP_BYTES, _PROBE_CAP_STORE_MULTIPLE * store_bytes)
+        started = time.monotonic()
+        try:
+            ok, why = run_isolated_probe(
+                ["-c", _PROBE_CHILD_CODE, str(persist_dir), COLLECTION_NAME],
+                cap_bytes=cap,
+            )
+        except Exception as e:  # could not spawn: the in-process probe still runs
+            log.warning("isolated store probe could not run (%s); skipping", e)
+            return True, ""
+        log.info("isolated store probe: ok=%s in %.1fs %s",
+                 ok, time.monotonic() - started, why)
+        if ok:
+            try:
+                # The child may have compacted the store; record what it left.
+                ok_file.write_text(json.dumps(self._store_signature(persist_dir)),
+                                   encoding="utf-8")
+            except OSError:
+                pass
+        return ok, why
+
+    def _prune_quarantines(self) -> None:
+        olds = sorted(self._index_dir.glob("quarantine_corrupt_*"))
+        for old in (olds[:-_QUARANTINE_KEEP] if _QUARANTINE_KEEP else olds):
+            shutil.rmtree(old, ignore_errors=True)
+
     def _quarantine_store(self, persist_dir: Path) -> None:
         """Move a corrupt store and its hash file aside for post-mortem.
 
         The hashes go with it: they claim vectors that the fresh store does not
         have, so leaving them behind would suppress the very rebuild this is
         meant to trigger.
+
+        Rename only, never copy. When another process still had the files open,
+        ``shutil.move`` fell back to copying the whole store and then failed to
+        delete the original, so every session left one more full copy behind
+        and reopened the same corrupt store (issue #180). A failed rename now
+        raises and the index degrades for this process.
         """
         self._close_chroma()
-        dest = self._index_dir / f"quarantine_corrupt_{datetime.now():%Y%m%d_%H%M%S}"
+        dest = self._index_dir / f"quarantine_corrupt_{datetime.now():%Y%m%d_%H%M%S_%f}"
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(persist_dir), str(dest / persist_dir.name))
+        try:
+            os.rename(str(persist_dir), str(dest / persist_dir.name))
+        except OSError as e:
+            try:
+                dest.rmdir()
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"could not move the corrupt embedding store aside ({e})") from e
+        (self._index_dir / _PROBE_OK_FILE).unlink(missing_ok=True)
         try:
             if self._hash_file.exists():
                 shutil.move(str(self._hash_file), str(dest / self._hash_file.name))
@@ -197,6 +575,7 @@ class EmbeddingIndex:
             self._hash_file.unlink(missing_ok=True)
         self._file_hashes = {}
         log.warning("quarantined corrupt embedding store to %s", dest)
+        self._prune_quarantines()
 
     def _drop_legacy_collection(self) -> None:
         """Best-effort removal of the pre-2.108.0 collection and hash file.
@@ -290,7 +669,7 @@ class EmbeddingIndex:
     def unavailable_reason(self) -> str:
         """Human-readable reason ``ready`` is False (after probe/init)."""
         if not self._available:
-            return "chromadb not installed"
+            return self._unavailable_why or "chromadb not installed"
         if not self._ollama_up:
             return "Ollama not reachable"
         if not self._model_ok:
