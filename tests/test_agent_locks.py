@@ -380,6 +380,7 @@ class TestEditIntegration(unittest.TestCase):
     def _svc(self, session_id):
         svc = self.MagicMock()
         svc.project_path = str(self.root)
+        svc.ide_name = "claude-code"
         svc.edit_ledger = None
         svc.activity_log = None
         mgr = self.MagicMock()
@@ -494,6 +495,47 @@ class TestEditIntegration(unittest.TestCase):
         svc = self._svc("")
         svc.session_mgr.current_session = {}
         self.assertEqual(edit_id(svc), locks_id(svc))
+
+    def test_codex_explicit_and_implicit_leases_share_caller_identity(self):
+        from cli.tools.edit import handle_edit
+        from cli.tools.locks import handle_locks
+        svc = self._svc("codex-thread-123")
+        svc.ide_name = "codex"
+        # Neither session metadata nor the target project's preferred editor wins.
+        svc.session_mgr.current_session["source_ide"] = "claude-code"
+        (self.root / ".c3" / "config.json").write_text(
+            json.dumps({"ide": "claude-code"}), encoding="utf-8")
+        out = handle_locks("acquire", "router.py", "Codex test", 60,
+                           svc, self._finalize)
+        self.assertIn("codex:codex-th", out)
+        row = al.LockStore(self.root).snapshot()["locks"][0]
+        self.assertEqual(row["agent_id"], "codex:codex-th")
+        self.assertEqual(row["session_id"], "codex-thread-123")
+        edited = handle_edit(str(self.target), "alpha", "beta", "", "", False,
+                             svc, self._finalize)
+        self.assertNotIn(al.TAG_HELD, edited)
+        handle_locks("release", "router.py", "", 0, svc, self._finalize)
+        self.assertEqual(al.LockStore(self.root).snapshot()["count"], 0)
+        handle_edit(str(self.target), "beta", "gamma", "", "", False,
+                    svc, self._finalize)
+        self.assertEqual(al.LockStore(self.root).snapshot()["locks"][0]["agent_id"],
+                         "codex:codex-th")
+
+    def test_caller_provider_overrides_project_for_proxy_runtime(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from cli.tools import _grants
+        for provider in ("codex", "grok", "cursor", "claude-code"):
+            svc = SimpleNamespace(
+                project_path=str(self.root), ide_name=provider,
+                session_mgr=SimpleNamespace(current_session={
+                    "id": "c3-local-id", "host_session_id": "host-session-id",
+                    "source_ide": "claude-code",
+                }),
+            )
+            with patch("core.host.resolve_host", side_effect=AssertionError("target config used")):
+                self.assertEqual(_grants.agent_id(svc), provider + ":host-ses")
 
     def test_disabled_locks_leave_editing_untouched(self):
         (self.root / ".c3" / "config.json").write_text(

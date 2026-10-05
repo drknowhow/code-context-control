@@ -40,7 +40,7 @@ def handle_locks(action: str, paths: str, intent: str, ttl_s: int,
     """Route c3_locks actions."""
     project = str(svc.project_path)
     session = _session_id(svc)
-    agent = al.agent_id_for(session)
+    agent = _grants.agent_id(svc)
     args = {"action": action}
 
     cfg = al.config(project)
