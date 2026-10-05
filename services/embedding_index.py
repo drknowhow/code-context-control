@@ -69,6 +69,56 @@ class StoreBusyError(RuntimeError):
     """Another C3 process owns this project's embedding store."""
 
 
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def prune_quarantines(index_dir: Path, keep: int | None = None,
+                      dry_run: bool = False, on_progress=None) -> dict:
+    """Delete all but the newest *keep* ``quarantine_corrupt_*`` dirs in *index_dir*.
+
+    ``keep=None`` keeps the default of two.
+
+    Newest is by name, which embeds the quarantine timestamp. Symlinks and
+    non-directories matching the pattern are never touched. A dir that cannot
+    be fully removed is reported in ``failed`` and retried by the next call.
+    ``on_progress(done, total)`` runs after each dir. With ``dry_run`` nothing
+    is deleted and ``pruned`` / ``bytes`` describe what a real run would remove.
+
+    Returns ``{"kept": [...], "pruned": [...], "failed": [...], "bytes": int}``
+    with directory names; ``bytes`` is the size freed (or that would be freed).
+    """
+    try:
+        found = sorted(p for p in Path(index_dir).glob("quarantine_corrupt_*")
+                       if p.is_dir() and not p.is_symlink())
+    except OSError:
+        found = []
+    keep = _QUARANTINE_KEEP if keep is None else max(int(keep), 0)
+    doomed = found[:len(found) - keep] if keep < len(found) else []
+    result = {"kept": [p.name for p in found[len(doomed):]],
+              "pruned": [], "failed": [], "bytes": 0}
+    for done, old in enumerate(doomed, 1):
+        size = _tree_bytes(old)
+        if dry_run:
+            result["pruned"].append(old.name)
+            result["bytes"] += size
+        else:
+            shutil.rmtree(old, ignore_errors=True)
+            left = _tree_bytes(old) if old.exists() else 0
+            result["bytes"] += size - left
+            result["failed" if old.exists() else "pruned"].append(old.name)
+        if on_progress:
+            on_progress(done, len(doomed))
+    return result
+
+
 def _private_bytes(proc) -> int:
     """Committed (Windows) or resident (POSIX) bytes of a psutil.Process."""
     info = proc.memory_info()
@@ -541,9 +591,7 @@ class EmbeddingIndex:
         return ok, why
 
     def _prune_quarantines(self) -> None:
-        olds = sorted(self._index_dir.glob("quarantine_corrupt_*"))
-        for old in (olds[:-_QUARANTINE_KEEP] if _QUARANTINE_KEEP else olds):
-            shutil.rmtree(old, ignore_errors=True)
+        prune_quarantines(self._index_dir)
 
     def _quarantine_store(self, persist_dir: Path) -> None:
         """Move a corrupt store and its hash file aside for post-mortem.
