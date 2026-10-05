@@ -37,6 +37,17 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_upgrade.add_argument("--check", action="store_true",
                            help="Only report whether a newer version exists; don't install")
 
+    p_prune = subparsers.add_parser(
+        "prune-quarantine",
+        help="Delete old corrupt-embedding-store quarantine copies (frees disk)")
+    p_prune.add_argument("project_path", nargs="?", default=".")
+    p_prune.add_argument("--all", action="store_true",
+                         help="Every project registered with the hub, not just this one")
+    p_prune.add_argument("--keep", type=int, default=None,
+                         help="Newest quarantine dirs to keep per project (default 2)")
+    p_prune.add_argument("--dry-run", action="store_true",
+                         help="Report what would be removed without deleting")
+
     p_index = subparsers.add_parser("index", help="Rebuild code index")
     p_index.add_argument("--max-files", type=int, default=None,
                          help="Cap files indexed this run. Unset reads "

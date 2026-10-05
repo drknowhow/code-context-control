@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.153.1"
+__version__ = "2.154.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -1288,6 +1288,14 @@ def cmd_init(args):
     except Exception:
         pass
 
+    swept = _prune_project_quarantines(project_path)
+    if swept["pruned"]:
+        print(f"  Fixed : freed {_format_bytes(swept['bytes'])} from "
+              f"{len(swept['pruned'])} old embedding quarantine dir(s)")
+    for name in swept["failed"]:
+        print(f"  [warn] {name} could not be fully removed (in use?); "
+              "run 'c3 prune-quarantine' later")
+
     # Delegate backends
     try:
         from services.ollama_client import OllamaClient as _OC
@@ -1461,6 +1469,59 @@ def cmd_init(args):
 def cmd_index(args):
     """Rebuild the code index."""
     return common_cmd_index(args, _command_deps())
+
+
+def _format_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _prune_project_quarantines(project_path: str, keep=None, dry_run: bool = False) -> dict:
+    """Prune one project's ``.c3/embeddings/quarantine_corrupt_*`` dirs; returns the sweep result."""
+    from cli.progress import ProgressLine
+    from services.embedding_index import prune_quarantines
+
+    prog = ProgressLine()
+    try:
+        return prune_quarantines(
+            Path(project_path) / CONFIG_DIR / "embeddings", keep=keep, dry_run=dry_run,
+            on_progress=lambda done, total: prog.update(
+                f"  removing quarantine copies {done}/{total}"))
+    finally:
+        prog.done()
+
+
+def cmd_prune_quarantine(args):
+    """Delete old corrupt-embedding-store quarantine copies, keeping the newest few."""
+    if args.all:
+        from services.project_manager import ProjectManager
+        projects = [p["path"] for p in ProjectManager().list_registered()]
+    else:
+        projects = [str(Path(args.project_path or ".").resolve())]
+
+    verb = "would remove" if args.dry_run else "removed"
+    pruned = failed = freed = 0
+    for project in projects:
+        res = _prune_project_quarantines(project, keep=args.keep, dry_run=args.dry_run)
+        if not (res["pruned"] or res["failed"]):
+            continue
+        pruned += len(res["pruned"])
+        failed += len(res["failed"])
+        freed += res["bytes"]
+        print(f"{project}: {verb} {len(res['pruned'])} quarantine dir(s), "
+              f"{_format_bytes(res['bytes'])}; kept {len(res['kept'])}")
+        for name in res["failed"]:
+            print(f"  [warn] {name} could not be fully removed (in use?); run again later")
+
+    if not (pruned or failed):
+        print(f"Nothing to prune in {len(projects)} project(s).")
+        return
+    print(f"\n{verb.capitalize()} {pruned} quarantine dir(s), {_format_bytes(freed)}.")
+    if failed:
+        sys.exit(1)
 
 
 def cmd_compress(args):
@@ -9603,6 +9664,7 @@ def main():
         "enforce": cmd_enforce,
         "override": cmd_override,
         "locks": cmd_locks,
+        "prune-quarantine": cmd_prune_quarantine,
         "ci": cmd_ci,
         "oracle": cmd_oracle,
         "upgrade": cmd_upgrade,

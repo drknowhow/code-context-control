@@ -4,6 +4,23 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.154.0] - 2026-10-05
+
+### Added — old embedding quarantine copies are swept, not just capped (#180)
+
+2.153.1 stopped new quarantine copies but only pruned right after making one.
+A machine whose store was healthy, or already quarantined, kept every copy an
+older server had left (284 copies, 384 GB on one project) until the store
+failed again.
+
+- `c3 init` on an existing install now deletes all but the newest two
+  `.c3/embeddings/quarantine_corrupt_*` dirs, with a progress line for large
+  sweeps and a `[warn]` for a dir that is still in use.
+- `c3 prune-quarantine [path] [--all] [--keep N] [--dry-run]` runs the same
+  sweep on demand. `--all` walks every project registered with the hub; the
+  exit code is 1 if any dir could not be fully removed.
+- Symlinks and plain files that match the name are never touched.
+
 ## [2.153.1] - 2026-10-02
 
 ### Fixed — a corrupt embedding store no longer eats the machine's memory (#180)
