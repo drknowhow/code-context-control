@@ -118,8 +118,12 @@ Key is `(repo_id, relpath)` — adopt FleetDeck's scheme verbatim from
   `unc`, `outside_repo`, `is_root`, `empty` — never guessed. A wrong guess
   silently breaks mutual exclusion, which is worse than refusing.
 
-`agent_id` follows FleetDeck's convention: `claude-code:<session_id[:8]>`
-(`fleetdeck/hook.py:57`). Same agent, same name, both systems.
+`agent_id` uses `<provider>:<session_id[:8]>`. MCP tools take the provider
+from the caller's runtime host identity, including cross-project calls; the
+target project's preferred editor does not override the caller. Explicit
+`c3_locks` leases and implicit `c3_edit` leases share this resolution. Legacy
+Claude hooks retain FleetDeck's `claude-code:<session_id[:8]>` convention
+(`fleetdeck/hook.py:57`). The full session id remains the ownership key.
 
 ---
 

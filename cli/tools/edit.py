@@ -566,7 +566,8 @@ def _write_gate(svc, path: Path, rel: str, file_path: str, op: str,
                                "holder": holder.get("agent_id", ""),
                                "held_for_s": held_for},
                         agent_locks.refusal(holder, rel), "lock held")
-    agent_locks.lease(str(path), svc.project_path, session_id, intent=intent)
+    agent_locks.lease(str(path), svc.project_path, session_id, intent=intent,
+                      agent_id=_grants.agent_id(svc))
     return None
 
 

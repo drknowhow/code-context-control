@@ -170,10 +170,12 @@ def normalize_relpath(filepath, root) -> str:
     return rel
 
 
-def agent_id_for(session_id: str) -> str:
-    """FleetDeck's convention (fleetdeck/hook.py) so both name one agent alike."""
+def agent_id_for(session_id: str, provider: str = "claude-code") -> str:
+    """Label the actual provider; preserve legacy Claude hook callers."""
+    from core.ide import normalize_ide_name
+    provider = normalize_ide_name(provider)
     sid = (session_id or "").strip()
-    return f"claude-code:{sid[:8]}" if sid else "claude-code"
+    return f"{provider}:{sid[:8]}" if sid else provider
 
 
 # ── Engine ──────────────────────────────────────────────────────────────────
@@ -496,7 +498,8 @@ def check(path, project_path=".", session_id: str = ""):
         return None
 
 
-def lease(path, project_path=".", session_id: str = "", intent: str = "") -> bool:
+def lease(path, project_path=".", session_id: str = "", intent: str = "",
+          agent_id: str = "") -> bool:
     """Best-effort implicit lease on one file, for c3_edit to call.
 
     Implicit rather than explicit by design (spec §14): an explicit
@@ -512,7 +515,7 @@ def lease(path, project_path=".", session_id: str = "", intent: str = "") -> boo
             return False
         text = (intent or "").strip()[:120] or "editing via c3_edit"
         res = store_for(project_path).acquire(
-            [path], agent_id=agent_id_for(session_id),
+            [path], agent_id=agent_id or agent_id_for(session_id),
             session_id=session_id, intent=text)
         return bool(res.get("granted"))
     except Exception:

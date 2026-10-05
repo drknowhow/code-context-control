@@ -54,6 +54,19 @@ def _runtime_for(path: str):
     return shared_cache().get(path)
 
 
+class _CallerLabelRuntime:
+    """Use the caller's provider label without changing target session ownership."""
+
+    def __init__(self, target, caller):
+        from cli.tools import _grants
+
+        self._target = target
+        self.ide_name = _grants.agent_id(caller).split(":", 1)[0]
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
+
+
 def _is_registered(path: str) -> bool:
     """True when *path* is in the cross-project registry. Fails closed."""
     try:
@@ -523,6 +536,11 @@ def handle_project(action, svc, finalize, *, project="", query="", file_path="",
     except Exception as e:
         return done(
             f"[c3_project:error] Could not load '{resolved['name']}': {e}", "error")
+
+    # Label edit leases with the requesting host, without mutating the cached
+    # runtime or borrowing the caller's session/grant identity in the target.
+    if action == "edit":
+        fsvc = _CallerLabelRuntime(fsvc, svc)
 
     banner = f"[c3_project:{resolved['name']}] {action}\n"
     try:

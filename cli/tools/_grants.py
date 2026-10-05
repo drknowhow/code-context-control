@@ -51,6 +51,24 @@ def session_id(svc) -> str:
     return str(session.get("id", "") or "") or f"pid-{os.getpid()}"
 
 
+def agent_id(svc) -> str:
+    """One caller label for explicit locks and implicit edit leases.
+
+    Runtime host identity belongs to the caller, including c3_project proxies;
+    the target project's preferred editor must not override it.
+    """
+    from core.host import resolve_host
+    from services.agent_locks import agent_id_for
+
+    provider = getattr(svc, "ide_name", "")
+    if not isinstance(provider, str) or not provider.strip():
+        session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        provider = session.get("source_ide", "")
+    if not isinstance(provider, str) or not provider.strip():
+        provider = resolve_host(str(getattr(svc, "project_path", "") or "")).provider
+    return agent_id_for(session_id(svc), provider=provider)
+
+
 def allow(svc, denial, *, tool: str, op: str, path,
           peek: bool = False) -> str | None:
     """The `[c3-override:granted]` line when a live grant permits this exact
