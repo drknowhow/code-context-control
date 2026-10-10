@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -232,6 +233,35 @@ class TestEnsureUI(unittest.TestCase):
         verdict, _ = self._run(launched=False, error="boom")
         self.assertTrue(verdict.startswith("failed"), verdict)
         self.assertIn("boom", verdict)
+
+    def test_second_session_inside_the_launch_window_stands_down(self):
+        # The first server is not registered yet, so _ui_running sees nothing
+        # both times; only the launch lock stops the second launch.
+        first, launch1 = self._run()
+        second, launch2 = self._run()
+        self.assertEqual(first, "launched")
+        self.assertEqual(second, "launch-pending")
+        launch1.assert_called_once()
+        launch2.assert_not_called()
+
+    def test_stale_launch_lock_is_taken_over(self):
+        lock = self.project / ".c3" / "ui_launch.lock"
+        lock.write_text("1 0\n", encoding="ascii")
+        old = time.time() - hook_session_open._LAUNCH_GRACE_S - 5
+        os.utime(lock, (old, old))
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+        self.assertTrue(lock.exists())
+        self.assertEqual(
+            list((self.project / ".c3").glob("ui_launch.stale-*")), [])
+
+    def test_unwritable_lock_dir_falls_back_to_launching(self):
+        with mock.patch.object(hook_session_open.os, "open",
+                               side_effect=PermissionError("denied")):
+            verdict, launch = self._run()
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
 
     def test_session_open_calls_ensure_ui_with_the_host_id(self):
         with mock.patch.object(hook_session_open, "ensure_ui",

@@ -48,6 +48,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -56,6 +58,12 @@ from cli._hook_utils import detect_host, find_project, log_hook_error  # noqa: E
 from cli.hook_session_end import short_id  # noqa: E402
 
 _SILENT_SOURCES = {"compact"}
+
+# How long one session's UI launch holds the project against the next. A
+# server lands in the registry only after it binds its port, a few seconds
+# after Popen; this covers that gap with room to spare. After it, the live
+# registry entry (``_ui_running``) is the guard again.
+_LAUNCH_GRACE_S = 90.0
 
 
 def _ui_autostart_enabled(project: Path) -> bool:
@@ -112,6 +120,62 @@ def _ui_running(pm, project: Path) -> bool:
     return False
 
 
+def _claim_launch(project: Path) -> bool:
+    """Atomically claim the right to launch this project's UI server.
+
+    ``_ui_running`` only sees a server once it has registered its port, a
+    few seconds after launch. Sessions that open inside that window (an
+    agent spawning several at once, or a resume racing a startup) each saw
+    no live UI and each launched one, which is how a project ended up with
+    two servers. The first claimant creates ``.c3/ui_launch.lock`` with
+    O_EXCL; anyone else inside ``_LAUNCH_GRACE_S`` stands down.
+
+    A lock older than the grace window is stale (the launch died, or the
+    server since exited). It is taken over by renaming it to a unique name,
+    which only one contender can do, then the create is retried. If the
+    lock cannot be handled at all the answer is True, which is the
+    behaviour from before this lock existed: a missing UI is worse than a
+    rare duplicate.
+    """
+    lock = project / ".c3" / "ui_launch.lock"
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return True
+    for _ in range(3):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except FileNotFoundError:
+                continue  # released between our create and stat; retry
+            except Exception:
+                return True
+            if age < _LAUNCH_GRACE_S:
+                return False
+            stale = lock.with_name(f"ui_launch.stale-{uuid.uuid4().hex}")
+            try:
+                os.rename(str(lock), str(stale))
+            except FileNotFoundError:
+                continue  # another contender took it over first
+            except Exception:
+                return False
+            try:
+                stale.unlink()
+            except Exception:
+                pass
+            continue
+        except Exception:
+            return True
+        try:
+            os.write(fd, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
+        finally:
+            os.close(fd)
+        return True
+    return False
+
+
 def ensure_ui(project: Path, host_session_id: str = "") -> str:
     """Bring up this project's UI server for the session that just opened.
 
@@ -136,6 +200,8 @@ def ensure_ui(project: Path, host_session_id: str = "") -> str:
             return "unregistered"
         if _ui_running(pm, project):
             return "already-running"
+        if not _claim_launch(project):
+            return "launch-pending"
         # launch_session copies os.environ into the detached child, which is
         # where cli/server._register_session reads the ownership from.
         os.environ["C3_UI_OWNER"] = "session"

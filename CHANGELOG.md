@@ -4,6 +4,18 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.154.1] - 2026-10-10
+
+### Fixed — sessions opening together no longer start two UI servers
+
+`ensure_ui` skipped a project whose UI was already registered, but a new
+server registers only after it binds its port. Sessions that opened inside
+those few seconds each launched one; dthome had two servers for one project
+on 2026-10-10. The first session now takes `.c3/ui_launch.lock` (O_EXCL)
+and any other session within 90 s returns `launch-pending`. A stale lock is
+taken over by an atomic rename. If the lock cannot be written at all, the
+session launches as before.
+
 ## [2.154.0] - 2026-10-05
 
 ### Added — old embedding quarantine copies are swept, not just capped (#180)
