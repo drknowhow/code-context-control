@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
