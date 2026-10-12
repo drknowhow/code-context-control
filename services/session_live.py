@@ -62,21 +62,33 @@ def heartbeat_path(project, session_id: str) -> Path:
 
 
 def beat(project, session_id: str, *, host_session_id: str = "",
-         ide: str = "", pid: int | None = None) -> bool:
-    """Record/refresh the heartbeat for one session. Never raises."""
+         ide: str = "", pid: int | None = None, host_pid: int = 0) -> bool:
+    """Record/refresh the heartbeat for one session. Never raises.
+
+    ``host_pid`` (2.155.0) is the pid of the IDE / agent CLI this server
+    serves (``services.host_handoff.host_process_id``). The SessionStart hook
+    uses it to find the server that must follow a ``/clear`` to its new host
+    session id. 0 when unknown; readers treat 0 as "no match".
+    """
     if not str(session_id or "").strip():
         return False
     try:
         from services.atomic_json import write_json_atomic
         target = heartbeat_path(project, session_id)
         target.parent.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(target, {
+        record = {
             "session_id": str(session_id),
             "host_session_id": str(host_session_id or ""),
             "ide": str(ide or ""),
             "pid": int(pid if pid is not None else os.getpid()),
             "ts": time.time(),
-        })
+        }
+        try:
+            if int(host_pid or 0) > 0:
+                record["host_pid"] = int(host_pid)
+        except (TypeError, ValueError):
+            pass
+        write_json_atomic(target, record)
         return True
     except Exception:
         return False

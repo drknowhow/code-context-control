@@ -4,6 +4,60 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.155.0] - 2026-10-12
+
+### Fixed — the hub stays up, and a `/clear` keeps its C3
+
+Two reports from C3 Desk on one machine: "Hub not answering" now and then,
+and "C3 did not connect" after every `/clear`. Both traced to the same two
+defects.
+
+**UI servers leaked, and the box ran out of commit.** `~/.c3/registry.json`
+had three writers and no lock: every `c3 ui` at startup, the hub's 60 s
+sweep, and every `GET /api/projects` — which the hub page and C3 Desk poll.
+Each rewrote the whole file from its own snapshot, dropping any entry that
+missed one 0.3 s connect or one 0.8 s health probe (a server re-indexing
+after a burst of edits misses both). A dropped server kept running but was
+invisible: nothing could reap it, and the next SessionStart launched another.
+The machine had six such orphans (3.3 GB) beside three registered servers,
+and the hub's own log ended in `MemoryError` on a request — that is the "hub
+down".
+
+- `services/ui_registry.py`: every write holds `registry.lock`; writers patch
+  a fresh read (upsert one entry, remove named ports) instead of replacing
+  the file; an entry is dead only when its port is quiet **and** its pid is
+  gone.
+- `cli/server`: a starting server upserts its own entry and no longer prunes
+  its siblings; it re-asserts the entry every 60 s, so a lost one returns.
+- `ProjectManager.list_projects` only reads. `sweep_registry` decides, and
+  removes under the lock. The health probe allows 2 s, not 0.8.
+- The SessionStart hook treats a registered server with a live pid as
+  running, and the first session to launch takes `.c3/ui_launch.lock` with
+  O_EXCL (90 s; a stale lock is taken over by rename) so two sessions
+  opening together start one server, not two. Folds in the unmerged
+  `fix/ui-launch-lock` branch (2.154.1).
+
+**A `/clear` left the MCP server on a dead host session id.** Claude Code
+starts a new host session on `/clear` (and on an in-session `/resume`) but
+keeps its MCP servers; C3 had read `CLAUDE_CODE_SESSION_ID` once and kept
+it. No `C3 connected <new id>` followed the hook's `Session started <new
+id>`, so the desktop sentinel reported a runtime that was serving fine as
+not connected; grants and confirm holds filed under the new id were consumed
+under the old one.
+
+- The server records the pid of the host it serves in its heartbeat
+  (`host_pid`, from the process tree — `services/host_handoff.py`). The
+  SessionStart hook, a child of the same host, finds that heartbeat and
+  leaves `.c3/live/handoffs/<c3 session>.json`.
+- The server polls for it every 5 s and on every tool call, rebinds in place
+  (session record, host env var, link file, heartbeat, a `session_rebind`
+  row) and writes `C3 connected <new id>` — inside the sentinel's 30 s.
+- Without a readable process tree the hook hands off only the unambiguous
+  case: one live session of that provider in the project.
+
+See docs/session-liveness.md. The hooks and the MCP server load their code
+at process start, so this is live for new sessions once installed.
+
 ## [2.154.0] - 2026-10-05
 
 ### Added — old embedding quarantine copies are swept, not just capped (#180)

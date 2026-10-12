@@ -165,6 +165,93 @@ def _link_host_session(svc, host_sid: str) -> None:
         pass
 
 
+# ── Host handoff (2.155.0): follow a /clear to its new host session id ─────
+# The pid of the IDE / agent CLI above this process (services.host_handoff).
+# Written into every heartbeat; the SessionStart hook matches on it.
+_HOST_PID = 0
+# How often the heartbeat thread looks for a handoff file. The desktop
+# sentinel gives a new session 30 s to produce a `C3 connected` row.
+_HANDOFF_POLL_S = 5
+
+
+def _rebind_host_session(svc, host_sid: str, start_source: str = "") -> bool:
+    """Adopt ``host_sid`` as this server's host session id. Returns True when
+    something changed.
+
+    Everything that was derived from the old id is redone: the session
+    record (what ``_grants.session_id`` and the access guard read), the
+    host env var (what a c3_project proxy runtime built later would read),
+    the host↔C3 link file, the heartbeat — and the ``C3 connected <id>``
+    notification, which is what C3 Desk's "did not connect" sentinel waits
+    for after the hook's ``Session started <id>``.
+    """
+    host_sid = str(host_sid or "").strip()
+    session = getattr(getattr(svc, "session_mgr", None), "current_session", None)
+    if not host_sid or not isinstance(session, dict):
+        return False
+    previous = str(session.get("host_session_id") or "")
+    if previous == host_sid:
+        return False
+    session["host_session_id"] = host_sid
+    ide = getattr(svc, "ide_name", "") or _IDE_NAME
+    try:
+        from core.host import session_env_var
+        var = session_env_var(ide)
+        if var:
+            os.environ[var] = host_sid
+    except Exception:
+        pass
+    try:
+        import dataclasses
+        base = getattr(svc, "host_context", None) or _HOST
+        ctx = dataclasses.replace(base, host_session_id=host_sid)
+        svc.host_context = ctx
+        if getattr(svc, "session_mgr", None) is not None:
+            svc.session_mgr.host_context = ctx
+    except Exception:
+        pass
+    with _host_sid_lock:
+        _host_sid_cache["value"] = host_sid
+        _host_sid_cache["read_at"] = time.monotonic()
+        _host_sid_cache["linked"] = ""
+    _link_host_session(svc, host_sid)
+    try:
+        svc.activity_log.log("session_rebind", {
+            "session_id": str(session.get("id") or ""),
+            "host_session_id": host_sid,
+            "previous_host_session_id": previous,
+            "start_source": str(start_source or ""),
+        })
+    except Exception:
+        pass
+    try:
+        from services import session_live
+        session_live.beat(svc.project_path, str(session.get("id") or ""),
+                          host_session_id=host_sid, ide=ide, host_pid=_HOST_PID)
+    except Exception:
+        pass
+    _notify_mcp_ready(svc)
+    return True
+
+
+def _check_handoff(svc) -> bool:
+    """Consume a pending handoff file for this session, if any. Never raises."""
+    try:
+        session = getattr(getattr(svc, "session_mgr", None), "current_session", None) or {}
+        c3_id = str(session.get("id") or "")
+        if not c3_id:
+            return False
+        from services import host_handoff
+        data = host_handoff.read_handoff(svc.project_path, c3_id)
+        if not data:
+            return False
+        host_handoff.clear_handoff(svc.project_path, c3_id)
+        return _rebind_host_session(svc, str(data.get("host_session_id") or ""),
+                                    str(data.get("start_source") or ""))
+    except Exception:
+        return False
+
+
 def _notify_mcp_ready(svc) -> None:
     """``kind="mcp"`` / ``C3 connected`` — the runtime is ready to serve (D0b).
 
@@ -341,19 +428,36 @@ async def lifespan(server):
     if _live_session_id:
         from services import session_live
 
+        global _HOST_PID
+        try:
+            from services.host_handoff import host_process_id
+            _HOST_PID = int(host_process_id() or 0)
+        except Exception:
+            _HOST_PID = 0
+
         def _do_beat():
             session_live.beat(services.project_path, _live_session_id,
                               host_session_id=_host_session_id(services) or "",
-                              ide=_IDE_NAME)
+                              ide=_IDE_NAME, host_pid=_HOST_PID)
 
         _do_beat()
 
         def _bg_heartbeat():
-            while not _heartbeat_stop.wait(timeout=session_live.HEARTBEAT_INTERVAL_S):
+            # Wakes every _HANDOFF_POLL_S to look for a handoff (a /clear
+            # moved this server to a new host session id), and beats every
+            # HEARTBEAT_INTERVAL_S as before.
+            last_beat = time.monotonic()
+            while not _heartbeat_stop.wait(timeout=_HANDOFF_POLL_S):
                 try:
-                    _do_beat()
+                    _check_handoff(services)
                 except Exception:
                     pass
+                if time.monotonic() - last_beat >= session_live.HEARTBEAT_INTERVAL_S:
+                    last_beat = time.monotonic()
+                    try:
+                        _do_beat()
+                    except Exception:
+                        pass
 
         threading.Thread(target=_bg_heartbeat, daemon=True,
                          name="c3-session-heartbeat").start()
@@ -423,6 +527,9 @@ async def lifespan(server):
     # notification within 30 s, so this must be the LAST thing before the
     # handshake proceeds and must never be skipped on a partial init.
     _notify_mcp_ready(services)
+    # A /clear that landed while this process was still starting left its
+    # handoff waiting; take it now rather than at the first poll.
+    _check_handoff(services)
 
     try:
         yield services
@@ -517,6 +624,10 @@ def _ensure_repo_map_once(rt) -> None:
 def _svc(ctx: Context) -> C3Runtime:
     rt = ctx.request_context.lifespan_context
     _ensure_repo_map_once(rt)
+    # A tool call right after a /clear must already run under the new host
+    # id (grants and leases are keyed by it): one stat per call, before the
+    # access guard binds the session.
+    _check_handoff(rt)
     access_guard.bind_session(_grants.session_id(rt))
     return rt
 

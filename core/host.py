@@ -8,6 +8,18 @@ from dataclasses import dataclass
 
 from core.ide import get_profile, load_ide_config, normalize_ide_name
 
+# The environment variable each host puts its session id in. The MCP server
+# reads it once at start; after a /clear it is REWRITTEN in-process by
+# cli/mcp_server._rebind_host_session so that runtimes built later in the same
+# process (the c3_project proxy) inherit the new id — see services.host_handoff.
+SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID",
+               "grok": "GROK_SESSION_ID"}
+
+
+def session_env_var(provider: str | None) -> str:
+    """The env var carrying ``provider``'s session id, or ``""``."""
+    return SESSION_ENV.get(normalize_ide_name(provider or ""), "")
+
 
 @dataclass(frozen=True)
 class HostContext:
@@ -35,7 +47,5 @@ def resolve_host(project_path: str = "", explicit_host: str | None = None,
     # Grok is never inferred from GROK_SESSION_ID: a grok launched from a Claude
     # Code terminal also inherits CLAUDE_CODE_SESSION_ID, so its MCP entry and
     # hooks name the host explicitly (--host grok) instead.
-    session_env = {"claude-code": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID",
-                   "grok": "GROK_SESSION_ID"}
-    session = str(env.get(session_env.get(provider, ""), "") or "").strip()
+    session = str(env.get(SESSION_ENV.get(provider, ""), "") or "").strip()
     return HostContext(provider, session)
