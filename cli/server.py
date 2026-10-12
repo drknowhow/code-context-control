@@ -63,19 +63,8 @@ _HUB_CONFIG_FILE = _GLOBAL_C3_DIR / "hub_config.json"
 
 
 def _registry_read() -> list:
-    try:
-        if _REGISTRY_FILE.exists():
-            with open(_REGISTRY_FILE, encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return []
-
-
-def _registry_write(entries: list):
-    _GLOBAL_C3_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_REGISTRY_FILE, "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2)
+    from services import ui_registry
+    return ui_registry.read(_REGISTRY_FILE)
 
 
 def _read_hub_config() -> dict:
@@ -103,32 +92,54 @@ def _port_alive(port: int) -> bool:
         return False
 
 
-def _register_session(port: int, project_path: str, project_name: str):
+# Seconds between a running server's re-assertions of its own registry entry
+# (services.ui_registry.ensure). A lost entry — an older hub rewriting the
+# file from a stale snapshot, a crash mid-write — comes back within one tick
+# instead of leaving a server nothing can find, reap or reuse.
+_REGISTRY_REASSERT_S = 60
+
+
+def _registry_entry(port: int, project_path: str, project_name: str) -> dict:
+    # owner says who asked for this server: "session" when an IDE session
+    # start launched it (cli/hook_session_open), "user" for `c3 ui`, the
+    # hub's Open UI button and the TUI. Only session-owned servers are
+    # ever reaped automatically (ProjectManager.sweep_registry).
+    return {
+        "port": port,
+        "project_path": project_path,
+        "project_name": project_name,
+        "started_at": time.time(),
+        "pid": os.getpid(),
+        "owner": (os.environ.get("C3_UI_OWNER") or "user").strip().lower(),
+        "owner_session": (os.environ.get("C3_UI_OWNER_SESSION") or "").strip(),
+    }
+
+
+def _register_session(port: int, project_path: str, project_name: str) -> dict:
+    """Upsert this server's entry under the registry lock (2.155.0).
+
+    This used to drop every OTHER entry whose port missed a 0.3 s connect —
+    a sibling server busy re-indexing was deregistered by the next one to
+    start, and lived on as an orphan. Pruning is the hub sweep's job now,
+    and it only drops an entry whose pid is gone as well.
+    """
+    from services import ui_registry
+    entry = _registry_entry(port, project_path, project_name)
     with _REGISTRY_LOCK:
-        entries = _registry_read()
-        # Remove our own port and any stale (dead) entries
-        entries = [e for e in entries if e.get("port") != port and _port_alive(e.get("port", 0))]
-        # owner says who asked for this server: "session" when an IDE session
-        # start launched it (cli/hook_session_open), "user" for `c3 ui`, the
-        # hub's Open UI button and the TUI. Only session-owned servers are
-        # ever reaped automatically (ProjectManager.sweep_registry).
-        entries.append({
-            "port": port,
-            "project_path": project_path,
-            "project_name": project_name,
-            "started_at": time.time(),
-            "pid": os.getpid(),
-            "owner": (os.environ.get("C3_UI_OWNER") or "user").strip().lower(),
-            "owner_session": (os.environ.get("C3_UI_OWNER_SESSION") or "").strip(),
-        })
-        _registry_write(entries)
+        ui_registry.upsert(entry, _REGISTRY_FILE)
+    return entry
+
+
+def _reassert_registration(entry: dict) -> bool:
+    from services import ui_registry
+    with _REGISTRY_LOCK:
+        return ui_registry.ensure(entry, _REGISTRY_FILE)
 
 
 def _unregister_session(port: int):
+    from services import ui_registry
     with _REGISTRY_LOCK:
-        entries = _registry_read()
-        entries = [e for e in entries if e.get("port") != port]
-        _registry_write(entries)
+        ui_registry.remove_ports([port], _REGISTRY_FILE)
 
 
 def init_services(project_path: str):
@@ -4536,8 +4547,19 @@ def run_server(
         # Fallback chain: custom meta name → folder name → parent/folder for disambiguation
         _folder = _resolved.name or _resolved.parent.name or "project"
         _proj_name = (_meta.get("name") or "").strip() or _folder
-        _register_session(port, str(_resolved), _proj_name)
+        _entry = _register_session(port, str(_resolved), _proj_name)
         atexit.register(_unregister_session, port)
+
+        def _bg_reassert():
+            while True:
+                time.sleep(_REGISTRY_REASSERT_S)
+                try:
+                    _reassert_registration(_entry)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg_reassert, daemon=True,
+                         name="c3-ui-registry-reassert").start()
     except Exception:
         pass
 

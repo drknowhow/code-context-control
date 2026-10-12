@@ -82,10 +82,30 @@ Registry entries (`~/.c3/registry.json`) carry `pid`, `owner` and
 `owner_session`. `owner` is `session` when a session start launched the server
 and `user` for `c3 ui`, the hub's **Open UI** button and the TUI.
 
-The hub sweeps every 60 s (`ProjectManager.sweep_registry`): dead ports are
-dropped, and a **session**-owned server is stopped once its project has no
-heartbeat left *and* its activity log has not been touched for
+The hub sweeps every 60 s (`ProjectManager.sweep_registry`): dead entries
+are dropped, and a **session**-owned server is stopped once its project has
+no heartbeat left *and* its activity log has not been touched for
 `ui_reap_minutes`.
+
+An entry is dead only when its port does not answer **and** its pid is gone
+(2.155.0). A quiet port behind a live pid is a server that is still starting
+or busy re-indexing; it stays. Until 2.155.0 one missed 0.3 s connect was
+enough to drop it — and three writers (every `c3 ui` at startup, the sweep,
+and every `GET /api/projects`, which the hub page and C3 Desk poll) rewrote
+the whole file from their own snapshot with no lock, so a server that
+registered while another writer was probing was simply written out. A
+dropped server is invisible: nothing reaps it, and the next SessionStart
+launches another. One machine had six such orphans (3.3 GB) beside three
+registered servers, and ran out of commit.
+
+The registry is one writer at a time now (`services/ui_registry.py`): every
+write holds `~/.c3/registry.lock`, writers patch a fresh read (upsert one
+entry, remove named ports) rather than replace the file, `list_projects`
+only reads, and a running server re-asserts its own entry every 60 s so a
+lost one comes back on its own. The SessionStart hook also takes a launch
+lock (`.c3/ui_launch.lock`, created with O_EXCL, honoured for 90 s) so two
+sessions opening together do not each start a server before the first has
+bound its port.
 
 ```jsonc
 // ~/.c3/hub_config.json
@@ -100,10 +120,43 @@ live session but no UI — so a hub started *after* the IDE, or a UI that died
 mid-session, recovers on its own. Before 2.128.0 that autostart ran once, two
 seconds after the hub started, and never again.
 
+## A session changes host id: `/clear`
+
+`/clear` (and an in-session `/resume`) in Claude Code starts a NEW host
+session — a new session id, a SessionStart hook with `source: "clear"` — but
+keeps the MCP servers it already has. Until 2.155.0 C3's server kept the id
+it had read from `CLAUDE_CODE_SESSION_ID` at process start, so after a clear
+no `C3 connected <new id>` row followed the hook's `Session started <new
+id>`, and C3 Desk's sentinel reported "C3 did not connect" for a runtime that
+was serving fine; grants and confirm holds filed by the hooks under the new
+id were consumed under the old one ("belongs to another session").
+
+Both sides can read the process tree. The server records the pid of the host
+it serves (its nearest ancestor that is not a shell or a Python/launcher
+wrapper, i.e. `claude.exe` / `node` / `codex`) in its heartbeat as
+`host_pid`. The SessionStart hook is a child of that same host, computes the
+same pid, and writes one handoff file per matching server:
+
+```
+.c3/live/handoffs/<c3_session_id>.json
+{"host_session_id": "<new>", "previous_host_session_id": "<old>",
+ "host_pid": N, "start_source": "clear", "ts": <epoch>}
+```
+
+The server's heartbeat thread looks for that file every 5 s (and every tool
+call looks once, before the access guard binds the session), rebinds in
+place — session record, host env var, link file, heartbeat, a
+`session_rebind` activity row — and writes `C3 connected <new id>`, inside
+the desktop sentinel's 30 s window. Without a readable process tree the hook
+falls back to the one unambiguous case: a clear / resume with exactly one
+live session of that provider in the project.
+(`services/host_handoff.py`, `cli/mcp_server._rebind_host_session`.)
+
 ## Checking it by hand
 
 ```bash
 ls .c3/live                      # one file per live session in this project
+ls .c3/live/handoffs             # a /clear the server has not picked up yet
 python -c "from services import session_live as s; print(s.live_sessions('.'))"
 python -c "import json,pathlib; print(json.loads((pathlib.Path.home()/'.c3'/'registry.json').read_text()))"
 ```

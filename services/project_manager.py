@@ -84,13 +84,12 @@ class ProjectManager:
             json.dump({"projects": projects}, f, indent=2)
 
     def _read_registry(self) -> list:
-        try:
-            if _REGISTRY_FILE.exists():
-                with open(_REGISTRY_FILE, encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return []
+        from services import ui_registry
+        return ui_registry.read(_REGISTRY_FILE)
+
+    def _pid_alive(self, pid) -> bool:
+        from services import ui_registry
+        return ui_registry.pid_alive(pid)
 
     def _port_alive(self, port: int) -> bool:
         try:
@@ -103,7 +102,9 @@ class ProjectManager:
         """Verify that a given port is actually a C3 session UI."""
         try:
             url = f"http://127.0.0.1:{port}/api/health"
-            with urllib.request.urlopen(url, timeout=0.8) as r:
+            # 2 s, not 0.8: a server re-indexing after a burst of file changes
+            # answers late, and a late answer must not read as "not C3".
+            with urllib.request.urlopen(url, timeout=2.0) as r:
                 data = json.loads(r.read().decode("utf-8"))
                 is_c3 = data.get("service") in {"c3-ui", "c3-hub"}
                 # Also accept if 'sources' key is present (for older versions or custom UIs)
@@ -260,6 +261,7 @@ class ProjectManager:
                 "source": "heartbeat",
                 "ide": str(beat.get("ide") or ""),
                 "pid": beat.get("pid"),
+                "host_pid": beat.get("host_pid"),
                 **timing,
             })
 
@@ -507,6 +509,15 @@ class ProjectManager:
 
         Called on hub startup and from the hub's periodic sweep. Returns
         ``{"dropped": n, "reaped": [ports]}``.
+
+        An entry is dead only when its port does not answer AND its pid is
+        gone (2.155.0). A quiet port with a live pid is a server that is
+        still starting, or busy; before this it was dropped from the
+        registry, kept running, and became an orphan nothing could reap —
+        the leak behind six stray ``c3 ui`` processes on one machine. The
+        removal is applied by ``ui_registry.remove_ports`` to a fresh read
+        under the registry lock, so a server that registered during the
+        sweep survives it.
         """
         registry = self._read_registry()
         if not registry:
@@ -514,24 +525,30 @@ class ProjectManager:
         reap_minutes = self._reap_minutes()
         now = time.time()
         reaped: list = []
-        valid: list = []
+        dead: list = []
+        portless = False
         for entry in registry:
             port = entry.get("port")
-            if not (port and self._port_alive(port)):
+            if not port:
+                portless = True
+                continue
+            if not self._port_alive(port):
+                if self._pid_alive(entry.get("pid")):
+                    continue  # starting up or busy — not dead
+                dead.append(port)
                 continue
             if reap_minutes and self._is_orphan_session_ui(entry, now, reap_minutes):
                 if self._stop_entry(entry):
                     reaped.append(port)
                     continue
-            valid.append(entry)
-        if len(valid) != len(registry):
+        if dead or reaped or portless:
             try:
-                with open(_REGISTRY_FILE, "w", encoding="utf-8") as f:
-                    json.dump(valid, f, indent=2)
+                from services import ui_registry
+                ui_registry.remove_ports(dead + reaped, _REGISTRY_FILE,
+                                         drop_portless=portless)
             except Exception:
                 pass
-        return {"dropped": len(registry) - len(valid) - len(reaped),
-                "reaped": reaped}
+        return {"dropped": len(dead), "reaped": reaped}
 
     def list_registered(self) -> list:
         """The stored project rows (name, path, parent_path, ...) as registered.
@@ -546,35 +563,18 @@ class ProjectManager:
         projects = self._read_projects()
         registry = self._read_registry()
         ui_active_by_path: dict = {}
-        valid_registry = []
-        registry_changed = False
 
+        # A READER. Until 2.155.0 this rewrote the registry on every call —
+        # and it is called by every poll of the hub page and of C3 Desk — so
+        # a server that was busy for one 0.8 s health probe, or one that
+        # registered while this ran, was written out of existence. Deciding
+        # what is dead is the sweep's job (sweep_registry); this only reports
+        # which servers answer right now.
         for entry in registry:
             port = entry.get("port")
             proj_path = entry.get("project_path", "")
-            if port and self._port_alive(port):
-                if self._verify_c3_session(port):
-                    ui_active_by_path[proj_path] = entry
-                    valid_registry.append(entry)
-                else:
-                    registry_changed = True
-            else:
-                # Grace period: keep entries registered recently — the server may still be
-                # starting up between _register_session() and app.run() binding the port.
-                # started_at is written as epoch float by _register_session() but older
-                # entries (or test fixtures) may store an ISO string; coerce defensively.
-                started_epoch = _coerce_epoch(entry.get("started_at"))
-                if started_epoch is not None and time.time() - started_epoch < _REGISTRY_STARTUP_GRACE:
-                    valid_registry.append(entry)  # keep it; don't mark ui_active yet
-                else:
-                    registry_changed = True
-
-        if registry_changed:
-            try:
-                with open(_REGISTRY_FILE, "w", encoding="utf-8") as f:
-                    json.dump(valid_registry, f, indent=2)
-            except Exception:
-                pass
+            if port and self._port_alive(port) and self._verify_c3_session(port):
+                ui_active_by_path[proj_path] = entry
 
         result = []
         for p in projects:

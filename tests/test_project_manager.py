@@ -362,12 +362,68 @@ class TestRegistryReaping(unittest.TestCase):
     def test_dead_port_is_dropped_not_reaped(self):
         with patch.object(self.pm, "_read_registry", return_value=[self._entry()]), \
              patch.object(self.pm, "_port_alive", return_value=False), \
+             patch.object(self.pm, "_pid_alive", return_value=False), \
              patch.object(self.pm, "_stop_entry", return_value=True) as stop, \
              patch("services.project_manager._REGISTRY_FILE",
                    Path(self.proj_path) / "registry.json"):
             result = self.pm.sweep_registry()
         self.assertEqual(result, {"dropped": 1, "reaped": []})
         stop.assert_not_called()
+
+    # ── 2.155.0: dead = port AND pid; removals patch a fresh read under lock ──
+
+    def test_quiet_port_with_a_live_pid_is_kept(self):
+        """A server that is starting up or busy re-indexing misses the 0.3 s
+        connect. Dropping it made an orphan nothing could reap."""
+        registry_file = Path(self.proj_path) / "registry.json"
+        registry_file.write_text(json.dumps([self._entry()]), encoding="utf-8")
+        with patch.object(self.pm, "_port_alive", return_value=False), \
+             patch.object(self.pm, "_pid_alive", return_value=True), \
+             patch.object(self.pm, "_stop_entry", return_value=True) as stop, \
+             patch("services.project_manager._REGISTRY_FILE", registry_file):
+            result = self.pm.sweep_registry()
+        self.assertEqual(result, {"dropped": 0, "reaped": []})
+        stop.assert_not_called()
+        self.assertEqual(len(json.loads(registry_file.read_text(encoding="utf-8"))), 1)
+
+    def test_sweep_removes_only_what_it_judged_dead(self):
+        """An entry registered after the sweep read the file survives it."""
+        from services import ui_registry
+        registry_file = Path(self.proj_path) / "registry.json"
+        dead = self._entry(port=4321)
+        registry_file.write_text(json.dumps([dead]), encoding="utf-8")
+        newcomer = self._entry(port=4322, pid=os.getpid())
+
+        def port_alive(port):
+            # The newcomer registers while the sweep is probing.
+            ui_registry.upsert(newcomer, registry_file)
+            return False
+
+        with patch.object(self.pm, "_port_alive", side_effect=port_alive), \
+             patch.object(self.pm, "_pid_alive", return_value=False), \
+             patch("services.project_manager._REGISTRY_FILE", registry_file):
+            result = self.pm.sweep_registry()
+        self.assertEqual(result, {"dropped": 1, "reaped": []})
+        self.assertEqual([e["port"] for e in json.loads(registry_file.read_text(encoding="utf-8"))],
+                         [4322])
+
+    def test_list_projects_never_rewrites_the_registry(self):
+        """It is polled by the hub page and C3 Desk; before 2.155.0 every
+        poll could drop a server that was busy for one health probe."""
+        registry_file = Path(self.proj_path) / "registry.json"
+        entry = self._entry(started_at=time.time() - 7200)
+        registry_file.write_text(json.dumps([entry]), encoding="utf-8")
+        stamp = registry_file.stat().st_mtime_ns
+        with patch.object(self.pm, "_read_projects", return_value=[{"name": "Proj", "path": self.proj_path}]), \
+             patch.object(self.pm, "_port_alive", return_value=False), \
+             patch.object(self.pm, "_verify_c3_session", return_value=False), \
+             patch.object(self.pm, "_get_live_sessions", return_value=[]), \
+             patch.object(self.pm, "_read_project_config", return_value={}), \
+             patch("services.project_manager._REGISTRY_FILE", registry_file):
+            projects = self.pm.list_projects()
+        self.assertFalse(projects[0]["ui_active"])
+        self.assertEqual(registry_file.stat().st_mtime_ns, stamp)
+        self.assertEqual(len(json.loads(registry_file.read_text(encoding="utf-8"))), 1)
 
 
 if __name__ == "__main__":

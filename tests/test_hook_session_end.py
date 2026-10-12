@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,6 +131,38 @@ class TestSessionOpen(_Base):
         self.assertEqual(len([r for r in self.activity() if r["type"] == "session_open"]), 1)
         self.assertEqual(self.notifications(), [])
 
+    # ── 2.155.0: a clear hands the running MCP server its new host id ──
+
+    def test_clear_hands_off_to_the_server_under_the_same_host_pid(self):
+        from services import host_handoff, session_live
+        session_live.beat(self.project, C3_SID, host_session_id="old-host",
+                          ide="claude-code", host_pid=4242)
+        session_live.beat(self.project, "other-window", host_session_id="w2",
+                          ide="claude-code", host_pid=4343)
+        with mock.patch.object(host_handoff, "host_process_id", return_value=4242):
+            hook_session_open.run(self._payload(source="clear"), self.project)
+        data = host_handoff.read_handoff(self.project, C3_SID)
+        self.assertEqual((data["host_session_id"], data["previous_host_session_id"],
+                          data["start_source"]), (HOST_SID, "old-host", "clear"))
+        self.assertEqual(host_handoff.read_handoff(self.project, "other-window"), {})
+        # The row and the toast are unchanged by the handoff.
+        self.assertEqual([r["start_source"] for r in self.activity() if r["type"] == "session_open"],
+                         ["clear"])
+        self.assertEqual([n["title"] for n in self.notifications()],
+                         [f"Session started {HOST_SID[:8]}"])
+
+    def test_startup_with_no_server_yet_hands_off_nothing(self):
+        from services import host_handoff
+        with mock.patch.object(host_handoff, "host_process_id", return_value=4242):
+            hook_session_open.run(self._payload(source="startup"), self.project)
+        self.assertFalse(host_handoff.handoff_dir(self.project).exists())
+
+    def test_handoff_failure_never_costs_the_row(self):
+        from services import host_handoff
+        with mock.patch.object(host_handoff, "hand_off", side_effect=RuntimeError("tree")):
+            hook_session_open.run(self._payload(source="clear"), self.project)
+        self.assertEqual(len([r for r in self.activity() if r["type"] == "session_open"]), 1)
+
 
 class TestEnsureUI(unittest.TestCase):
     """v2.128.0: the session that just opened gets its project UI.
@@ -196,6 +229,47 @@ class TestEnsureUI(unittest.TestCase):
     def test_dead_port_does_not_count_as_running(self):
         registry = [{"port": 4321, "project_path": str(self.project.resolve())}]
         verdict, launch = self._run(registry=registry, port_alive=False)
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+
+    def test_quiet_port_with_a_live_pid_counts_as_running(self):
+        """2.155.0: a registered server that is starting or busy is not a
+        reason to start a second one."""
+        registry = [{"port": 4321, "project_path": str(self.project.resolve()),
+                     "pid": os.getpid()}]
+        verdict, launch = self._run(registry=registry, port_alive=False)
+        self.assertEqual(verdict, "already-running")
+        launch.assert_not_called()
+
+    def test_dead_port_and_dead_pid_is_not_running(self):
+        registry = [{"port": 4321, "project_path": str(self.project.resolve()), "pid": 999999}]
+        from services import ui_registry
+        with mock.patch.object(ui_registry, "pid_alive", return_value=False):
+            verdict, launch = self._run(registry=registry, port_alive=False)
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+
+    def test_a_launch_in_flight_is_not_repeated(self):
+        """2.155.0: two SessionStart hooks within seconds launched two servers,
+        because the first had not bound its port yet. The O_EXCL launch lock
+        holds the second one off; a stale lock is taken over."""
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "launched")
+        lock = hook_session_open._launch_lock(self.project)
+        self.assertTrue(lock.is_file())
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "launch-pending")
+        launch.assert_not_called()
+        stale = time.time() - hook_session_open._LAUNCH_GRACE_S - 5
+        os.utime(lock, (stale, stale))
+        verdict, launch = self._run()
+        self.assertEqual(verdict, "launched")
+        launch.assert_called_once()
+        self.assertEqual([p.name for p in (self.project / ".c3").glob("ui_launch.stale-*")], [])
+
+    def test_an_unwritable_lock_falls_back_to_launching(self):
+        with mock.patch.object(hook_session_open.os, "open", side_effect=PermissionError("ro")):
+            verdict, launch = self._run()
         self.assertEqual(verdict, "launched")
         launch.assert_called_once()
 
