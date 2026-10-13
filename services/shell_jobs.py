@@ -514,6 +514,11 @@ class JobStore:
     def load(self, job: JobState) -> JobState | None:
         return _load_job(job.path)
 
+    def find(self, job_id: str) -> JobState | None:
+        """The current record for ``job_id`` under this root, or None."""
+        path = self.locate(job_id)
+        return _load_job(path) if path is not None else None
+
     def save(self, job: JobState) -> None:
         _mkdir_private(Path(job.dir))
         _write_json_atomic(job.path, job.to_dict())
