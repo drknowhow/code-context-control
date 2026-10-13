@@ -26,7 +26,9 @@ _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 #   session    ref_id = host session  (cli/hook_session_open.py, hook_session_end.py)
 #   mcp        ref_id = C3 session id (cli/mcp_server.py, runtime ready)
 #   override   ref_id = request id    (services/override_requests.py)
-EVENT_KINDS = ("shell_job", "ci", "session", "mcp", "override")
+#   schedule   ref_id = run id, or approval id for a pending approval
+#                                     (oracle/services/scheduler.py)
+EVENT_KINDS = ("shell_job", "ci", "session", "mcp", "override", "schedule")
 
 
 def notify(project_path, agent: str, severity: str, title: str, message: str,
