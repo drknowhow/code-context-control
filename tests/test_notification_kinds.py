@@ -101,7 +101,7 @@ class TestNotifyHelper(_Base):
 
     def test_event_kinds_are_the_documented_set(self):
         self.assertEqual(set(ntf.EVENT_KINDS),
-                         {"shell_job", "ci", "session", "mcp", "override"})
+                         {"shell_job", "ci", "session", "mcp", "override", "schedule"})
 
 
 class TestShellJobProducer(_Base):

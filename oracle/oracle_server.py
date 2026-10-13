@@ -36,6 +36,7 @@ from oracle.services.memory_reader import MemoryReader  # noqa: E402
 from oracle.services.memory_writer import MemoryWriter  # noqa: E402
 from oracle.services.project_scanner import ProjectScanner  # noqa: E402
 from oracle.services.review_agent import ReviewAgent  # noqa: E402
+from oracle.services.scheduler import Scheduler  # noqa: E402
 from oracle.services.tool_executor import ToolExecutor  # noqa: E402
 from oracle.services.tool_registry import ToolRegistry, _c3_version  # noqa: E402
 from services.ollama_bridge import OllamaBridge  # noqa: E402
@@ -60,10 +61,14 @@ _c3_bridge: C3Bridge | None = None
 _federated: FederatedGraph | None = None
 _tool_registry: ToolRegistry | None = None
 _activity_reporter: ActivityReporter | None = None
+_scheduler: Scheduler | None = None
+_schedule_store = None
+_approval_store = None
 
 
 def _init_services():
     global _cfg, _bridge, _scanner, _reader, _checker, _writer, _cross_memory, _engine, _agent, _model_verified, _chat_store, _chat_engine, _c3_bridge, _federated, _tool_registry, _activity_reporter
+    global _scheduler, _schedule_store, _approval_store
     _cfg = load_config()
     _bridge = OllamaBridge(
         base_url=_cfg.get("ollama_base_url", "https://ollama.com"),
@@ -125,6 +130,13 @@ def _init_services():
     )
     mobile_api.init_services(scanner=_scanner, checker=_checker,
                              reporter=_activity_reporter)
+    from services.schedule_approvals import ApprovalStore
+    from services.schedule_store import ScheduleStore
+    from services.shell_jobs import JobStore
+    _schedule_store = ScheduleStore()
+    _approval_store = ApprovalStore()
+    _scheduler = Scheduler(store=_schedule_store, approvals=_approval_store, jobstore=JobStore(),
+                           interval=int(_cfg.get("scheduler_tick_seconds", 30)))
     atexit.register(lambda: _c3_bridge.shutdown() if _c3_bridge else None)
 
 
@@ -267,6 +279,15 @@ app.register_blueprint(mobile_api.bp)
 chat_poll.configure(get_engine=lambda: _chat_engine, get_store=lambda: _chat_store,
                     get_cfg=lambda: _cfg)
 app.register_blueprint(chat_poll.bp)
+
+# Scheduled tasks (/api/schedules/*): GETs open like the rest of the local
+# API, mutations behind _local_write_guard. See docs/scheduled-tasks.md.
+from oracle.services import schedule_api  # noqa: E402
+
+schedule_api.configure(get_scheduler=lambda: _scheduler, get_store=lambda: _schedule_store,
+                       get_approvals=lambda: _approval_store, get_scanner=lambda: _scanner,
+                       get_cfg=lambda: _cfg)
+app.register_blueprint(schedule_api.bp)
 
 
 # ── Static ────────────────────────────────────────────────
@@ -1252,6 +1273,9 @@ def run_oracle(port: int = None, open_browser: bool = None):
     if cfg.get("review_enabled", True) and _agent:
         _agent.start()
         atexit.register(_agent.stop)
+    if cfg.get("scheduler_enabled", True) and _scheduler:
+        _scheduler.start()
+        atexit.register(_scheduler.stop)
 
     # Start the discovery MCP server on its own loopback port if enabled.
     if cfg.get("mcp_enabled", True) and _tool_registry is not None:
