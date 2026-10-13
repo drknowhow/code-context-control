@@ -420,8 +420,9 @@ class ScheduleStore:
                         due_at=run["due_at"], trigger="cron")
         return claimed
 
-    def request_run(self, schedule_id: str, *, trigger: str = "manual", by: str = "") -> dict:
-        """A ``claimed`` run outside the cadence (Run now). The tick dispatches it."""
+    def request_run(self, schedule_id: str, *, trigger: str = "manual", by: str = "",
+                    approved: bool = False) -> dict:
+        """A run outside the cadence (Run now); ``approved`` skips the approval gate once."""
         if trigger not in TRIGGERS:
             raise ScheduleError(f"trigger must be one of {', '.join(TRIGGERS)}")
         now = _now()
@@ -429,17 +430,19 @@ class ScheduleStore:
             row = _find(doc, schedule_id)
             if row is None:
                 raise ScheduleError(f"no schedule {schedule_id}")
-            run = self._new_run(row, trigger=trigger, due_at=_iso(now), now=now)
+            run = self._new_run(row, trigger=trigger, due_at=_iso(now), now=now,
+                                status="approved" if approved else "claimed")
         self._event("run.claimed", run_id=run["run_id"], schedule_id=schedule_id,
-                    due_at=run["due_at"], trigger=trigger, by=by)
+                    due_at=run["due_at"], trigger=trigger, by=by, status=run["status"])
         return run
 
-    def _new_run(self, row: dict, *, trigger: str, due_at: str, now: datetime) -> dict:
+    def _new_run(self, row: dict, *, trigger: str, due_at: str, now: datetime,
+                 status: str = "claimed") -> dict:
         run = {k: None for k in _RUN_FIELDS}
         run.update({
             "run_id": _new_run_id(), "schedule_id": row["id"], "schedule_name": row.get("name", ""),
             "project_path": row.get("project_path", ""), "trigger": trigger, "due_at": due_at,
-            "claimed_at": _iso(now), "status": "claimed", "tokens": {}, "error": "",
+            "claimed_at": _iso(now), "status": status, "tokens": {}, "error": "",
         })
         self._write_run(run)
         return run

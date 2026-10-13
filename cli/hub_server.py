@@ -3249,6 +3249,180 @@ def _hub_override_audit(action: str, row: dict, *, confirmed: bool = False,
         pass
 
 
+# ── Scheduled tasks (docs/scheduled-tasks.md) ────────────────────────────
+# The Oracle owns the loop; the hub reads and writes the same stores on this
+# machine, so a Hub edit or decision is picked up on the Oracle's next tick.
+
+def _schedule_api():
+    from oracle.config import load_config as _oracle_config
+    from oracle.services import schedule_api
+    from services.schedule_approvals import ApprovalStore
+    from services.schedule_store import ScheduleStore
+    if schedule_api._get_store() is None:
+        store, approvals = ScheduleStore(), ApprovalStore()
+        schedule_api.configure(get_scheduler=lambda: None, get_store=lambda: store,
+                               get_approvals=lambda: approvals, get_scanner=lambda: None,
+                               get_cfg=_oracle_config)
+    return schedule_api
+
+
+def _sched_call(fn, *args, **kwargs):
+    api = _schedule_api()
+    try:
+        return fn(*args, **kwargs), None
+    except api.ApiError as exc:
+        return None, (jsonify({"error": str(exc)}), exc.status)
+    except ValueError as exc:
+        return None, (jsonify({"error": str(exc)}), 400)
+
+
+def _sched_project_arg(key: str = "path") -> tuple[str, object]:
+    raw = (request.args.get(key) or "").strip()
+    if not raw:
+        return "", None
+    try:
+        return str(_resolve_project_path(raw)), None
+    except ValueError as exc:
+        return "", (jsonify({"error": str(exc)}), 404)
+
+
+def _sched_body_with_project(body: dict) -> tuple[dict, object]:
+    body = dict(body or {})
+    raw = str(body.pop("project", "") or body.get("project_path") or "").strip()
+    if raw:
+        try:
+            body["project_path"] = str(_resolve_project_path(raw))
+        except ValueError as exc:
+            return body, (jsonify({"error": str(exc)}), 404)
+    return body, None
+
+
+def _sched_with_names(rows: list) -> list:
+    return [dict(r, project_name=Path(str(r.get("project_path") or "")).name) for r in rows]
+
+
+@app.route("/api/hub/schedules", methods=["GET"])
+def api_hub_schedules():
+    project_path, err = _sched_project_arg()
+    if err:
+        return err
+    store = _schedule_api()._get_store()
+    rows = _sched_with_names(store.list(project_path=project_path or None))
+    return jsonify({"schedules": rows, "count": len(rows), "rev": store.rev(), "project": project_path})
+
+
+@app.route("/api/hub/schedules", methods=["POST"])
+def api_hub_schedules_create():
+    body, err = _sched_body_with_project(request.get_json(silent=True) or {})
+    if err:
+        return err
+    row, err = _sched_call(_schedule_api().create_schedule, body, scanner=None, by="desktop")
+    return err or (jsonify(row), 201)
+
+
+@app.route("/api/hub/schedules/status", methods=["GET"])
+def api_hub_schedules_status():
+    """The Oracle's scheduler status, or ``reachable: false`` when it is down."""
+    base = (_read_hub_config().get("oracle_url") or "").strip() or _oracle_service().url()
+    try:
+        with urllib.request.urlopen(f"{base.rstrip('/')}/api/schedules/status", timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        return jsonify({"running": False, "reachable": False, "error": str(exc), "oracle_url": base})
+    data["reachable"] = True
+    data["oracle_url"] = base
+    return jsonify(data)
+
+
+@app.route("/api/hub/schedules/preview", methods=["POST"])
+def api_hub_schedules_preview():
+    data, err = _sched_call(_schedule_api().preview_when, request.get_json(silent=True) or {})
+    return err or jsonify(data)
+
+
+@app.route("/api/hub/schedules/runs", methods=["GET"])
+def api_hub_schedule_runs():
+    project_path, err = _sched_project_arg()
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 500))
+    except (TypeError, ValueError):
+        limit = 50
+    rows = _schedule_api()._get_store().runs(
+        schedule_id=(request.args.get("schedule_id") or None),
+        status=((request.args.get("status") or "").strip() or None),
+        project_path=project_path or None, limit=limit)
+    return jsonify({"runs": _sched_with_names(rows), "count": len(rows), "project": project_path})
+
+
+@app.route("/api/hub/schedules/approvals", methods=["GET"])
+def api_hub_schedule_approvals():
+    project_path, err = _sched_project_arg()
+    if err:
+        return err
+    rows = _schedule_api()._get_approvals().list(
+        status=((request.args.get("status") or "").strip() or None), project_path=project_path or None)
+    return jsonify({"approvals": _sched_with_names(rows), "count": len(rows)})
+
+
+@app.route("/api/hub/schedules/approvals/<approval_id>", methods=["POST"])
+def api_hub_schedule_decide(approval_id):
+    row, err = _sched_call(_schedule_api().decide_approval, str(approval_id),
+                           request.get_json(silent=True) or {}, by="desktop")
+    return err or jsonify(row)
+
+
+@app.route("/api/hub/schedules/<schedule_id>", methods=["GET"])
+def api_hub_schedule_one(schedule_id):
+    store = _schedule_api()._get_store()
+    row = store.get(schedule_id)
+    if row is None:
+        return jsonify({"error": f"no schedule {schedule_id}"}), 404
+    return jsonify(dict(row, rev=store.rev(), project_name=Path(str(row.get("project_path") or "")).name))
+
+
+@app.route("/api/hub/schedules/<schedule_id>", methods=["PATCH"])
+def api_hub_schedule_update(schedule_id):
+    body, err = _sched_body_with_project(request.get_json(silent=True) or {})
+    if err:
+        return err
+    row, err = _sched_call(_schedule_api().update_schedule, schedule_id, body, scanner=None, by="desktop")
+    return err or jsonify(row)
+
+
+@app.route("/api/hub/schedules/<schedule_id>", methods=["DELETE"])
+def api_hub_schedule_delete(schedule_id):
+    if not _schedule_api()._get_store().delete(schedule_id, by="desktop"):
+        return jsonify({"error": f"no schedule {schedule_id}"}), 404
+    return jsonify({"deleted": schedule_id})
+
+
+@app.route("/api/hub/schedules/<schedule_id>/run", methods=["POST"])
+def api_hub_schedule_run(schedule_id):
+    run, err = _sched_call(_schedule_api().run_schedule, schedule_id, request.get_json(silent=True) or {},
+                           by="desktop")
+    return err or (jsonify(run), 202)
+
+
+@app.route("/api/hub/schedules/<schedule_id>/<action>", methods=["POST"])
+def api_hub_schedule_toggle(schedule_id, action):
+    if action not in ("enable", "disable"):
+        return jsonify({"error": "unknown action"}), 404
+    row, err = _sched_call(_schedule_api().update_schedule, schedule_id, {"enabled": action == "enable"},
+                           scanner=None, by="desktop")
+    return err or jsonify(row)
+
+
+@app.route("/api/hub/schedules/<schedule_id>/runs", methods=["GET"])
+def api_hub_schedule_runs_one(schedule_id):
+    store = _schedule_api()._get_store()
+    if store.get(schedule_id) is None:
+        return jsonify({"error": f"no schedule {schedule_id}"}), 404
+    rows = store.runs(schedule_id=schedule_id, status=((request.args.get("status") or "").strip() or None))
+    return jsonify({"runs": rows, "count": len(rows)})
+
+
 @app.route("/api/hub/overrides", methods=["GET"])
 def api_hub_overrides():
     """Pending + recently-decided requests across every project, newest first.

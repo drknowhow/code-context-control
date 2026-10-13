@@ -76,7 +76,7 @@ from services.atomic_json import write_json_atomic
 #    trailing window, the "this rule is costing you" nudge (D3a). The
 #    /overrides/<id> detail also carries `allow_session_grants`,
 #    `max_ttl_s` and `session_confirm` at the top level.
-API_VERSION = 5
+API_VERSION = 6
 
 CAPABILITIES = [
     "feed", "feed_wait", "projects", "health", "pm", "pm_events", "digest",
@@ -92,6 +92,9 @@ CAPABILITIES = [
     # Background shell jobs (/jobs) and local CI runs (/ci/runs, /ci/run):
     # read-only views over the job store and the CI index (v2.126.0, D0b).
     "jobs", "ci",
+    # Scheduled tasks (/schedules): read the schedules, their runs and pending
+    # approvals; write = create/edit/run-now/decide (docs/scheduled-tasks.md).
+    "schedules", "schedules_write",
     # Poll-based chat transport, served by services/chat_poll.py under
     # /api/mobile/chat/*. Advertised here because /info is the single place a
     # client probes; the routes themselves live in that blueprint.
@@ -117,6 +120,8 @@ _CAPABILITY_SWITCHES = {
     # that mutate are switchable.
     "insights_write": "mobile_insights_write",
     "suggestions_write": "mobile_suggestions_write",
+    "schedules": "mobile_schedules_enabled",
+    "schedules_write": "mobile_schedules_write",
 }
 
 FEED_TYPES = ("notification", "activity", "edit", "session_stat")
@@ -964,6 +969,200 @@ def mobile_jobs():
     rows = rows[:limit]
     return jsonify({"jobs": rows, "count": len(rows), "project": project_path,
                     "status": status, "limit": limit})
+
+
+# ── Scheduled tasks ───────────────────────────────────────
+# The operations live in oracle/services/schedule_api.py; this surface adds
+# the Bearer gate, the capability switches, the registered-project filter and
+# the per-client decided_by.
+
+def _schedule_write_gate():
+    gate = _feature_or_404("schedules") or _feature_or_404("schedules_write")
+    if gate:
+        return gate
+    return _security_gate()
+
+
+def _schedule_api():
+    from oracle.services import schedule_api
+    return schedule_api
+
+
+def _schedule_row_or_404(schedule_id: str):
+    row = _schedule_api()._get_store().get(schedule_id)
+    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+        return None, (jsonify({"error": "unknown schedule"}), 404)
+    return row, None
+
+
+def _registered_rows(rows: list) -> list:
+    return [r for r in rows if _resolve_registered(str(r.get("project_path") or "")) is not None]
+
+
+def _schedule_call(fn, *args, **kwargs):
+    api = _schedule_api()
+    try:
+        return fn(*args, **kwargs), None
+    except api.ApiError as exc:
+        return None, (jsonify({"error": str(exc)}), exc.status)
+    except Exception as exc:
+        return None, _svc_error(exc)
+
+
+@bp.route("/schedules", methods=["GET"])
+def mobile_schedules_list():
+    """Every schedule on registered projects (``project`` narrows to one)."""
+    gate = _feature_or_404("schedules")
+    if gate:
+        return gate
+    project_path = ""
+    raw_project = (request.args.get("project") or "").strip()
+    if raw_project:
+        resolved, err = _project_or_404(raw_project)
+        if err:
+            return err
+        project_path = str(resolved)
+    store = _schedule_api()._get_store()
+    rows = _registered_rows(store.list(project_path=project_path or None))
+    return jsonify({"schedules": rows, "count": len(rows), "rev": store.rev(), "project": project_path})
+
+
+@bp.route("/schedules", methods=["POST"])
+def mobile_schedules_create():
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    row, err = _schedule_call(_schedule_api().create_schedule, request.get_json(silent=True) or {},
+                              scanner=_scanner, by=_decided_by())
+    if err:
+        return err
+    _gw_audit("mobile.schedule.create", {"schedule_id": row["id"], "kind": row["kind"]})
+    return jsonify(row), 201
+
+
+@bp.route("/schedules/runs", methods=["GET"])
+def mobile_schedule_runs():
+    """Runs newest first. Query: project, schedule_id, status, limit."""
+    gate = _feature_or_404("schedules")
+    if gate:
+        return gate
+    project_path = ""
+    raw_project = (request.args.get("project") or "").strip()
+    if raw_project:
+        resolved, err = _project_or_404(raw_project)
+        if err:
+            return err
+        project_path = str(resolved)
+    status = (request.args.get("status") or "").strip() or None
+    store = _schedule_api()._get_store()
+    rows = store.runs(schedule_id=(request.args.get("schedule_id") or None), status=status,
+                      project_path=project_path or None, limit=_SOURCE_CAP)
+    rows = _registered_rows(rows)[:_limit_arg()]
+    return jsonify({"runs": rows, "count": len(rows), "project": project_path})
+
+
+@bp.route("/schedules/approvals", methods=["GET"])
+def mobile_schedule_approvals():
+    gate = _feature_or_404("schedules")
+    if gate:
+        return gate
+    status = (request.args.get("status") or "").strip() or None
+    rows = _schedule_api()._get_approvals().list(status=status, limit=_SOURCE_CAP)
+    rows = _registered_rows(rows)[:_limit_arg()]
+    return jsonify({"approvals": rows, "count": len(rows)})
+
+
+@bp.route("/schedules/approvals/<approval_id>/decide", methods=["POST"])
+def mobile_schedule_decide(approval_id):
+    """Approve or deny one pending scheduled run; 409 once it lapsed."""
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    api = _schedule_api()
+    row = api._get_approvals().get(str(approval_id))
+    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+        return jsonify({"error": "unknown approval"}), 404
+    result, err = _schedule_call(api.decide_approval, str(approval_id), request.get_json(silent=True) or {},
+                                 by=_decided_by())
+    if err:
+        return err
+    _gw_audit(f"mobile.schedule.{result['status']}", {"approval_id": str(approval_id),
+                                                      "schedule_id": result.get("schedule_id")})
+    return jsonify(result)
+
+
+@bp.route("/schedules/<schedule_id>", methods=["GET"])
+def mobile_schedule_one(schedule_id):
+    gate = _feature_or_404("schedules")
+    if gate:
+        return gate
+    row, err = _schedule_row_or_404(schedule_id)
+    if err:
+        return err
+    return jsonify(dict(row, rev=_schedule_api()._get_store().rev()))
+
+
+@bp.route("/schedules/<schedule_id>", methods=["PATCH"])
+def mobile_schedule_update(schedule_id):
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    _, err = _schedule_row_or_404(schedule_id)
+    if err:
+        return err
+    row, err = _schedule_call(_schedule_api().update_schedule, schedule_id, request.get_json(silent=True) or {},
+                              scanner=_scanner, by=_decided_by())
+    if err:
+        return err
+    _gw_audit("mobile.schedule.update", {"schedule_id": schedule_id})
+    return jsonify(row)
+
+
+@bp.route("/schedules/<schedule_id>", methods=["DELETE"])
+def mobile_schedule_delete(schedule_id):
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    _, err = _schedule_row_or_404(schedule_id)
+    if err:
+        return err
+    _schedule_api()._get_store().delete(schedule_id, by=_decided_by())
+    _gw_audit("mobile.schedule.delete", {"schedule_id": schedule_id})
+    return jsonify({"deleted": schedule_id})
+
+
+@bp.route("/schedules/<schedule_id>/run", methods=["POST"])
+def mobile_schedule_run(schedule_id):
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    _, err = _schedule_row_or_404(schedule_id)
+    if err:
+        return err
+    run, err = _schedule_call(_schedule_api().run_schedule, schedule_id, request.get_json(silent=True) or {},
+                              by=_decided_by())
+    if err:
+        return err
+    _gw_audit("mobile.schedule.run", {"schedule_id": schedule_id, "run_id": run["run_id"]})
+    return jsonify(run), 202
+
+
+@bp.route("/schedules/<schedule_id>/<action>", methods=["POST"])
+def mobile_schedule_toggle(schedule_id, action):
+    if action not in ("enable", "disable"):
+        return jsonify({"error": "unknown action"}), 404
+    gate = _schedule_write_gate()
+    if gate:
+        return gate
+    _, err = _schedule_row_or_404(schedule_id)
+    if err:
+        return err
+    row, err = _schedule_call(_schedule_api().update_schedule, schedule_id, {"enabled": action == "enable"},
+                              scanner=_scanner, by=_decided_by())
+    if err:
+        return err
+    _gw_audit(f"mobile.schedule.{action}", {"schedule_id": schedule_id})
+    return jsonify(row)
 
 
 @bp.route("/ci/runs", methods=["GET"])

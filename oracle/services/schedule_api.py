@@ -92,13 +92,16 @@ def update_schedule(schedule_id: str, body: dict, *, scanner, by: str) -> dict:
 
 
 def run_schedule(schedule_id: str, body: dict, *, by: str) -> dict:
-    if _get_store().get(schedule_id) is None:
+    """Queue a manual run; the next tick (whichever process holds the lock) dispatches it."""
+    store = _get_store()
+    if store.get(schedule_id) is None:
         raise ApiError(f"no schedule {schedule_id}", 404)
     bypass = bool((body or {}).get("bypass_approval", False))
+    run = store.request_run(schedule_id, trigger="manual", by=by, approved=bypass)
     scheduler = _get_scheduler()
-    if scheduler is None:
-        raise ApiError("scheduler not running", 503)
-    return scheduler.run_now(schedule_id, bypass_approval=bypass, by=by)
+    if scheduler is not None:
+        scheduler.kick()
+    return run
 
 
 def decide_approval(approval_id: str, body: dict, *, by: str) -> dict:
