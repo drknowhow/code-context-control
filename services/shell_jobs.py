@@ -1145,20 +1145,33 @@ def supervise(job_id: str, root=None) -> int:
     except Exception:
         git_before = None
 
-    bash = shell_mod._select_bash()
-    if bash:
-        popen_target: object = [bash, "-c", exec_cmd]
+    argv = payload.get("argv")
+    stdin_text = payload.get("stdin_text")
+    popen_kwargs = shell_mod._popen_kwargs(extra_env)
+    for name in payload.get("env_drop") or []:
+        popen_kwargs["env"].pop(str(name), None)
+    if isinstance(stdin_text, str):
+        popen_kwargs["stdin"] = subprocess.PIPE
+    if isinstance(argv, list) and argv:
+        from services.win_subprocess import harden_win_argv
+        popen_target: object = harden_win_argv([str(a) for a in argv])
         use_shell = False
+        shell_name = "argv"
     else:
-        popen_target = exec_cmd
-        use_shell = True
-    shell_name = "git-bash" if bash else ("cmd" if sys.platform == "win32" else "sh")
+        bash = shell_mod._select_bash()
+        if bash:
+            popen_target = [bash, "-c", exec_cmd]
+            use_shell = False
+        else:
+            popen_target = exec_cmd
+            use_shell = True
+        shell_name = "git-bash" if bash else ("cmd" if sys.platform == "win32" else "sh")
     t0 = time.monotonic()
     try:
         proc = subprocess.Popen(
             popen_target, shell=use_shell, cwd=job.cwd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            **shell_mod._popen_kwargs(extra_env),
+            **popen_kwargs,
         )
     except (OSError, ValueError) as exc:
         _finish(store, job, "failed", exit_code=127 if isinstance(exc, FileNotFoundError) else 126,
@@ -1167,6 +1180,12 @@ def supervise(job_id: str, root=None) -> int:
         return 0
     capture = ShellCapture(proc, store.output_store.spool_dir(), redact=redact,
                            kill_tree=shell_mod._kill_tree, live=True)
+    if isinstance(stdin_text, str) and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin_text.encode("utf-8"))
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
     job.status = "running"
     job.started_at = _iso(_now())
     job.child_pid = proc.pid
