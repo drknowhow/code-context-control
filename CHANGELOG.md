@@ -4,6 +4,38 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.156.0] - 2026-10-13
+
+### Added — Scheduled tasks
+
+A schedule runs a Claude Code skill (`/daily_report weekly`), a free prompt or
+a plain command in a project at a time or cadence, with the model, effort and
+permission mode you choose, either autonomously or only after a person
+approves each run. Everything is in `docs/scheduled-tasks.md`.
+
+- The Oracle hosts the loop (`oracle/services/scheduler.py`). Each tick
+  claims due slots in one locked transaction (`ScheduleStore.claim_due`
+  advances `next_run_at` as it writes the run row, so a slot is never claimed
+  twice by any process), routes each run through the misfire window, the
+  overlap rule, an optional `check_command` gate (exit 0 = nothing to do, no
+  LLM cost) and the autonomy gate, and fires it as a detached shell job
+  (`services/schedule_runner.py`): tree-kill on timeout, no console window,
+  output kept, cost and tokens read back from `claude -p --output-format json`.
+  A kernel-held `scheduler.lock` keeps a second Oracle in standby.
+- Approval mode: a pending row in `services/schedule_approvals.py` lands in
+  the project's feed (`kind=schedule`) for the Hub, Desk and phone; decide is
+  human-only and a lapsed approval answers 409. Expire-and-skip after the TTL.
+- Cadences: 5-field cron with names, steps and `@daily` aliases, presets
+  (hourly / daily / weekdays / weekly / monthly at HH:MM), `every` seconds, or
+  a one-shot `at`; IANA zones or `local` via `zoneinfo` (`tzdata` on Windows).
+- Surfaces: `/api/schedules/*` on the Oracle, `/api/mobile/schedules*`
+  (capabilities `schedules` / `schedules_write`, API version 6),
+  `/api/hub/schedules*` and a Hub **Schedules** tab (create, edit, pause, run
+  now, approve, recent runs with cost), `c3_schedule` for agents (no decide),
+  `c3 schedule list|add|show|rm|enable|disable|run|runs|approvals|approve|deny`.
+- Shell jobs: the supervisor accepts `argv`, `stdin_text` and `env_drop`
+  payload keys.
+
 ## [2.155.0] - 2026-10-12
 
 ### Fixed — the hub stays up, and a `/clear` keeps its C3

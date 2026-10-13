@@ -107,6 +107,7 @@
       <a href="#c3_impact"    class="sidebar-link"><span class="icon">💥</span> c3_impact</a>
       <a href="#c3_shell"     class="sidebar-link"><span class="icon">⚡</span> c3_shell</a>
       <a href="#c3_shell_job" class="sidebar-link"><span class="icon">🕐</span> c3_shell_job</a>
+      <a href="#c3_schedule" class="sidebar-link"><span class="icon">📅</span> c3_schedule</a>
       <a href="#c3_ci"        class="sidebar-link"><span class="icon">🧪</span> c3_ci</a>
     </div>
     <div class="sidebar-section">
@@ -166,6 +167,7 @@
         <a href="#c3_impact"   class="toc-item">c3_impact   <span class="cat">Analysis</span></a>
         <a href="#c3_shell"    class="toc-item">c3_shell    <span class="cat">Execute</span></a>
         <a href="#c3_shell_job" class="toc-item">c3_shell_job <span class="cat">Execute</span></a>
+        <a href="#c3_schedule" class="toc-item">c3_schedule <span class="cat">Execute</span></a>
         <a href="#c3_ci"       class="toc-item">c3_ci       <span class="cat">Execute</span></a>
         <a href="#c3_edit"     class="toc-item">c3_edit     <span class="cat">Write</span></a>
         <a href="#c3_validate" class="toc-item">c3_validate <span class="cat">Write</span></a>
@@ -1599,6 +1601,49 @@ c3_task(action=<span class="str">'time_add'</span>, minutes=<span class="num">45
 c3_task(action=<span class="str">'note_add'</span>, note=<span class="str">'Kanban rank uses float sort keys'</span>, kind=<span class="str">'decision'</span>)</code></pre>
 
           <p class="tool-desc"><strong>Surfaces:</strong> the Hub shows a Tasks tab per project (drill-in panel), <code>☑ N</code> open-task chips on cards, and a global kanban board behind the Projects | Tasks switcher. Hub mutations audit <code>pm_write</code> events to the project's activity log. Disable with <code>hybrid.pm.enabled=false</code>.</p>
+        </div>
+      </div>
+
+      <!-- c3_schedule -->
+      <div class="tool-card" id="c3_schedule">
+        <div class="tool-card-header">
+          <span class="tool-name">c3_schedule</span>
+          <div class="tag-row">
+            <span class="badge badge-purple">execute</span>
+            <span class="badge">v2.156.0</span>
+          </div>
+          <span class="tool-tagline">Scheduled tasks — a skill, prompt or command the Oracle fires on a cadence, autonomously or after a human approves each run</span>
+        </div>
+        <div class="tool-card-body">
+          <p class="tool-desc">A schedule names what to run (<code>kind='skill'</code> with <code>target='/daily_report weekly'</code>, a free <code>prompt</code>, or a plain <code>command</code> with no LLM), where (a registered project), how (<code>provider</code> claude / codex / gemini / grok, <code>model</code>, <code>effort</code>, <code>permission_mode</code>, <code>max_budget_usd</code>) and when (<code>cron</code>, <code>preset</code>, <code>every</code> seconds, or a one-shot <code>at</code>). The Oracle's scheduler claims each due slot once, runs it as a detached shell job in the project, records exit, duration, cost and tokens, and writes a <code>kind=schedule</code> notification the Hub, Desk and phone show. <code>autonomy='approval'</code> (the default from an agent) creates a pending approval instead of firing; nobody approving before the TTL means the slot is logged <code>expired</code> and skipped. Deciding is human-only — the Hub Schedules tab, the Desk, the phone or <code>c3 schedule approve</code>. See <code>docs/scheduled-tasks.md</code>.</p>
+
+          <h4>Actions</h4>
+          <table class="params-table">
+            <thead><tr><th>Action</th><th>Group</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">create</td><td>Write</td><td class="param-desc"><code>name</code>, <code>kind</code>, <code>target</code>, one cadence (<code>cron</code> + <code>tz</code> | <code>preset</code> + <code>preset_at</code> [+ <code>days</code>] | <code>every</code> | <code>at</code>), then <code>provider</code>, <code>model</code>, <code>effort</code>, <code>autonomy</code>, <code>project</code>, <code>cwd</code>, <code>timeout</code>, <code>max_budget_usd</code>, <code>permission_mode</code>, <code>allowed_tools</code>, <code>check_command</code> (exit 1 arms the run, exit 0 skips it for free), <code>overlap</code>, <code>misfire_grace_s</code></td></tr>
+              <tr><td class="param-name param-list">update, enable, disable, delete</td><td>Write</td><td class="param-desc"><code>schedule_id</code> + changed fields; a disabled schedule keeps its history</td></tr>
+              <tr><td class="param-name">run_now</td><td>Write</td><td class="param-desc">Queue one run outside the cadence; approval-mode schedules still ask</td></tr>
+              <tr><td class="param-name param-list">list, get, runs, approvals, status</td><td>Read</td><td class="param-desc">Schedules, one row, recent runs ([<code>schedule_id</code>] [<code>status</code>] [<code>limit</code>]), pending approvals, the loop's state</td></tr>
+              <tr><td class="param-name">preview</td><td>Read</td><td class="param-desc">A cadence → its next fire times, before you commit to it</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Examples</h4>
+          <pre><code><span class="com"># A weekday report, sonnet at medium effort, asking first</span>
+c3_schedule(action=<span class="str">'create'</span>, name=<span class="str">'daily report'</span>, kind=<span class="str">'skill'</span>,
+            target=<span class="str">'/daily_report'</span>, preset=<span class="str">'weekdays'</span>, preset_at=<span class="str">'09:00'</span>,
+            model=<span class="str">'sonnet'</span>, effort=<span class="str">'medium'</span>, max_budget_usd=<span class="num">1.0</span>)
+
+<span class="com"># A free command every hour, no LLM, fires on its own</span>
+c3_schedule(action=<span class="str">'create'</span>, name=<span class="str">'fetch'</span>, kind=<span class="str">'command'</span>,
+            target=<span class="str">'git fetch --all --prune'</span>, every=<span class="num">3600</span>, autonomy=<span class="str">'autonomous'</span>)
+
+<span class="com"># See what a cron would do, then what ran</span>
+c3_schedule(action=<span class="str">'preview'</span>, cron=<span class="str">'0 18 * * 1-5'</span>, tz=<span class="str">'Europe/Berlin'</span>)
+c3_schedule(action=<span class="str">'runs'</span>, limit=<span class="num">10</span>)</code></pre>
+
+          <p class="tool-desc"><strong>Surfaces:</strong> the Hub's Schedules tab (create, edit, pause, run now, approve or deny), <code>/api/mobile/schedules</code> for the Desk and the phone, and <code>c3 schedule</code> on the command line.</p>
         </div>
       </div>
 

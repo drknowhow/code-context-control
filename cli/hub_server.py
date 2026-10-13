@@ -83,7 +83,7 @@ _HUB_CONFIG_DEFAULTS = {
 
 # Top-bar tabs a persisted ``main_view`` may name (cli/hub_ui/components/topbar.js).
 _MAIN_VIEWS = {"projects", "board", "ci", "creds", "tokens", "locks", "access",
-               "enforce", "sessions"}
+               "enforce", "sessions", "schedules"}
 
 # Stock command per IDE id, and whether it takes the project path as an
 # argument (GUI) instead of being run inside a terminal at that path.
@@ -400,6 +400,7 @@ _HUB_JS_FILES = [
     "hub_ui/components/hub_enforcement.js",
     "hub_ui/components/hub_sessions.js",
     "hub_ui/components/hub_ci.js",
+    "hub_ui/components/hub_schedules.js",
     "hub_ui/components/drill_subprojects.js",
     "hub_ui/components/drill_health.js",
     "hub_ui/components/drill_tasks.js",
