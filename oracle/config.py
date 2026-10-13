@@ -68,6 +68,21 @@ DEFAULTS = {
     "digest_narrate": False,          # LLM prose costs a cloud call; opt-in
     "digest_notify_file": "",         # "" = disabled; else JSONL sink path
     "digest_retention_days": 14,      # prune stored digests
+    # ── Scheduled tasks (docs/scheduled-tasks.md) ──
+    "scheduler_enabled": True,
+    "scheduler_tick_seconds": 30,
+    "scheduler_default_timeout_s": 1800,
+    "scheduler_max_timeout_s": 21600,
+    "scheduler_approval_ttl_s": 3600,
+    "scheduler_misfire_grace_s": 900,
+    "scheduler_run_retention_days": 30,
+    "scheduler_default_permission_mode": "acceptEdits",
+    # bypassPermissions lets a headless run act without any permission check;
+    # a schedule may only ask for it once this is switched on.
+    "scheduler_allow_bypass_permissions": False,
+    "scheduler_default_max_budget_usd": 0,
+    "mobile_schedules_enabled": True,     # read: schedules / runs / approvals
+    "mobile_schedules_write": True,       # create / edit / run now / decide
     "auto_open_browser": True,
     "theme": "dark",
     "ui_last_tab": "chat",          # persisted UI preference (hub parity)
