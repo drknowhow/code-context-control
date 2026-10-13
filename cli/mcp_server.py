@@ -1600,6 +1600,66 @@ async def c3_task(
 
 
 @mcp.tool()
+async def c3_schedule(
+    action: str,
+    schedule_id: str = "",
+    name: str = "",
+    kind: str = "skill",
+    target: str = "",
+    cron: str = "",
+    every: int = 0,
+    at: str = "",
+    preset: str = "",
+    preset_at: str = "09:00",
+    days: str = "",
+    tz: str = "local",
+    provider: str = "claude",
+    model: str = "",
+    effort: str = "",
+    autonomy: str = "approval",
+    project: str = "",
+    cwd: str = "",
+    enabled: bool = True,
+    timeout: int = 0,
+    max_budget_usd: float = 0.0,
+    permission_mode: str = "",
+    allowed_tools: str = "",
+    check_command: str = "",
+    overlap: str = "skip",
+    misfire_grace_s: int = -1,
+    run_id: str = "",
+    status: str = "",
+    limit: int = 20,
+    ctx: Context = None,
+) -> str:
+    """SCHEDULED TASKS — propose and inspect jobs the Oracle fires on a cadence (docs/scheduled-tasks.md). Reads safe in plan mode.
+    A schedule runs a Claude Code skill (kind='skill', target='/daily_report weekly'), a prompt (kind='prompt') or a
+    plain command (kind='command', no LLM) in a registered project, with model / effort / permission_mode, either
+    autonomy='autonomous' or 'approval' (default from an agent: a human approves each run from the Hub, Desk or phone).
+    Cadence: cron='0 9 * * 1-5' (+tz), preset='hourly|daily|weekdays|weekly|monthly' (+preset_at='09:00', days='mon,fri'),
+    every=<seconds>, or at=<ISO datetime> (one-shot).
+    Actions: create (name, kind, target, one cadence, [provider, model, effort, autonomy, project, cwd, timeout,
+      max_budget_usd, permission_mode, allowed_tools, check_command, overlap=skip|allow, misfire_grace_s]),
+      update (schedule_id + changed fields), enable, disable, delete, run_now (queues a run for the next tick),
+      list, get, runs ([schedule_id] [status] [limit]), preview (a cadence → next fire times), approvals, status.
+    Deciding an approval is human-only: Hub Schedules tab, Desk, phone, or `c3 schedule approve <id>`."""
+    svc = _svc(ctx)
+
+    def finalize(fname, fargs, fresp, fsumm, **kw):
+        return _finalize_response(ctx, fname, fargs, fresp, fsumm, **kw)
+
+    from cli.tools.schedule import handle_schedule
+    return await asyncio.to_thread(
+        handle_schedule, action, svc, finalize,
+        schedule_id=schedule_id, name=name, kind=kind, target=target, cron=cron, every=every, at=at,
+        preset=preset, preset_at=preset_at, days=days, tz=tz, provider=provider, model=model,
+        effort=effort, autonomy=autonomy, project=project, cwd=cwd, enabled=enabled, timeout=timeout,
+        max_budget_usd=max_budget_usd, permission_mode=permission_mode, allowed_tools=allowed_tools,
+        check_command=check_command, overlap=overlap, misfire_grace_s=misfire_grace_s, run_id=run_id,
+        status=status, limit=limit)
+
+
+@mcp.tool()
 async def c3_artifacts(
     action: str,
     artifact: str = "",
