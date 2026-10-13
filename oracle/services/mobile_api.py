@@ -1102,7 +1102,7 @@ def mobile_schedule_one(schedule_id):
     return jsonify(dict(row, rev=_schedule_api()._get_store().rev()))
 
 
-@bp.route("/schedules/<schedule_id>", methods=["PATCH"])
+@bp.route("/schedules/<schedule_id>", methods=["PATCH", "PUT"])
 def mobile_schedule_update(schedule_id):
     gate = _schedule_write_gate()
     if gate:
