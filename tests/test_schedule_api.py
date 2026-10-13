@@ -9,8 +9,6 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-os.environ["C3_ORACLE_API_KEY"] = "schedule-api-key"
-
 import oracle.oracle_server as srv  # noqa: E402
 from oracle.services import scheduler as sch  # noqa: E402
 from services import schedule_approvals as sa  # noqa: E402
