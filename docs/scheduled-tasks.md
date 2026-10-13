@@ -80,6 +80,18 @@ POST   /api/schedules/preview             {when, count} → next fire times
 GET    /api/schedules/status              POST /api/schedules/kick
 ```
 
+Desk and phone (`/api/mobile/schedules…`, Bearer on every method, capabilities
+`schedules` / `schedules_write` switched by `mobile_schedules_enabled` /
+`mobile_schedules_write`): the same list, one, runs, approvals, create, PATCH,
+DELETE, `/run`, `/enable`, `/disable` and `/approvals/<id>/decide`, every row
+filtered to the projects the gateway serves; `decided_by` is the client kind.
+
+Hub (`/api/hub/schedules…`, loopback): the same operations over the same files
+plus `?path=` project filters, `project_name` on rows, `/preview`, and
+`/status`, which proxies the Oracle's scheduler status and reports
+`reachable: false` when the Oracle is down. The Hub never dispatches; a Hub
+write is picked up on the Oracle's next tick.
+
 ## Config (`~/.c3/oracle/config.json`)
 
 `scheduler_enabled`, `scheduler_tick_seconds`, `scheduler_default_timeout_s`,

@@ -104,9 +104,7 @@ class Scheduler:
 
     def run_now(self, schedule_id: str, *, bypass_approval: bool = False, by: str = "") -> dict:
         """Queue a manual run; ``bypass_approval`` skips the approval gate once."""
-        run = self.store.request_run(schedule_id, trigger="manual", by=by)
-        if bypass_approval:
-            run = self.store.update_run(run["run_id"], status="approved")
+        run = self.store.request_run(schedule_id, trigger="manual", by=by, approved=bypass_approval)
         self.kick()
         return run
 
