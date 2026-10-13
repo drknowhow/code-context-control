@@ -149,7 +149,12 @@ stderr go to `jobs/<job-id>.supervisor.log`, stdin is the payload pipe.
 2. Registers the values with `services.credential_store` so the streaming
    redactor scrubs them before a byte reaches the spool.
 3. Spawns the command exactly as `c3_shell` does (Git Bash / cmd / sh
-   selection, `_popen_kwargs` env), streams both pipes through
+   selection, `_popen_kwargs` env). A payload may instead carry `argv` (a
+   list, launched with no shell and `harden_win_argv`), `stdin_text` (written
+   to the child's stdin, then closed) and `env_drop` (variable names removed
+   from the child's environment); the scheduler uses these to run `claude -p`
+   with the prompt on stdin and without the parent's `CLAUDECODE` marker.
+   Either way it streams both pipes through
    `ShellCapture(live=True)` — the spool is flushed per piece so `tail` sees
    it grow — and writes `running` with the pids and creation times.
 4. Enforces the job's own timeout with the same tree kill as `c3_shell`.
