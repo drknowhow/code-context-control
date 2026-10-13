@@ -840,6 +840,56 @@ def build_parser(version: str, parse_cli_ide_arg):
     ov_costs.add_argument("--path", dest="project_path", default=".",
                           help="Project directory (default: current)")
 
+    # ── Scheduled tasks (docs/scheduled-tasks.md) ─────────────────────────
+    # The human CLI over the same stores the Oracle fires from. approve/deny
+    # live here and on the Hub/Desk/phone, never on the c3_schedule agent tool.
+    p_schedule = subparsers.add_parser(
+        "schedule", help="Scheduled tasks — skills, prompts or commands the Oracle fires on a cadence")
+    sched_subs = p_schedule.add_subparsers(dest="schedule_cmd")
+    sched_subs.add_parser("list", help="Every schedule on this machine")
+    sc_show = sched_subs.add_parser("show", help="One schedule as JSON")
+    sc_show.add_argument("schedule_id")
+    sc_add = sched_subs.add_parser("add", help="Create a schedule")
+    sc_add.add_argument("name")
+    sc_add.add_argument("target", help="'/skill args', a prompt, or a command (see --kind)")
+    sc_add.add_argument("--kind", choices=["skill", "prompt", "command"], default="skill")
+    sc_add.add_argument("--cron", default="", help="5-field cron, e.g. '0 9 * * 1-5'")
+    sc_add.add_argument("--every", type=int, default=0, help="Seconds between runs")
+    sc_add.add_argument("--at", default="", help="One-shot ISO datetime")
+    sc_add.add_argument("--preset", choices=["hourly", "daily", "weekdays", "weekly", "monthly"], default="")
+    sc_add.add_argument("--preset-at", dest="preset_at", default="09:00", help="HH:MM for --preset")
+    sc_add.add_argument("--days", default="", help="Weekly preset days, e.g. mon,fri")
+    sc_add.add_argument("--tz", default="local", help="IANA zone or 'local'")
+    sc_add.add_argument("--provider", choices=["claude", "codex", "gemini", "grok"], default="claude")
+    sc_add.add_argument("--model", default="")
+    sc_add.add_argument("--effort", choices=["", "low", "medium", "high", "xhigh", "max"], default="")
+    sc_add.add_argument("--autonomy", choices=["autonomous", "approval"], default="approval")
+    sc_add.add_argument("--permission-mode", dest="permission_mode", default="")
+    sc_add.add_argument("--timeout", dest="timeout_s", type=int, default=0)
+    sc_add.add_argument("--budget", dest="max_budget_usd", type=float, default=0.0, help="--max-budget-usd cap")
+    sc_add.add_argument("--overlap", choices=["skip", "allow"], default="skip")
+    sc_add.add_argument("--check", dest="check_command", default="",
+                        help="Command whose exit 1 arms the run; exit 0 skips it")
+    sc_add.add_argument("--path", dest="project_path", default=".", help="Project directory (default: current)")
+    for verb, help_text in (("enable", "Resume a schedule"), ("disable", "Pause a schedule"),
+                            ("rm", "Delete a schedule")):
+        sp = sched_subs.add_parser(verb, help=help_text)
+        sp.add_argument("schedule_id")
+    sc_run = sched_subs.add_parser("run", help="Queue a run now")
+    sc_run.add_argument("schedule_id")
+    sc_run.add_argument("--bypass-approval", dest="bypass_approval", action="store_true",
+                        help="Skip the approval gate for this one run")
+    sc_runs = sched_subs.add_parser("runs", help="Recent runs")
+    sc_runs.add_argument("--schedule", dest="schedule_id", default="")
+    sc_runs.add_argument("--status", default="")
+    sc_runs.add_argument("--limit", type=int, default=30)
+    sc_appr = sched_subs.add_parser("approvals", help="Pending (or --status) approvals")
+    sc_appr.add_argument("--status", default="")
+    for verb in ("approve", "deny"):
+        sp = sched_subs.add_parser(verb, help=f"{verb.capitalize()} one pending scheduled run")
+        sp.add_argument("approval_id")
+        sp.add_argument("--note", default="")
+
     # ── Tool discipline / enforcement mode (v2.66.0) ────────────────────
     # LAYER C: how hard C3 pushes the agent toward c3_* tools. Distinct from
     # `c3 access` (path policy — a security boundary) and from

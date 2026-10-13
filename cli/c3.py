@@ -91,7 +91,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.155.0"
+__version__ = "2.156.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -264,6 +264,7 @@ _C3_MCP_ALLOW = [
     "mcp__c3__c3_jira", "mcp__c3__c3_credentials",
     "mcp__c3__c3_project", "mcp__c3__c3_task", "mcp__c3__c3_artifacts",
     "mcp__c3__c3_override", "mcp__c3__c3_ci", "mcp__c3__c3_shell_job",
+    "mcp__c3__c3_schedule",
 ]
 
 # Obsolete MCP tool names from earlier C3 versions. `c3 permissions clean`
@@ -7235,6 +7236,95 @@ def _enforce_audit(result: dict, project_path: str) -> None:
 _OVERRIDE_DEFAULT_TOOL = {"read": "Read", "write": "Edit"}
 
 
+def cmd_schedule(args):
+    """`c3 schedule` — scheduled tasks: list, add, run, approve or deny (docs/scheduled-tasks.md)."""
+    import json as _json
+
+    from cli.tools.schedule import build_target, build_when
+    from services.schedule_approvals import ApprovalError, ApprovalStore
+    from services.schedule_store import ScheduleError, ScheduleStore
+
+    sub = getattr(args, "schedule_cmd", None)
+    if not sub:
+        print("Usage: c3 schedule <list|add|show|rm|enable|disable|run|runs|approvals|approve|deny> ...")
+        return
+    store = ScheduleStore()
+    approvals = ApprovalStore()
+    try:
+        if sub == "list":
+            rows = store.list()
+            if not rows:
+                print("No schedules. Add one with `c3 schedule add`.")
+            for row in rows:
+                when = row.get("when") or {}
+                cadence = when.get("expr") or (f"every {when.get('seconds')}s" if when.get("type") == "every"
+                                                else when.get("when", ""))
+                flag = "on " if row.get("enabled") else "off"
+                print(f"  {row['id']} [{flag}] {row['name']!r} {row['kind']} @ {cadence} {row['autonomy']} "
+                      f"next={row.get('next_run_at') or '-'} last={row.get('last_status') or '-'}  "
+                      f"{row['project_path']}")
+        elif sub == "show":
+            row = store.get(args.schedule_id)
+            if row is None:
+                raise ScheduleError(f"no schedule {args.schedule_id}")
+            print(_json.dumps(row, indent=2, ensure_ascii=False))
+        elif sub == "add":
+            from oracle.config import load_config
+            from oracle.services.scheduler import defaults_from_config
+            when = build_when(cron=args.cron, every=args.every, at=args.at, preset=args.preset, tz=args.tz,
+                              preset_at=args.preset_at, days=args.days)
+            if when is None:
+                raise ScheduleError("give one of --cron, --every, --at or --preset")
+            fields = {
+                "name": args.name, "kind": args.kind, "target": build_target(args.kind, args.target),
+                "provider": args.provider, "model": args.model, "effort": args.effort,
+                "autonomy": args.autonomy, "project_path": str(Path(args.project_path).resolve()),
+                "when": when, "overlap": args.overlap, "check_command": args.check_command,
+            }
+            if args.timeout_s:
+                fields["timeout_s"] = args.timeout_s
+            if args.max_budget_usd:
+                fields["max_budget_usd"] = args.max_budget_usd
+            if args.permission_mode:
+                fields["permission_mode"] = args.permission_mode
+            row = store.create(fields, defaults=defaults_from_config(load_config()), created_by="cli")
+            print(f"Created {row['id']} {row['name']!r}; next run {row['next_run_at']}")
+        elif sub in ("enable", "disable"):
+            row = store.set_enabled(args.schedule_id, sub == "enable", by="cli")
+            print(f"{row['id']} {sub}d; next run {row.get('next_run_at') or '-'}")
+        elif sub == "rm":
+            if not store.delete(args.schedule_id, by="cli"):
+                raise ScheduleError(f"no schedule {args.schedule_id}")
+            print(f"Deleted {args.schedule_id}")
+        elif sub == "run":
+            if store.get(args.schedule_id) is None:
+                raise ScheduleError(f"no schedule {args.schedule_id}")
+            run = store.request_run(args.schedule_id, trigger="manual", by="cli", approved=args.bypass_approval)
+            print(f"Queued run {run['run_id']} ({run['status']}); the Oracle dispatches it on its next tick")
+        elif sub == "runs":
+            rows = store.runs(schedule_id=args.schedule_id or None, status=args.status or None, limit=args.limit)
+            if not rows:
+                print("No runs.")
+            for run in rows:
+                cost = f" ${run['cost_usd']:.3f}" if run.get("cost_usd") is not None else ""
+                err = f" — {str(run['error'])[:80]}" if run.get("error") else ""
+                print(f"  {run['run_id']} {run['status']:<17} {run['trigger']:<8} {run['schedule_name']!r} "
+                      f"{(run.get('claimed_at') or '')[:19]}{cost}{err}")
+        elif sub == "approvals":
+            rows = approvals.list(status=args.status or "pending")
+            if not rows:
+                print(f"No {args.status or 'pending'} approvals.")
+            for row in rows:
+                print(f"  {row['id']} {row['status']:<8} {row['schedule_name']!r} {row['summary']} "
+                      f"expires={row['expires_at']}")
+        elif sub in ("approve", "deny"):
+            row = approvals.decide(args.approval_id, sub, decided_by="cli", note=args.note or "")
+            print(f"{row['id']} {row['status']}; the Oracle acts on it on its next tick")
+    except (ScheduleError, ApprovalError) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+
 def cmd_override(args):
     """`c3 override` — Override Requests: allow one blocked call, once.
 
@@ -9663,6 +9753,7 @@ def main():
         "access": cmd_access,
         "enforce": cmd_enforce,
         "override": cmd_override,
+        "schedule": cmd_schedule,
         "locks": cmd_locks,
         "prune-quarantine": cmd_prune_quarantine,
         "ci": cmd_ci,
