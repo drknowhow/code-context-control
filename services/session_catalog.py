@@ -808,17 +808,28 @@ def _resume_view(rid: str, provider: str, meta: dict, live: bool, project) -> di
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
-def _matches(row: dict, q: str) -> bool:
+def _matches(row: dict, q: str, *, transcripts: bool = True) -> bool:
+    """Every word of ``q`` appears in the row.
+
+    ``transcripts=False`` searches only what a caller without transcript
+    access is shown: no prompts, and no title copied from the first prompt.
+    Matching on text the caller cannot see would still tell it which
+    sessions contain a word.
+    """
     if not q:
         return True
-    hay = " ".join([row["id"], row["title"], row["first_prompt"], row["last_prompt"],
-                    row["branch"], ((row.get("note") or {}).get("summary") or ""),
-                    ((row.get("stale") or {}).get("reason") or "")]).lower()
+    parts = [row["id"], row["branch"], ((row.get("note") or {}).get("summary") or ""),
+             ((row.get("stale") or {}).get("reason") or "")]
+    if transcripts:
+        parts += [row["title"], row["first_prompt"], row["last_prompt"]]
+    elif row.get("title_source") != "first_prompt":
+        parts.append(row["title"])
+    hay = " ".join(parts).lower()
     return all(word in hay for word in q.lower().split())
 
 
 def filter_rows(rows: list[dict], *, stale: str = "hide", q: str = "",
-                limit: int = 50, before: str = "") -> dict:
+                limit: int = 50, before: str = "", transcripts: bool = True) -> dict:
     """Apply the list filters to already-built rows (newest first)."""
     stale = (stale or "hide").lower()
     out = []
@@ -831,7 +842,7 @@ def filter_rows(rows: list[dict], *, stale: str = "hide", q: str = "",
             continue
         if before and row["last_active"] >= before:
             continue
-        if not _matches(row, q):
+        if not _matches(row, q, transcripts=transcripts):
             continue
         out.append(row)
     limit = max(1, min(int(limit or 50), 500))
@@ -841,18 +852,20 @@ def filter_rows(rows: list[dict], *, stale: str = "hide", q: str = "",
 
 
 def list_sessions(project, *, name: str = "", stale: str = "hide", q: str = "",
-                  limit: int = 50, before: str = "") -> dict:
+                  limit: int = 50, before: str = "", transcripts: bool = True) -> dict:
     """``{"sessions": [row...], "next_before": iso|""}`` for one project.
 
     stale: ``hide`` (default), ``only``, ``likely`` (unmarked rows with hints)
-    or ``all``.
+    or ``all``. ``transcripts=False`` keeps ``q`` off the prompt text.
     """
     rows, _ = _build(project, name)
-    return filter_rows(rows, stale=stale, q=q, limit=limit, before=before)
+    return filter_rows(rows, stale=stale, q=q, limit=limit, before=before,
+                       transcripts=transcripts)
 
 
 def list_many(projects: list[dict], *, stale: str = "hide", q: str = "",
-              limit: int = 50, before: str = "", workers: int = 8) -> dict:
+              limit: int = 50, before: str = "", workers: int = 8,
+              transcripts: bool = True) -> dict:
     """Rows from several projects (``[{name, path}]``) merged newest first.
 
     Projects build in parallel; one unreadable project is reported under
@@ -878,7 +891,8 @@ def list_many(projects: list[dict], *, stale: str = "hide", q: str = "",
             if err:
                 errors.append({"path": path, "error": err})
     merged.sort(key=lambda r: r["last_active"], reverse=True)
-    result = filter_rows(merged, stale=stale, q=q, limit=limit, before=before)
+    result = filter_rows(merged, stale=stale, q=q, limit=limit, before=before,
+                         transcripts=transcripts)
     result["errors"] = errors
     return result
 
@@ -1042,7 +1056,10 @@ def overview(project, *, name: str = "") -> dict:
             if dirty:
                 _save_cache(project, cache)
         if meta:
-            newest = {"id": meta["id"], "title": meta.get("title") or "(untitled)"}
+            # title_source travels with the title so a surface that withholds
+            # transcript text can tell a first-prompt title from a summary.
+            newest = {"id": meta["id"], "title": meta.get("title") or "(untitled)",
+                      "title_source": meta.get("title_source") or "none"}
     return {"name": name or project.name, "path": str(project),
             "counts": {"total": len(files), "live": len(live),
                        "stale": len(stale_ids & {f.stem for f in files}), "idle": idle},

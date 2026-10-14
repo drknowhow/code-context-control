@@ -4,6 +4,24 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.157.1] - 2026-10-14
+
+### Fixed — the phone's session search and overview no longer leak hidden transcript text
+
+With `mobile_sessions_transcripts` off, the gateway blanked prompts in the
+rows it returned, but `GET /api/mobile/sessions?q=` still matched against the
+unblanked prompts and first-prompt titles, so a search told the phone which
+sessions contained a word. `/api/mobile/sessions/overview` also passed a
+first-prompt title through as `newest.title`, because
+`session_catalog.overview()` did not say where the title came from.
+
+- `session_catalog._matches` / `filter_rows` / `list_sessions` /
+  `list_many` take `transcripts=` (default true, so the Hub is unchanged);
+  false searches only the id, branch, note, stale reason and a title that
+  did not come from the first prompt.
+- `session_catalog.overview()` adds `title_source` to `newest`.
+- Found by the c3-mobile Sessions screen's builder reviewing the v7 routes.
+
 ## [2.157.0] - 2026-10-14
 
 ### Added — the fleet views on the mobile gateway (API version 7)

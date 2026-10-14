@@ -455,6 +455,9 @@ def mobile_sessions_list():
 
     Query: ``stale`` hide|only|likely|all (default hide), ``q``, ``limit``
     (default 50, max 200), ``before`` (ISO cursor from ``next_before``).
+    Without ``mobile_sessions_transcripts``, ``q`` never matches prompt text
+    or a first-prompt title: a hit on hidden text would reveal it a word at
+    a time.
     """
     gate = m._feature_or_404("sessions")
     if gate:
@@ -473,11 +476,12 @@ def mobile_sessions_list():
             if err:
                 return err
             res = sc.list_sessions(proj["path"], name=proj["name"], stale=stale,
-                                   q=q, limit=limit, before=before)
+                                   q=q, limit=limit, before=before,
+                                   transcripts=transcripts)
             res["errors"] = []
         else:
             res = sc.list_many(_registered(), stale=stale, q=q, limit=limit,
-                               before=before)
+                               before=before, transcripts=transcripts)
     except Exception as exc:
         return m._svc_error(exc)
     res["sessions"] = [_session_wire(r, transcripts)
