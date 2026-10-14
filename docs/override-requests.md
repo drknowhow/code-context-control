@@ -646,6 +646,8 @@ to see.
 | `GET /api/mobile/overrides/policy` | The effective `override` section for a project (read-only view of §3.1). |
 | `POST /api/mobile/overrides/policy` | Edit it, gated on `override_write` + typed confirm for any widening. |
 | `GET /api/mobile/overrides/costs` | Per-(project, rule) counts over a trailing window (v2.127.0, §11 T5). Params `project` (optional — omit for every registered project), `days` (1..30, default 7). `{days, rules, count, project}`. |
+| `GET /api/mobile/overrides/policy/overview` | Every registered project's effective policy plus the read-only global scope (v2.157.0, capability `override_policy_overview`). Same payload as the Hub's overview, from `services/fleet_overview.py`. |
+| `POST /api/mobile/overrides/policy/clear` | `{project, confirm?}`: drop the project's own section so it inherits global; `confirm: "widen"` when that loosens (v2.157.0, `override_policy_clear`). |
 
 Capabilities added to `mobile_api.CAPABILITIES`: `override`, `override_write`,
 mapped to `mobile_override_enabled` / `mobile_override_write`; `override_costs`

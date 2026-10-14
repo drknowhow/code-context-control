@@ -239,6 +239,15 @@ Hub, loopback only:
 - A project without `.c3/` gets a 409, never a fresh config. Every real
   write is audited on the target (a global one in `~/.c3`), `via: hub`.
 
+Since v2.157.0 the phone reads the same cross-project table from
+`GET /api/mobile/access/overview` (built by `services/fleet_overview.py`,
+which the Hub route above also calls). Its `writable` block says which scopes
+the gateway will edit; edits still go through `/api/mobile/access/rule` with
+its limits. Built-in guards on the gateway (`GET /api/mobile/access/builtin`,
+`POST .../builtin/mode`, `POST .../builtin/lease/revoke`) only ever tighten:
+a looser mode is a 403 for every token kind, and leases are minted from C3
+Desk alone.
+
 C3 Desk's Locks → Permissions view is built on these three routes.
 
 ## 6. Residual risks (named, documented)

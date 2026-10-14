@@ -122,8 +122,20 @@ has not been confirmed by Anthropic; an id in any other shape gets no link.
 | `POST /api/hub/sessions/mark {path, id, op, reason?, successor?, summary?, next_steps?}` | recorded as `by: user` |
 | `POST /api/hub/sessions/resume {path, id}` | 200 `{launched, command, cwd}`, 404, 409, or 500 with the command to run by hand |
 
-These are deliberately **not** on the Oracle gateway. Oracle can bind to the
-tailnet, and transcript previews should stay on this machine. The first
+Resume and the turn preview are deliberately **not** on the Oracle gateway.
+Oracle can bind to the tailnet, and transcript text should stay on this
+machine. Since 2.157.0 the gateway serves the catalog to the phone without it:
+
+| route | what |
+| --- | --- |
+| `GET /api/mobile/sessions/overview` | as the Hub's, over scanner-registered projects |
+| `GET /api/mobile/sessions?project=&stale=&q=&limit=&before=` | rows with `first_prompt` / `last_prompt` blanked and a title copied from the first prompt replaced by `(untitled)` (`title_source: withheld`); `resume` is only `{remote_url, can_launch: false, why_not}` |
+| `GET /api/mobile/sessions/detail?project=&id=` | row + decisions, snapshot and tasks; `preview` is empty |
+| `POST /api/mobile/sessions/mark {project, id, op, ...}` | recorded as `by: user` |
+
+`mobile_sessions_transcripts: true` in `~/.c3/oracle/config.json` lets the
+prompts, titles and preview through; every response says which with
+`transcripts`. The first
 all-projects listing on a machine reads every transcript head and tail once.
 Around 1,000 transcripts took about 20 seconds; later loads are served from
 the cache.
