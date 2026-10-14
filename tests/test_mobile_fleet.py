@@ -426,6 +426,50 @@ class TestSessions(FleetBase):
         self.assertEqual(body["preview"], [])
         self.assertNotIn("secret turn", json.dumps(body))
 
+    def test_search_never_matches_hidden_text(self):
+        rows = [_row(self.proj),
+                _row(self.proj, id="9" * 36, title="deploy the parser",
+                     title_source="first_prompt", first_prompt="deploy the parser")]
+        with mock.patch.object(sc, "_build", return_value=(rows, {})):
+            # "first" is only in a prompt; "deploy" only in a first-prompt title.
+            for q in ("first", "last", "deploy"):
+                _, body = self.get("/api/mobile/sessions",
+                                   project=str(self.proj), q=q)
+                self.assertEqual(body["sessions"], [], q)
+            # Visible text still matches.
+            _, body = self.get("/api/mobile/sessions", project=str(self.proj),
+                               q="parser main")
+            self.assertEqual(len(body["sessions"]), 1)
+            srv._cfg["mobile_sessions_transcripts"] = True
+            _, body = self.get("/api/mobile/sessions", project=str(self.proj),
+                               q="first")
+            self.assertEqual(len(body["sessions"]), 1)
+
+    def test_search_across_projects_respects_the_switch_too(self):
+        rows = [_row(self.proj)]
+        with mock.patch.object(sc, "_build", return_value=(rows, {})):
+            _, body = self.get("/api/mobile/sessions", q="first")
+        self.assertEqual(body["sessions"], [])
+
+    def test_overview_withholds_a_real_first_prompt_title(self):
+        # Unmocked session_catalog.overview: newest must carry title_source
+        # for the withholding to fire at all.
+        tdir = Path(self._tmp.name) / "transcripts"
+        tdir.mkdir()
+        transcript = tdir / "abc.jsonl"
+        transcript.write_text("{}\n", encoding="utf-8")
+        meta = {"id": "abc", "title": "my secret first prompt",
+                "title_source": "first_prompt"}
+        with mock.patch.object(sc, "claude_transcript_dir", return_value=tdir), \
+                mock.patch.object(sc, "_transcript_files",
+                                  return_value=[transcript]), \
+                mock.patch.object(sc, "_cached", return_value=meta):
+            status, body = self.get("/api/mobile/sessions/overview")
+        self.assertEqual(status, 200, body)
+        self.assertNotIn("my secret first prompt", json.dumps(body))
+        newest = body["projects"][0]["newest"]
+        self.assertEqual(newest["title"], "(untitled)")
+
     def test_unregistered_project_is_a_404(self):
         status, _ = self.get("/api/mobile/sessions", project=str(self.ghost))
         self.assertEqual(status, 404)
