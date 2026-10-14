@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 os.environ.setdefault("C3_ORACLE_API_KEY", "mobile-sec-key")
 
 import oracle.oracle_server as srv  # noqa: E402
-from oracle.services import mobile_api  # noqa: E402
+from oracle.services import mobile_api, mobile_fleet  # noqa: E402
 from services import access_guard as ag  # noqa: E402
 from services import credential_store as cs  # noqa: E402
 
@@ -711,7 +711,9 @@ class TestMobileSurfaceInvariants(unittest.TestCase):
     """Structural assertions — stronger than any canary, because they hold for
     values the tests never constructed."""
 
-    IDENTS = _module_identifiers(mobile_api)
+    # mobile_fleet registers routes on the same blueprint (API v7), so the
+    # plaintext and builtin-disable bans cover it too.
+    IDENTS = _module_identifiers(mobile_api) | _module_identifiers(mobile_fleet)
 
     def _mobile_rules(self):
         return [str(r) for r in srv.app.url_map.iter_rules()
@@ -729,9 +731,19 @@ class TestMobileSurfaceInvariants(unittest.TestCase):
                              f"{banned} gives this module access to plaintext")
 
     def test_no_builtin_disable_route_or_reference(self):
+        # Invariant 2 since API v7: the gateway may read builtin modes, tighten
+        # one and end a lease early — never loosen, disable or mint a lease.
+        # The allowlist is exact so a new builtin route is a deliberate edit
+        # here, not something that slips in beside these three.
         self.assertNotIn("set_builtin_disabled", self.IDENTS)
-        for rule in self._mobile_rules():
-            self.assertNotIn("builtin", rule)
+        # builtin_leases.mint is how a lease (a temporary loosening) is made.
+        self.assertNotIn("mint", _module_identifiers(mobile_fleet))
+        builtin_rules = {r for r in self._mobile_rules() if "builtin" in r}
+        self.assertEqual(builtin_rules, {
+            "/api/mobile/access/builtin",
+            "/api/mobile/access/builtin/mode",
+            "/api/mobile/access/builtin/lease/revoke",
+        })
 
     def test_no_raw_content_preview_route(self):
         for rule in self._mobile_rules():

@@ -83,6 +83,17 @@ DEFAULTS = {
     "scheduler_default_max_budget_usd": 0,
     "mobile_schedules_enabled": True,     # read: schedules / runs / approvals
     "mobile_schedules_write": True,       # create / edit / run now / decide
+    # ── API v7 fleet views (oracle/services/mobile_fleet.py) ──
+    # Built-in guards: read modes and leases; tighten a mode and end a lease
+    # early. Loosening is never served here, whatever these say.
+    "mobile_builtin_enabled": True,
+    "mobile_builtin_tighten": True,
+    # Session catalog: rows, counts and marks. Transcript text (first/last
+    # prompt, the turn preview, a title copied from the first prompt) stays on
+    # this machine unless mobile_sessions_transcripts is on (docs/sessions.md).
+    "mobile_sessions_enabled": True,
+    "mobile_sessions_write": True,
+    "mobile_sessions_transcripts": False,
     "auto_open_browser": True,
     "theme": "dark",
     "ui_last_tab": "chat",          # persisted UI preference (hub parity)

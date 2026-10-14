@@ -4,6 +4,56 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.157.0] - 2026-10-14
+
+### Added — the fleet views on the mobile gateway (API version 7)
+
+C3 Desk reads its Locks, Permissions, Rules, Built-in guards, Sessions and
+Now views from the Hub on loopback, which a phone cannot reach. The Oracle's
+mobile gateway now serves the same read models, so the companion app can show
+everything Desk shows. What the phone may change stays narrower than Desk.
+
+- `services/fleet_overview.py` builds the cross-project payloads (locks,
+  Access Guard rules, tool discipline, override policy, built-in guards, and a
+  Now snapshot). The Hub's `/api/hub/locks/overview`,
+  `/api/hub/access/overview`, `/api/hub/enforcement/overview`,
+  `/api/hub/overrides/policy/overview` and `GET /api/hub/access/builtin` now
+  call it too, so Desk and the phone read the same rows. Their responses are
+  unchanged.
+- New gateway routes (`oracle/services/mobile_fleet.py`):
+  - `GET /api/mobile/locks/overview`. Read only: breaking a lease stays on the
+    Hub.
+  - `GET /api/mobile/access/overview` and `GET /api/mobile/enforcement/overview`,
+    each with a `writable` block naming the scopes this gateway will edit.
+  - `GET /api/mobile/overrides/policy/overview` (global scope read-only).
+  - `POST /api/mobile/enforcement/clear` and
+    `POST /api/mobile/overrides/policy/clear`, project scope only. Clearing
+    asks for `confirm: "off"` or `confirm: "widen"` when what the project
+    would inherit is looser.
+  - `GET /api/mobile/access/builtin`, `POST /api/mobile/access/builtin/mode`
+    and `POST /api/mobile/access/builtin/lease/revoke`. The mode route only
+    tightens: a looser mode is a 403 (`needs_desk`, with the CLI command) for
+    every token kind, Desk's included. Leases are never minted here. Global
+    scope needs `mobile_access_global_scope`, even to tighten.
+  - `GET /api/mobile/sessions/overview`, `GET /api/mobile/sessions`,
+    `GET /api/mobile/sessions/detail` and `POST /api/mobile/sessions/mark`.
+    First and last prompts, the turn preview and titles copied from a first
+    prompt are withheld unless `mobile_sessions_transcripts` is on (default
+    off, per docs/sessions.md). Resume is not offered; the
+    `claude.ai/code` remote link is passed through.
+  - `GET /api/mobile/now`: live sessions from the MCP heartbeats, their newest
+    token totals and last C3 call, running jobs, last CI run and file-map
+    freshness, plus whether the Hub answers.
+- Capabilities `locks_overview`, `access_overview`, `enforcement_overview`,
+  `enforcement_clear`, `override_policy_overview`, `override_policy_clear`,
+  `builtin`, `builtin_tighten`, `sessions`, `sessions_write`, `now`. New
+  switches `mobile_builtin_enabled`, `mobile_builtin_tighten`,
+  `mobile_sessions_enabled`, `mobile_sessions_write` (default on) and
+  `mobile_sessions_transcripts` (default off).
+- Gateway invariant 2 is restated: no route can loosen or disable a built-in
+  guard. `tests/test_mobile_security_api.py` now pins the exact set of builtin
+  routes instead of banning the word.
+
 ## [2.156.0] - 2026-10-13
 
 ### Added — Scheduled tasks

@@ -112,7 +112,7 @@ class TestCapabilityAndAuth(CostsRouteBase):
 
     def test_api_version_is_not_bumped(self):
         # Additive: an older client must not be told the API moved.
-        self.assertEqual(mobile_api.API_VERSION, 6)
+        self.assertEqual(mobile_api.API_VERSION, 7)
 
     def test_switch_off_is_404(self):
         srv._cfg["mobile_override_enabled"] = False

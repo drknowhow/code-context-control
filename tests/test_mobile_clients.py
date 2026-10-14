@@ -352,7 +352,7 @@ class TestClientAuth(_RouteBase):
         r = self.client.get("/api/mobile/info", headers=self.bearer(tok))
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
-        self.assertEqual(body["api_version"], 6)
+        self.assertEqual(body["api_version"], 7)
         self.assertIn("clients", body["capabilities"])
         self.assertEqual(body["client"], {"kind": "desk", "client_id": cid})
 

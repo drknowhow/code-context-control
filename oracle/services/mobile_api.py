@@ -27,9 +27,13 @@ three invariants are enforced structurally and asserted by tests:
    through ``credential_store.public_entry`` — an allowlist that cannot emit
    one — and this module never imports ``get_value``/``expand_templates``.
    ``credential_store.is_resolvable`` exists so it never needs to.
-2. **No ``set_builtin_disabled`` route.** Disabling a builtin guard needs a
-   keyring attestation and a typed confirmation; it stays a local, human
-   operation on a machine someone is physically at.
+2. **No route can loosen or disable a builtin guard.** Disabling one, setting
+   a looser mode or minting a temporary lease needs a keyring attestation and
+   a person at the machine (C3 Desk's client token on the Hub); it stays a
+   local, human operation. Since API v7 the gateway READS builtin modes and
+   leases, TIGHTENS a mode and ENDS a lease early (``mobile_fleet``) — each
+   only ever makes the guard stricter. ``set_builtin_disabled`` is never
+   referenced here.
 3. **No ``/access/preview`` equivalent.** That route (``cli/server.py``)
    returns RAW file content and is explicitly human-only.
 
@@ -76,7 +80,14 @@ from services.atomic_json import write_json_atomic
 #    trailing window, the "this rule is costing you" nudge (D3a). The
 #    /overrides/<id> detail also carries `allow_session_grants`,
 #    `max_ttl_s` and `session_confirm` at the top level.
-API_VERSION = 6
+# 6: scheduled tasks (`schedules`, `schedules_write`).
+# 7: the fleet views C3 Desk reads from the Hub (oracle/services/
+#    mobile_fleet.py): cross-project /locks/overview, /access/overview,
+#    /enforcement/overview, /overrides/policy/overview; /enforcement/clear
+#    and /overrides/policy/clear; built-in guards read + tighten + lease
+#    revoke (/access/builtin*); the session catalog (/sessions*, no
+#    transcript text by default); and /now.
+API_VERSION = 7
 
 CAPABILITIES = [
     "feed", "feed_wait", "projects", "health", "pm", "pm_events", "digest",
@@ -99,6 +110,12 @@ CAPABILITIES = [
     # /api/mobile/chat/*. Advertised here because /info is the single place a
     # client probes; the routes themselves live in that blueprint.
     "chat",
+    # API v7 fleet views (oracle/services/mobile_fleet.py).
+    "locks_overview", "access_overview", "enforcement_overview",
+    "enforcement_clear", "override_policy_overview", "override_policy_clear",
+    "builtin", "builtin_tighten",
+    "sessions", "sessions_write",
+    "now",
 ]
 
 # capability -> config key that gates it. Absent from this map = always on.
@@ -122,6 +139,17 @@ _CAPABILITY_SWITCHES = {
     "suggestions_write": "mobile_suggestions_write",
     "schedules": "mobile_schedules_enabled",
     "schedules_write": "mobile_schedules_write",
+    # v7: each overview goes dark with the subsystem it reads; locks_overview
+    # and now are ops reads like /locks and /status, so always on.
+    "access_overview": "mobile_access_enabled",
+    "enforcement_overview": "mobile_access_enabled",
+    "enforcement_clear": "mobile_access_write",
+    "override_policy_overview": "mobile_override_enabled",
+    "override_policy_clear": "mobile_override_write",
+    "builtin": "mobile_builtin_enabled",
+    "builtin_tighten": "mobile_builtin_tighten",
+    "sessions": "mobile_sessions_enabled",
+    "sessions_write": "mobile_sessions_write",
 }
 
 FEED_TYPES = ("notification", "activity", "edit", "session_stat")
@@ -3529,3 +3557,10 @@ def mobile_review():
         "interval_seconds": status.get("interval_seconds"),
         "digest_enabled": bool(status.get("digest_enabled")),
     })
+
+
+# ── API v7 fleet views ────────────────────────────────────
+# Registered on this blueprint for their side effect; kept in their own module
+# because they answer a different question (every project at once) from the
+# per-project routes above. Must run before oracle_server registers `bp`.
+from oracle.services import mobile_fleet as _mobile_fleet  # noqa: E402,F401

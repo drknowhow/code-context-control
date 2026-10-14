@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cli._hook_utils import hook_command_arg
 from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normalize_ide_name
-from services import access_guard
+from services import access_guard, fleet_overview
 from services.activity_log import ActivityLog
 from services.atomic_json import write_json_atomic
 from services.project_manager import ProjectManager
@@ -2710,38 +2710,11 @@ def api_hub_locks_overview():
     Per-row isolation like /api/hub/credentials/overview: one unreadable
     project must not blank the page. A project we cannot read reports
     ``error``/``initialized`` rather than an empty lease list — "0 leases"
-    would claim the repo is clear when we simply do not know.
+    would claim the repo is clear when we simply do not know. Built by
+    services.fleet_overview, which the Oracle gateway's /locks/overview
+    shares, so Desk and the phone read the same rows.
     """
-    from services import agent_locks as al
-
-    rows, total = [], 0
-    for p in _pm().list_registered():
-        ppath = str(p.get("path") or "")
-        row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
-               "error": None, "enabled": True, "mode": "advisory",
-               "locks": [], "count": 0, "fencing": 0}
-        try:
-            if not (Path(ppath) / ".c3").is_dir():
-                row["initialized"] = False
-            else:
-                cfg = al.config(ppath)
-                row["enabled"] = cfg["enabled"]
-                row["mode"] = cfg["mode"]
-                snap = al.store_for(ppath).snapshot()
-                row["locks"] = snap["locks"]
-                row["count"] = snap["count"]
-                row["fencing"] = snap["fencing"]
-                total += snap["count"]
-        except Exception as e:
-            row["error"] = str(e)
-        rows.append(row)
-    return jsonify({"projects": rows, "total": total,
-                    # Surfaced so the UI can state its own limits instead of
-                    # implying a lease covers everything (spec §9).
-                    "coverage_note": (
-                        "Leases gate C3 tool surfaces only. A raw shell "
-                        "redirect, a non-Claude agent, or a human in an editor "
-                        "is not covered.")})
+    return jsonify(fleet_overview.locks(_pm().list_registered()))
 
 
 @app.route("/api/projects/locks/force-release", methods=["POST"])
@@ -2798,84 +2771,10 @@ def api_hub_enforcement_overview():
 
     Denial counts come from services.access_telemetry, split by layer so the
     UI can point at the right lever: discipline blocks are cleared by changing
-    the mode here, path denials by editing Access Guard rules.
+    the mode here, path denials by editing Access Guard rules. Shared with
+    the gateway's /enforcement/overview through services.fleet_overview.
     """
-    from services import access_telemetry as at
-    from services import enforcement_policy as ep
-
-    rows = []
-    totals = {"discipline": 0, "access": 0}
-    for p in _pm().list_registered():
-        ppath = str(p.get("path") or "")
-        row = {"name": p.get("name") or "", "path": ppath, "initialized": True,
-               "error": None, "mode": None, "scope": "", "set_by": "",
-               "signal_ttl_s": ep.DEFAULT_SIGNAL_TTL_S, "warnings": [],
-               "tier": "", "tier_implies": "", "denials": {}, "denial_total": 0}
-        try:
-            if not (Path(ppath) / ".c3").is_dir():
-                row["initialized"] = False
-            else:
-                policy = ep.resolve(ppath)
-                row["mode"] = policy.mode
-                row["scope"] = policy.scope
-                row["set_by"] = policy.set_by
-                row["signal_ttl_s"] = policy.signal_ttl_s
-                row["warnings"] = list(policy.warnings)
-                row["blocked_tools"] = sorted(policy.blocked_tools)
-
-                cfg_path = Path(ppath) / ".c3" / "config.json"
-                try:
-                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                    tier = str(cfg.get("permission_tier") or "")
-                except Exception:
-                    tier = ""
-                row["tier"] = tier
-                row["tier_implies"] = ep.derive_from_tier(tier) if tier else ""
-
-                agg = at.aggregate(ppath)
-                row["denials"] = agg["by_layer"]
-                row["denial_total"] = agg["total"]
-                row["top_denials"] = [
-                    {**r, "fix": at.suggest(r)} for r in agg["rows"][:5]
-                ]
-                for layer, count in agg["by_layer"].items():
-                    totals[layer] = totals.get(layer, 0) + count
-        except Exception as e:
-            row["error"] = str(e)
-        rows.append(row)
-
-    # The global (~/.c3) section, shown as its own card. A corrupt global
-    # config must not blank the tab — report the error inside the object.
-    try:
-        g = ep.resolve_global()
-        global_policy = {
-            "configured": g.scope == "global",
-            "mode": g.mode or None,
-            "set_by": g.set_by,
-            "signal_ttl_s": g.signal_ttl_s,
-            "blocked_tools": sorted(g.blocked_tools),
-            "warnings": list(g.warnings),
-        }
-    except Exception as e:
-        global_policy = {"configured": False, "mode": None, "error": str(e)}
-
-    return jsonify({
-        "projects": rows,
-        "modes": [{"id": m, "help": ep.MODE_HELP[m]} for m in ep.MODES],
-        "default_mode": ep.DEFAULT_MODE,
-        "tier_map": ep.TIER_TO_MODE,
-        "totals": totals,
-        "global_policy": global_policy,
-        # Stated so the tab can never imply that turning discipline down also
-        # turns the security boundaries down. Mirrors docs/enforcement.md.
-        "coverage_note": (
-            "Tool discipline only governs whether native Edit/Write are "
-            "pushed through c3_edit. At every mode — including off — Access "
-            "Guard path rules, the credential-vault write guard, and agent "
-            "locks still enforce. The edit ledger records native writes "
-            "either way; strict additionally gets c3_edit's pre-edit snapshot."
-        ),
-    })
+    return jsonify(fleet_overview.enforcement(_pm().list_registered()))
 
 
 @app.route("/api/projects/enforcement", methods=["GET"])
@@ -3526,12 +3425,9 @@ def api_hub_override_costs():
 
 
 #: Verbatim from the spec, and the one thing a toggle screen must not let the
-#: reader forget: policy is a floor, not a promise.
-_OVERRIDE_POLICY_NOTE = (
-    "Project and global policy merge by tightening only: a layer is "
-    "escalatable iff both scopes allow it, and the numeric limits take "
-    "the smaller value."
-)
+#: reader forget: policy is a floor, not a promise. One copy, shared with the
+#: overview and the Oracle gateway.
+_OVERRIDE_POLICY_NOTE = fleet_overview.OVERRIDE_POLICY_NOTE
 
 
 def _hub_policy_audit(project_path: str, action: str, detail_extra: dict) -> None:
@@ -3650,51 +3546,10 @@ def api_hub_override_policy_overview():
     section is reported as corrupt rather than as the disabled policy it
     resolves to. ``project_keys`` names what the project pins itself, so a
     screen can tell an inherited value from a chosen one. The global scope is
-    served READ-ONLY: ``write_section`` is project-scope by design.
+    served READ-ONLY: ``write_section`` is project-scope by design. Shared
+    with the gateway's /overrides/policy/overview (services.fleet_overview).
     """
-    from services import override_policy as opol
-
-    rows = []
-    for p in _pm().list_registered():
-        ppath = str(p.get("path") or "")
-        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
-               "initialized": True, "error": None, "policy": None,
-               "configured": False, "corrupt": False, "project_keys": []}
-        try:
-            if not (Path(ppath) / ".c3").is_dir():
-                row["initialized"] = False
-            else:
-                keys, present, corrupt = opol.scope_keys(ppath)
-                row["project_keys"] = keys
-                row["configured"] = present
-                row["corrupt"] = corrupt
-                row["policy"] = opol.resolve(ppath).as_dict()
-        except Exception as e:
-            row["error"] = str(e)
-        rows.append(row)
-
-    try:
-        keys, present, corrupt = opol.global_scope_keys()
-        global_policy = {"configured": present, "corrupt": corrupt,
-                         "keys": keys, "error": None,
-                         "policy": opol.resolve_global().as_dict()}
-    except Exception as e:
-        global_policy = {"configured": False, "corrupt": False, "keys": [],
-                         "error": str(e), "policy": None}
-
-    return jsonify({
-        "projects": rows,
-        "global_policy": global_policy,
-        "defaults": {k: v for k, v in opol.DEFAULTS.items()
-                     if k != opol.WAKE_KEY},
-        "layers": list(opol.LAYER_KEYS),
-        "typed_confirm_layers": sorted(opol.TYPED_CONFIRM_LAYERS),
-        "hard_max_ttl_s": opol.HARD_MAX_TTL_S,
-        "coverage_note": _OVERRIDE_POLICY_NOTE,
-        # What this Hub can do beyond the per-project GET/POST, so a client
-        # built against a newer C3 can hide what an older one cannot serve.
-        "features": ["clear"],
-    })
+    return jsonify(fleet_overview.override_policy(_pm().list_registered()))
 
 
 @app.route("/api/hub/overrides/policy/clear", methods=["POST"])
@@ -3962,45 +3817,10 @@ def api_hub_access_overview():
     scope is reported as corrupt: it evaluates deny-all until repaired by
     hand, which is the opposite of what an empty list would suggest.
     Builtin rules are read once, from the global realm; a project-scope
-    builtin mode (set with the CLI) is not reflected per row.
+    builtin mode (set with the CLI) is not reflected per row. Shared with the
+    gateway's /access/overview through services.fleet_overview.
     """
-    empty = {"deny": [], "read_only": [], "confirm": [], "mask": 0,
-             "corrupt": False}
-    rows = []
-    for p in _pm().list_registered():
-        ppath = str(p.get("path") or "")
-        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
-               "initialized": True, "error": None, "rules": dict(empty)}
-        try:
-            if not (Path(ppath) / ".c3").is_dir():
-                row["initialized"] = False
-            else:
-                row["rules"] = access_guard.scope_rules("project", ppath)
-        except Exception as e:
-            row["error"] = str(e)
-        rows.append(row)
-
-    try:
-        global_rules = {**access_guard.scope_rules("global"), "error": None}
-    except Exception as e:
-        global_rules = {**empty, "error": str(e)}
-    try:
-        home = access_guard._global_base()
-        b = access_guard.list_rules(str(home) if home else ".")["builtin"]
-        builtin = {"deny": list(b.get("deny") or []),
-                   "read_only": list(b.get("read_only") or []),
-                   "confirm": list(b.get("confirm") or []), "error": None}
-    except Exception as e:
-        builtin = {"deny": [], "read_only": [], "confirm": [], "error": str(e)}
-
-    return jsonify({
-        "projects": rows,
-        "global": global_rules,
-        "builtin": builtin,
-        # Strictest last. "allow" is the absence of a rule, not a kind.
-        "kinds": ["confirm", "read_only", "deny"],
-        "coverage_note": access_guard.COVERAGE_MATRIX,
-    })
+    return jsonify(fleet_overview.access(_pm().list_registered()))
 
 
 @app.route("/api/hub/access/rule", methods=["POST"])
@@ -4089,38 +3909,13 @@ def api_hub_access_builtin():
     so a mode listed here is one evaluation honours. ``projects`` holds only
     projects that set a mode of their own, or could not be read.
     ``strictness`` ranks each mode 0 (allow) to 3 (full deny), so a client
-    can tell loosening from tightening without knowing the tiers.
+    can tell loosening from tightening without knowing the tiers. Shared
+    with the gateway's /access/builtin through services.fleet_overview.
     """
     try:
-        global_modes = access_guard._scope_modes("global")
+        return jsonify(fleet_overview.builtin(_pm().list_registered()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    home = access_guard._global_base()
-    guards = []
-    for glob in access_guard.DISABLEABLE_BUILTINS:
-        canon = access_guard._norm_builtin(glob)
-        guards.append({
-            "glob": canon,
-            "global": global_modes.get(canon, "default"),
-            "strictness": {m: access_guard.builtin_strictness(canon, m)
-                           for m in (*access_guard.BUILTIN_MODES, "default")},
-        })
-    projects = []
-    for p in _pm().list_registered():
-        ppath = str(p.get("path") or "")
-        row = {"name": p.get("name") or Path(ppath).name, "path": ppath,
-               "modes": {}, "error": None}
-        try:
-            base = Path(ppath).resolve()
-            if (base / ".c3").is_dir() and base != home:
-                row["modes"] = access_guard._scope_modes("project", ppath)
-        except Exception as e:
-            row["error"] = str(e)
-        if row["modes"] or row["error"]:
-            projects.append(row)
-    from services import builtin_leases
-    return jsonify({"guards": guards, "projects": projects,
-                    "leases": builtin_leases.active()})
 
 
 @app.route("/api/hub/access/builtin/mode", methods=["POST"])
