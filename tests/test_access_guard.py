@@ -131,6 +131,27 @@ class TestBuiltins(GuardBase):
             self.assertEqual(d.scope, "builtin")
         self.assertIsNotNone(self._check("sub/dir/.env.local"))
 
+    def test_env_templates_are_readable_and_writable(self):
+        for rel in (".env.example", "web/.env.local.example", ".ENV.Sample",
+                    ".env.template", ".env.dist"):
+            for op in ("read", "write"):
+                with self.subTest(rel=rel, op=op):
+                    self.assertIsNone(self._check(rel, op))
+
+    def test_env_files_that_only_look_like_templates_stay_denied(self):
+        for rel in (".env.example.local", ".env.examples", ".env-example",
+                    ".env.prod", ".envrc"):
+            with self.subTest(rel=rel):
+                self.assertIsNotNone(self._check(rel))
+
+    def test_env_template_exemption_holds_in_every_builtin_mode(self):
+        for mode in ("deny", "confirm"):
+            rule = ag._BUILTIN_VARIANTS["**/.env*"][mode]
+            with self.subTest(mode=mode):
+                self.assertFalse(rule.matches("/p/.env.example", ".env.example",
+                                              ".env.example"))
+                self.assertTrue(rule.matches("/p/.env", ".env", ".env"))
+
     def test_vault_sidecars_denied(self):
         self.assertIsNotNone(self._check(".c3/secrets.enc"))
         self.assertIsNotNone(self._check(".c3/cred_state.json"))

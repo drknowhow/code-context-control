@@ -37,6 +37,16 @@ were refused. After this change 134 are refused, and those are real reads of
 - Known limit: `|`, `;` and `&` inside quotes still split tokens, so a
   quoted regex fragment that names a protected directory is still refused.
 
+### Changed — `.env` templates are outside the `**/.env*` builtin
+
+`.env.example`, `.env.local.example`, `.env.sample`, `.env.template` and
+`.env.dist` list variable names and are normally committed, but the builtin
+denied reading and editing them on every surface (21 refusals in the same
+80 days). A leaf name ending in `.example`, `.sample`, `.template` or `.dist`
+is no longer covered, in every builtin mode; `.env.example.local`,
+`.env-example` and `.envrc` stay denied. User rules are unchanged, so a
+project that wants templates protected can add a deny rule for them.
+
 ## [2.157.1] - 2026-10-14
 
 ### Fixed — the phone's session search and overview no longer leak hidden transcript text

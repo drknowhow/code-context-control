@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from services.atomic_json import write_json_atomic
@@ -92,6 +92,10 @@ BUILTIN_ABSOLUTE_DENY = ("**/.c3/secrets.enc", "**/.c3/cred_state.json",
 # Tier 1 — a human may switch these off, but only through the two-key opt-out
 # below: a config entry AND a keyring attestation. Default is all enforced.
 BUILTIN_DENY = ("**/.env*", "**/.c3/edit_blobs/**")
+# Committed templates that list variable names, not values. Outside
+# `**/.env*` so an agent can read and update them.
+_ENV_TEMPLATE_RE = re.compile(
+    r"^\.env(?:\.[^/.]+)*\.(?:example|sample|template|dist)$")
 # .grok/hooks/*.json is Grok Build's hook REGISTRATION (the command lines it
 # runs), the same role .claude/settings*.json plays for Claude Code, and Grok's
 # folder trust is granted per folder, not per hook file.
@@ -179,8 +183,12 @@ class Rule:
     # builtins, where confirm must cover reads or it silently becomes
     # allow-read. Ignored for every other kind.
     confirm_ops: str = "write"
+    # Leaf names the rule does not cover even when the glob matches them.
+    _except: re.Pattern | None = None
 
     def matches(self, canon: str, rel: str, name: str) -> bool:
+        if self._except is not None and self._except.match(name):
+            return False
         if self._basename:
             return bool(self._re.match(name))
         return bool(self._re.match(rel)) or bool(self._re.match(canon))
@@ -344,6 +352,10 @@ for _g in BUILTIN_CONFIRM_WRITE:
                             confirm_ops="write"),
     }
 del _g
+_BUILTIN_VARIANTS["**/.env*"] = {
+    mode: replace(rule, _except=_ENV_TEMPLATE_RE)
+    for mode, rule in _BUILTIN_VARIANTS["**/.env*"].items()
+}
 
 
 def _builtin_rules_effective(modes: dict | None = None,
