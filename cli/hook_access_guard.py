@@ -34,12 +34,18 @@ except Exception:  # pragma: no cover — telemetry is never load-bearing
 # The same write-target extractor the edit ledger uses after the fact. Its
 # absence degrades the shell branch to the read-only scan, never to a crash.
 try:
-    from _shell_writes import shell_write_targets
+    from _shell_writes import msys_drive, quoted_paths, shell_write_targets
 except Exception:  # pragma: no cover — package-style import (dispatcher, tests)
     try:
-        from cli._shell_writes import shell_write_targets
+        from cli._shell_writes import msys_drive, quoted_paths, shell_write_targets
     except Exception:
         shell_write_targets = None
+
+        def msys_drive(path: str) -> str:
+            return path
+
+        def quoted_paths(cmd: str) -> list:
+            return []
 
 _WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 _READ_TOOLS = {"Read", "SearchText"}
@@ -112,7 +118,20 @@ _DOUBLE_COLON_RE = re.compile(r"::(?!\$)")
 # `<rev>:<path>` — how git names a blob: `git show HEAD:setup.py`,
 # `git cat-file -p origin/main:src/a.py`.
 _GIT_REVSPEC_RE = re.compile(r"^(?P<rev>[^:\s]+):(?P<path>[^:\s]+)$")
-_GIT_CMD_RE = re.compile(r"^\s*(?:[\w.\-]*[/\\])?git(?:\.exe)?\b", re.IGNORECASE)
+# Loop and conditional bodies (`do git show …`) and env prefixes
+# (`GIT_PAGER= git show …`) are still git commands.
+_GIT_CMD_RE = re.compile(
+    r"^\s*(?:(?:do|then|else|time|exec|command)\s+|[!({]\s*|[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:[\w.\-]*[/\\])?git(?:\.exe)?\b",
+    re.IGNORECASE,
+)
+
+# Refusals that judge how a path is SPELLED rather than which file it names.
+# A shell token that trips one is usually not a path at all, so these are
+# re-judged as the file they could reach (_spelling_verdict).
+_SPELLING_RULES = frozenset({"<ads>", "<unc>", "<empty-component>", "<8.3-alias>"})
+# `\\host\share` or `//host/share`: one separator between host and share.
+_UNC_SHARE_RE = re.compile(r"^(?:\\\\|//)[^\\/\s]+[\\/][^\\/\s]+")
 
 # Where one command ends and the next begins. Anchoring "is this git?" to the
 # start of the whole string was wrong in the most ordinary way possible:
@@ -188,6 +207,56 @@ def _looks_like_a_path(tok: str) -> bool:
     So this errs toward skipping.
     """
     return not (_SYNTAX_CHARS & set(tok))
+
+
+def _exists(path: str) -> bool:
+    try:
+        return Path(path).exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _stream_base(path: str) -> str:
+    """`C:/x/f.txt:name:$DATA` -> `C:/x/f.txt`: the file a stream belongs to."""
+    head = path[:2] if re.match(r"^[A-Za-z]:", path) else ""
+    return head + path[len(head):].split(":", 1)[0]
+
+
+def _dots_collapsed(path: str) -> str:
+    """The path Windows opens for a spelling with dot-only components.
+
+    Win32 strips trailing dots and spaces, so `a/.../b` and `a/x/../b` both
+    land somewhere real; model that before asking which file it is.
+    """
+    parts = re.split(r"[\\/]", path)
+    kept = [p if p in ("", ".", "..") or p.rstrip(". ") else "." for p in parts]
+    return os.path.normpath("/".join(kept))
+
+
+def _spelling_verdict(denial, tok: str, probe: str, base: str):
+    """The deny a path-spelling refusal stands for in a shell command, or None.
+
+    The spelling rules keep a protected file from being reached under an odd
+    name. Tokens that trip them in shell text are mostly not paths
+    (`origin/main:x`, `// comment`, `taskkill //F`, `...`), so the token is
+    judged as the file it could name, with the usual existence gate, and
+    refused only when that file is denied. A real UNC share stays denied: a
+    network path cannot be judged locally.
+    """
+    if denial.rule == "<unc>":
+        unc = any(_UNC_SHARE_RE.match(t) for t in (tok, tok.replace("\\\\", "\\")))
+        return denial if unc else None
+    if denial.rule == "<ads>":
+        target = _stream_base(probe)
+    elif denial.rule == "<empty-component>":
+        target = _dots_collapsed(probe)
+    else:
+        return None  # <8.3-alias>: a short name that does not exist names nothing
+    real = ag.check(target, "read", base)
+    if (real and real.kind == "deny" and not real.rule.startswith("<")
+            and _exists(target)):
+        return real
+    return None
 
 
 def _deny(reason: str) -> dict:
@@ -290,7 +359,8 @@ def _cd_target(segment: str, cwd: str) -> str | None:
     if not target or target.startswith("-"):
         return None
     try:
-        return os.path.abspath(os.path.join(cwd, os.path.expanduser(target)))
+        return os.path.abspath(
+            os.path.join(cwd, msys_drive(os.path.expanduser(target))))
     except (OSError, ValueError):
         return None
 
@@ -300,12 +370,13 @@ def _scan_shell(cmd: str, base: str):
 
     Confident = the token resolves to an EXISTING path that a ``deny`` rule
     covers (existence-gating keeps regex/pattern arguments like '\\.env'
-    from false-denying), or the evaluator flags the spelling itself.
+    from false-denying). A spelling refusal (``<ads>``, ``<unc>``, …) counts
+    only when the file the spelling could reach is itself denied
+    (``_spelling_verdict``). Quoted substrings are judged as well, so a
+    quoted path with spaces is not lost to whitespace splitting.
 
     Tokens that are shell syntax rather than path arguments are skipped
-    outright, as are URLs and IPv6 literals: all of them trip the ADS spelling
-    check, which is exempt from existence-gating, so a token naming nothing on
-    disk would otherwise hard-deny (#50).
+    outright, as are URLs and IPv6 literals.
 
     Scanning is per **command segment**, not per whole string. A segment is what
     sits between `&&`, `||`, `;`, `|` or a newline, and each one answers "am I a
@@ -315,6 +386,7 @@ def _scan_shell(cmd: str, base: str):
     """
     budget = _MAX_TOKENS
     cwd = base
+    visited = [base]
     for segment in _SEGMENT_SPLIT.split(cmd or ""):
         if budget <= 0:
             break
@@ -347,8 +419,7 @@ def _scan_shell(cmd: str, base: str):
             from_revspec = revspec_path is not None
             if from_revspec:
                 tok = revspec_path
-            if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo → C:/foo
-                tok = f"{tok[1]}:{tok[2:]}"
+            tok = msys_drive(tok)
             # Resolve against the cwd the command will actually run in, not the
             # session root. `cd /elsewhere && cat .env` used to compute the
             # denial correctly and then throw it away, because the existence
@@ -363,10 +434,12 @@ def _scan_shell(cmd: str, base: str):
                     probe = tok
             denial = ag.check(probe, "read", base)
             if denial and denial.kind == "deny":
-                try:
-                    exists = Path(probe).exists()
-                except OSError:
-                    exists = False
+                if denial.rule in _SPELLING_RULES:
+                    denial = _spelling_verdict(denial, tok, probe, base)
+                    if denial is not None:
+                        return denial, tok
+                    continue
+                exists = _exists(probe)
                 # A revspec names a path in HISTORY, so the working tree is the
                 # wrong place to ask whether it is real. `git show HEAD~5:.env`
                 # reads a denied file whether or not that file exists today, and
@@ -378,6 +451,34 @@ def _scan_shell(cmd: str, base: str):
         moved = _cd_target(segment, cwd)
         if moved is not None:
             cwd = moved
+            visited.append(cwd)
+    return _scan_quoted(cmd, visited, base)
+
+
+def _scan_quoted(cmd: str, dirs: list, base: str):
+    """(denial, token) for a quoted path naming an existing denied file.
+
+    Quotes can span the segment separators, so this runs over the whole
+    command and resolves a relative path against every directory the scan
+    visited. A quoted `//host/path` is far more often a protocol-relative URL
+    in code than a share, so `<unc>` is not judged here; the token scan still
+    judges it.
+    """
+    for raw in quoted_paths(cmd):
+        if _is_network_token(raw):
+            continue
+        tok = msys_drive(os.path.expanduser(raw))
+        for here in ([base] if os.path.isabs(tok) else dirs):
+            probe = tok if os.path.isabs(tok) else os.path.join(here, tok)
+            denial = ag.check(probe, "read", base)
+            if not denial or denial.kind != "deny" or denial.rule == "<unc>":
+                continue
+            if denial.rule in _SPELLING_RULES:
+                denial = _spelling_verdict(denial, tok, probe, base)
+            elif not (_exists(probe) or denial.rule.startswith("<")):
+                denial = None
+            if denial is not None:
+                return denial, tok
     return None, ""
 
 

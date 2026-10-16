@@ -19,6 +19,7 @@ such as jq; use Python's stdlib JSON support when portability matters.
 from __future__ import annotations
 
 import asyncio
+import glob
 import os
 import re
 import shutil
@@ -27,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from cli._shell_writes import shell_write_targets
+from cli._shell_writes import msys_drive, quoted_paths, shell_write_targets
 from cli.tools import _grants
 from cli.tools._helpers import finalize_with_tokens
 from cli.tools.shell_nudge import bypass_hint
@@ -737,6 +738,15 @@ _MSYS_DRIVE = re.compile(r"^/([a-zA-Z])(/|$)")   # /c/foo → c:/foo (any drive)
 _URL_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _DRIVE_PREFIX = re.compile(r"^[a-zA-Z]:[/\\]")
 _MAX_SCAN_TOKENS = 64
+_CD_SEGMENT = re.compile(
+    r"""(?:^|&&|\|\||[;\n])\s*cd\s+(?:/d\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)""",
+    re.IGNORECASE)
+_MAX_SCAN_DIRS = 16
+_GLOB_CHARS = frozenset("*?[")
+_MAX_GLOB_HITS = 50
+# Refusals that stand even for a token naming no existing file: the evaluator
+# could not judge the command at all.
+_FAIL_CLOSED_RULES = ("<corrupt-config>", "<evaluator-error>")
 
 
 def _scan_candidates(command: str, work_cwd: str) -> list[str]:
@@ -779,28 +789,79 @@ def _scan_candidates(command: str, work_cwd: str) -> list[str]:
     return out
 
 
-def _advisory_guard_scan(command: str, work_cwd: str, project_path: str):
-    """(denial, token) when a path-shaped token hits a deny rule, else (None, '').
+def _scan_dirs(command: str, work_cwd: str) -> list[str]:
+    """``work_cwd`` plus every directory a ``cd`` in the command may move to.
 
-    ADVISORY: only deny-kind rule hits (and the corrupt-config deny-all)
-    refuse; canonicalization artifacts on tokens that may not be paths at
-    all (UNC-ish, 8.3, unresolvable) are skipped so non-path tokens cannot
-    veto commands. Evaluator errors fail closed (synthetic denial), matching
-    the hook layer's posture.
+    A union rather than a replay: the scan only needs to know where a
+    relative token could land, and over-including a directory can only add
+    refusals.
     """
-    for tok in _scan_candidates(command, work_cwd):
-        target = tok if os.path.isabs(tok) else os.path.join(work_cwd, tok)
+    dirs = [work_cwd]
+    for m in _CD_SEGMENT.finditer(command or ""):
+        target = msys_drive(os.path.expanduser(m.group(1).strip("\"'")))
+        for here in list(dirs):
+            if len(dirs) >= _MAX_SCAN_DIRS:
+                return dirs
+            try:
+                dirs.append(os.path.normpath(os.path.join(here, target)))
+            except (OSError, ValueError):
+                continue
+    return dirs
+
+
+def _existing_targets(tok: str, dirs: list[str], command: str = "") -> list[str]:
+    """Files ``tok`` names from any of ``dirs``, globs expanded as bash would.
+
+    Bash expands a pattern only outside quotes, and reads ``**`` as ``*``
+    without globstar, so a pattern is expanded only when it also appears
+    unquoted in ``command``, and matched that way.
+    """
+    expand = bool(_GLOB_CHARS & set(tok)) and bool(
+        re.search(r"(?:^|[^'\"])" + re.escape(tok), command))
+    tok = os.path.expanduser(tok)
+    found: list[str] = []
+    for here in ([""] if os.path.isabs(tok) else dirs):
+        path = os.path.join(here, tok) if here else tok
         try:
-            denial = access_guard.check(target, "read", project_path)
-        except Exception as exc:  # fail closed — mirror hook _FAIL_CLOSED
-            return access_guard.Denial(
-                "<evaluator-error>", "deny", "builtin",
-                f"evaluator error: {type(exc).__name__}"), tok
-        if denial is None or denial.kind != "deny":
+            if expand:
+                found.extend(glob.glob(path.replace("**", "*"))[:_MAX_GLOB_HITS])
+            elif os.path.lexists(path):
+                found.append(path)
+        except (OSError, ValueError):
             continue
-        if denial.rule.startswith("<") and denial.rule != "<corrupt-config>":
-            continue  # canonicalization artifact on a maybe-not-a-path token
-        return denial, tok
+    return found
+
+
+def _advisory_guard_scan(command: str, work_cwd: str, project_path: str):
+    """(denial, token) when a token names an existing denied file, else (None, '').
+
+    ADVISORY: a deny rule refuses only for a file that exists from the
+    command's cwd or a directory it ``cd``s to, with globs expanded. Text that
+    merely matches a glob (``\\.env`` in a regex, ``event.key`` in code) names
+    nothing to read. Canonicalization artifacts on tokens that may not be
+    paths at all (UNC-ish, 8.3, unresolvable) are skipped. A corrupt config
+    and evaluator errors refuse regardless, matching the hook layer.
+    """
+    dirs = _scan_dirs(command, work_cwd)
+    quoted = [msys_drive(q) for q in quoted_paths(command)
+              if not _URL_SCHEME.match(q)]
+    candidates = [(t, command) for t in _scan_candidates(command, work_cwd)]
+    for tok, context in candidates + [(q, "") for q in quoted]:
+        hits = _existing_targets(tok, dirs, context)
+        judged = hits or [tok if os.path.isabs(tok) else os.path.join(work_cwd, tok)]
+        for target in judged:
+            try:
+                denial = access_guard.check(target, "read", project_path)
+            except Exception as exc:  # fail closed — mirror hook _FAIL_CLOSED
+                return access_guard.Denial(
+                    "<evaluator-error>", "deny", "builtin",
+                    f"evaluator error: {type(exc).__name__}"), tok
+            if denial is None or denial.kind != "deny":
+                continue
+            if denial.rule in _FAIL_CLOSED_RULES:
+                return denial, tok
+            if hits and not denial.rule.startswith("<"):
+                return denial, tok
     return None, ""
 
 

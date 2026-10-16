@@ -33,7 +33,73 @@ _PY_WRITE_TEXT_RE = re.compile(r"""Path\(\s*(?P<q>['"])(?P<t>[^'"]+)(?P=q)\s*\)\
 _FILE_CMDS = {"cp", "mv", "touch", "rm", "install"}
 _STREAMS = {"/dev/null", "/dev/stdout", "/dev/stderr", "nul", "&1", "&2", "-"}
 _SYNTAX = set("$`(){}|<>*?")
+_MSYS_DRIVE_RE = re.compile(r"^/([a-zA-Z])(?=/|$)")
+_QUOTED_RES = (re.compile(r'"([^"\n]{1,400})"'), re.compile(r"'([^'\n]{1,400})'"))
 MAX_TARGETS = 20
+MAX_QUOTED = 64
+
+
+def msys_drive(path: str) -> str:
+    """`/c/x` -> `c:/x` on Windows, where Git Bash spells drives that way.
+
+    Without it `cd /u/repo` resolves to `<cwd drive>:/u/repo`, a directory
+    that does not exist, and every relative path after it is judged there.
+    """
+    if os.name != "nt" or not _MSYS_DRIVE_RE.match(path):
+        return path
+    return f"{path[1]}:/{path[3:]}"
+
+
+def _shell_quoted(cmd: str) -> list[str]:
+    """Quoted strings as the shell reads them: `'` is literal inside `"`."""
+    out: list[str] = []
+    buf: list[str] = []
+    quote, esc = None, False
+    for ch in cmd:
+        if quote is None:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch in "'\"":
+                quote, buf = ch, []
+        elif quote == '"' and esc:
+            buf.append(ch)
+            esc = False
+        elif quote == '"' and ch == "\\":
+            buf.append(ch)
+            esc = True
+        elif ch == quote:
+            out.append("".join(buf))
+            quote = None
+        else:
+            buf.append(ch)
+    return out
+
+
+def quoted_paths(cmd: str) -> list[str]:
+    """Path-shaped quoted substrings of a command, for the access scans.
+
+    A quoted path with spaces (`"U:/1. Projects/x/.env"`) splits into
+    fragments under a whitespace tokenizer, and quoted code
+    (`node -e "fs.readFileSync('x/.env')"`, a heredoc body) hides its
+    path inside a larger token. So this returns the shell's own quoted
+    strings plus the string literals inside them and anywhere in the text.
+    Over-collecting is expected: callers judge each candidate against files
+    that exist.
+    """
+    out: list[str] = []
+    cmd = cmd or ""
+    tops = _shell_quoted(cmd)
+    for s in tops + [m.group(1) for t in tops + [cmd]
+                     for rx in _QUOTED_RES for m in rx.finditer(t)]:
+        s = s.strip()
+        if (s and "\n" not in s and len(s) <= 400 and s not in out
+                and ("/" in s or "\\" in s or s.startswith("."))):
+            out.append(s)
+            if len(out) >= MAX_QUOTED:
+                break
+    return out
 
 
 def _clean(tok: str) -> str:
@@ -79,7 +145,7 @@ def _cd_target(segment: str, cwd: str) -> str | None:
     m = _CD_RE.match(segment)
     if not m:
         return None
-    target = m.group("dir").strip("\"'")
+    target = msys_drive(os.path.expanduser(m.group("dir").strip("\"'")))
     try:
         return target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
     except (OSError, ValueError):
@@ -99,8 +165,7 @@ def shell_write_targets(cmd: str, cwd: str) -> list[str]:
     try:
         for segment in _SEGMENT_SPLIT.split(cmd or ""):
             for tok in _segment_targets(segment):
-                if re.match(r"^/[a-z]/", tok):  # MSYS /c/foo -> C:/foo
-                    tok = f"{tok[1]}:{tok[2:]}"
+                tok = msys_drive(os.path.expanduser(tok))
                 try:
                     p = Path(tok) if os.path.isabs(tok) else Path(here) / tok
                     key = os.path.normcase(os.path.normpath(str(p)))

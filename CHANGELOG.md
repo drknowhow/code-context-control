@@ -4,6 +4,39 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.157.2] - 2026-10-16
+
+### Fixed — the shell scans stop refusing commands that name no protected file
+
+Replaying 80 days of logged shell refusals through the current scanners,
+1,074 of 1,200 commands were still refused, and almost all of them named no
+protected file. The Bash hook treated the path-spelling checks (`<ads>`,
+`<unc>`, `<empty-component>`, `<8.3-alias>`) as final, so `origin/main:$f`,
+`node:assert/strict`, `taskkill //F`, a `//` comment in a heredoc and `...`
+in an echo were hard denies. c3_shell refused any token matching a deny glob
+whether or not a file existed, so `\.env` in a grep regex and `e.key` in JS
+were refused. After this change 134 are refused, and those are real reads of
+`.env` files and key files plus one docker `//tmp` path.
+
+- `cli/hook_access_guard.py`: a spelling refusal is re-judged as the file the
+  spelling could reach (the stream's file, the dot-collapsed path) and stands
+  only when that file exists and a real rule denies it. A token shaped like a
+  real share (`\\host\share`, `//host/share`) is still denied.
+- `cli/tools/shell.py`: the read scan refuses only a token naming an existing
+  denied file, judged from the cwd and every directory the command `cd`s to,
+  with unquoted globs expanded the way bash expands them.
+- Both scans also judge quoted strings whole, read the way the shell reads
+  quotes, plus string literals inside them. Before, a quoted path with
+  spaces (`"U:/1. Projects/x/.env"`) split into fragments: the hook let it
+  through, and c3_shell caught it only because a fragment matched the glob.
+- `cd /u/repo` now resolves to `u:/repo` in both scans and the write-target
+  extractor; it used to resolve to `<cwd drive>:/u/repo`, a directory that
+  does not exist, so reads after it were judged in the wrong place.
+- `git show <rev>:<path>` inside a loop body (`do git show …`) gets the
+  revspec rewrite.
+- Known limit: `|`, `;` and `&` inside quotes still split tokens, so a
+  quoted regex fragment that names a protected directory is still refused.
+
 ## [2.157.1] - 2026-10-14
 
 ### Fixed — the phone's session search and overview no longer leak hidden transcript text
