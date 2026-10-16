@@ -496,7 +496,10 @@ class TestShellScanSpellingVerdicts(HookGuardBase):
         ))
 
     def test_a_real_share_is_still_denied(self):
-        for cmd in (r"type \\server\share\f.txt", "cat //server/share/f.txt"):
+        cmds = ["cat //server/share/f.txt"]
+        if WIN:  # backslashes name a share only on Windows
+            cmds.append(r"type \\server\share\f.txt")
+        for cmd in cmds:
             with self.subTest(cmd=cmd):
                 denial, _ = hag._scan_shell(cmd, str(self.proj))
                 self.assertIsNotNone(denial)
