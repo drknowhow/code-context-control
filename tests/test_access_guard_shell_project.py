@@ -134,7 +134,9 @@ class TestShellCwdDeny(GuardBase):
 class TestShellTokenScan(GuardBase):
     def setUp(self):
         super().setUp()
-        self._write_access({"deny": ["secrets/**"]})
+        self._write_access({"deny": ["secrets/**", "*.key"]})
+        (self.proj / "secrets").mkdir()
+        (self.proj / "secrets" / "key.txt").write_text("k", encoding="utf-8")
         self.svc, self.activity = _fake_svc(self.proj)
 
     def _shell(self, cmd):
@@ -172,6 +174,35 @@ class TestShellTokenScan(GuardBase):
         self.assertEqual(denied[0]["surface"], "token_scan")
         self.assertTrue(denied[0]["cwd"])
 
+    def test_text_matching_a_deny_glob_but_naming_no_file_runs(self):
+        for cmd in (
+            "git ls-files | grep -iE 'token|\\.key$'",
+            "node -e \"document.onkeydown = (e) => e.key\"",
+            "grep -n this.key js/app.js",
+            "c3 access add 'secrets/**'",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertIn("[c3_shell:OK]", self._shell(cmd))
+
+    def test_an_unquoted_glob_reaching_a_denied_file_is_refused(self):
+        self.assertIn("[c3-access:denied]", self._shell("cat secrets/*.txt"))
+
+    def test_a_quoted_glob_is_not_expanded(self):
+        self.assertIn("[c3_shell:OK]", self._shell("echo 'secrets/*.txt'"))
+
+    def test_a_quoted_path_with_spaces_is_judged_whole(self):
+        spaced = self.proj / "secrets" / "a dir (1)"
+        spaced.mkdir()
+        (spaced / "f.txt").write_text("x", encoding="utf-8")
+        p = str(spaced / "f.txt").replace("\\", "/")
+        for cmd in (f'cat "{p}"', f"python -c \"Path(r'{p}').read_text()\""):
+            with self.subTest(cmd=cmd):
+                self.assertIn("[c3-access:denied]", self._shell(cmd))
+
+    def test_a_relative_read_after_cd_is_refused(self):
+        self.assertIn("[c3-access:denied]",
+                      self._shell("cd secrets && cat key.txt"))
+
 
 # ── c3_shell: post-credential-expansion scan ───────────────────────────────
 
@@ -182,6 +213,8 @@ class TestShellPostExpansionScan(GuardBase):
     def setUp(self):
         super().setUp()
         self._write_access({"deny": ["secrets/**"]})
+        (self.proj / "secrets").mkdir()
+        (self.proj / "secrets" / "key.txt").write_text("k", encoding="utf-8")
         self.svc, _ = _fake_svc(self.proj)
 
     def _shell_with_creds(self, cmd, expanded, used):

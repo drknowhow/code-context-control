@@ -197,12 +197,20 @@ class TestShellScanNetworkTokens(HookGuardBase):
                 self.assertIsNone(denial, f"{cmd!r} denied on token {tok!r}")
 
     @unittest.skipUnless(WIN, "NTFS ADS semantics")
-    def test_real_ads_spelling_still_denies(self):
-        for tok in ("./notes.txt:$DATA", "./a/b.txt:hidden"):
+    def test_a_stream_of_a_protected_file_is_denied_by_its_rule(self):
+        for tok in ("./secrets/key.txt:$DATA", "./secrets/key.txt:hidden"):
             with self.subTest(tok=tok):
                 denial, _ = hag._scan_shell(f"type {tok}", str(self.proj))
                 self.assertIsNotNone(denial)
-                self.assertEqual(denial.rule, "<ads>")
+                self.assertEqual(denial.rule, "secrets/**")
+
+    @unittest.skipUnless(WIN, "NTFS ADS semantics")
+    def test_a_stream_of_an_unprotected_or_missing_file_is_allowed(self):
+        (self.proj / "notes.txt").write_text("n", encoding="utf-8")
+        for tok in ("./notes.txt:$DATA", "./a/b.txt:hidden"):
+            with self.subTest(tok=tok):
+                denial, _ = hag._scan_shell(f"type {tok}", str(self.proj))
+                self.assertIsNone(denial)
 
     def test_denied_path_still_caught_alongside_a_url(self):
         denial, tok = hag._scan_shell(
@@ -281,7 +289,7 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         denial, _ = hag._scan_shell(
             "type ./secrets/key.txt:hidden", str(self.proj))
         self.assertIsNotNone(denial)
-        self.assertEqual(denial.rule, "<ads>")
+        self.assertEqual(denial.rule, "secrets/**")
 
     def test_the_scheme_search_does_not_swallow_a_stream_spelling(self):
         """The cost of unanchoring, priced.
@@ -318,12 +326,13 @@ class TestShellScanSyntaxTokens(HookGuardBase):
         This is the control that stops the node-id fix from being a hole. An
         earlier draft skipped every `::` token and would have opened it.
         """
-        # Deliberately a path NO deny glob covers, so `<ads>` is the only rule
-        # that can catch it. Pointing this at `secrets/**` would have "passed"
-        # on the glob and proven nothing about the spelling check.
-        denial, _ = hag._scan_shell("type ./notes.txt::$DATA", str(self.proj))
+        # The evaluator answers `<ads>` for the whole token before any glob
+        # runs, so `secrets/**` can only come back through the spelling
+        # verdict, which a token skipped as a node id never reaches.
+        denial, _ = hag._scan_shell(
+            "type ./secrets/key.txt::$DATA", str(self.proj))
         self.assertIsNotNone(denial)
-        self.assertEqual(denial.rule, "<ads>")
+        self.assertEqual(denial.rule, "secrets/**")
 
     def test_a_git_revspec_is_judged_on_its_path_half(self):
         """`git show <rev>:<path>` — the second idiom, and a tightening.
@@ -467,6 +476,78 @@ class TestShellScanFollowsCd(HookGuardBase):
             f'cd "{self.proj / "secrets"}" && type key.txt', str(self.proj))
         self.assertIsNotNone(denial)
         self.assertNotIn("key.txt", tok)
+
+
+class TestShellScanSpellingVerdicts(HookGuardBase):
+    """A path-spelling refusal counts only when the file it could reach is denied."""
+
+    def _allowed(self, cmds):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                denial, tok = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNone(denial, f"{cmd!r} denied on {tok!r}")
+
+    def test_double_slash_switches_and_comments_are_not_shares(self):
+        self._allowed((
+            "taskkill //F //PID 1234",
+            "cmd //c dir",
+            "grep -n '// ----' static/app.js",
+            "printf 'a\\\\r\\\\nb'",
+        ))
+
+    def test_a_real_share_is_still_denied(self):
+        cmds = ["cat //server/share/f.txt"]
+        if WIN:  # backslashes name a share only on Windows
+            cmds.append(r"type \\server\share\f.txt")
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                denial, _ = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNotNone(denial)
+                self.assertEqual(denial.rule, "<unc>")
+
+    @unittest.skipUnless(WIN, "NTFS spelling rules are Windows-only")
+    def test_colons_dots_and_tildes_in_non_paths_are_allowed(self):
+        self._allowed((
+            "for f in a.py b.py; do git cat-file -e origin/main:$f; done",
+            "node --import node:assert/strict t.mjs",
+            'git commit -m "merge origin/main: keep ours"',
+            "echo waiting...; echo ....",
+            "git log --oneline origin/main~2",
+        ))
+
+    def test_a_revspec_inside_a_loop_body_is_judged_on_its_path(self):
+        denial, tok = hag._scan_shell(
+            "for r in HEAD; do git show $r:secrets/key.txt; git show HEAD:secrets/key.txt; done",
+            str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(tok, "secrets/key.txt")
+
+    @unittest.skipUnless(WIN, "Win32 strips dot-only path components")
+    def test_a_dot_only_component_does_not_hide_a_denied_file(self):
+        denial, _ = hag._scan_shell(
+            "type ./missing/../secrets/key.txt ./.../secrets/key.txt", str(self.proj))
+        self.assertIsNotNone(denial)
+
+    @unittest.skipUnless(WIN, "MSYS drive spellings are Windows-only")
+    def test_an_msys_cd_target_is_the_real_directory(self):
+        p = str(self.proj.parent).replace("\\", "/")
+        msys = "/" + p[0].lower() + p[2:]
+        denial, _ = hag._scan_shell(
+            f'cd "{msys}" && cat {self.proj.name}/secrets/key.txt', str(self.proj))
+        self.assertIsNotNone(denial)
+        self.assertEqual(denial.rule, "secrets/**")
+
+    def test_a_quoted_path_with_spaces_is_judged_whole(self):
+        spaced = self.proj / "secrets" / "a dir (1)"
+        spaced.mkdir()
+        (spaced / "f.txt").write_text("x", encoding="utf-8")
+        p = str(spaced / "f.txt").replace("\\", "/")
+        for cmd in (f'cat "{p}"', f"python -c \"Path(r'{p}').read_text()\"",
+                    f"grep -n \"a|b\" 'x'; cat '{p}'"):
+            with self.subTest(cmd=cmd):
+                denial, _ = hag._scan_shell(cmd, str(self.proj))
+                self.assertIsNotNone(denial)
+                self.assertEqual(denial.rule, "secrets/**")
 
     def test_a_git_segment_does_not_license_rewrites_in_other_segments(self):
         """Per-segment, not per-string: `cat a:b && git status` is two commands.
