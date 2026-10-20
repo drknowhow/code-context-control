@@ -1,6 +1,7 @@
 """Tests for cli/tools/bitbucket.py — handle_bitbucket dispatch."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -111,10 +112,83 @@ class _StubClient:
         self._record("decline_pr", project, repo, pr_id, version=version)
         return {"state": "DECLINED"}
 
-    def list_branches(self, project, repo, *, filter_text=""):
-        self._record("list_branches", project, repo, filter_text=filter_text)
-        return [{"id": "refs/heads/main", "displayId": "main", "isDefault": True,
-                 "latestCommit": "abc1234567"}]
+    def list_branches(self, project, repo, *, filter_text="", order=""):
+        self._record("list_branches", project, repo, filter_text=filter_text,
+                     order=order)
+        return [
+            {"id": "refs/heads/main", "displayId": "main", "isDefault": True,
+             "latestCommit": "abc1234567"},
+            {"id": "refs/heads/feature/PROJ-7", "displayId": "feature/PROJ-7",
+             "isDefault": False, "latestCommit": "def7654321",
+             "metadata": {
+                 tool._META_AHEAD_BEHIND: {"ahead": 2, "behind": 5},
+                 tool._META_LAST_COMMIT: {
+                     "id": "def7654321", "displayId": "def7654",
+                     "message": "PROJ-7 wire it", "author": {"name": "bob"},
+                     "authorTimestamp": 1700000000000},
+                 tool._META_JIRA:
+                     [{"key": "PROJ-7", "url": "https://jira/browse/PROJ-7"}],
+                 tool._META_OUTGOING_PR:
+                     {"pullRequest": {"id": 12, "state": "OPEN", "title": "Wire it"}},
+             }},
+        ]
+
+    def get_repo(self, project, repo):
+        self._record("get_repo", project, repo)
+        return {"slug": repo, "name": "Repo", "description": "The repo",
+                "project": {"key": project, "name": "Project"},
+                "scmId": "git", "state": "AVAILABLE", "public": False,
+                "links": {"self": [{"href": "https://bb/projects/PROJ/repos/repo/browse"}],
+                          "clone": [{"name": "http", "href": "https://bb/scm/proj/repo.git"},
+                                    {"name": "ssh", "href": "ssh://git@bb:7999/proj/repo.git"}]}}
+
+    def get_default_branch(self, project, repo):
+        self._record("get_default_branch", project, repo)
+        return {"id": "refs/heads/main", "displayId": "main"}
+
+    def readme(self, project, repo, *, at=""):
+        self._record("readme", project, repo, at=at)
+        return {"found": True, "path": "README.md", "at": at, "size": 9,
+                "binary": False, "truncated": False, "text": "# Repo\nhi"}
+
+    def get_file(self, project, repo, path, *, at=""):
+        self._record("get_file", project, repo, path, at=at)
+        return {"path": path, "at": at, "size": 3, "binary": False,
+                "truncated": False, "text": "abc"}
+
+    def pr_issues(self, project, repo, pr_id):
+        self._record("pr_issues", project, repo, pr_id)
+        return [{"key": "PROJ-7", "url": "https://jira/browse/PROJ-7"}]
+
+    def get_pr_activities(self, project, repo, pr_id, *, limit=50):
+        self._record("get_pr_activities", project, repo, pr_id, limit=limit)
+        # Bitbucket returns newest first.
+        return [
+            {"id": 3, "action": "COMMENTED", "createdDate": 3000,
+             "user": {"name": "bob", "displayName": "Bob"},
+             "commentAction": "ADDED",
+             "comment": {"id": 30, "text": "**Looks** good",
+                         "author": {"name": "bob"}, "createdDate": 3000,
+                         "comments": [{"id": 31, "text": "thanks",
+                                       "author": {"name": "alice"}}]},
+             "commentAnchor": {"path": "a.py", "line": 4, "lineType": "ADDED"}},
+            {"id": 1, "action": "OPENED", "createdDate": 1000,
+             "user": {"name": "alice", "displayName": "Alice"}},
+        ]
+
+    def list_commits(self, project, repo, *, branch="", path="", limit=50):
+        self._record("list_commits", project, repo, branch=branch, path=path,
+                     limit=limit)
+        return [{"id": "abc1234567", "displayId": "abc1234",
+                 "message": "PROJ-7 fix", "author": {"name": "alice",
+                 "emailAddress": "a@x"}, "authorTimestamp": 1700000000000,
+                 "parents": [{"id": "0001"}],
+                 "properties": {"jira-key": ["PROJ-7"]}}]
+
+    def get_build_status(self, commit):
+        self._record("get_build_status", commit)
+        return [{"state": "SUCCESSFUL", "key": "ci", "name": "CI",
+                 "url": "https://ci/1", "dateAdded": 1700000000000}]
 
 
 class _StubLedger:
@@ -145,7 +219,7 @@ def _captured_finalize():
     seen: list[tuple] = []
 
     def finalize(name, args, resp, summary, **kw):
-        seen.append((name, dict(args), resp, summary))
+        seen.append((name, dict(args), resp, summary, kw))
         return resp
 
     return finalize, seen
@@ -349,6 +423,39 @@ class TestBitbucketTool(unittest.TestCase):
         res = tool.handle_bitbucket("list_branches", self.svc, finalize)
         self.assertIn("project and repo are required", res)
 
+    def test_get_repo_text_shows_description_default_and_url(self):
+        finalize, _ = _captured_finalize()
+        res = tool.handle_bitbucket("get_repo", self.svc, finalize)
+        self.assertIn("description: The repo", res)
+        self.assertIn("default: main", res)
+        self.assertIn("https://bb/projects/PROJ/repos/repo/browse", res)
+
+    def test_readme_and_get_file_text(self):
+        finalize, _ = _captured_finalize()
+        res = tool.handle_bitbucket("readme", self.svc, finalize, at="dev")
+        self.assertIn("[bitbucket:readme] PROJ/repo README.md@dev", res)
+        self.assertIn("# Repo", res)
+        res = tool.handle_bitbucket("get_file", self.svc, finalize)
+        self.assertIn("path is required", res)
+        res = tool.handle_bitbucket("get_file", self.svc, finalize, path="src/a.py")
+        self.assertIn("src/a.py (3 bytes)", res)
+
+    def test_pr_issues_text_needs_pr_id(self):
+        finalize, _ = _captured_finalize()
+        res = tool.handle_bitbucket("pr_issues", self.svc, finalize)
+        self.assertIn("pr_id required", res)
+        res = tool.handle_bitbucket("pr_issues", self.svc, finalize, pr_id=12)
+        self.assertIn("1 issue(s)", res)
+        self.assertIn("PROJ-7", res)
+
+    def test_list_branches_passes_filter_and_order(self):
+        finalize, _ = _captured_finalize()
+        tool.handle_bitbucket("list_branches", self.svc, finalize,
+                              filter_text="feat", order="modification")
+        kw = self.client.calls[0][2]
+        self.assertEqual(kw["filter_text"], "feat")
+        self.assertEqual(kw["order"], "modification")
+
     def test_cap_clamps_single_overlong_line(self):
         # Issue 7: one line with no newlines must still be clamped by chars.
         long_line = "x" * 200_000
@@ -358,6 +465,137 @@ class TestBitbucketTool(unittest.TestCase):
             len(out), tool._RESPONSE_TOKEN_CAP * 4 + len("\n[truncated]")
         )
         self.assertLess(len(out), len(long_line))
+
+
+class TestBitbucketJson(unittest.TestCase):
+    """format="json" replies."""
+
+    setUp = TestBitbucketTool.setUp
+    tearDown = TestBitbucketTool.tearDown
+
+    def _json(self, action, **kw):
+        finalize, seen = _captured_finalize()
+        res = tool.handle_bitbucket(action, self.svc, finalize, format="json", **kw)
+        self.seen = seen
+        return json.loads(res)
+
+    def test_status_json_lists_formats(self):
+        out = self._json("status")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["data"]["formats"], ["text", "json"])
+        self.assertTrue(out["data"]["connected"])
+        self.assertEqual(out["data"]["version"], "8.5.0")
+        self.assertEqual(out["data"]["default_project"], "PROJ")
+
+    def test_get_repo_json(self):
+        d = self._json("get_repo")["data"]
+        self.assertEqual(d["default_branch"], "main")
+        self.assertEqual(d["description"], "The repo")
+        self.assertEqual(d["url"], "https://bb/projects/PROJ/repos/repo/browse")
+        self.assertEqual([c["name"] for c in d["clone"]], ["http", "ssh"])
+
+    def test_list_prs_and_get_pr_json(self):
+        out = self._json("list_prs")
+        self.assertEqual(out["action"], "list_prs")
+        pr = out["data"]["pull_requests"][0]
+        self.assertEqual((pr["id"], pr["source_branch"], pr["destination_branch"]),
+                         (1, "f", "main"))
+        pr = self._json("get_pr", pr_id=5)["data"]
+        self.assertEqual(pr["id"], 5)
+        self.assertEqual(pr["version"], 7)
+        self.assertEqual(pr["author"]["display_name"], "Alice")
+        self.assertEqual(pr["reviewers"], [])
+
+    def test_branches_json_reads_metadata(self):
+        rows = self._json("list_branches")["data"]["branches"]
+        main, feat = rows
+        self.assertTrue(main["is_default"])
+        self.assertIsNone(main["ahead"])
+        self.assertEqual((feat["ahead"], feat["behind"]), (2, 5))
+        self.assertEqual(feat["jira_keys"], ["PROJ-7"])
+        self.assertEqual(feat["pull_request"]["id"], 12)
+        self.assertEqual(feat["last_commit"]["display_id"], "def7654")
+        self.assertEqual(len(self._json("list_branches", limit=1)["data"]["branches"]), 1)
+
+    def test_activities_json_oldest_first_with_replies(self):
+        acts = self._json("get_pr_activities", pr_id=4)["data"]["activities"]
+        self.assertEqual([a["id"] for a in acts], [1, 3])
+        c = acts[1]
+        self.assertEqual(c["comment"]["text"], "**Looks** good")
+        self.assertEqual(c["comment"]["replies"][0]["text"], "thanks")
+        self.assertEqual(c["anchor"], {"path": "a.py", "line": 4, "line_type": "ADDED"})
+
+    def test_commits_json_carries_jira_keys_without_email(self):
+        c = self._json("list_commits")["data"]["commits"][0]
+        self.assertEqual(c["jira_keys"], ["PROJ-7"])
+        self.assertEqual(c["parents"], ["0001"])
+        self.assertNotIn("a@x", json.dumps(c))
+
+    def test_readme_get_file_pr_issues_json(self):
+        d = self._json("readme")["data"]
+        self.assertTrue(d["found"])
+        self.assertEqual(d["path"], "README.md")
+        d = self._json("get_file", path="src/a.py", at="dev")["data"]
+        self.assertEqual((d["path"], d["text"]), ("src/a.py", "abc"))
+        self.assertEqual(self.client.calls[-1][2]["at"], "dev")
+        d = self._json("pr_issues", pr_id=12)["data"]
+        self.assertEqual(d["issues"], [{"key": "PROJ-7", "url": "https://jira/browse/PROJ-7"}])
+
+    def test_build_status_json(self):
+        d = self._json("build_status", commit="abc")["data"]
+        self.assertEqual(d["builds"][0]["state"], "SUCCESSFUL")
+        out = self._json("build_status")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["code"], "missing-arg")
+
+    def test_missing_path_is_json_error(self):
+        out = self._json("get_file")
+        self.assertFalse(out["ok"])
+        self.assertIn("path is required", out["error"])
+        self.assertEqual(self.seen[-1][4], {"ok": False})
+
+    def test_missing_pr_id_and_unknown_action_are_json_errors(self):
+        out = self._json("get_pr")
+        self.assertEqual((out["ok"], out["code"]), (False, "missing-arg"))
+        out = self._json("explode")
+        self.assertEqual(out["code"], "unknown-action")
+        self.assertIn("readme", out["error"])
+
+    def test_api_error_json_carries_status(self):
+        from services.bitbucket_client import BitbucketError
+        with mock.patch.object(self.client, "get_pull_request",
+                               side_effect=BitbucketError("gone", status=404)):
+            out = self._json("get_pr", pr_id=5)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], 404)
+        self.assertEqual(out["code"], "http-404")
+
+    def test_write_in_json_mode_returns_text_and_logs(self):
+        out = self._json("merge_pr", pr_id=42)
+        self.assertTrue(out["ok"])
+        self.assertIn("[bitbucket:merged]", out["data"]["text"])
+        self.assertEqual(len(self.svc.edit_ledger.entries), 1)
+
+    def test_write_validation_error_in_json_mode_is_not_ok(self):
+        out = self._json("update_pr_comment", pr_id=4)
+        self.assertFalse(out["ok"])
+        self.assertIn("comment_id and body are required", out["error"])
+        self.assertEqual(self.svc.edit_ledger.entries, [])
+
+    def test_large_diff_trims_to_valid_json(self):
+        with mock.patch.object(self.client, "get_pr_diff", create=True,
+                               return_value="+" * 500_000):
+            finalize, _ = _captured_finalize()
+            res = tool.handle_bitbucket("get_pr_diff", self.svc, finalize,
+                                        format="json", pr_id=4)
+        out = json.loads(res)
+        self.assertLessEqual(len(res), 400_000)
+        self.assertEqual(out["truncated"], ["diff"])
+
+    def test_text_default_unchanged(self):
+        finalize, _ = _captured_finalize()
+        res = tool.handle_bitbucket("get_pr", self.svc, finalize, pr_id=5)
+        self.assertTrue(res.startswith("[bitbucket:pr]"))
 
 
 if __name__ == "__main__":

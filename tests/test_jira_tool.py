@@ -161,6 +161,17 @@ class _StubClient:
         return [{"id": "501", "filename": filename, "size": len(content),
                  "author": "Alice", "created": ""}]
 
+    def dev_status(self, key):
+        self._record("dev_status", key)
+        return {"available": True, "issue": key, "issue_id": "10001",
+                "pull_requests": [{"id": "12", "title": "PROJ-1 fix",
+                                   "status": "OPEN", "author": "alice",
+                                   "repository": "api", "url": "https://bb/12"}],
+                "branches": [{"name": "feature/PROJ-1", "repository": "api"}],
+                "commits": [{"id": "abc123def4567890", "message": "PROJ-1 fix\nbody",
+                             "repository": "api"}],
+                "errors": []}
+
 
 class _StubLedger:
     def __init__(self):
@@ -592,6 +603,83 @@ class TestJiraTool(unittest.TestCase):
         resp = tool._cap("x" * 100_000)
         self.assertLess(len(resp), 100_000)
         self.assertIn("[truncated]", resp)
+
+    # ── format=json ──────────────────────────────────────────
+
+    def _json(self, action, **kw):
+        import json
+        return json.loads(self._run(action, format="json", **kw))
+
+    def test_json_get_issue_returns_the_dto(self):
+        self.client.issue_extra = {"description_html": "<p>x</p>"}
+        out = self._json("get_issue", issue="PROJ-1")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["action"], "get_issue")
+        self.assertEqual(out["data"]["issue_type"], "Bug")
+        self.assertEqual(out["data"]["description_html"], "<p>x</p>")
+        self.assertNotIn("truncated", out)
+
+    def test_json_search_passes_validate(self):
+        out = self._json("search", jql="key in (PROJ-1)", validate="warn")
+        self.assertEqual(out["data"]["issues"][0]["key"], "PROJ-1")
+        name, _a, kw = self.client.calls[-1]
+        self.assertEqual(name, "search")
+        self.assertEqual(kw["validate"], "warn")
+
+    def test_json_list_wraps_rows(self):
+        out = self._json("list_transitions", issue="PROJ-1")
+        self.assertEqual(out["data"]["issue"], "PROJ-1")
+        self.assertEqual(len(out["data"]["transitions"]), 2)
+
+    def test_json_errors_are_json(self):
+        out = self._json("get_issue")
+        self.assertFalse(out["ok"])
+        self.assertIn("issue key is required", out["error"])
+        out = self._json("search")
+        self.assertFalse(out["ok"])
+        self.assertIn("jql is required", out["error"])
+        self.client.fail_with = JiraError("Issue does not exist", status=404)
+        out = self._json("get_issue", issue="PROJ-404")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], 404)
+
+    def test_json_write_carries_text_and_logs(self):
+        out = self._json("comment", issue="PROJ-1", body="hello")
+        self.assertTrue(out["ok"])
+        self.assertIn("PROJ-1", out["data"]["text"])
+        self.assertEqual(len(self.svc.edit_ledger.entries), 1)
+
+    def test_json_status_lists_formats(self):
+        out = self._json("status")
+        self.assertTrue(out["data"]["connected"])
+        self.assertIn("json", out["data"]["formats"])
+        self.assertEqual(out["data"]["version"], "9.4.0")
+
+    def test_json_truncation_stays_valid(self):
+        self.client.issue_extra = {"comments": [
+            {"id": str(n), "author": "C", "created": "", "body": "y" * 2000}
+            for n in range(400)]}
+        out = self._json("get_issue", issue="PROJ-1")
+        self.assertEqual(out["truncated"], ["comments"])
+        comments = out["data"]["comments"]
+        self.assertLess(len(comments), 400)
+        self.assertEqual(comments[-1]["id"], "399")  # newest kept
+
+    def test_dev_status_text(self):
+        resp = self._run("dev_status", issue="PROJ-1")
+        self.assertIn("1 pull request(s), 1 branch(es), 1 commit(s)", resp)
+        self.assertIn("pr api#12 [OPEN] PROJ-1 fix", resp)
+        self.assertIn("commit api@abc123def456 PROJ-1 fix", resp)
+
+    def test_get_issue_text_shows_subtasks_and_parent(self):
+        self.client.issue_extra = {
+            "parent": "PROJ-0", "parent_type": "Epic",
+            "parent_summary": "Big thing",
+            "subtasks": [{"key": "PROJ-2", "status": "Done", "summary": "child"}],
+        }
+        resp = self._run("get_issue", issue="PROJ-1")
+        self.assertIn("parent: PROJ-0 (Epic) Big thing", resp)
+        self.assertIn("subtask: PROJ-2 [Done] child", resp)
 
 
 if __name__ == "__main__":

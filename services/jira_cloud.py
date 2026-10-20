@@ -13,6 +13,7 @@ from typing import Any
 from services.jira_client import (
     JiraTransport,
     encode_multipart_file,
+    fetch_dev_status,
     normalize_attachment,
     normalize_board,
     normalize_comment,
@@ -97,7 +98,10 @@ class CloudBackend:
         return self._t.request("GET", f"{_API}/myself")
 
     # Read
-    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "") -> dict:
+    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "",
+               validate: str = "") -> dict:
+        # /search/jql has no validateQuery parameter; ``validate`` is accepted
+        # for facade parity and ignored.
         params = {
             "jql": jql,
             "maxResults": limit,
@@ -110,11 +114,23 @@ class CloudBackend:
         return {"issues": issues, "next_cursor": page.get("nextPageToken", "") or ""}
 
     def get_issue(self, key: str, *, include_comments: bool = True) -> dict:
-        fields = _DEFAULT_FIELDS + ",description,parent,issuelinks,attachment"
+        fields = _DEFAULT_FIELDS + (
+            ",description,parent,issuelinks,attachment,subtasks,components,"
+            "fixVersions,duedate"
+        )
         if include_comments:
             fields += ",comment"
-        raw = self._t.request("GET", f"{_API}/issue/{key}", params={"fields": fields})
+        raw = self._t.request(
+            "GET", f"{_API}/issue/{key}",
+            params={"fields": fields, "expand": "renderedFields"},
+        )
         return normalize_issue(raw, text_from_adf)
+
+    def dev_status(self, key: str) -> dict:
+        issue_id = key if key.isdigit() else str(
+            self._t.request("GET", f"{_API}/issue/{key}", params={"fields": "summary"})
+            .get("id", ""))
+        return fetch_dev_status(self._t, key, issue_id, application_type="bitbucket")
 
     def list_projects(self, *, query: str = "", limit: int = 50) -> list[dict]:
         page = self._t.request(

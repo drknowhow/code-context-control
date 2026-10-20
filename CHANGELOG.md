@@ -4,6 +4,64 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.0] - 2026-10-20
+
+### Added — `format="json"` for c3_jira and c3_bitbucket
+
+Programs that read these tools, such as the Work Agents Work page, had to
+parse text replies capped at 2400 tokens, which cut long descriptions and
+comment threads. With `format="json"` the read actions return the normalized
+data instead: `{"ok": true, "action": ..., "data": {...}}`, under a
+400,000-character cap. A reply over the cap shrinks its largest fields until
+it fits, so the output is always valid JSON, and `"truncated"` names the
+fields that were cut. Comments and PR activities keep their newest entries.
+Errors come back as `{"ok": false, "action", "error", "status"?, "code"?}`.
+Writes and actions with no structured form return their text reply in
+`data.text`. Text stays the default, so agents see no change.
+
+- `cli/tools/_json_reply.py`: the shared envelope and trimming.
+- `cli/mcp_server.py`: the auto-snapshot notice is no longer appended to a
+  JSON reply, which would have made it invalid.
+- `c3_bitbucket` JSON covers whoami, list_projects, list_repos, get_repo,
+  readme, get_file, list_prs, get_pr, get_pr_diff, get_pr_activities
+  (oldest first, replies nested), get_pr_commits, pr_issues, list_pr_tasks,
+  list_branches, list_commits and build_status. Commit DTOs carry no author
+  email.
+
+### Added — Jira: rendered HTML, issue types, development panel
+
+- `get_issue` requests `expand=renderedFields`. The DTO gains
+  `description_html` and a `body_html` on each comment (the server's own
+  HTML, unsanitized: a caller that displays it must sanitize it), plus `id`,
+  `status_category`, `priority`, `issue_type_subtask`, `issue_type_icon`,
+  `parent_type`, `subtasks`, `components`, `fix_versions`, `due`, issue
+  links and attachments with their URLs.
+- `search` requests issue type and priority, so its rows carry them along
+  with the status category. `validate="warn"` sends `validateQuery=warn` on
+  Data Center, so `key in (...)` naming a missing issue returns the others
+  instead of failing. Cloud's `/search/jql` has no such parameter and
+  ignores it.
+- New read action `dev_status(issue)`: pull requests, branches and commits
+  from the issue's development panel (`/rest/dev-status/1.0/issue/detail`).
+  That API is internal and some instances block it; HTTP 401/403/404/405 on
+  the first call returns `{"available": false, "reason": ...}`.
+
+### Added — Bitbucket: README, files, linked Jira issues, richer repos and branches
+
+- `get_repo` shows the description, default branch, browse URL and clone
+  links.
+- New `readme(project, repo, at)`: picks the first `README*` in the repo
+  root (Markdown first, then `.rst`, `.txt`, no extension) and returns its
+  raw text. New
+  `get_file(project, repo, path, at)` uses the same code. Both refuse binary
+  files and cap text at 256 KB.
+- New `pr_issues(pr_id)`: the Jira issues Bitbucket links to a pull request,
+  through `/rest/jira/1.0/` (needs the Bitbucket–Jira integration).
+- `list_branches` sends `details=true`. When the server provides branch
+  metadata, rows gain ahead/behind counts, the last commit, Jira keys, the
+  outgoing pull request and build counts. It also takes `filter_text` and
+  `order` (`alphabetical` or `modification`).
+
 ## [2.157.2] - 2026-10-16
 
 ### Fixed — the shell scans stop refusing commands that name no protected file

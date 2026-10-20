@@ -12,6 +12,7 @@ from services.jira_client import (
     JiraError,
     JiraTransport,
     encode_multipart_file,
+    fetch_dev_status,
     normalize_attachment,
     normalize_board,
     normalize_comment,
@@ -27,6 +28,10 @@ _AGILE = "/rest/agile/1.0"
 _DEFAULT_FIELDS = (
     "summary,status,issuetype,priority,assignee,reporter,project,"
     "created,updated,labels"
+)
+_DETAIL_FIELDS = (
+    ",description,parent,issuelinks,attachment,subtasks,components,"
+    "fixVersions,duedate"
 )
 
 # createmeta paging. DC caps maxResults server-side; _MAX_PAGES is a runaway
@@ -137,40 +142,56 @@ class DataCenterBackend:
         return self._t.request("GET", f"{_API}/myself")
 
     # Read
-    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "") -> dict:
+    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "",
+               validate: str = "") -> dict:
         try:
             start_at = max(0, int(cursor)) if cursor else 0
         except ValueError:
             start_at = 0
-        page = self._t.request(
-            "GET", f"{_API}/search",
-            params={
-                "jql": jql,
-                "startAt": start_at,
-                "maxResults": limit,
-                "fields": fields or _DEFAULT_FIELDS,
-            },
-        )
+        params = {
+            "jql": jql,
+            "startAt": start_at,
+            "maxResults": limit,
+            "fields": fields or _DEFAULT_FIELDS,
+        }
+        # validateQuery=warn: a `key in (...)` naming a missing issue or
+        # project returns the rest plus warnings instead of a 400.
+        if validate in ("warn", "false"):
+            params["validateQuery"] = validate
+        page = self._t.request("GET", f"{_API}/search", params=params)
         issues = [normalize_issue(i, _text_of) for i in page.get("issues", [])]
         total = int(page.get("total", 0) or 0)
         next_offset = start_at + len(issues)
         next_cursor = str(next_offset) if issues and next_offset < total else ""
-        return {"issues": issues, "next_cursor": next_cursor}
+        out = {"issues": issues, "next_cursor": next_cursor, "total": total}
+        if page.get("warningMessages"):
+            out["warnings"] = list(page["warningMessages"])
+        return out
 
     def get_issue(self, key: str, *, include_comments: bool = True) -> dict:
-        fields = _DEFAULT_FIELDS + ",description,parent,issuelinks,attachment"
+        fields = _DEFAULT_FIELDS + _DETAIL_FIELDS
         epic_field = self._epic_link_field_id()
         if epic_field:
             fields += f",{epic_field}"
         if include_comments:
             fields += ",comment"
-        raw = self._t.request("GET", f"{_API}/issue/{key}", params={"fields": fields})
+        raw = self._t.request(
+            "GET", f"{_API}/issue/{key}",
+            params={"fields": fields, "expand": "renderedFields"},
+        )
         dto = normalize_issue(raw, _text_of)
         if epic_field and not dto.get("parent"):
             epic_key = (raw.get("fields") or {}).get(epic_field)
             if isinstance(epic_key, str) and epic_key:
                 dto["parent"] = epic_key
         return dto
+
+    def dev_status(self, key: str) -> dict:
+        issue_id = key if key.isdigit() else str(
+            self._t.request("GET", f"{_API}/issue/{key}", params={"fields": "summary"})
+            .get("id", ""))
+        # applicationType=stash is Bitbucket Server / Data Center.
+        return fetch_dev_status(self._t, key, issue_id, application_type="stash")
 
     def list_projects(self, *, query: str = "", limit: int = 50) -> list[dict]:
         projects = self._t.request("GET", f"{_API}/project")

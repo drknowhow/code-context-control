@@ -461,9 +461,11 @@ class TestLinksAndParent(unittest.TestCase):
         self.assertEqual(dto["parent"], "PROJ-42")
         self.assertEqual(dto["links"], [
             {"id": "77", "description": "blocks", "issue": "PROJ-9",
-             "status": "Open"},
+             "status": "Open", "status_category": "", "summary": "",
+             "issue_type": ""},
             {"id": "78", "description": "is blocked by", "issue": "PROJ-3",
-             "status": ""},
+             "status": "", "status_category": "", "summary": "",
+             "issue_type": ""},
         ])
         # The narrowed field list must actually request the new fields.
         url = m.call_args[0][0].get_full_url()
@@ -674,6 +676,113 @@ class TestAgileWorklogAttach(unittest.TestCase):
             dto = _cloud().get_issue("PROJ-1")
         self.assertEqual(dto["attachments"][0]["filename"], "build.log")
         self.assertIn("attachment", m.call_args[0][0].get_full_url())
+
+
+class TestRichIssueAndDevStatus(unittest.TestCase):
+    def setUp(self):
+        from services import jira_data_center
+        # No epic-link lookup: the DC get_issue goes straight to the issue.
+        jira_data_center._EPIC_FIELD_CACHE["https://jira.corp.example"] = ""
+
+    def tearDown(self):
+        from services import jira_data_center
+        jira_data_center._EPIC_FIELD_CACHE.clear()
+
+    def test_get_issue_rendered_html_type_and_subtasks(self):
+        issue = json.loads(json.dumps(_ISSUE))
+        issue["fields"]["issuetype"] = {"name": "Story", "subtask": False,
+                                        "iconUrl": "https://j/story.svg"}
+        issue["fields"]["description"] = "h1. Title"
+        issue["fields"]["components"] = [{"name": "api"}]
+        issue["fields"]["fixVersions"] = [{"name": "1.2"}]
+        issue["fields"]["duedate"] = "2026-11-01"
+        issue["fields"]["subtasks"] = [{
+            "key": "PROJ-2", "fields": {
+                "summary": "child", "status": {
+                    "name": "Done", "statusCategory": {"key": "done"}},
+                "issuetype": {"name": "Sub-task"}}}]
+        issue["fields"]["comment"] = {"total": 1, "comments": [
+            {"id": "9", "author": {"displayName": "Carol"}, "body": "*hi*",
+             "created": "2026-07-03"}]}
+        issue["renderedFields"] = {
+            "description": "<h1>Title</h1>",
+            "comment": {"comments": [{"id": "9", "body": "<b>hi</b>"}]},
+        }
+        with mock.patch(_URLOPEN, return_value=_ok(issue)) as m:
+            dto = _dc().get_issue("PROJ-1")
+        url = m.call_args[0][0].get_full_url()
+        self.assertIn("expand=renderedFields", url)
+        self.assertIn("subtasks", url)
+        self.assertEqual(dto["issue_type"], "Story")
+        self.assertFalse(dto["issue_type_subtask"])
+        self.assertEqual(dto["issue_type_icon"], "https://j/story.svg")
+        self.assertEqual(dto["description_html"], "<h1>Title</h1>")
+        self.assertEqual(dto["comments"][0]["body_html"], "<b>hi</b>")
+        self.assertEqual(dto["components"], ["api"])
+        self.assertEqual(dto["fix_versions"], ["1.2"])
+        self.assertEqual(dto["due"], "2026-11-01")
+        self.assertEqual(dto["subtasks"][0]["key"], "PROJ-2")
+        self.assertEqual(dto["subtasks"][0]["status_category"], "done")
+
+    def test_dc_search_validate_warn_and_warnings(self):
+        page = {"issues": [_ISSUE], "startAt": 0, "total": 1,
+                "warningMessages": ["An issue with key 'UTF-8' does not exist"]}
+        with mock.patch(_URLOPEN, return_value=_ok(page)) as m:
+            result = _dc().search("key in (PROJ-1, UTF-8)", validate="warn")
+        self.assertIn("validateQuery=warn", m.call_args[0][0].get_full_url())
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["warnings"],
+                         ["An issue with key 'UTF-8' does not exist"])
+        self.assertEqual(result["issues"][0]["issue_type"], "Bug")
+
+    def test_dc_search_without_validate_sends_no_flag(self):
+        with mock.patch(_URLOPEN, return_value=_ok({"issues": []})) as m:
+            _dc().search("project = PROJ")
+        self.assertNotIn("validateQuery", m.call_args[0][0].get_full_url())
+
+    def test_dc_dev_status_collects_prs_branches_commits(self):
+        prs = {"detail": [{"pullRequests": [{
+            "id": "#12", "name": "PROJ-1 fix", "status": "OPEN",
+            "url": "https://bb/pr/12", "author": {"name": "alice"},
+            "source": {"branch": "feature/PROJ-1"},
+            "destination": {"branch": "main"},
+            "repositoryName": "api", "reviewers": [{"name": "bob", "approved": True}],
+        }]}]}
+        branches = {"detail": [{"branches": [{
+            "name": "feature/PROJ-1", "url": "https://bb/b",
+            "repository": {"name": "api"}}]}]}
+        repos = {"detail": [{"repositories": [{
+            "name": "api", "url": "https://bb/api",
+            "commits": [{"id": "abc123", "message": "PROJ-1 fix it",
+                         "author": {"name": "alice"}}]}]}]}
+        responses = [_ok({"id": "10001"}), _ok(prs), _ok(branches), _ok(repos)]
+        with mock.patch(_URLOPEN, side_effect=responses) as m:
+            dev = _dc().dev_status("PROJ-1")
+        urls = [c[0][0].get_full_url() for c in m.call_args_list]
+        self.assertIn("applicationType=stash", urls[1])
+        self.assertIn("issueId=10001", urls[1])
+        self.assertTrue(dev["available"])
+        self.assertEqual(dev["pull_requests"][0]["id"], "12")
+        self.assertEqual(dev["pull_requests"][0]["reviewers"],
+                         [{"name": "bob", "approved": True}])
+        self.assertEqual(dev["branches"][0]["name"], "feature/PROJ-1")
+        self.assertEqual(dev["commits"][0]["repository"], "api")
+
+    def test_dev_status_unavailable_when_api_blocked(self):
+        responses = [_ok({"id": "10001"}), _http_error(404)]
+        with mock.patch(_URLOPEN, side_effect=responses):
+            dev = _dc().dev_status("PROJ-1")
+        self.assertFalse(dev["available"])
+        self.assertIn("HTTP 404", dev["reason"])
+
+    def test_cloud_dev_status_uses_bitbucket_application_type(self):
+        responses = [_ok({"id": "10001"}), _ok({"detail": []}),
+                     _ok({"detail": []}), _ok({"detail": []})]
+        with mock.patch(_URLOPEN, side_effect=responses) as m:
+            dev = _cloud().dev_status("PROJ-1")
+        self.assertIn("applicationType=bitbucket",
+                      m.call_args_list[1][0][0].get_full_url())
+        self.assertEqual(dev["pull_requests"], [])
 
 
 if __name__ == "__main__":

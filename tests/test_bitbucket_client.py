@@ -398,6 +398,108 @@ class TestBitbucketClient(unittest.TestCase):
         self.assertIn("/pull-requests/42/participants/jane%20doe", captured["url"])
         self.assertEqual(captured["body"], {"status": "NEEDS_WORK"})
 
+    def _raw(self, payload: bytes, seen: list):
+        def fake_urlopen(req, timeout=None, context=None):
+            seen.append((req.full_url, req.get_header("Accept")))
+            return _Resp(payload)
+        return fake_urlopen
+
+    def test_get_file_quotes_path_and_passes_at(self):
+        seen: list = []
+        with mock.patch("urllib.request.urlopen", side_effect=self._raw(b"hello", seen)):
+            f = self.client.get_file("PROJ", "repo", "/docs/my notes.md", at="refs/heads/dev")
+        url, accept = seen[0]
+        self.assertIn("/rest/api/1.0/projects/PROJ/repos/repo/raw/docs/my%20notes.md?", url)
+        self.assertIn("at=refs%2Fheads%2Fdev", url)
+        self.assertEqual(accept, "text/plain")
+        self.assertEqual(f, {"path": "docs/my notes.md", "at": "refs/heads/dev",
+                             "size": 5, "binary": False, "truncated": False,
+                             "text": "hello"})
+
+    def test_get_file_refuses_binary(self):
+        seen: list = []
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=self._raw(b"\x89PNG\x00\x00data", seen)):
+            f = self.client.get_file("PROJ", "repo", "logo.png")
+        self.assertTrue(f["binary"])
+        self.assertEqual(f["text"], "")
+        self.assertEqual(f["size"], 10)
+
+    def test_get_file_caps_large_text(self):
+        seen: list = []
+        big = b"a" * (256 * 1024 + 10)
+        with mock.patch("urllib.request.urlopen", side_effect=self._raw(big, seen)):
+            f = self.client.get_file("PROJ", "repo", "big.txt")
+        self.assertTrue(f["truncated"])
+        self.assertEqual(len(f["text"]), 256 * 1024)
+        self.assertEqual(f["size"], len(big))
+
+    def test_pick_readme_prefers_markdown_at_root(self):
+        from services.bitbucket_client import pick_readme
+        self.assertEqual(pick_readme(["README.txt", "readme.md", "README"]), "readme.md")
+        self.assertEqual(pick_readme(["Readme.rst", "README"]), "Readme.rst")
+        self.assertEqual(pick_readme(["README", "README.adoc"]), "README")
+        self.assertEqual(pick_readme(["docs/README.md", "main.py", "READMEFIRST.md"]), "")
+        self.assertEqual(pick_readme([]), "")
+
+    def test_readme_browses_root_then_fetches_raw(self):
+        seen: list = []
+        browse = {"children": {"values": [
+            {"type": "DIRECTORY", "path": {"toString": "README.md"}},
+            {"type": "FILE", "path": {"toString": "README.txt"}},
+            {"type": "FILE", "path": {"name": "README.markdown"}},
+        ]}}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            seen.append(req.full_url)
+            if "/browse" in req.full_url:
+                return _ok(browse)
+            return _Resp(b"# Title")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            f = self.client.readme("PROJ", "repo", at="dev")
+        self.assertIn("/repos/repo/browse?at=dev", seen[0])
+        self.assertIn("/raw/README.markdown", seen[1])
+        self.assertTrue(f["found"])
+        self.assertEqual(f["text"], "# Title")
+
+    def test_readme_missing_is_not_found(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=_ok({"children": {"values": []}})):
+            f = self.client.readme("PROJ", "repo")
+        self.assertFalse(f["found"])
+        self.assertEqual(f["path"], "")
+
+    def test_pr_issues_uses_jira_integration_api(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            return _ok([{"key": "PROJ-7", "url": "https://jira/browse/PROJ-7"}])
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            issues = self.client.pr_issues("PROJ", "repo", 12)
+        self.assertEqual(
+            captured["url"],
+            "https://bb.example.com/rest/jira/1.0/projects/PROJ/repos/repo/pull-requests/12/issues",
+        )
+        self.assertEqual(issues[0]["key"], "PROJ-7")
+
+    def test_list_branches_sends_details_filter_and_order(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            return _ok({"values": [{"displayId": "main"}], "isLastPage": True})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            rows = self.client.list_branches("PROJ", "repo", filter_text="feat",
+                                             order="modification")
+        self.assertEqual(rows, [{"displayId": "main"}])
+        self.assertIn("details=true", captured["url"])
+        self.assertIn("filterText=feat", captured["url"])
+        self.assertIn("orderBy=MODIFICATION", captured["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -768,10 +768,13 @@ def _finalize_response(ctx: Context, tool_name: str, args: dict,
                            reasoning=f"Budget at {snap_pct}% — auto-snapshot before potential /clear",
                            description="", summary="", event_type="auto",
                            svc=svc, finalize=lambda *a, **kw: "")
-            response += (
-                f"\n\n[c3:auto_snapshot] Budget {snap_pct}%. Snapshot saved. "
-                f"Tell user to /clear, then restore."
-            )
+            # A format="json" reply must stay parseable: no text appended.
+            from cli.tools._json_reply import is_json_reply
+            if not is_json_reply(response):
+                response += (
+                    f"\n\n[c3:auto_snapshot] Budget {snap_pct}%. Snapshot saved. "
+                    f"Tell user to /clear, then restore."
+                )
             svc.activity_log.log("auto_snapshot", {"budget_pct": snap_pct})
         except Exception:
             pass
@@ -1289,11 +1292,20 @@ async def c3_bitbucket(
     webhook_id: int = 0,
     comment_id: int = 0,
     limit: int = 50,
+    path: str = "",
+    at: str = "",
+    filter_text: str = "",
+    order: str = "",
+    format: str = "",
     ctx: Context = None,
 ) -> str:
     """BITBUCKET (Data Center / Server) — see and act on PRs, branches, builds, repo admin.
-    actions: status, whoami, list_projects, list_repos, get_repo,
+    actions: status, whoami, list_projects, list_repos, get_repo (description,
+    default branch, browse and clone URLs),
+    readme ([at=branch/commit] — the root README, markdown preferred),
+    get_file (path [at] — one text file, 256 KB cap, binary refused),
     list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits,
+    pr_issues (pr_id — Jira issues Bitbucket's Jira integration links to the PR),
     create_pr, update_pr (pr_id + any of title/description/reviewers/to_branch —
     unchanged fields are preserved; reviewers is the FULL comma-separated
     replacement set), comment_pr,
@@ -1305,10 +1317,13 @@ async def c3_bitbucket(
     list_pr_tasks (state filters OPEN/RESOLVED), create_pr_task (pr_id, body —
     a blocker task on the PR), resolve_pr_task (pr_id, comment_id from
     list_pr_tasks),
-    list_branches, create_branch, delete_branch,
-    list_commits, list_activity, build_status,
+    list_branches ([filter_text] [order=MODIFICATION|ALPHABETICAL]), create_branch,
+    delete_branch, list_commits ([branch] [path]), list_activity, build_status (commit),
     repo_settings, update_repo_settings, list_webhooks, create_webhook, delete_webhook,
     list_permissions.
+    format="json": reads return {"ok", "action", "data"} JSON (normalized fields, a
+    ~400k-char cap that trims lists and sets "truncated"); writes return the text
+    reply in data.text; errors return {"ok": false, "error"}. For programs, not agents.
     project/repo fall back to bitbucket.default_project/default_repo from .c3/config.json.
     Tokens live in the OS keyring — `c3 bitbucket login` to set them up first."""
     svc = _svc(ctx)
@@ -1324,7 +1339,8 @@ async def c3_bitbucket(
         description=description, reviewers=reviewers, name=name, url=url,
         events=events, start_point=start_point, commit=commit,
         settings=settings, webhook_id=webhook_id, comment_id=comment_id,
-        limit=limit,
+        limit=limit, path=path, at=at, filter_text=filter_text, order=order,
+        format=format,
     )
 
 
@@ -1357,10 +1373,16 @@ async def c3_jira(
     file_path: str = "",
     delete_subtasks: bool = False,
     limit: int = 25,
+    validate: str = "",
+    format: str = "",
     ctx: Context = None,
 ) -> str:
     """JIRA (Cloud + Data Center) — search, read, create, update, link, sprint, comment, transition, assign issues.
-    actions: status, whoami, search (jql), get_issue (issue — shows parent, links, attachments),
+    actions: status, whoami, search (jql [validate=warn — Data Center: unknown keys in
+    `key in (...)` become warnings instead of failing the query]),
+    get_issue (issue — shows type, parent, subtasks, links, attachments),
+    dev_status (issue — pull requests, branches and commits from Jira's development panel;
+    some instances disable that API, which reports as unavailable),
     my_issues, list_projects, list_transitions (issue), get_create_metadata (project, issue_type),
     search_users (query), list_link_types,
     list_boards ([project]), list_sprints (board_id [sprint_state=active|future|closed]),
@@ -1383,6 +1405,10 @@ async def c3_jira(
     get_create_metadata reflects Jira's field configuration, not the create screen — if
     create_issue rejects a listed field ('not on the appropriate screen'), create without
     it and set it via update_issue (the edit screen is configured separately).
+    format="json": reads return {"ok", "action", "data"} JSON (normalized fields incl.
+    rendered HTML description/comments, a ~400k-char cap that trims lists and sets
+    "truncated"); writes return the text reply in data.text; errors return
+    {"ok": false, "error"}. For programs, not agents.
     project falls back to the account's default_project; account to jira.default_account.
     Mutating actions are ledger-logged. Tokens live in the OS keyring — `c3 jira login` first."""
     svc = _svc(ctx)
@@ -1402,6 +1428,7 @@ async def c3_jira(
         sprint_id=sprint_id, sprint_state=sprint_state,
         time_spent=time_spent, file_path=file_path,
         delete_subtasks=delete_subtasks, limit=limit,
+        validate=validate, format=format,
     )
 
 
