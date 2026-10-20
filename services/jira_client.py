@@ -202,9 +202,26 @@ def normalize_issue(raw: dict, text_of: Callable[[Any], str]) -> dict:
         "updated": f.get("updated", ""),
         "labels": f.get("labels") or [],
     }
+    issue_type = f.get("issuetype") or {}
+    if issue_type:
+        dto["issue_type_subtask"] = bool(issue_type.get("subtask"))
+        dto["issue_type_icon"] = issue_type.get("iconUrl", "")
     parent = f.get("parent")
     if isinstance(parent, dict) and parent.get("key"):
         dto["parent"] = parent["key"]
+        parent_fields = parent.get("fields") or {}
+        if parent_fields:
+            dto["parent_summary"] = parent_fields.get("summary", "")
+            dto["parent_type"] = (parent_fields.get("issuetype") or {}).get("name", "")
+    subtasks = f.get("subtasks")
+    if isinstance(subtasks, list) and subtasks:
+        dto["subtasks"] = [normalize_subtask(s) for s in subtasks if isinstance(s, dict)]
+    if isinstance(f.get("components"), list):
+        dto["components"] = [c.get("name", "") for c in f["components"] if isinstance(c, dict)]
+    if isinstance(f.get("fixVersions"), list):
+        dto["fix_versions"] = [v.get("name", "") for v in f["fixVersions"] if isinstance(v, dict)]
+    if f.get("duedate"):
+        dto["due"] = f["duedate"]
     links = f.get("issuelinks")
     if isinstance(links, list) and links:
         dto["links"] = [
@@ -215,12 +232,139 @@ def normalize_issue(raw: dict, text_of: Callable[[Any], str]) -> dict:
         dto["attachments"] = [normalize_attachment(a) for a in attachments]
     if "description" in f:
         dto["description"] = text_of(f.get("description"))
+    # expand=renderedFields: the server's own HTML for rich-text fields
+    # (wiki markup on DC, ADF on Cloud). Unsanitized: callers that display
+    # it must sanitize it themselves.
+    rendered = raw.get("renderedFields") or {}
+    if isinstance(rendered.get("description"), str) and rendered["description"]:
+        dto["description_html"] = rendered["description"]
+    rendered_comments = {
+        str(c.get("id", "")): c.get("body", "")
+        for c in ((rendered.get("comment") or {}).get("comments") or [])
+        if isinstance(c, dict)
+    }
     comment_block = f.get("comment")
     if isinstance(comment_block, dict):
         dto["comments"] = [
             normalize_comment(c, text_of) for c in comment_block.get("comments", [])
         ]
+        for c in dto["comments"]:
+            html = rendered_comments.get(str(c.get("id", "")))
+            if isinstance(html, str) and html:
+                c["body_html"] = html
+        if comment_block.get("total") is not None:
+            dto["comment_total"] = comment_block.get("total")
     return dto
+
+
+_DEV_STATUS = "/rest/dev-status/1.0/issue/detail"
+
+
+def _dev_commit(raw: dict, repo: dict) -> dict:
+    return {
+        "id": raw.get("id", ""),
+        "display_id": raw.get("displayId", ""),
+        "message": raw.get("message", ""),
+        "author": (raw.get("author") or {}).get("name", ""),
+        "timestamp": raw.get("authorTimestamp", ""),
+        "url": raw.get("url", ""),
+        "merge": bool(raw.get("merge")),
+        "files": raw.get("fileCount", 0),
+        "repository": repo.get("name", ""),
+        "repository_url": repo.get("url", ""),
+    }
+
+
+def _dev_pull_request(raw: dict) -> dict:
+    return {
+        "id": str(raw.get("id", "")).lstrip("#"),
+        "title": raw.get("name", ""),
+        "url": raw.get("url", ""),
+        "status": raw.get("status", ""),
+        "author": (raw.get("author") or {}).get("name", ""),
+        "source_branch": (raw.get("source") or {}).get("branch", ""),
+        "destination_branch": (raw.get("destination") or {}).get("branch", ""),
+        "repository": raw.get("repositoryName", ""),
+        "repository_url": raw.get("repositoryUrl", ""),
+        "updated": raw.get("lastUpdate", ""),
+        "comment_count": raw.get("commentCount", 0),
+        "reviewers": [
+            {"name": r.get("name", ""), "approved": bool(r.get("approved"))}
+            for r in (raw.get("reviewers") or []) if isinstance(r, dict)
+        ],
+    }
+
+
+def _dev_branch(raw: dict) -> dict:
+    repo = raw.get("repository") or {}
+    last = raw.get("lastCommit") or {}
+    return {
+        "name": raw.get("name", ""),
+        "url": raw.get("url", ""),
+        "create_pr_url": raw.get("createPullRequestUrl", ""),
+        "repository": repo.get("name", ""),
+        "repository_url": repo.get("url", ""),
+        "last_commit": _dev_commit(last, repo) if last else {},
+    }
+
+
+def fetch_dev_status(transport: "JiraTransport", key: str, issue_id: str, *,
+                     application_type: str) -> dict:
+    """Read the development panel through Jira's internal dev-status API
+    (one call per data type). The API is undocumented and some instances
+    block it: a refusal on the first call returns ``available: False``."""
+    out: dict[str, Any] = {
+        "available": True, "issue": key, "issue_id": issue_id,
+        "pull_requests": [], "branches": [], "commits": [], "errors": [],
+    }
+    for data_type in ("pullrequest", "branch", "repository"):
+        try:
+            page = transport.request(
+                "GET", _DEV_STATUS,
+                params={"issueId": issue_id, "applicationType": application_type,
+                        "dataType": data_type},
+            )
+        except JiraError as exc:
+            if exc.status in (401, 403, 404, 405):
+                if data_type == "pullrequest":
+                    return {"available": False, "issue": key, "issue_id": issue_id,
+                            "reason": f"dev-status API unavailable (HTTP {exc.status})"}
+                out["errors"].append(f"{data_type}: HTTP {exc.status}")
+                continue
+            raise
+        if not isinstance(page, dict):
+            continue
+        for detail in page.get("detail") or []:
+            if not isinstance(detail, dict):
+                continue
+            out["pull_requests"].extend(
+                _dev_pull_request(p) for p in detail.get("pullRequests") or []
+                if isinstance(p, dict))
+            out["branches"].extend(
+                _dev_branch(b) for b in detail.get("branches") or [] if isinstance(b, dict))
+            for repo in detail.get("repositories") or []:
+                if isinstance(repo, dict):
+                    out["commits"].extend(
+                        _dev_commit(c, repo) for c in repo.get("commits") or []
+                        if isinstance(c, dict))
+        for err in page.get("errors") or []:
+            text = err.get("error") if isinstance(err, dict) else err
+            if text:
+                out["errors"].append(f"{data_type}: {text}")
+    return out
+
+
+def normalize_subtask(raw: dict) -> dict:
+    f = raw.get("fields") or {}
+    status = f.get("status") or {}
+    return {
+        "key": raw.get("key", ""),
+        "summary": f.get("summary", ""),
+        "status": status.get("name", ""),
+        "status_category": (status.get("statusCategory") or {}).get("key", ""),
+        "issue_type": (f.get("issuetype") or {}).get("name", ""),
+        "priority": (f.get("priority") or {}).get("name", ""),
+    }
 
 
 def normalize_issue_link(raw: dict) -> dict:
@@ -236,11 +380,16 @@ def normalize_issue_link(raw: dict) -> dict:
         other, description = raw["inwardIssue"], link_type.get("inward", "")
     else:
         return {}
+    other_fields = other.get("fields") or {}
+    status = other_fields.get("status") or {}
     return {
         "id": raw.get("id", ""),
         "description": description or link_type.get("name", "link"),
         "issue": other.get("key", ""),
-        "status": ((other.get("fields") or {}).get("status") or {}).get("name", ""),
+        "status": status.get("name", ""),
+        "status_category": (status.get("statusCategory") or {}).get("key", ""),
+        "summary": other_fields.get("summary", ""),
+        "issue_type": (other_fields.get("issuetype") or {}).get("name", ""),
     }
 
 
@@ -254,13 +403,18 @@ def normalize_comment(raw: dict, text_of: Callable[[Any], str]) -> dict:
 
 
 def normalize_attachment(raw: dict) -> dict:
-    return {
+    dto = {
         "id": raw.get("id", ""),
         "filename": raw.get("filename", ""),
         "size": raw.get("size", 0),
         "author": (raw.get("author") or {}).get("displayName", ""),
         "created": raw.get("created", ""),
     }
+    for src, dst in (("content", "url"), ("thumbnail", "thumbnail"),
+                     ("mimeType", "mime_type")):
+        if raw.get(src):
+            dto[dst] = raw[src]
+    return dto
 
 
 def normalize_board(raw: dict) -> dict:
@@ -367,13 +521,25 @@ class JiraClient:
         return self._backend.myself()
 
     # Issues — read
-    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "") -> dict:
+    def search(self, jql: str, *, fields: str = "", limit: int = 25, cursor: str = "",
+               validate: str = "") -> dict:
         """Run JQL. Returns ``{"issues": [dto...], "next_cursor": str}`` —
-        pass ``next_cursor`` back in to fetch the next page ("" = done)."""
+        pass ``next_cursor`` back in to fetch the next page ("" = done).
+        ``validate="warn"`` (Data Center) turns an unknown key or project in
+        the JQL into a warning instead of an error."""
+        if validate:
+            return self._backend.search(jql, fields=fields, limit=limit, cursor=cursor,
+                                        validate=validate)
         return self._backend.search(jql, fields=fields, limit=limit, cursor=cursor)
 
     def get_issue(self, key: str, *, include_comments: bool = True) -> dict:
         return self._backend.get_issue(key, include_comments=include_comments)
+
+    def dev_status(self, key: str) -> dict:
+        """Jira's development panel for an issue: linked pull requests,
+        branches and commits. ``{"available": False, "reason"}`` when the
+        instance does not expose the (internal) dev-status API."""
+        return self._backend.dev_status(key)
 
     def list_projects(self, *, query: str = "", limit: int = 50) -> list[dict]:
         return self._backend.list_projects(query=query, limit=limit)

@@ -5,13 +5,15 @@ Action-dispatch tool. Resolves credentials from the OS keyring (via
 project+repo from ``.c3/config.json``.
 
 Long responses are capped at ``_RESPONSE_TOKEN_CAP`` to protect the
-caller's context budget.
+caller's context budget. ``format="json"`` returns normalized JSON for
+programs instead (see cli/tools/_json_reply.py).
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from cli.tools import _json_reply as jr
 from core import count_tokens
 from core.config import load_bitbucket_config
 from services import bitbucket_credentials as bb_creds
@@ -41,7 +43,29 @@ _REPO_SCOPED = {
     "create_branch", "delete_branch", "list_commits", "list_activity",
     "repo_settings", "update_repo_settings", "list_webhooks",
     "create_webhook", "delete_webhook", "list_permissions",
+    "readme", "get_file", "pr_issues",
 }
+
+# Actions that need a pr_id.
+_PR_ACTIONS = {
+    "get_pr", "get_pr_diff", "get_pr_activities", "get_pr_commits",
+    "pr_issues", "update_pr", "comment_pr", "update_pr_comment",
+    "delete_pr_comment", "list_pr_tasks", "create_pr_task",
+    "resolve_pr_task", "approve_pr", "unapprove_pr", "needs_work_pr",
+    "decline_pr", "merge_pr",
+}
+
+_VALID_ACTIONS = sorted(
+    {"status", "whoami", "list_projects", "build_status"} | _REPO_SCOPED
+)
+
+# Branch metadata keys Bitbucket adds with details=true (plugins permitting).
+_META = "com.atlassian.bitbucket.server."
+_META_AHEAD_BEHIND = _META + "bitbucket-branch:ahead-behind-metadata-provider"
+_META_LAST_COMMIT = _META + "bitbucket-branch:latest-commit-metadata"
+_META_JIRA = _META + "bitbucket-jira:branch-list-jira-issues"
+_META_OUTGOING_PR = _META + "bitbucket-ref-metadata:outgoing-pull-request-metadata"
+_META_BUILDS = _META + "bitbucket-build:build-status-metadata"
 
 
 def _cap(resp: str) -> str:
@@ -110,6 +134,18 @@ def _resolve_repo(action: str, kwargs: dict, svc) -> tuple[str, str, str]:
     return project, repo, ""
 
 
+def _href(links: dict | None, rel: str = "self") -> str:
+    """The first href under ``links[rel]`` of a Bitbucket entity."""
+    for link in (links or {}).get(rel) or []:
+        if isinstance(link, dict) and link.get("href"):
+            return link["href"]
+    return ""
+
+
+def _filter_text(kwargs: dict) -> str:
+    return kwargs.get("filter_text") or kwargs.get("filter") or ""
+
+
 # ── Formatters ────────────────────────────────────────────
 
 
@@ -148,9 +184,7 @@ def _format_branch(b: dict) -> str:
     name = b.get("displayId", b.get("id", "?"))
     latest = b.get("latestCommit", "")[:8]
     is_default = " [default]" if b.get("isDefault") else ""
-    behind = b.get("metadata", {}).get(
-        "com.atlassian.bitbucket.server.bitbucket-branch:ahead-behind-metadata-provider"
-    )
+    behind = b.get("metadata", {}).get(_META_AHEAD_BEHIND)
     ab = ""
     if isinstance(behind, dict):
         ab = f"  +{behind.get('ahead',0)}/-{behind.get('behind',0)}"
@@ -239,16 +273,65 @@ def _act_list_repos(client: BitbucketDataCenterClient, project: str) -> str:
     return "\n".join(lines)
 
 
+def _default_branch(client, project: str, repo: str) -> str:
+    """The default branch name; empty for an empty repo or on any error."""
+    try:
+        return (client.get_default_branch(project, repo) or {}).get("displayId", "")
+    except BitbucketError:
+        return ""
+
+
 def _act_get_repo(client: BitbucketDataCenterClient, project: str, repo: str) -> str:
     r = client.get_repo(project, repo)
-    return (
-        f"[bitbucket:repo] {project}/{repo}\n"
-        f"  name:    {r.get('name','?')}\n"
-        f"  scmId:   {r.get('scmId','?')}\n"
-        f"  public:  {r.get('public','?')}\n"
-        f"  state:   {r.get('state','?')}\n"
-        f"  links:   {[l.get('href') for l in (r.get('links',{}).get('clone') or [])]}"
-    )
+    lines = [
+        f"[bitbucket:repo] {project}/{repo}",
+        f"  name:    {r.get('name','?')}",
+    ]
+    if r.get("description"):
+        lines.append(f"  description: {r['description']}")
+    lines += [
+        f"  default: {_default_branch(client, project, repo) or '-'}",
+        f"  url:     {_href(r.get('links')) or '-'}",
+        f"  scmId:   {r.get('scmId','?')}",
+        f"  public:  {r.get('public','?')}",
+        f"  state:   {r.get('state','?')}",
+        f"  links:   {[l.get('href') for l in (r.get('links',{}).get('clone') or [])]}",
+    ]
+    return "\n".join(lines)
+
+
+def _act_readme(client, project: str, repo: str, kwargs: dict) -> str:
+    f = client.readme(project, repo, at=kwargs.get("at") or "")
+    if not f.get("found"):
+        return f"[bitbucket:readme] {project}/{repo}: no README at the root"
+    return _format_file("readme", project, repo, f)
+
+
+def _act_get_file(client, project: str, repo: str, kwargs: dict) -> str:
+    path = (kwargs.get("path") or "").strip()
+    if not path:
+        return "[bitbucket:get_file:error] path is required"
+    f = client.get_file(project, repo, path, at=kwargs.get("at") or "")
+    return _format_file("file", project, repo, f)
+
+
+def _format_file(tag: str, project: str, repo: str, f: dict) -> str:
+    where = f"{f.get('path')}@{f['at']}" if f.get("at") else f.get("path")
+    head = f"[bitbucket:{tag}] {project}/{repo} {where} ({f.get('size', 0)} bytes"
+    if f.get("binary"):
+        return f"{head}): binary file, not shown"
+    if f.get("truncated"):
+        head += ", truncated"
+    return f"{head})\n{f.get('text', '')}"
+
+
+def _act_pr_issues(client, project: str, repo: str, pr_id: int) -> str:
+    issues = client.pr_issues(project, repo, pr_id)
+    if not issues:
+        return f"[bitbucket:pr_issues] {project}/{repo}#{pr_id}: 0 issue(s)"
+    out = [f"[bitbucket:pr_issues] {project}/{repo}#{pr_id}: {len(issues)} issue(s)"]
+    out.extend(f"  {i.get('key', '?'):16} {i.get('url', '')}" for i in issues)
+    return "\n".join(out)
 
 
 def _act_list_prs(client, project: str, repo: str, kwargs: dict) -> str:
@@ -490,7 +573,10 @@ def _act_merge_pr(client, project: str, repo: str, pr_id: int, kwargs: dict) -> 
 
 
 def _act_list_branches(client, project: str, repo: str, kwargs: dict) -> str:
-    branches = client.list_branches(project, repo, filter_text=kwargs.get("filter", ""))
+    branches = client.list_branches(
+        project, repo, filter_text=_filter_text(kwargs),
+        order=kwargs.get("order") or "",
+    )
     if not branches:
         return f"[bitbucket:branches] {project}/{repo}: (none)"
     out = [f"[bitbucket:branches] {project}/{repo} - {len(branches)} branch(es)"]
@@ -632,6 +718,364 @@ def _act_list_permissions(client, project: str, repo: str) -> str:
     return "\n".join(out)
 
 
+# ── JSON replies (format="json") ──────────────────────────
+
+
+class _UsageError(Exception):
+    """A missing or bad argument found while building a JSON reply."""
+
+
+def _user_dto(u: dict | None) -> dict:
+    u = u or {}
+    return {"name": u.get("name") or u.get("slug") or "",
+            "display_name": u.get("displayName") or u.get("name") or ""}
+
+
+def _reviewer_dto(p: dict) -> dict:
+    return {**_user_dto(p.get("user")), "approved": bool(p.get("approved")),
+            "status": p.get("status", "")}
+
+
+def _ref_repo(ref: dict) -> str:
+    """``PROJ/slug`` of the repository a PR ref points into."""
+    repo = (ref or {}).get("repository") or {}
+    key = (repo.get("project") or {}).get("key", "")
+    slug = repo.get("slug", "")
+    return f"{key}/{slug}" if key and slug else ""
+
+
+def _project_dto(p: dict) -> dict:
+    return {"key": p.get("key", ""), "name": p.get("name", ""),
+            "description": p.get("description", ""),
+            "public": bool(p.get("public")), "url": _href(p.get("links"))}
+
+
+def _repo_dto(r: dict) -> dict:
+    proj = r.get("project") or {}
+    return {
+        "project": proj.get("key", ""),
+        "project_name": proj.get("name", ""),
+        "slug": r.get("slug", ""),
+        "name": r.get("name", ""),
+        "description": r.get("description", ""),
+        "state": r.get("state", ""),
+        "scm_id": r.get("scmId", ""),
+        "public": bool(r.get("public")),
+        "forkable": bool(r.get("forkable")),
+        "url": _href(r.get("links")),
+        "clone": [{"name": c.get("name", ""), "href": c.get("href", "")}
+                  for c in (r.get("links") or {}).get("clone") or []
+                  if isinstance(c, dict)],
+    }
+
+
+def _pr_dto(pr: dict) -> dict:
+    src = pr.get("fromRef") or {}
+    dst = pr.get("toRef") or {}
+    props = pr.get("properties") or {}
+    return {
+        "id": pr.get("id"),
+        "version": pr.get("version"),
+        "title": pr.get("title", ""),
+        "description": pr.get("description", ""),
+        "state": pr.get("state", ""),
+        "draft": bool(pr.get("draft")),
+        "author": _user_dto((pr.get("author") or {}).get("user")),
+        "reviewers": [_reviewer_dto(r) for r in pr.get("reviewers") or []],
+        "source_branch": src.get("displayId", ""),
+        "source_commit": src.get("latestCommit", ""),
+        "source_repository": _ref_repo(src),
+        "destination_branch": dst.get("displayId", ""),
+        "destination_commit": dst.get("latestCommit", ""),
+        "repository": _ref_repo(dst),
+        "created": pr.get("createdDate"),
+        "updated": pr.get("updatedDate"),
+        "closed": pr.get("closedDate"),
+        "url": _href(pr.get("links")),
+        "open_tasks": props.get("openTaskCount", pr.get("openTaskCount", 0)),
+        "resolved_tasks": props.get("resolvedTaskCount", 0),
+        "comment_count": props.get("commentCount", 0),
+        "merge_result": (props.get("mergeResult") or {}).get("outcome", ""),
+    }
+
+
+def _commit_dto(c: dict) -> dict:
+    keys = (c.get("properties") or {}).get("jira-key") or []
+    return {
+        "id": c.get("id", ""),
+        "display_id": c.get("displayId") or (c.get("id") or "")[:11],
+        "message": c.get("message", ""),
+        "author": _user_dto(c.get("author")),
+        "author_timestamp": c.get("authorTimestamp"),
+        "committer": _user_dto(c.get("committer")),
+        "committer_timestamp": c.get("committerTimestamp"),
+        "parents": [p.get("id", "") for p in c.get("parents") or []
+                    if isinstance(p, dict)],
+        "jira_keys": [k for k in keys if isinstance(k, str)]
+        if isinstance(keys, list) else [],
+    }
+
+
+def _branch_dto(b: dict) -> dict:
+    meta = b.get("metadata") or {}
+    ab = meta.get(_META_AHEAD_BEHIND)
+    last = meta.get(_META_LAST_COMMIT)
+    issues = meta.get(_META_JIRA)
+    outgoing = meta.get(_META_OUTGOING_PR)
+    builds = meta.get(_META_BUILDS)
+    pr = outgoing.get("pullRequest") if isinstance(outgoing, dict) else None
+    return {
+        "name": b.get("displayId", ""),
+        "id": b.get("id", ""),
+        "latest_commit": b.get("latestCommit", ""),
+        "is_default": bool(b.get("isDefault")),
+        "ahead": ab.get("ahead") if isinstance(ab, dict) else None,
+        "behind": ab.get("behind") if isinstance(ab, dict) else None,
+        "last_commit": _commit_dto(last) if isinstance(last, dict) else None,
+        "jira_keys": [i["key"] for i in issues
+                      if isinstance(i, dict) and i.get("key")]
+        if isinstance(issues, list) else [],
+        "pull_request": {"id": pr.get("id"), "state": pr.get("state", ""),
+                         "title": pr.get("title", "")}
+        if isinstance(pr, dict) else None,
+        "builds": builds if isinstance(builds, dict) else None,
+    }
+
+
+def _build_dto(b: dict) -> dict:
+    return {"state": b.get("state", ""), "key": b.get("key", ""),
+            "name": b.get("name", ""), "url": b.get("url", ""),
+            "description": b.get("description", ""),
+            "date_added": b.get("dateAdded")}
+
+
+def _comment_dto(c: dict, depth: int = 0) -> dict:
+    replies = (c.get("comments") or []) if depth < 5 else []
+    return {
+        "id": c.get("id"),
+        "text": c.get("text", ""),
+        "author": _user_dto(c.get("author")),
+        "created": c.get("createdDate"),
+        "updated": c.get("updatedDate"),
+        "severity": c.get("severity", ""),
+        "state": c.get("state", ""),
+        "replies": [_comment_dto(r, depth + 1) for r in replies
+                    if isinstance(r, dict)],
+    }
+
+
+def _activity_dto(a: dict) -> dict:
+    out = {"id": a.get("id"), "action": a.get("action", ""),
+           "created": a.get("createdDate"), "user": _user_dto(a.get("user"))}
+    if isinstance(a.get("comment"), dict):
+        out["comment_action"] = a.get("commentAction", "")
+        out["comment"] = _comment_dto(a["comment"])
+        anchor = a.get("commentAnchor") or {}
+        if anchor:
+            out["anchor"] = {"path": anchor.get("path", ""),
+                             "line": anchor.get("line"),
+                             "line_type": anchor.get("lineType", "")}
+    return out
+
+
+def _task_dto(t: dict) -> dict:
+    return {"id": t.get("id"), "text": t.get("text", ""),
+            "state": t.get("state", ""), "severity": t.get("severity", ""),
+            "author": _user_dto(t.get("author")),
+            "created": t.get("createdDate")}
+
+
+def _json_read(client, action: str, project: str, repo: str, pr_id: int,
+               kwargs: dict) -> dict | None:
+    """The structured data behind a read action, or None for an action
+    with no structured form (writes, admin), which the caller wraps as text."""
+    limit = int(kwargs.get("limit") or 0)
+    at = kwargs.get("at") or ""
+    if action == "whoami":
+        u = client.whoami()
+        return {"name": u.get("name", ""), "slug": u.get("slug", ""),
+                "display_name": u.get("displayName", ""),
+                "email": u.get("emailAddress", ""),
+                "active": u.get("active")}
+    if action == "list_projects":
+        name = kwargs.get("name", "") or kwargs.get("query", "")
+        return {"projects": [_project_dto(p) for p in client.list_projects(name=name)]}
+    if action == "list_repos":
+        return {"project": project,
+                "repos": [_repo_dto(r) for r in client.list_repos(project)]}
+    if action == "get_repo":
+        return {**_repo_dto(client.get_repo(project, repo)),
+                "default_branch": _default_branch(client, project, repo)}
+    if action == "readme":
+        return {"project": project, "repo": repo,
+                **client.readme(project, repo, at=at)}
+    if action == "get_file":
+        path = (kwargs.get("path") or "").strip()
+        if not path:
+            raise _UsageError("path is required for get_file")
+        return {"project": project, "repo": repo,
+                **client.get_file(project, repo, path, at=at)}
+    if action == "list_prs":
+        state = (kwargs.get("state") or "OPEN").upper()
+        prs = client.list_pull_requests(
+            project, repo, state=state,
+            author=kwargs.get("author", ""),
+            reviewer=kwargs.get("reviewer", ""),
+            limit=limit or 50,
+        )
+        return {"project": project, "repo": repo, "state": state,
+                "pull_requests": [_pr_dto(pr) for pr in prs]}
+    if action == "get_pr":
+        return _pr_dto(client.get_pull_request(project, repo, pr_id))
+    if action == "get_pr_diff":
+        return {"id": pr_id, "diff": client.get_pr_diff(
+            project, repo, pr_id,
+            context_lines=int(kwargs.get("context_lines", 3)))}
+    if action == "get_pr_activities":
+        acts = client.get_pr_activities(project, repo, pr_id, limit=limit or 50)
+        # Bitbucket lists newest first; oldest first lets trimming keep the newest.
+        return {"id": pr_id, "activities": [_activity_dto(a) for a in reversed(acts)]}
+    if action == "get_pr_commits":
+        return {"id": pr_id, "commits": [
+            _commit_dto(c) for c in client.get_pr_commits(project, repo, pr_id)]}
+    if action == "pr_issues":
+        return {"id": pr_id, "issues": [
+            {"key": i.get("key", ""), "url": i.get("url", "")}
+            for i in client.pr_issues(project, repo, pr_id)]}
+    if action == "list_pr_tasks":
+        state = (kwargs.get("state") or "").strip()
+        return {"id": pr_id, "tasks": [
+            _task_dto(t) for t in client.list_pr_tasks(project, repo, pr_id, state=state)]}
+    if action == "list_branches":
+        branches = client.list_branches(
+            project, repo, filter_text=_filter_text(kwargs),
+            order=kwargs.get("order") or "",
+        )
+        if limit:
+            branches = branches[:limit]
+        return {"project": project, "repo": repo,
+                "branches": [_branch_dto(b) for b in branches]}
+    if action == "list_commits":
+        commits = client.list_commits(
+            project, repo, branch=kwargs.get("branch", ""),
+            path=kwargs.get("path", ""), limit=limit or 30,
+        )
+        return {"project": project, "repo": repo,
+                "commits": [_commit_dto(c) for c in commits]}
+    if action == "build_status":
+        commit = kwargs.get("commit") or kwargs.get("commit_hash") or ""
+        if not commit:
+            raise _UsageError("commit hash is required for build_status")
+        return {"commit": commit,
+                "builds": [_build_dto(b) for b in client.get_build_status(commit)]}
+    return None
+
+
+def _status_data(client, err: str, svc) -> dict:
+    project_path = getattr(svc, "project_path", ".") or "."
+    cfg = load_bitbucket_config(project_path)
+    active = cfg.get("active") or {}
+    data: dict[str, Any] = {
+        "base_url": active.get("base_url", ""),
+        "username": active.get("username", ""),
+        "default_project": cfg.get("default_project") or "",
+        "default_repo": cfg.get("default_repo") or "",
+        "accounts": [{"username": a.get("username", ""),
+                      "base_url": a.get("base_url", "")}
+                     for a in cfg.get("accounts") or [] if isinstance(a, dict)],
+        "connected": False,
+        "formats": ["text", "json"],
+    }
+    if client is None:
+        data["error"] = err or "[bitbucket:no-account]"
+        return data
+    try:
+        props = client.application_properties()
+        data.update(connected=True, version=props.get("version", ""))
+    except BitbucketError as exc:
+        data["error"] = str(exc)
+    return data
+
+
+def _dispatch_text(client, action: str, project: str, repo: str, pr_id: int,
+                   kwargs: dict) -> str:
+    """Run *action* and return its text reply."""
+    if action == "whoami":
+        return _act_whoami(client)
+    if action == "list_projects":
+        return _act_list_projects(client, kwargs)
+    if action == "list_repos":
+        return _act_list_repos(client, project)
+    if action == "get_repo":
+        return _act_get_repo(client, project, repo)
+    if action == "readme":
+        return _act_readme(client, project, repo, kwargs)
+    if action == "get_file":
+        return _act_get_file(client, project, repo, kwargs)
+    if action == "list_prs":
+        return _act_list_prs(client, project, repo, kwargs)
+    if action == "get_pr":
+        return _act_get_pr(client, project, repo, pr_id)
+    if action == "get_pr_diff":
+        return _act_get_pr_diff(client, project, repo, pr_id, kwargs)
+    if action == "get_pr_activities":
+        return _act_get_pr_activities(client, project, repo, pr_id)
+    if action == "get_pr_commits":
+        return _act_get_pr_commits(client, project, repo, pr_id)
+    if action == "pr_issues":
+        return _act_pr_issues(client, project, repo, pr_id)
+    if action == "create_pr":
+        return _act_create_pr(client, project, repo, kwargs)
+    if action == "update_pr":
+        return _act_update_pr(client, project, repo, pr_id, kwargs)
+    if action == "comment_pr":
+        return _act_comment_pr(client, project, repo, pr_id, kwargs)
+    if action == "update_pr_comment":
+        return _act_update_pr_comment(client, project, repo, pr_id, kwargs)
+    if action == "delete_pr_comment":
+        return _act_delete_pr_comment(client, project, repo, pr_id, kwargs)
+    if action == "list_pr_tasks":
+        return _act_list_pr_tasks(client, project, repo, pr_id, kwargs)
+    if action == "create_pr_task":
+        return _act_create_pr_task(client, project, repo, pr_id, kwargs)
+    if action == "resolve_pr_task":
+        return _act_resolve_pr_task(client, project, repo, pr_id, kwargs)
+    if action == "approve_pr":
+        return _act_approve_pr(client, project, repo, pr_id)
+    if action == "unapprove_pr":
+        return _act_unapprove_pr(client, project, repo, pr_id)
+    if action == "needs_work_pr":
+        return _act_needs_work_pr(client, project, repo, pr_id)
+    if action == "decline_pr":
+        return _act_decline_pr(client, project, repo, pr_id)
+    if action == "merge_pr":
+        return _act_merge_pr(client, project, repo, pr_id, kwargs)
+    if action == "list_branches":
+        return _act_list_branches(client, project, repo, kwargs)
+    if action == "create_branch":
+        return _act_create_branch(client, project, repo, kwargs)
+    if action == "delete_branch":
+        return _act_delete_branch(client, project, repo, kwargs)
+    if action == "list_commits":
+        return _act_list_commits(client, project, repo, kwargs)
+    if action == "list_activity":
+        return _act_list_activity(client, project, repo, kwargs)
+    if action == "build_status":
+        return _act_build_status(client, kwargs)
+    if action == "repo_settings":
+        return _act_repo_settings(client, project, repo)
+    if action == "update_repo_settings":
+        return _act_update_repo_settings(client, project, repo, kwargs)
+    if action == "list_webhooks":
+        return _act_list_webhooks(client, project, repo)
+    if action == "create_webhook":
+        return _act_create_webhook(client, project, repo, kwargs)
+    if action == "delete_webhook":
+        return _act_delete_webhook(client, project, repo, kwargs)
+    # list_permissions — the action set is closed by the _VALID_ACTIONS gate
+    return _act_list_permissions(client, project, repo)
+
+
 # ── Ledger logging for mutations ──────────────────────────
 
 
@@ -678,166 +1122,73 @@ def handle_bitbucket(action: str, svc, finalize, **kwargs) -> str:
 
     ``svc`` provides ``project_path``, ``edit_ledger``, ``activity_log``,
     ``session_mgr``. ``finalize(tool, args, response, summary)`` logs the call.
+    ``format="json"`` returns ``{"ok", "action", "data"}`` JSON instead of
+    the capped text reply (see cli/tools/_json_reply.py).
     """
     action = (action or "").strip().lower()
     args_for_log = {k: v for k, v in kwargs.items() if k not in {"token", "secret"}}
     args_for_log["action"] = action
+    want_json = jr.wants_json(kwargs)
+
+    def fail(msg: str, summary: str, *, status: int = 0) -> str:
+        if want_json:
+            return finalize(_TOOL, args_for_log,
+                            jr.error(action, msg, status=status, code=summary),
+                            summary, ok=False)
+        return finalize(_TOOL, args_for_log, msg, summary)
 
     if not action:
-        return finalize(_TOOL, args_for_log,
-                        "[bitbucket:error] action is required", "error")
+        return fail("[bitbucket:error] action is required", "error")
 
     client, err = _build_client(svc)
 
     # `status` is special — it can render the config without a working client.
     if action == "status":
+        if want_json:
+            data = _status_data(client, err, svc)
+            return finalize(_TOOL, args_for_log, jr.ok("status", data), "status")
         resp = _act_status(client, err, svc)
         return finalize(_TOOL, args_for_log, _cap(resp), "status")
 
     if client is None:
-        return finalize(_TOOL, args_for_log, err, "no-account")
+        return fail(err, "no-account")
+
+    if action not in _VALID_ACTIONS:
+        return fail(
+            f"[bitbucket:unknown-action] '{action}'. Valid: {', '.join(_VALID_ACTIONS)}",
+            "unknown-action",
+        )
 
     # Resolve project/repo for repo-scoped actions.
     project = repo = ""
     if action in _REPO_SCOPED:
         project, repo, scope_err = _resolve_repo(action, kwargs, svc)
         if scope_err:
-            return finalize(_TOOL, args_for_log, scope_err, "missing-arg")
+            return fail(scope_err, "missing-arg")
 
     pr_id = int(kwargs.get("pr_id") or kwargs.get("id") or 0)
+    if action in _PR_ACTIONS and not pr_id:
+        return fail("[bitbucket:error] pr_id required", "missing-arg")
 
+    data = None
     try:
-        if action == "whoami":
-            resp = _act_whoami(client)
-        elif action == "list_projects":
-            resp = _act_list_projects(client, kwargs)
-        elif action == "list_repos":
-            resp = _act_list_repos(client, project)
-        elif action == "get_repo":
-            resp = _act_get_repo(client, project, repo)
-        elif action == "list_prs":
-            resp = _act_list_prs(client, project, repo, kwargs)
-        elif action == "get_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_get_pr(client, project, repo, pr_id)
-        elif action == "get_pr_diff":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_get_pr_diff(client, project, repo, pr_id, kwargs)
-        elif action == "get_pr_activities":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_get_pr_activities(client, project, repo, pr_id)
-        elif action == "get_pr_commits":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_get_pr_commits(client, project, repo, pr_id)
-        elif action == "create_pr":
-            resp = _act_create_pr(client, project, repo, kwargs)
-        elif action == "update_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_update_pr(client, project, repo, pr_id, kwargs)
-        elif action == "comment_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_comment_pr(client, project, repo, pr_id, kwargs)
-        elif action == "update_pr_comment":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_update_pr_comment(client, project, repo, pr_id, kwargs)
-        elif action == "delete_pr_comment":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_delete_pr_comment(client, project, repo, pr_id, kwargs)
-        elif action == "list_pr_tasks":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_list_pr_tasks(client, project, repo, pr_id, kwargs)
-        elif action == "create_pr_task":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_create_pr_task(client, project, repo, pr_id, kwargs)
-        elif action == "resolve_pr_task":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_resolve_pr_task(client, project, repo, pr_id, kwargs)
-        elif action == "approve_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_approve_pr(client, project, repo, pr_id)
-        elif action == "unapprove_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_unapprove_pr(client, project, repo, pr_id)
-        elif action == "needs_work_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_needs_work_pr(client, project, repo, pr_id)
-        elif action == "decline_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_decline_pr(client, project, repo, pr_id)
-        elif action == "merge_pr":
-            if not pr_id:
-                return finalize(_TOOL, args_for_log, "[bitbucket:error] pr_id required", "missing-arg")
-            resp = _act_merge_pr(client, project, repo, pr_id, kwargs)
-        elif action == "list_branches":
-            resp = _act_list_branches(client, project, repo, kwargs)
-        elif action == "create_branch":
-            resp = _act_create_branch(client, project, repo, kwargs)
-        elif action == "delete_branch":
-            resp = _act_delete_branch(client, project, repo, kwargs)
-        elif action == "list_commits":
-            resp = _act_list_commits(client, project, repo, kwargs)
-        elif action == "list_activity":
-            resp = _act_list_activity(client, project, repo, kwargs)
-        elif action == "build_status":
-            resp = _act_build_status(client, kwargs)
-        elif action == "repo_settings":
-            resp = _act_repo_settings(client, project, repo)
-        elif action == "update_repo_settings":
-            resp = _act_update_repo_settings(client, project, repo, kwargs)
-        elif action == "list_webhooks":
-            resp = _act_list_webhooks(client, project, repo)
-        elif action == "create_webhook":
-            resp = _act_create_webhook(client, project, repo, kwargs)
-        elif action == "delete_webhook":
-            resp = _act_delete_webhook(client, project, repo, kwargs)
-        elif action == "list_permissions":
-            resp = _act_list_permissions(client, project, repo)
-        else:
-            valid = sorted([
-                "status", "whoami",
-                "list_projects", "list_repos", "get_repo",
-                "list_prs", "get_pr", "get_pr_diff", "get_pr_activities",
-                "get_pr_commits",
-                "create_pr", "update_pr", "comment_pr", "update_pr_comment",
-                "delete_pr_comment", "approve_pr",
-                "unapprove_pr", "needs_work_pr", "decline_pr", "merge_pr",
-                "list_pr_tasks", "create_pr_task", "resolve_pr_task",
-                "list_branches", "create_branch", "delete_branch",
-                "list_commits", "list_activity", "build_status",
-                "repo_settings", "update_repo_settings",
-                "list_webhooks", "create_webhook", "delete_webhook",
-                "list_permissions",
-            ])
-            return finalize(
-                _TOOL, args_for_log,
-                f"[bitbucket:unknown-action] '{action}'. Valid: {', '.join(valid)}",
-                "unknown-action",
-            )
+        if want_json:
+            data = _json_read(client, action, project, repo, pr_id, kwargs)
+        if data is None:
+            resp = _dispatch_text(client, action, project, repo, pr_id, kwargs)
+    except _UsageError as exc:
+        return fail(f"[bitbucket:error] {exc}", "missing-arg")
     except BitbucketError as exc:
-        return finalize(
-            _TOOL, args_for_log,
-            f"[bitbucket:api-error] {exc}", f"http-{exc.status}",
-        )
+        return fail(f"[bitbucket:api-error] {exc}", f"http-{exc.status}",
+                    status=exc.status)
     except Exception as exc:  # pragma: no cover — defensive
-        return finalize(
-            _TOOL, args_for_log,
-            f"[bitbucket:internal-error] {type(exc).__name__}: {exc}", "error",
-        )
+        return fail(f"[bitbucket:internal-error] {type(exc).__name__}: {exc}", "error")
 
+    if data is not None:
+        return finalize(_TOOL, args_for_log, jr.ok(action, data), action)
     _log_mutation(svc, action, project, repo, kwargs, resp)
+    if want_json:
+        if ":error]" in resp.split("\n", 1)[0]:
+            return fail(resp, "error")
+        return finalize(_TOOL, args_for_log, jr.text(action, resp), action)
     return finalize(_TOOL, args_for_log, _cap(resp), action)

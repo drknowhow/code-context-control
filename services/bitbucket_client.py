@@ -6,7 +6,8 @@ Targets the on-prem 'Data Center' / 'Server' product, NOT Bitbucket Cloud
 (which uses a different host, auth model, and API path).
 
 Surface:
-  * Read       — projects, repos, PRs, branches, commits, builds, activity
+  * Read       — projects, repos, PRs, branches, commits, builds, activity,
+                 README / raw files, a PR's linked Jira issues
   * PR writes  — create / comment / approve / unapprove / decline / merge
   * Branch     — create / delete
   * Admin      — repo settings, webhooks, permissions
@@ -28,6 +29,14 @@ _TIMEOUT = 30  # seconds
 _API = "/rest/api/1.0"
 _BUILD_API = "/rest/build-status/1.0"
 _BRANCH_UTILS = "/rest/branch-utils/1.0"
+_JIRA_INTEGRATION = "/rest/jira/1.0"
+
+# Raw file reads (README, get_file) return at most this many bytes of text.
+_FILE_CAP = 256 * 1024
+# A NUL byte in this many leading bytes marks a file as binary.
+_BINARY_SNIFF = 8192
+# README picking: markdown first, then the other common forms.
+_README_ORDER = (".md", ".markdown", ".rst", ".txt", "")
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -47,6 +56,30 @@ class BitbucketError(RuntimeError):
         self.status = status
         self.path = path
         self.body = body
+
+
+def pick_readme(names: list[str]) -> str:
+    """The README to show from a list of root file names: ``README.md``
+    before ``README.markdown``, ``.rst``, ``.txt``, no extension, then any
+    other ``README.*``. Matching ignores case. Empty when there is none."""
+    def ext(name: str) -> str:
+        dot = name.find(".")
+        return name[dot:].lower() if dot >= 0 else ""
+
+    def stem(name: str) -> str:
+        dot = name.find(".")
+        return (name[:dot] if dot >= 0 else name).lower()
+
+    found = [n for n in names if "/" not in n and stem(n) == "readme"]
+    if not found:
+        return ""
+
+    def rank(name: str) -> tuple[int, str]:
+        e = ext(name)
+        order = _README_ORDER.index(e) if e in _README_ORDER else len(_README_ORDER)
+        return order, name.lower()
+
+    return min(found, key=rank)
 
 
 class BitbucketDataCenterClient:
@@ -221,12 +254,77 @@ class BitbucketDataCenterClient:
             "GET", f"/projects/{project_key}/repos/{repo_slug}/default-branch"
         )
 
+    # ── Files (read) ──────────────────────────────────────
+
+    def list_root_files(
+        self, project_key: str, repo_slug: str, *, at: str = ""
+    ) -> list[str]:
+        """Names of the files (not directories) at the repo root."""
+        page = self._request(
+            "GET", f"/projects/{project_key}/repos/{repo_slug}/browse",
+            params={"at": at, "limit": 1000},
+        )
+        children = ((page or {}).get("children") or {}).get("values") or []
+        names = []
+        for child in children:
+            if child.get("type") != "FILE":
+                continue
+            name = (child.get("path") or {}).get("toString") \
+                or (child.get("path") or {}).get("name") or ""
+            if name:
+                names.append(name)
+        return names
+
+    def get_file(
+        self, project_key: str, repo_slug: str, path: str, *, at: str = "",
+        max_bytes: int = _FILE_CAP,
+    ) -> dict:
+        """A text file's content via ``/raw``. Binary files (a NUL byte near
+        the start) come back with ``binary`` set and no text; text past
+        *max_bytes* is cut and ``truncated`` set."""
+        clean = path.strip().lstrip("/")
+        payload = self._request(
+            "GET",
+            f"/projects/{project_key}/repos/{repo_slug}/raw/"
+            f"{urllib.parse.quote(clean, safe='/')}",
+            params={"at": at}, raw=True, accept="text/plain",
+        )
+        payload = payload if isinstance(payload, bytes) else b""
+        out = {"path": clean, "at": at, "size": len(payload),
+               "binary": False, "truncated": False, "text": ""}
+        if b"\x00" in payload[:_BINARY_SNIFF]:
+            out["binary"] = True
+            return out
+        if len(payload) > max_bytes:
+            payload = payload[:max_bytes]
+            out["truncated"] = True
+        out["text"] = payload.decode("utf-8", errors="replace")
+        return out
+
+    def readme(
+        self, project_key: str, repo_slug: str, *, at: str = ""
+    ) -> dict:
+        """The root README (markdown preferred), as ``get_file`` returns it
+        plus ``found``. No README gives ``found: False`` and an empty path."""
+        name = pick_readme(self.list_root_files(project_key, repo_slug, at=at))
+        if not name:
+            return {"found": False, "path": "", "at": at, "size": 0,
+                    "binary": False, "truncated": False, "text": ""}
+        out = self.get_file(project_key, repo_slug, name, at=at)
+        out["found"] = True
+        return out
+
     def list_branches(
-        self, project_key: str, repo_slug: str, *, filter_text: str = ""
+        self, project_key: str, repo_slug: str, *, filter_text: str = "",
+        order: str = "",
     ) -> list[dict]:
+        """``order`` is MODIFICATION (most recently changed first) or
+        ALPHABETICAL; empty keeps the server default."""
         params = {"details": "true"}
         if filter_text:
             params["filterText"] = filter_text
+        if order:
+            params["orderBy"] = order.upper()
         return list(
             self._paged(
                 f"/projects/{project_key}/repos/{repo_slug}/branches", params=params
@@ -417,6 +515,21 @@ class BitbucketDataCenterClient:
         return list(self._paged(
             f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/commits"
         ))
+
+    def pr_issues(
+        self, project_key: str, repo_slug: str, pr_id: int
+    ) -> list[dict]:
+        """Jira issues Bitbucket's Jira integration links to a PR:
+        ``[{"key": "PROJ-1", "url": "..."}]``. Needs the integration set up;
+        without it the endpoint 404s."""
+        res = self._request(
+            "GET",
+            f"/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}/issues",
+            api_root=_JIRA_INTEGRATION,
+        )
+        if isinstance(res, dict):
+            res = res.get("values") or []
+        return [i for i in res if isinstance(i, dict)] if isinstance(res, list) else []
 
     def get_pr_comment(
         self, project_key: str, repo_slug: str, pr_id: int, comment_id: int

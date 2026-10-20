@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from cli.tools import _json_reply as jr
 from core import count_tokens
 from core.config import load_jira_config
 from services import jira_credentials as jr_creds
@@ -25,7 +26,7 @@ _MUTATING_ACTIONS = {
 }
 
 _VALID_ACTIONS = sorted([
-    "status", "whoami", "search", "get_issue", "my_issues",
+    "status", "whoami", "search", "get_issue", "my_issues", "dev_status",
     "list_projects", "list_transitions", "get_create_metadata",
     "search_users", "list_link_types",
     "list_boards", "list_sprints", "list_worklogs",
@@ -33,6 +34,14 @@ _VALID_ACTIONS = sorted([
     "link_issues", "unlink_issues", "delete_issue",
     "move_to_sprint", "move_to_backlog", "add_worklog", "attach_file",
 ])
+
+# Actions that need an `issue` key.
+_ISSUE_ACTIONS = {
+    "get_issue", "dev_status", "list_transitions", "update_issue",
+    "comment", "transition", "assign", "link_issues",
+    "delete_issue", "move_to_sprint", "move_to_backlog",
+    "add_worklog", "list_worklogs", "attach_file",
+}
 
 # Attachment uploads are read fully into memory before the multipart POST;
 # Jira's own default cap is 10MB — this local guard just prevents runaway
@@ -122,8 +131,24 @@ def _format_issue_full(i: dict) -> str:
     ]
     if i.get("labels"):
         lines.append(f"  labels: {', '.join(i['labels'])}")
+    if i.get("components"):
+        lines.append(f"  components: {', '.join(i['components'])}")
+    if i.get("fix_versions"):
+        lines.append(f"  fix versions: {', '.join(i['fix_versions'])}")
+    if i.get("due"):
+        lines.append(f"  due: {i['due']}")
     if i.get("parent"):
-        lines.append(f"  parent: {i['parent']}")
+        about = " ".join(
+            p for p in (
+                f"({i['parent_type']})" if i.get("parent_type") else "",
+                i.get("parent_summary") or "",
+            ) if p
+        )
+        lines.append(f"  parent: {i['parent']} {about}".rstrip())
+    for s in i.get("subtasks", []):
+        lines.append(
+            f"  subtask: {s.get('key')} [{s.get('status')}] {s.get('summary')}"
+        )
     for link in i.get("links", []):
         status = f" [{link['status']}]" if link.get("status") else ""
         lines.append(
@@ -152,6 +177,35 @@ def _format_search(result: dict, label: str) -> str:
     lines.extend(f"  {_format_issue(i)}" for i in issues)
     if result.get("next_cursor"):
         lines.append(f"  next: pass cursor={result['next_cursor']}")
+    lines.extend(f"  warning: {w}" for w in result.get("warnings", []))
+    return "\n".join(lines)
+
+
+def _format_dev_status(d: dict) -> str:
+    key = d.get("issue", "")
+    if not d.get("available"):
+        return f"[jira:dev_status] {key}: {d.get('reason') or 'not available'}"
+    prs = d.get("pull_requests", [])
+    branches = d.get("branches", [])
+    commits = d.get("commits", [])
+    lines = [
+        f"[jira:dev_status] {key}: {len(prs)} pull request(s), "
+        f"{len(branches)} branch(es), {len(commits)} commit(s)"
+    ]
+    for p in prs:
+        lines.append(
+            f"  pr {p.get('repository')}#{p.get('id')} [{p.get('status')}] "
+            f"{p.get('title')} — {p.get('author')} {p.get('url')}".rstrip()
+        )
+    for b in branches:
+        lines.append(f"  branch {b.get('repository')}:{b.get('name')}")
+    for c in commits:
+        message = (c.get("message") or "").splitlines()[:1]
+        lines.append(
+            f"  commit {c.get('repository')}@{(c.get('id') or '')[:12]} "
+            f"{message[0] if message else ''}".rstrip()
+        )
+    lines.extend(f"  warning: {e}" for e in d.get("errors", []))
     return "\n".join(lines)
 
 
@@ -198,16 +252,28 @@ def _act_search(client: JiraClient, kwargs: dict) -> str:
     jql = (kwargs.get("jql") or "").strip()
     if not jql:
         return "[jira:error] jql is required for search"
-    result = client.search(
+    return _format_search(_search(client, jql, kwargs), "search")
+
+
+def _search(client: JiraClient, jql: str, kwargs: dict) -> dict:
+    return client.search(
         jql,
         fields=kwargs.get("fields_list") or "",
         limit=int(kwargs.get("limit") or 25),
         cursor=kwargs.get("cursor") or "",
+        validate=(kwargs.get("validate") or "").strip().lower(),
     )
-    return _format_search(result, "search")
 
 
 def _act_my_issues(client: JiraClient, entry: dict, kwargs: dict) -> str:
+    result = client.search(
+        _my_issues_jql(entry, kwargs),
+        limit=int(kwargs.get("limit") or 25), cursor=kwargs.get("cursor") or "",
+    )
+    return _format_search(result, "my_issues")
+
+
+def _my_issues_jql(entry: dict, kwargs: dict) -> str:
     clauses = ["assignee = currentUser()"]
     project = (kwargs.get("project") or "").strip() or entry.get("default_project", "")
     if project:
@@ -215,11 +281,7 @@ def _act_my_issues(client: JiraClient, entry: dict, kwargs: dict) -> str:
     category = (kwargs.get("status_category") or "").strip()
     if category:
         clauses.append(f"statusCategory = {_jql_quote(category)}")
-    jql = " AND ".join(clauses) + " ORDER BY updated DESC"
-    result = client.search(
-        jql, limit=int(kwargs.get("limit") or 25), cursor=kwargs.get("cursor") or ""
-    )
-    return _format_search(result, "my_issues")
+    return " AND ".join(clauses) + " ORDER BY updated DESC"
 
 
 def _act_list_projects(client: JiraClient, kwargs: dict) -> str:
@@ -629,98 +691,221 @@ def _log_mutation(svc, action: str, issue: str, project: str,
 # ── Main entrypoint ───────────────────────────────────────
 
 
+# ── JSON mode ─────────────────────────────────────────────
+
+
+class _UsageError(Exception):
+    """A missing or bad argument found while building a JSON reply."""
+
+
+def _json_read(client: JiraClient, entry: dict, action: str, issue: str,
+               kwargs: dict) -> dict | None:
+    """The structured data behind a read action, or None for an action
+    with no structured form (the writes), which the caller wraps as text."""
+    limit = int(kwargs.get("limit") or 0)
+    if action == "whoami":
+        me = client.myself()
+        return {
+            "display_name": me.get("displayName", ""),
+            "id": me.get("accountId") or me.get("key") or me.get("name") or "",
+            "name": me.get("name", ""),
+            "email": me.get("emailAddress", ""),
+        }
+    if action == "search":
+        jql = (kwargs.get("jql") or "").strip()
+        if not jql:
+            raise _UsageError("jql is required for search")
+        return _search(client, jql, kwargs)
+    if action == "my_issues":
+        return client.search(
+            _my_issues_jql(entry, kwargs), limit=limit or 25,
+            cursor=kwargs.get("cursor") or "",
+        )
+    if action == "get_issue":
+        return client.get_issue(issue)
+    if action == "dev_status":
+        return client.dev_status(issue)
+    if action == "list_projects":
+        return {"projects": client.list_projects(
+            query=kwargs.get("query") or "", limit=limit or 50)}
+    if action == "list_transitions":
+        return {"issue": issue, "transitions": client.list_transitions(issue)}
+    if action == "get_create_metadata":
+        project = (kwargs.get("project") or "").strip() \
+            or entry.get("default_project", "")
+        issue_type = (kwargs.get("issue_type") or "").strip()
+        if not project or not issue_type:
+            raise _UsageError(
+                "project and issue_type are required for get_create_metadata")
+        return client.get_create_metadata(project, issue_type)
+    if action == "search_users":
+        query = (kwargs.get("query") or "").strip()
+        if not query:
+            raise _UsageError("query is required for search_users")
+        return {"users": client.search_users(query, limit=limit or 10)}
+    if action == "list_link_types":
+        return {"link_types": client.list_link_types()}
+    if action == "list_boards":
+        project = (kwargs.get("project") or "").strip() \
+            or entry.get("default_project", "")
+        return {"boards": client.list_boards(project=project, limit=limit or 50)}
+    if action == "list_sprints":
+        board_id = int(kwargs.get("board_id") or 0)
+        if not board_id:
+            raise _UsageError(
+                "board_id is required for list_sprints — find it via list_boards")
+        return {"board_id": board_id, "sprints": client.list_sprints(
+            board_id, state=(kwargs.get("sprint_state") or "").strip(),
+            limit=limit or 50)}
+    if action == "list_worklogs":
+        return {"issue": issue, "worklogs": client.list_worklogs(issue)}
+    return None
+
+
+def _status_data(client: JiraClient | None, err: str, entry: dict, svc) -> dict:
+    project_path = getattr(svc, "project_path", ".") or "."
+    accounts = load_jira_config(project_path).get("accounts") or {}
+    data: dict[str, Any] = {
+        "accounts": [
+            {"name": name, "username": a.get("username", ""),
+             "base_url": a.get("base_url", ""),
+             "deployment": a.get("deployment", "")}
+            for name, a in accounts.items() if isinstance(a, dict)
+        ],
+        "account": entry.get("name", ""),
+        "deployment": entry.get("deployment", ""),
+        "base_url": entry.get("base_url", ""),
+        "default_project": entry.get("default_project", ""),
+        "connected": False,
+        "formats": ["text", "json"],
+    }
+    if client is None:
+        data["error"] = err or "[jira:no-account]"
+        return data
+    try:
+        info = client.server_info()
+        me = client.myself()
+        data.update(
+            connected=True,
+            version=info.get("version", ""),
+            user=me.get("displayName", ""),
+        )
+    except JiraError as exc:
+        data["error"] = str(exc)
+    return data
+
+
+def _dispatch_text(client: JiraClient, entry: dict, action: str, issue: str,
+                   kwargs: dict) -> str:
+    """Run *action* and return its text reply."""
+    if action == "whoami":
+        return _act_whoami(client)
+    if action == "search":
+        return _act_search(client, kwargs)
+    if action == "my_issues":
+        return _act_my_issues(client, entry, kwargs)
+    if action == "get_issue":
+        return _format_issue_full(client.get_issue(issue))
+    if action == "dev_status":
+        return _format_dev_status(client.dev_status(issue))
+    if action == "list_projects":
+        return _act_list_projects(client, kwargs)
+    if action == "list_transitions":
+        return _act_list_transitions(client, issue)
+    if action == "get_create_metadata":
+        return _act_create_metadata(client, entry, kwargs)
+    if action == "search_users":
+        return _act_search_users(client, kwargs)
+    if action == "list_link_types":
+        return _act_list_link_types(client)
+    if action == "link_issues":
+        return _act_link_issues(client, issue, kwargs)
+    if action == "unlink_issues":
+        return _act_unlink_issues(client, kwargs)
+    if action == "delete_issue":
+        return _act_delete_issue(client, issue, kwargs)
+    if action == "list_boards":
+        return _act_list_boards(client, entry, kwargs)
+    if action == "list_sprints":
+        return _act_list_sprints(client, kwargs)
+    if action == "move_to_sprint":
+        return _act_move_to_sprint(client, issue, kwargs)
+    if action == "move_to_backlog":
+        return _act_move_to_backlog(client, issue)
+    if action == "add_worklog":
+        return _act_add_worklog(client, issue, kwargs)
+    if action == "list_worklogs":
+        return _act_list_worklogs(client, issue)
+    if action == "attach_file":
+        return _act_attach_file(client, issue, kwargs)
+    if action == "create_issue":
+        return _act_create_issue(client, entry, kwargs)
+    if action == "update_issue":
+        return _act_update_issue(client, issue, kwargs)
+    if action == "comment":
+        return _act_comment(client, issue, kwargs)
+    if action == "transition":
+        return _act_transition(client, issue, kwargs)
+    # assign — the action set is closed by the _VALID_ACTIONS gate
+    return _act_assign(client, issue, kwargs)
+
+
 def handle_jira(action: str, svc, finalize, **kwargs) -> str:
     """Dispatch a Jira action.
 
     ``svc`` provides ``project_path``, ``edit_ledger``, ``activity_log``.
     ``finalize(tool, args, response, summary)`` logs the call.
+    ``format="json"`` returns ``{"ok", "action", "data"}`` JSON instead of
+    the capped text reply (see cli/tools/_json_reply.py).
     """
     action = (action or "").strip().lower()
     args_for_log = {k: v for k, v in kwargs.items() if k not in {"token", "secret"}}
     args_for_log["action"] = action
+    want_json = jr.wants_json(kwargs)
+
+    def fail(msg: str, summary: str, *, status: int = 0) -> str:
+        if want_json:
+            return finalize(_TOOL, args_for_log,
+                            jr.error(action, msg, status=status, code=summary),
+                            summary, ok=False)
+        return finalize(_TOOL, args_for_log, msg, summary)
 
     if not action:
-        return finalize(_TOOL, args_for_log, "[jira:error] action is required", "error")
+        return fail("[jira:error] action is required", "error")
 
     client, entry, err = _build_client(svc, kwargs.get("account") or "")
 
     # `status` renders the config even without a working client.
     if action == "status":
+        if want_json:
+            data = _status_data(client, err, entry, svc)
+            return finalize(_TOOL, args_for_log, jr.ok("status", data), "status")
         resp = _act_status(client, err, entry, svc)
         return finalize(_TOOL, args_for_log, _cap(resp), "status")
 
     if client is None:
-        return finalize(_TOOL, args_for_log, err, "no-account")
+        return fail(err, "no-account")
 
     if action not in _VALID_ACTIONS:
-        return finalize(
-            _TOOL, args_for_log,
+        return fail(
             f"[jira:unknown-action] '{action}'. Valid: {', '.join(_VALID_ACTIONS)}",
             "unknown-action",
         )
 
     issue = (kwargs.get("issue") or "").strip()
-    if action in {"get_issue", "list_transitions", "update_issue",
-                  "comment", "transition", "assign", "link_issues",
-                  "delete_issue", "move_to_sprint", "move_to_backlog",
-                  "add_worklog", "list_worklogs", "attach_file"} \
-            and not issue:
-        return finalize(
-            _TOOL, args_for_log,
-            f"[jira:error] issue key is required for {action}", "missing-arg",
-        )
+    if action in _ISSUE_ACTIONS and not issue:
+        return fail(f"[jira:error] issue key is required for {action}", "missing-arg")
     project_for_log = (kwargs.get("project") or "").strip() \
         or entry.get("default_project", "")
 
+    data = None
     try:
-        if action == "whoami":
-            resp = _act_whoami(client)
-        elif action == "search":
-            resp = _act_search(client, kwargs)
-        elif action == "my_issues":
-            resp = _act_my_issues(client, entry, kwargs)
-        elif action == "get_issue":
-            resp = _format_issue_full(client.get_issue(issue))
-        elif action == "list_projects":
-            resp = _act_list_projects(client, kwargs)
-        elif action == "list_transitions":
-            resp = _act_list_transitions(client, issue)
-        elif action == "get_create_metadata":
-            resp = _act_create_metadata(client, entry, kwargs)
-        elif action == "search_users":
-            resp = _act_search_users(client, kwargs)
-        elif action == "list_link_types":
-            resp = _act_list_link_types(client)
-        elif action == "link_issues":
-            resp = _act_link_issues(client, issue, kwargs)
-        elif action == "unlink_issues":
-            resp = _act_unlink_issues(client, kwargs)
-        elif action == "delete_issue":
-            resp = _act_delete_issue(client, issue, kwargs)
-        elif action == "list_boards":
-            resp = _act_list_boards(client, entry, kwargs)
-        elif action == "list_sprints":
-            resp = _act_list_sprints(client, kwargs)
-        elif action == "move_to_sprint":
-            resp = _act_move_to_sprint(client, issue, kwargs)
-        elif action == "move_to_backlog":
-            resp = _act_move_to_backlog(client, issue)
-        elif action == "add_worklog":
-            resp = _act_add_worklog(client, issue, kwargs)
-        elif action == "list_worklogs":
-            resp = _act_list_worklogs(client, issue)
-        elif action == "attach_file":
-            resp = _act_attach_file(client, issue, kwargs)
-        elif action == "create_issue":
-            resp = _act_create_issue(client, entry, kwargs)
-        elif action == "update_issue":
-            resp = _act_update_issue(client, issue, kwargs)
-        elif action == "comment":
-            resp = _act_comment(client, issue, kwargs)
-        elif action == "transition":
-            resp = _act_transition(client, issue, kwargs)
-        else:  # assign — action set is closed by the _VALID_ACTIONS gate above
-            resp = _act_assign(client, issue, kwargs)
+        if want_json:
+            data = _json_read(client, entry, action, issue, kwargs)
+        if data is None:
+            resp = _dispatch_text(client, entry, action, issue, kwargs)
+    except _UsageError as exc:
+        return fail(f"[jira:error] {exc}", "missing-arg")
     except JiraError as exc:
         msg = f"[jira:api-error] {exc}"
         if "appropriate screen" in str(exc):
@@ -737,12 +922,15 @@ def handle_jira(action: str, svc, finalize, **kwargs) -> str:
                     "Jira admin must add it to the screen before the API can "
                     "set it."
                 )
-        return finalize(_TOOL, args_for_log, msg, f"http-{exc.status}")
+        return fail(msg, f"http-{exc.status}", status=exc.status)
     except Exception as exc:  # pragma: no cover — defensive
-        return finalize(
-            _TOOL, args_for_log,
-            f"[jira:internal-error] {type(exc).__name__}: {exc}", "error",
-        )
+        return fail(f"[jira:internal-error] {type(exc).__name__}: {exc}", "error")
 
+    if data is not None:
+        return finalize(_TOOL, args_for_log, jr.ok(action, data), action)
     _log_mutation(svc, action, issue, project_for_log, kwargs, resp)
+    if want_json:
+        if resp.startswith(("[jira:error]", "[jira:missing-fields]")):
+            return fail(resp, "error")
+        return finalize(_TOOL, args_for_log, jr.text(action, resp), action)
     return finalize(_TOOL, args_for_log, _cap(resp), action)
