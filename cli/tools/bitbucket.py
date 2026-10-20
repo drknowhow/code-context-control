@@ -13,8 +13,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from core import count_tokens
 from cli.tools import _json_reply as jr
+from core import count_tokens
 from core.config import load_bitbucket_config
 from services import bitbucket_credentials as bb_creds
 from services.bitbucket_client import BitbucketDataCenterClient, BitbucketError
