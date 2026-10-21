@@ -559,6 +559,11 @@ def _notify_decision(project_path: str, row: dict, grant=None) -> None:
             severity="info",
             title=f"Override {status}: {name}",
             message=message,
+            # Scopes the store's dedup to this request: two decisions on one
+            # file inside the info cooldown are two lines, and a client drops
+            # a card answered elsewhere when it sees one. No `kind`, so the
+            # line still reads as a decision rather than a request to route to.
+            ref_id=str(row.get("id") or ""),
         )
     except Exception:
         pass  # the decision already happened; a missing feed line never undoes it

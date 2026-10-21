@@ -679,7 +679,12 @@ withheld for that reason: it is a canonical local-filesystem identity used for
 grant matching, and the client already has the human-readable `path`. The
 cross-project listing additionally drops rows whose project the gateway's
 scanner does not serve; the store is one file for the whole machine, and a
-token's reach must not exceed the projects it can enumerate.
+token's reach must not exceed the projects it can enumerate. A row filed from
+a directory inside a served project, such as a session in a worktree under
+`.claude/worktrees/`, is served by that project (since 2.158.2): the listing,
+`GET /overrides/<id>`, `decide` and `mute` all accept it. Its notification
+lands in the worktree's own `.c3/`, which the feed does not scan, so a client
+learns of it from its next `/overrides` read rather than from the feed.
 
 See the deviation list at the top of this document for the four places the
 implementation had to decide something §8 left open.

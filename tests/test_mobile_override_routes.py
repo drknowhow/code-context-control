@@ -427,6 +427,33 @@ class TestListing(_OverrideRouteBase):
         self.assertEqual(
             self.get(f"/api/mobile/overrides/{row['id']}").status_code, 404)
 
+    def test_rows_from_a_worktree_inside_a_registered_project_are_served(self):
+        worktree = self.proj / ".claude" / "worktrees" / "wt-1"
+        (worktree / ".c3").mkdir(parents=True)
+        self.write_policy(worktree)
+        row = self.make_request(project=worktree)
+
+        ids = [r["id"] for r in
+               self.get("/api/mobile/overrides?status=pending").get_json()["requests"]]
+        self.assertIn(row["id"], ids)
+        self.assertEqual(
+            self.get(f"/api/mobile/overrides/{row['id']}").status_code, 200)
+        res = self.post(f"/api/mobile/overrides/{row['id']}/decide",
+                        {"decision": "deny"})
+        self.assertEqual(res.status_code, 200)
+
+    def test_a_sibling_sharing_a_name_prefix_is_not_inside_the_project(self):
+        sibling = Path(f"{self.proj}-copy")
+        (sibling / ".c3").mkdir(parents=True)
+        self.write_policy(sibling)
+        row = self.make_request(project=sibling)
+
+        ids = [r["id"] for r in
+               self.get("/api/mobile/overrides").get_json()["requests"]]
+        self.assertNotIn(row["id"], ids)
+        self.assertEqual(
+            self.get(f"/api/mobile/overrides/{row['id']}").status_code, 404)
+
     def test_filter_by_status(self):
         pending = self.make_request(name="p.env", rule="**/*.env")
         denied = self.make_request(name="d.env", rule="**/*.env")

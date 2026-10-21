@@ -4,6 +4,35 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.2] - 2026-10-21
+
+### Fixed — approval requests that never reached the desk or the phone
+
+Clients learn of an override request from its line in
+`.c3/notifications.jsonl`, and two things kept that line from existing.
+`NotificationStore.add` deduplicated on agent and title, and a request's
+title names only the tool, the operation and the file name. Once one request
+on a file had been read, the next request on that file inside the cooldown
+(5 minutes at the default `critical` severity) wrote nothing, so the desk and
+the phone never showed it. A notification with a `ref_id` now matches only
+entries with the same `ref_id`, in the cooldown, the duplicate collapse and
+the retro-cleanup; decision lines carry the request id as `ref_id` for the
+same reason. Second, every process that rewrote the file (the auto-ack on
+each tool response, acks from the gateway, the collapse) did so without a
+cross-process lock and by truncating it first, so a line appended in between,
+or read as a truncated file, was lost. On one machine, 36 of the 63 requests
+whose project still existed had no notification line. Rewrites now hold a lock on
+`notifications.jsonl.lock` and publish by atomic replace; the Hub's "clear"
+route goes through the store.
+
+A third gap was on the gateway: a session in a worktree nested inside a
+registered project (`.claude/worktrees/<name>`) files requests under the
+worktree path, which is not registered, so `/api/mobile/overrides` dropped
+the row and `GET`, `decide` and `mute` answered 404. A row inside a served
+project is now served by that project. Its notification still lands in the
+worktree's `.c3/`, outside the feed, so clients see it on their next
+`/overrides` read (C3 Desk 0.15.1 re-reads every 30 s).
+
 ## [2.158.1] - 2026-10-21
 
 ### Fixed — FileMemory and BranchWatch stop re-reading every file map
