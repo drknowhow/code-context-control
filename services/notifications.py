@@ -8,10 +8,8 @@ auto-ack on each tool response), hook subprocesses (session open and end, the
 override request filed at a confirm denial), the Oracle (the phone's and the
 desk's acks) and the job supervisor. So every method that can rewrite the
 file holds a cross-process lock, and a rewrite is published by atomic
-replace. Before 2.158.2 neither was true: a writer that read the file while
-another was rewriting it read a truncated copy and wrote that back, and
-whatever had been appended in between was gone, including approval requests
-the desk and the phone were waiting for.
+replace; otherwise a line appended between another writer's read and its
+rewrite is lost.
 """
 import hashlib
 import json
@@ -31,10 +29,8 @@ _COOLDOWN_MINUTES = {"critical": 5, "warning": 30, "info": 60}
 # Duplicate collapse: keep the most severe label when merging records.
 _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 
-# How long a writer waits for another process to finish its rewrite. A
-# rewrite takes milliseconds; the bound is for a holder that is alive but
-# stuck. Past it the write goes ahead unlocked, as before 2.158.2, rather than
-# being dropped: a notification nobody receives is what the lock prevents.
+# How long a writer waits for another process's rewrite. Past it the write
+# goes ahead unlocked rather than being dropped.
 _LOCK_TIMEOUT_S = 5.0
 _LOCK_POLL_S = 0.01
 
@@ -197,14 +193,9 @@ class NotificationStore:
             for existing in entries:
                 if existing.get("agent") != agent or existing.get("title") != title:
                     continue
-                # A notification that names what it is about is that thing's
-                # own event: a second approval request on the same file is a
-                # new request, not a repeat of the first. Matched on agent and
-                # title alone, an acknowledged request's cooldown swallowed
-                # the next request's notification, and the desk and the phone,
-                # which learn of requests from this file, never showed it.
-                # `replace_if_unacked` keeps title scope: that caller asked for
-                # one record per title.
+                # A second request on the same file is a new event, not a
+                # repeat: clients learn of requests only from this line.
+                # `replace_if_unacked` keeps title scope by request.
                 if (ref_id and not replace_if_unacked
                         and (existing.get("ref_id") or "") != ref_id):
                     continue
