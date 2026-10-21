@@ -1072,25 +1072,10 @@ def api_project_notifications_clear():
     if not nf.exists():
         return jsonify({"cleared": 0})
     try:
-        entries = []
-        for line in nf.read_text(encoding="utf-8").strip().splitlines():
-            if not line.strip():
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        count = 0
-        for e in entries:
-            if not e.get("acknowledged"):
-                e["acknowledged"] = True
-                count += 1
-        if count:
-            nf.write_text(
-                "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n",
-                encoding="utf-8",
-            )
-        return jsonify({"cleared": count})
+        # Through the store: its rewrite holds the cross-process lock, so a
+        # notification another process appends meanwhile is kept.
+        from services.notifications import NotificationStore
+        return jsonify({"cleared": NotificationStore(path).acknowledge_all()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

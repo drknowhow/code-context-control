@@ -500,6 +500,38 @@ def _resolve_registered(raw: str) -> Path | None:
     return None
 
 
+def _serving_project(raw: str) -> Path | None:
+    """The registered project that serves an override row's ``project_path``:
+    that project itself, or the deepest registered project containing it.
+
+    A session in a worktree nested inside a registered project (Claude Code's
+    ``.claude/worktrees/<name>``) files its requests under the worktree path,
+    which is never registered itself. Refusing those rows left the desk and
+    the phone unable to show or answer a hold the agent was blocked on.
+    """
+    raw = (raw or "").strip()
+    if not raw or _scanner is None:
+        return None
+    try:
+        target = os.path.normcase(str(Path(raw).resolve()))
+    except (OSError, ValueError):
+        return None
+    best: Path | None = None
+    best_len = -1
+    for proj in _scanner.discover():
+        if not proj.get("has_c3"):
+            continue
+        try:
+            candidate = Path(proj["path"]).resolve()
+        except (OSError, ValueError):
+            continue
+        key = os.path.normcase(str(candidate))
+        inside = target == key or target.startswith(key.rstrip("\\/") + os.sep)
+        if inside and len(key) > best_len:
+            best, best_len = candidate, len(key)
+    return best
+
+
 def _project_or_404(raw: str):
     """Returns (Path, None) or (None, error_response)."""
     if not (raw or "").strip():
@@ -2453,7 +2485,7 @@ def mobile_overrides_list():
         # does not serve — the store is one file across every project on the
         # machine, including ones the scanner has since dropped.
         rows = [r for r in rows
-                if _resolve_registered(str(r.get("project_path") or "")) is not None]
+                if _serving_project(str(r.get("project_path") or "")) is not None]
     channels = _override_channels(rows)
     cards = []
     for r in rows:
@@ -2739,7 +2771,7 @@ def mobile_overrides_costs():
         # whole machine, and a cross-project view must not name a project
         # this token cannot otherwise see.
         rules = [r for r in rules
-                 if _resolve_registered(str(r.get("project_path") or "")) is not None]
+                 if _serving_project(str(r.get("project_path") or "")) is not None]
     return jsonify({"days": days, "rules": rules, "count": len(rules),
                     "project": project_path})
 
@@ -2754,7 +2786,7 @@ def mobile_override_get(request_id):
     row = orq.get(str(request_id))
     if row is None:
         return jsonify({"error": "unknown request"}), 404
-    if _resolve_registered(str(row.get("project_path") or "")) is None:
+    if _serving_project(str(row.get("project_path") or "")) is None:
         # Same refusal as an unknown id: whether a request exists for a project
         # this gateway does not serve is not this token's business.
         return jsonify({"error": "unknown request"}), 404
@@ -2823,7 +2855,7 @@ def mobile_override_decide(request_id):
                                  f"{', '.join(orq.MODES)}"}), 400
 
     row = orq.get(str(request_id))
-    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+    if row is None or _serving_project(str(row.get("project_path") or "")) is None:
         return jsonify({"error": "unknown request"}), 404
     if row.get("status") != orq.STATUS_PENDING:
         # §12.7: it lapsed while the phone was showing it. 409, and the card
@@ -2961,7 +2993,7 @@ def mobile_override_mute(request_id):
     from services import override_requests as orq
     data = request.get_json(silent=True) or {}
     row = orq.get(str(request_id))
-    if row is None or _resolve_registered(str(row.get("project_path") or "")) is None:
+    if row is None or _serving_project(str(row.get("project_path") or "")) is None:
         return jsonify({"error": "unknown request"}), 404
     if row.get("status") != orq.STATUS_PENDING:
         return jsonify({"error": f"request is {row.get('status')}, not pending",

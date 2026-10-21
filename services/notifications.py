@@ -2,19 +2,37 @@
 
 Persists to .c3/notifications.jsonl. Supports dedup, severity filtering,
 and auto-acknowledgement when surfaced to Claude via tool responses.
+
+Several processes write one project's file at once: every MCP server (the
+auto-ack on each tool response), hook subprocesses (session open and end, the
+override request filed at a confirm denial), the Oracle (the phone's and the
+desk's acks) and the job supervisor. So every method that can rewrite the
+file holds a cross-process lock, and a rewrite is published by atomic
+replace; otherwise a line appended between another writer's read and its
+rewrite is lost.
 """
 import hashlib
 import json
+import os
 import threading
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from services.atomic_json import write_text_atomic
 
 # How long to suppress a repeated agent+title after it has been acknowledged.
 _COOLDOWN_MINUTES = {"critical": 5, "warning": 30, "info": 60}
 
 # Duplicate collapse: keep the most severe label when merging records.
 _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+# How long a writer waits for another process's rewrite. Past it the write
+# goes ahead unlocked rather than being dropped.
+_LOCK_TIMEOUT_S = 5.0
+_LOCK_POLL_S = 0.01
 
 # Event kinds written by C3's own producers (v2.126.0). A client ROUTES on
 # ``kind`` + ``ref_id`` rather than parsing the title; every kind here also
@@ -63,17 +81,83 @@ def _entry_count(entry: dict) -> int:
         return 1
 
 
+class _FileLock:
+    """Advisory cross-process lock on a sidecar file, released by the OS if
+    the holder dies. The shape of ``services.task_store._FileLock``, except
+    that ``acquire`` gives up quietly: it returns False on timeout instead of
+    raising, and the caller carries on without the lock."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._fh = None
+
+    def acquire(self, timeout_s: float = _LOCK_TIMEOUT_S) -> bool:
+        try:
+            fh = open(self.path, "ab")  # never read/written; fd exists to hold the lock
+        except OSError:
+            return False
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._fh = fh
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    fh.close()
+                    return False
+                time.sleep(_LOCK_POLL_S)
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            fh.close()
+
+
 class NotificationStore:
     """Thread-safe JSONL notification store for background agents."""
 
     def __init__(self, project_path: str):
         self._file = Path(project_path) / ".c3" / "notifications.jsonl"
         self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_file = self._file.with_name(self._file.name + ".lock")
         self._lock = threading.Lock()
         # Retro-cleanup runs at most once per store instance, lazily on first
         # access, so pre-existing duplicate backlogs self-heal without a
         # dedicated maintenance pass.
         self._collapsed = False
+
+    @contextmanager
+    def _locked(self):
+        """This instance's thread lock plus the cross-process file lock. Every
+        method that can rewrite the file runs under both; instances are made
+        per call all over C3, so the thread lock alone never covered two
+        threads, let alone two processes."""
+        with self._lock:
+            file_lock = _FileLock(self._lock_file)
+            file_lock.acquire()
+            try:
+                yield
+            finally:
+                file_lock.release()
 
     def add(self, agent: str, severity: str, title: str, message: str,
             ai_enhanced: bool = False, replace_if_unacked: bool = False,
@@ -95,9 +179,12 @@ class NotificationStore:
         ref_id: the id of the thing the notification is ABOUT (e.g. the
             override request), which is not the notification's own ``id``.
             A client needs both: ``id`` to acknowledge, ``ref_id`` to navigate.
+            It is also part of the dedup identity: an entry with a ref_id
+            only collapses into, or is suppressed by, an entry with the same
+            ref_id (unless ``replace_if_unacked``).
         Returns the entry if written/updated, None if deduped.
         """
-        with self._lock:
+        with self._locked():
             self._maybe_collapse_locked()
             message_hash = hashlib.md5((message or "").encode("utf-8")).hexdigest()[:12]
             cooldown = timedelta(minutes=_COOLDOWN_MINUTES.get(severity, 30))
@@ -105,6 +192,12 @@ class NotificationStore:
             entries = self._read_all()
             for existing in entries:
                 if existing.get("agent") != agent or existing.get("title") != title:
+                    continue
+                # A second request on the same file is a new event, not a
+                # repeat: clients learn of requests only from this line.
+                # `replace_if_unacked` keeps title scope by request.
+                if (ref_id and not replace_if_unacked
+                        and (existing.get("ref_id") or "") != ref_id):
                     continue
                 if not existing.get("acknowledged"):
                     if replace_if_unacked:
@@ -168,7 +261,7 @@ class NotificationStore:
 
     def get_pending_count(self) -> int:
         """Return count of unacknowledged warning/critical notifications without consuming them."""
-        with self._lock:
+        with self._locked():
             self._maybe_collapse_locked()
             return sum(
                 1 for e in self._read_all()
@@ -190,7 +283,7 @@ class NotificationStore:
         """
         if severities is None:
             severities = self._ACTIONABLE
-        with self._lock:
+        with self._locked():
             self._maybe_collapse_locked()
             entries = [
                 e for e in self._read_all()
@@ -202,7 +295,7 @@ class NotificationStore:
 
     def get_suppressed_info_count(self) -> int:
         """Count of unacknowledged 'info' notifications not shown in actionable view."""
-        with self._lock:
+        with self._locked():
             self._maybe_collapse_locked()
             return sum(
                 1 for e in self._read_all()
@@ -218,12 +311,12 @@ class NotificationStore:
 
     def acknowledge(self, notification_id: str) -> bool:
         """Mark a single notification as acknowledged."""
-        with self._lock:
+        with self._locked():
             return self._set_ack(lambda e: e.get("id") == notification_id)
 
     def acknowledge_all(self) -> int:
         """Mark all unacknowledged notifications as acknowledged. Returns count."""
-        with self._lock:
+        with self._locked():
             entries = self._read_all()
             count = 0
             for e in entries:
@@ -239,7 +332,7 @@ class NotificationStore:
 
         Auto-acknowledges those included. Returns empty string if none.
         """
-        with self._lock:
+        with self._locked():
             self._maybe_collapse_locked()
             entries = self._read_all()
             pending = [
@@ -282,7 +375,7 @@ class NotificationStore:
         than ``min_age_minutes`` also stay, so add()'s post-ack cooldown
         suppression window keeps working. Returns the count moved.
         """
-        with self._lock:
+        with self._locked():
             entries = self._read_all()
             horizon = datetime.now(timezone.utc) - timedelta(
                 minutes=max(0, min_age_minutes))
@@ -312,14 +405,15 @@ class NotificationStore:
     def collapse_duplicates(self) -> int:
         """Retro-cleanup: merge unacknowledged duplicates into one record each.
 
-        Unacknowledged entries sharing (agent, title) collapse into the most
-        recent record, which absorbs the group's total ``count``, the max
-        ``last_seen``, and the highest severity. The newest message wins —
+        Unacknowledged entries sharing (agent, title, ref_id) collapse into
+        the most recent record, which absorbs the group's total ``count``, the
+        max ``last_seen``, and the highest severity. The newest message wins —
         older same-title messages are stale snapshots of the same condition.
+        Entries about different things (different ``ref_id``) never merge.
         Acknowledged history is never touched. Returns the number of duplicate
         records removed.
         """
-        with self._lock:
+        with self._locked():
             self._collapsed = True
             return self._collapse_locked()
 
@@ -334,13 +428,14 @@ class NotificationStore:
             pass  # maintenance is best-effort — never break reads/writes
 
     def _collapse_locked(self) -> int:
-        """Merge unacked duplicates (same agent+title). Caller must hold _lock."""
+        """Merge unacked duplicates (same agent+title+ref_id). Caller must hold _locked()."""
         entries = self._read_all()
         groups: dict[tuple, list] = {}
         for e in entries:
             if e.get("acknowledged"):
                 continue
-            groups.setdefault((e.get("agent"), e.get("title")), []).append(e)
+            groups.setdefault((e.get("agent"), e.get("title"),
+                               e.get("ref_id") or ""), []).append(e)
 
         drop_ids: set[int] = set()
         removed = 0
@@ -377,10 +472,16 @@ class NotificationStore:
         return entries
 
     def _write_all(self, entries: list):
-        """Rewrite entire file. Caller must hold _lock."""
-        with open(self._file, "w", encoding="utf-8") as f:
-            for e in entries:
-                f.write(json.dumps(e) + "\n")
+        """Rewrite entire file. Caller must hold _locked().
+
+        Published by atomic replace, so a reader that takes no lock (the
+        gateway feed, the hub) sees the old file or the new one, never the
+        truncated middle of a rewrite. No fsync: this is a feed, and what
+        readers need is the replace, not durability across a power cut.
+        """
+        write_text_atomic(self._file,
+                          "".join(json.dumps(e) + "\n" for e in entries),
+                          fsync=False)
 
     def _set_ack(self, predicate) -> bool:
         """Acknowledge entries matching predicate. Caller must hold _lock."""
