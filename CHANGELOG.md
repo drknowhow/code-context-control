@@ -4,6 +4,21 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.1] - 2026-10-21
+
+### Fixed — FileMemory and BranchWatch stop re-reading every file map
+
+`list_tracked()` JSON-loaded every record in `.c3/file_memory` to read one
+field, and two background agents called it on a timer. On the Yep project
+that was 64,126 records (292 MB) per call, 92% of them maps of files inside
+nested checkouts, and the project's 14 MCP servers used about 4.5 CPU cores
+between them. `list_tracked()` now lists the store and reads only records it
+has not seen before; a record's filename is the md5 of its path, so a name
+already read cannot change meaning. BranchWatch looks each dirty file up with
+the new `is_tracked()` instead of listing the store every 30 s, and the
+FileMemory stale scan skips records inside nested checkouts, which the
+watcher never reports changes for.
+
 ## [2.158.0] - 2026-10-20
 
 ### Added — `format="json"` for c3_jira and c3_bitbucket

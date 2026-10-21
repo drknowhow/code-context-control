@@ -90,6 +90,10 @@ class _ChangeHandler(FileSystemEventHandler):
                 return True
         return False
 
+    def under_nested_checkout(self, rel_path: str) -> bool:
+        """True if ``rel_path`` (relative to the root) sits in a nested checkout."""
+        return self._under_nested_checkout(Path(rel_path).parts[:-1])
+
     def _should_track(self, path: str) -> bool:
         p = Path(path)
         if p.suffix.lower() not in CODE_EXTENSIONS:

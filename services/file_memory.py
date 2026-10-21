@@ -8,6 +8,7 @@ Storage: .c3/file_memory/ directory, one JSON file per source file.
 """
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -56,6 +57,10 @@ class FileMemoryStore:
         # update()'s add_or_update on the shared TextIndex. Reentrant so
         # search() may hold it across _ensure_search_index() + the query.
         self._search_lock = threading.RLock()
+        # list_tracked(): record filename -> stored path. A filename is the
+        # md5 of its path, so a name already read never maps to another path.
+        self._tracked_paths: dict[str, str] = {}
+        self._tracked_lock = threading.Lock()
         # One-time cleanup of pre-2.121.0 generated summaries (marker-gated).
         try:
             self.purge_summaries()
@@ -100,6 +105,10 @@ class FileMemoryStore:
         except Exception:
             pass
         return rewritten
+
+    def is_tracked(self, rel_path: str) -> bool:
+        """True if a record exists for ``rel_path``, without reading it."""
+        return self._store_path(str(rel_path).replace("\\", "/")).exists()
 
     def get(self, rel_path: str) -> Optional[dict]:
         """Load a file's memory record, or None if not tracked."""
@@ -391,18 +400,29 @@ class FileMemoryStore:
         return unique_ranges
 
     def list_tracked(self) -> list:
-        """Return relative paths of all tracked files."""
-        tracked = []
-        for f in self.store_dir.glob("*.json"):
-            if f.name.startswith("_"):
-                continue
-            try:
-                with open(f, encoding="utf-8") as fh:
-                    data = json.load(fh)
-                tracked.append(data.get("path", ""))
-            except Exception:
-                continue
-        return [p for p in tracked if p]
+        """Return relative paths of all tracked files.
+
+        Lists the store directory on every call but reads only records whose
+        filename it has not seen before; removed records drop out.
+        """
+        try:
+            names = {e.name for e in os.scandir(self.store_dir)
+                     if e.name.endswith(".json") and not e.name.startswith("_")}
+        except OSError:
+            return []
+        with self._tracked_lock:
+            known = self._tracked_paths
+            for gone in known.keys() - names:
+                del known[gone]
+            for name in names - known.keys():
+                try:
+                    with open(self.store_dir / name, encoding="utf-8") as fh:
+                        path = json.load(fh).get("path", "")
+                except (OSError, ValueError, AttributeError):
+                    continue
+                if path:
+                    known[name] = path
+            return list(known.values())
 
     def prune_stale(self) -> list[str]:
         """Remove records whose source file no longer exists on disk.

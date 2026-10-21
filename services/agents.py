@@ -903,8 +903,12 @@ class FileMemoryAgent(BackgroundAgent):
         change_count = self.watcher._handler.change_count
         if change_count != self._last_change_count:
             self._last_change_count = change_count
-            # Check tracked files for staleness
+            # Check tracked files for staleness. The watcher never reports a
+            # change inside a nested checkout, so records there are skipped.
+            handler = self.watcher._handler
             for rel_path in self.file_memory.list_tracked():
+                if handler.under_nested_checkout(rel_path):
+                    continue
                 if self.file_memory.needs_update(rel_path):
                     files_to_process.append(rel_path)
 
@@ -1007,11 +1011,10 @@ class BranchWatchAgent(BackgroundAgent):
         """
         if not paths:
             return 0
-        tracked = {t.replace("\\", "/"): t for t in self.file_memory.list_tracked()}
         queued = 0
         for p in paths:
-            canonical = tracked.get(p.replace("\\", "/"))
-            if canonical is None:
+            canonical = p.replace("\\", "/")
+            if not self.file_memory.is_tracked(canonical):
                 continue
             try:
                 if not self.file_memory.needs_update(canonical):
