@@ -1,15 +1,9 @@
 """Whether the installed fastmcp and mcp packages can load together.
 
-Each fastmcp line pins the mcp SDK it was built on: 3.x needs ``mcp<2`` and
-4.x needs ``mcp>=2``. pip does not hold installed packages to their pins when
-it installs something else, so installing any tool that wants mcp 2.x moves
-mcp out from under a fastmcp 3.x, and ``from fastmcp import ...`` then fails
-with ``cannot import name 'McpError' from 'mcp'``. The MCP server dies before
-the handshake and the host only reports that the connection closed.
-
-This module reads installed metadata without importing either package, so the
-MCP server and the SessionStart hook can name the mismatch and the pip
-command that repairs it.
+fastmcp 3.x needs ``mcp<2`` and 4.x needs ``mcp>=2``, and pip installing some
+other tool can move mcp out from under fastmcp anyway. Reads installed
+metadata without importing either package, so the MCP server and the
+SessionStart hook can name the mismatch and the pip command that repairs it.
 """
 from __future__ import annotations
 
@@ -23,17 +17,17 @@ _EXTRAS = ("", "client", "server", "mcp")
 
 
 def _packaging():
-    """packaging's Requirement and canonicalize_name, or None when absent."""
+    """packaging's (Requirement, InvalidRequirement, canonicalize_name), or None."""
     try:
-        from packaging.requirements import Requirement
+        from packaging.requirements import InvalidRequirement, Requirement
         from packaging.utils import canonicalize_name
     except ImportError:
         try:
-            from pip._vendor.packaging.requirements import Requirement
+            from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
             from pip._vendor.packaging.utils import canonicalize_name
         except ImportError:
             return None
-    return Requirement, canonicalize_name
+    return Requirement, InvalidRequirement, canonicalize_name
 
 
 def _version(dist: str) -> str | None:
@@ -43,7 +37,7 @@ def _version(dist: str) -> str | None:
         return None
 
 
-def _mcp_requirement(requirement_cls, canonicalize_name):
+def _mcp_requirement(requirement_cls, invalid_requirement, canonicalize_name):
     """The mcp Requirement the installed fastmcp declares, or None."""
     fastmcp = _version("fastmcp")
     if fastmcp is None:
@@ -58,7 +52,7 @@ def _mcp_requirement(requirement_cls, canonicalize_name):
         for raw in metadata.requires(dist) or []:
             try:
                 req = requirement_cls(raw)
-            except Exception:
+            except invalid_requirement:
                 continue
             if canonicalize_name(req.name) != "mcp":
                 continue
