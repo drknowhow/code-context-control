@@ -40,14 +40,19 @@ by the host pid both of them share and hands it the new id
 the same MCP process, and a "Session started" toast on every compaction
 would teach the user to ignore the real ones.
 
+When the installed fastmcp and mcp cannot load together
+(``core.mcp_stack``), the MCP server dies before its handshake and the host
+reports only a closed connection; this hook then returns the mismatch and
+the pip repair as context, so the session can say why C3's tools are gone.
+
 The MCP server's own ``session_start`` row is untouched — it carries the C3
 id and, when the host put its id in the environment, ``host_session_id``
 too. This hook is what lets a client see the session before the runtime has
 finished starting (~seconds), and it is the row the desktop's "MCP failed to
 connect" sentinel starts its 30 s clock from.
 
-Returns None always: SessionStart hook stdout becomes model context, and
-this hook has nothing to tell the model.
+Returns None, or ``{"_text": <mismatch>}`` for the case above: SessionStart
+hook stdout becomes model context.
 """
 from __future__ import annotations
 
@@ -249,10 +254,19 @@ def hand_off_runtime(project: Path, host: str, host_sid: str, start_source: str)
 
 
 def run(payload: dict, project_path: Path | None = None):
-    """Core logic — importable by the dispatcher and tests. Returns None."""
+    """Core logic — importable by the dispatcher and tests.
+
+    Returns None, or ``{"_text": ...}`` naming a fastmcp/mcp mismatch.
+    """
     start_source = str(payload.get("source") or "").strip().lower()
     if start_source in _SILENT_SOURCES:
         return None
+    try:
+        from core.mcp_stack import problem
+        stack_problem = problem()
+    except Exception as exc:
+        log_hook_error("hook_session_open", exc)
+        stack_problem = None
     project = find_project(payload, project_path)
     if project is None:
         return None
@@ -278,7 +292,7 @@ def run(payload: dict, project_path: Path | None = None):
         pass
     hand_off_runtime(project, host, host_sid, start_source)
     ensure_ui(project, host_sid)
-    return None
+    return {"_text": stack_problem} if stack_problem else None
 
 
 def main() -> None:
