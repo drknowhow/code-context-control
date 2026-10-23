@@ -4,6 +4,19 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.3] - 2026-10-23
+
+### Fixed — `c3_bitbucket list_prs` takes `author` and `reviewer`
+
+The handler and the Bitbucket client could already filter `list_prs` by
+author and by reviewer (Bitbucket's `role.N`/`username.N` query), but the
+MCP tool's signature had neither argument, so a client that passed one was
+refused with pydantic's "Unexpected keyword argument" before the handler ran.
+Work Agents' Bitbucket watchers and its Work page asked for "my pull
+requests" that way and failed on every poll. `c3_bitbucket` now takes
+`author` and `reviewer` (Bitbucket user names) and passes them through, in
+text and in `format="json"`.
+
 ## [2.158.2] - 2026-10-21
 
 ### Fixed — approval requests that never reached the desk or the phone

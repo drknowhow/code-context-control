@@ -1,11 +1,13 @@
 """Tests for cli/tools/bitbucket.py — handle_bitbucket dispatch."""
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -455,6 +457,24 @@ class TestBitbucketTool(unittest.TestCase):
         kw = self.client.calls[0][2]
         self.assertEqual(kw["filter_text"], "feat")
         self.assertEqual(kw["order"], "modification")
+
+    def test_list_prs_passes_author_and_reviewer(self):
+        finalize, _ = _captured_finalize()
+        tool.handle_bitbucket("list_prs", self.svc, finalize, author="alice", reviewer="bob")
+        kw = next(c[2] for c in self.client.calls if c[0] == "list_prs")
+        self.assertEqual((kw["author"], kw["reviewer"]), ("alice", "bob"))
+
+
+class TestBitbucketMcpTool(unittest.TestCase):
+    def test_list_prs_author_and_reviewer_reach_the_handler(self):
+        from cli import mcp_server
+        schema = asyncio.run(mcp_server.mcp.get_tool("c3_bitbucket")).parameters["properties"]
+        self.assertLessEqual({"author", "reviewer"}, set(schema))
+        ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=object()))
+        with mock.patch.object(tool, "handle_bitbucket", return_value="ok") as handle:
+            asyncio.run(mcp_server.c3_bitbucket("list_prs", author="alice", reviewer="bob", ctx=ctx))
+        self.assertEqual((handle.call_args.kwargs["author"], handle.call_args.kwargs["reviewer"]),
+                         ("alice", "bob"))
 
     def test_cap_clamps_single_overlong_line(self):
         # Issue 7: one line with no newlines must still be clamped by chars.
