@@ -1277,6 +1277,8 @@ async def c3_bitbucket(
     pr_id: int = 0,
     branch: str = "",
     state: str = "OPEN",
+    author: str = "",
+    reviewer: str = "",
     title: str = "",
     body: str = "",
     from_branch: str = "",
@@ -1304,7 +1306,8 @@ async def c3_bitbucket(
     default branch, browse and clone URLs),
     readme ([at=branch/commit] — the root README, markdown preferred),
     get_file (path [at] — one text file, 256 KB cap, binary refused),
-    list_prs, get_pr, get_pr_diff, get_pr_activities, get_pr_commits,
+    list_prs ([author] [reviewer] — Bitbucket user names), get_pr,
+    get_pr_diff, get_pr_activities, get_pr_commits,
     pr_issues (pr_id — Jira issues Bitbucket's Jira integration links to the PR),
     create_pr, update_pr (pr_id + any of title/description/reviewers/to_branch —
     unchanged fields are preserved; reviewers is the FULL comma-separated
@@ -1335,6 +1338,7 @@ async def c3_bitbucket(
     return await asyncio.to_thread(
         handle_bitbucket, action, svc, finalize,
         project=project, repo=repo, pr_id=pr_id, branch=branch, state=state,
+        author=author, reviewer=reviewer,
         title=title, body=body, from_branch=from_branch, to_branch=to_branch,
         description=description, reviewers=reviewers, name=name, url=url,
         events=events, start_point=start_point, commit=commit,
