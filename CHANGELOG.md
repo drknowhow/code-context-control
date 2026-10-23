@@ -4,6 +4,20 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.4] - 2026-10-23
+
+### Fixed — a fastmcp/mcp mismatch now says how to repair it
+
+Each fastmcp line pins the mcp SDK it was built on: 3.x needs `mcp<2`, 4.x
+needs `mcp>=2`. pip does not hold installed packages to their pins when it
+installs something else, so installing a tool that wants mcp 2.x left a
+fastmcp 3.x unable to import (`cannot import name 'McpError' from 'mcp'`).
+The MCP server died before its handshake and the host reported only a closed
+connection, in every session. The server now prints the mismatch and the pip
+commands that repair it (`pip install --upgrade fastmcp`, or pin mcp back to
+what the installed fastmcp needs) and exits 1, and the SessionStart hook puts
+the same message into the session.
+
 ## [2.158.3] - 2026-10-23
 
 ### Fixed — `c3_bitbucket list_prs` takes `author` and `reviewer`

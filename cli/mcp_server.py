@@ -21,7 +21,16 @@ from typing import Any
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastmcp import Context, FastMCP
+try:
+    from fastmcp import Context, FastMCP
+except Exception:
+    # The host shows only "connection closed"; stderr reaches its MCP log.
+    from core.mcp_stack import problem as _mcp_stack_problem
+    _stack_problem = _mcp_stack_problem()
+    if not _stack_problem:
+        raise
+    print(_stack_problem, file=sys.stderr)
+    raise SystemExit(1)
 
 from cli.tools import _grants
 from core.host import resolve_host
