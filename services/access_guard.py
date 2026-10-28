@@ -17,10 +17,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from services.atomic_json import write_json_atomic
+from services.keyring_read import get_password as _keyring_get
 
 # ── Rule model ──────────────────────────────────────────────────────────────
 
@@ -456,6 +458,8 @@ def _attest_builtin_disabled(glob: str, disabled: bool, scope: str = "global",
         return True
     except Exception:
         return False
+    finally:
+        invalidate_cache()
 
 
 def _verify_builtin_disabled(glob: str, scope: str = "global",
@@ -465,9 +469,7 @@ def _verify_builtin_disabled(glob: str, scope: str = "global",
     if not account:
         return False
     try:
-        import keyring  # noqa: PLC0415 — see above
-        return keyring.get_password(
-            _ACCESS_KEYRING_SERVICE, account) == "1"
+        return _keyring_get(_ACCESS_KEYRING_SERVICE, account) == "1"
     except Exception:
         return False
 
@@ -535,6 +537,8 @@ def _attest_builtin_mode(glob: str, mode: str, scope: str = "global",
         return True
     except Exception:
         return False
+    finally:
+        invalidate_cache()
 
 
 def _verify_builtin_mode(glob: str, scope: str = "global",
@@ -544,9 +548,7 @@ def _verify_builtin_mode(glob: str, scope: str = "global",
     if not account:
         return ""
     try:
-        import keyring  # noqa: PLC0415 — see above
-        return str(keyring.get_password(
-            _ACCESS_KEYRING_SERVICE, account) or "")
+        return str(_keyring_get(_ACCESS_KEYRING_SERVICE, account) or "")
     except Exception:
         return ""
 
@@ -876,16 +878,115 @@ def _global_base() -> Path | None:
         return None
 
 
-def load_all(project_path: str = ".") -> tuple:
-    """(rules, mask_rules, corrupt_scopes) — one read per scope."""
+# ── Rule cache ──────────────────────────────────────────────────────────────
+# verdict() needs the rules on every call, and building them reads each
+# scope's config.json three times, the leases file, and the keyring for every
+# configured builtin mode: 2-3 ms and 7 file reads per verdict. An exact
+# search over a 2,195-file project spent 6.5 of its 7.1 s here, and the
+# watcher asks twice for every file it re-maps.
+#
+# An entry is kept per (project, home, bound session) together with a stat
+# signature of each file the build read, and is used only while every
+# signature still matches, so a config or lease edit applies on the very next
+# verdict. Keyring attestations have no file to stat, so an entry also expires
+# after _RULES_TTL_S, and never outlives the soonest unexpired lease row: a
+# lease stops loosening a guard the moment it lapses. A file written within
+# the last _RACY_S seconds is not trusted to its signature at all (two writes
+# inside one timestamp tick can leave mtime and size equal): while one is that
+# fresh, every verdict rebuilds.
+_RULES_TTL_S = 5.0
+_RACY_S = 2.0
+_RULES_CACHE_MAX = 64
+_rules_cache: dict = {}
+
+
+def invalidate_cache() -> None:
+    """Forget cached rules: the next verdict re-reads config, leases and keyring.
+
+    Every writer in this module and in builtin_leases calls it, so a change
+    made in this process never waits on a signature or the TTL.
+    """
+    _rules_cache.clear()
+
+
+def _file_signature(path: Path):
+    """(mtime_ns, size, inode) of *path*; None when absent; False while racy."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if time.time() - st.st_mtime < _RACY_S:
+        return False
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
+def _rules_entry(project_path: str = ".") -> tuple:
+    """(rules, mask_rules, corrupt, n_baseline) as tuples, cached (see above).
+
+    n_baseline counts the rules every project has (absolute, builtin and
+    install-dir) so has_active_rules() can tell when user rules exist.
+    """
+    gbase = _global_base()
+    proj = _scope_base("project", project_path)
+    if proj is None:  # load_all raised here before the cache; keep failing closed
+        raise ValueError(f"cannot resolve project path {project_path!r}")
+    home_c3 = gbase / ".c3" if gbase is not None else None
+    signature = (
+        _file_signature(home_c3 / "config.json") if home_c3 else None,
+        _file_signature(proj / ".c3" / "config.json"),
+        _file_signature(home_c3 / LEASES_FILE) if home_c3 else None,
+    )
+    key = (str(proj), str(gbase), _SESSION_ID)
+    now = time.monotonic()
+    trusted = False not in signature
+    hit = _rules_cache.get(key)
+    if trusted and hit is not None and hit[0] == signature and now < hit[1]:
+        return hit[2]
+    entry = _build_rules(project_path, proj, gbase)
+    if trusted:
+        expires = now + _RULES_TTL_S
+        if signature[2] is not None:  # a leases file exists
+            lapse = _next_lease_lapse(home_c3 / LEASES_FILE)
+            if lapse is not None:
+                expires = min(expires, now + lapse)
+        if len(_rules_cache) >= _RULES_CACHE_MAX:
+            _rules_cache.clear()
+        _rules_cache[key] = (signature, expires, entry)
+    else:
+        _rules_cache.pop(key, None)
+    return entry
+
+
+def _next_lease_lapse(leases_file: Path) -> float | None:
+    """Seconds until the soonest unexpired lease row expires; None when none.
+
+    Every row counts, attested or not, so the answer can only be early.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415 — hooks import this module
+    try:
+        rows = json.loads(leases_file.read_text(encoding="utf-8")).get("leases")
+    except (OSError, ValueError, AttributeError):
+        return 0.0  # unreadable now: do not cache past this verdict
+    soonest = None
+    now = datetime.now(timezone.utc)
+    for row in rows if isinstance(rows, list) else ():
+        try:
+            left = (datetime.fromisoformat(str(row.get("expires_at"))) - now).total_seconds()
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if left > 0 and (soonest is None or left < soonest):
+            soonest = left
+    return soonest
+
+
+def _build_rules(project_path: str, proj: Path, gbase) -> tuple:
     rules = list(_ABSOLUTE_RULES)
     rules.extend(_builtin_rules_effective(project_path=project_path))
     inst = _install_dir_rule()
     if inst:
         rules.append(inst)
+    n_baseline = len(rules)
     mask_rules, corrupt = [], []
-    gbase = _global_base()
-    proj = Path(project_path).resolve()
     for scope, base in (("global", gbase), ("project", proj)):
         if base is None or (scope == "global" and gbase == proj):
             continue
@@ -895,7 +996,17 @@ def load_all(project_path: str = ".") -> tuple:
         else:
             rules.extend(scoped[0])
             mask_rules.extend(scoped[1])
-    return rules, mask_rules, corrupt
+    return tuple(rules), tuple(mask_rules), tuple(corrupt), n_baseline
+
+
+def load_all(project_path: str = ".") -> tuple:
+    """(rules, mask_rules, corrupt_scopes) — one read per scope, cached.
+
+    Every reader in this module goes through here, so it stays the one place
+    a caller (or a test) can substitute the rules.
+    """
+    rules, mask_rules, corrupt, _n = _rules_entry(project_path)
+    return list(rules), list(mask_rules), list(corrupt)
 
 
 def load_rules(project_path: str = ".") -> tuple:
@@ -918,13 +1029,13 @@ def has_mask_rules(project_path: str = ".") -> bool:
 
 def has_active_rules(project_path: str = ".") -> bool:
     """True when any user rules (or corrupt scopes) exist — drives S4."""
+    # The baseline counts the install-dir rule only when it actually loaded:
+    # in a dev checkout it is absent, and a fixed "+1" made a single user
+    # rule invisible to S4 (footer suppressed while filtering was active). It
+    # is counted for this project's build, so a project-scope builtin mode
+    # cannot skew it the way a baseline read for the cwd could.
     rules, mask_rules, corrupt = load_all(project_path)
-    # Count the install-dir rule only when it actually loaded: in a dev
-    # checkout it is absent, and a fixed "+1" made a single user rule
-    # invisible to S4 (footer suppressed while filtering was active).
-    n_baseline = (len(_ABSOLUTE_RULES)
-                  + len(_builtin_rules_effective())
-                  + (1 if _install_dir_rule() else 0))
+    n_baseline = _rules_entry(project_path)[3]
     return bool(corrupt) or bool(mask_rules) or len(rules) > n_baseline
 
 
@@ -1584,7 +1695,10 @@ def _write_scope_config(cfg: Path, data: dict) -> None:
     fails closed with ``<corrupt-config>``, and the session can no longer run
     the command that would fix it.
     """
-    write_json_atomic(cfg, data)
+    try:
+        write_json_atomic(cfg, data)
+    finally:
+        invalidate_cache()
 
 
 def seed_default_global_rules() -> dict:

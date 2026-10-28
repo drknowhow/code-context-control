@@ -31,6 +31,29 @@ def _is_rotation_marker(entry: dict) -> bool:
     return ROTATION_KEY in entry
 
 
+# validate_pending() checks only edits newer than this. The checker reads the
+# file as it is now, so an older edit would get a verdict on later content,
+# and a failure notice would name an edit made long ago.
+VALIDATE_MAX_AGE_S = 24 * 3600
+
+# Bytes compared at the ledger's head and just before the scan offset, to
+# notice a file rewritten in place under the same name and identity.
+_SCAN_FP_BYTES = 512
+
+
+def _older_than(ts, cutoff: datetime | None) -> bool:
+    """True when ISO timestamp ``ts`` is before ``cutoff``; unparseable is not."""
+    if cutoff is None or not ts or not isinstance(ts, str):
+        return False
+    try:
+        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when < cutoff
+
+
 class EditLedger:
     """Tracks every AI edit with version numbering and git context."""
 
@@ -45,6 +68,11 @@ class EditLedger:
         self._total_count: int | None = None
         self._seq_counter: int = 0  # monotonic within process lifetime
         self._write_lock = threading.Lock()
+        # Pending scan shared by enrich_pending/validate_pending: the ledger
+        # is parsed once, then only the lines appended since (see _scan).
+        self._scan_lock = threading.Lock()
+        self._scan_vc = None  # the validation cache _unvalidated was pruned for
+        self._reset_scan()
 
     # ── Cache management ──────────────────────────────────────────────
 
@@ -403,6 +431,9 @@ class EditLedger:
                         pass
                 return None
 
+            # The live file was replaced; the next pending scan starts over.
+            with self._scan_lock:
+                self._reset_scan()
             # Versions are unchanged (tombstones preserve maxima); only the
             # live base-entry count shrank.
             if self._total_count is not None:
@@ -597,6 +628,105 @@ class EditLedger:
         results.sort(key=lambda e: e.get("timestamp", ""))
         return results
 
+    # ── Incremental pending scan ─────────────────────────────────────────────
+
+    def _reset_scan(self) -> None:
+        """Forget the pending scan; the next _scan() reads from byte 0."""
+        self._scan_offset = 0
+        self._scan_stat: tuple | None = None  # (dev, ino, size, mtime_ns) last read
+        self._scan_head = b""  # the file's first bytes as scanned
+        self._scan_tail = b""  # the bytes just before _scan_offset
+        self._scan_git = bool(self._git_root)  # whether git_pending is tracked
+        self._git_pending: dict[str, str] = {}  # id -> file, awaiting a git patch
+        self._unvalidated: dict[str, tuple] = {}  # id -> (file, timestamp)
+
+    def _scan(self) -> None:
+        """Fold the ledger lines appended since the last call into the pending sets.
+
+        Caller holds ``_scan_lock``. An unchanged file costs one ``stat``. A
+        file that was replaced (rotation's ``os.replace``), truncated, or
+        rewritten in place shows another identity, a smaller size, or other
+        bytes at its head or before the offset, and is read again from the
+        start. Only complete lines are consumed, so a line a hook is still
+        writing is picked up on a later call.
+        """
+        try:
+            st = os.stat(self.ledger_file)
+        except OSError:
+            return
+        if self._scan_stat == (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns):
+            return
+        try:
+            with open(self.ledger_file, "rb") as fh:
+                st = os.fstat(fh.fileno())
+                if self._scan_offset and not self._scan_continues(fh, st):
+                    self._reset_scan()
+                fh.seek(self._scan_offset)
+                data = fh.read()
+        except OSError:
+            return
+        end = data.rfind(b"\n") + 1
+        if end:
+            chunk = data[:end]
+            self._fold(chunk)
+            if not self._scan_offset:
+                self._scan_head = chunk[:_SCAN_FP_BYTES]
+            self._scan_tail = (chunk[-_SCAN_FP_BYTES:] if end >= _SCAN_FP_BYTES
+                               else (self._scan_tail + chunk)[-_SCAN_FP_BYTES:])
+            self._scan_offset += end
+        self._scan_stat = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+    def _scan_continues(self, fh, st) -> bool:
+        """True when the open ledger still holds the bytes already scanned."""
+        if self._scan_stat is None or self._scan_stat[:2] != (st.st_dev, st.st_ino):
+            return False
+        if st.st_size < self._scan_offset:
+            return False
+        fh.seek(0)
+        if fh.read(len(self._scan_head)) != self._scan_head:
+            return False
+        fh.seek(self._scan_offset - len(self._scan_tail))
+        return fh.read(len(self._scan_tail)) == self._scan_tail
+
+    def _fold(self, chunk: bytes) -> None:
+        """Apply complete ledger lines to the pending sets.
+
+        A patch settles its target wherever it sits in the chunk, as the
+        full-file scans this replaces did.
+        """
+        git_done: set = set()
+        valid_done: set = set()
+        bases = []
+        for raw in chunk.splitlines():
+            if not raw.strip():
+                continue
+            try:
+                entry = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(entry, dict) or _is_rotation_marker(entry):
+                continue
+            if "target_id" in entry:
+                tid = entry["target_id"]
+                if isinstance(tid, str):
+                    if "git" in entry:
+                        git_done.add(tid)
+                    if "valid" in entry:
+                        valid_done.add(tid)
+                continue
+            eid, rel = entry.get("id"), entry.get("file")
+            if eid and rel and isinstance(eid, str) and isinstance(rel, str):
+                bases.append((eid, rel, entry.get("git_pending"), entry.get("timestamp")))
+        for eid, rel, git_pending, ts in bases:
+            if git_pending and self._scan_git and eid not in git_done:
+                self._git_pending[eid] = rel
+            if eid not in valid_done:
+                self._unvalidated[eid] = (rel, ts)
+        for tid in git_done:
+            self._git_pending.pop(tid, None)
+        for tid in valid_done:
+            self._unvalidated.pop(tid, None)
+
     def enrich_pending(self, batch: int = 10) -> int:
         """Find hook-logged entries with git_pending=True and append git patches.
 
@@ -605,34 +735,19 @@ class EditLedger:
         """
         if not self.ledger_file.exists() or not self._git_root:
             return 0
-        pending = []
-        already_patched: set = set()
-        try:
-            for line in self.ledger_file.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if _is_rotation_marker(entry):
-                    continue
-                if "target_id" in entry and "git" in entry:
-                    already_patched.add(entry["target_id"])
-                elif "target_id" not in entry and entry.get("git_pending") and entry.get("file"):
-                    pending.append(entry)
-        except Exception:
-            return 0
-
-        to_enrich = [e for e in pending if e["id"] not in already_patched][:batch]
+        with self._scan_lock:
+            if not self._scan_git:  # git root appeared after the last scan
+                self._reset_scan()
+            self._scan()
+            to_enrich = list(self._git_pending.items())[:batch]
         if not to_enrich:
             return 0
 
         patches = []
-        for entry in to_enrich:
-            git_info, diff_summary = self._git_combined(entry["file"])
+        for eid, rel in to_enrich:
+            git_info, diff_summary = self._git_combined(rel)
             patches.append({
-                "target_id": entry["id"],
+                "target_id": eid,
                 "git": git_info,
                 "diff_summary": diff_summary,
                 "enriched_at": datetime.now(timezone.utc).isoformat(),
@@ -645,64 +760,82 @@ class EditLedger:
                         f.write(json.dumps(patch) + "\n")
             except Exception:
                 return 0
+        with self._scan_lock:
+            for eid, _ in to_enrich:
+                self._git_pending.pop(eid, None)
         return len(patches)
 
-    def validate_pending(self, batch: int = 5, validation_cache=None) -> list:
-        """Find recently-edited files without validation results and validate them.
+    def validate_pending(self, batch: int = 5, validation_cache=None,
+                         max_age_s: float | None = VALIDATE_MAX_AGE_S) -> list:
+        """Validate recently edited files that have no validation result yet.
 
         Appends validate patches to the ledger and returns result dicts.
-        Called by EditLedgerEnricherAgent on a background timer.
+        Called by EditLedgerEnricherAgent on a background timer. Only edits
+        newer than ``max_age_s`` are checked (None checks every age; see
+        VALIDATE_MAX_AGE_S). An entry the cache never checks (its extension
+        is not eligible) or whose file is gone leaves the pending set, so it
+        is not retried every cycle.
         """
         if not self.ledger_file.exists() or not validation_cache:
             return []
-        pending = []
-        already_validated: set = set()
-        try:
-            for line in self.ledger_file.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
+        eligible = getattr(validation_cache, "eligible", None)
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_s)
+                  if max_age_s else None)
+        to_validate = []
+        with self._scan_lock:
+            if self._scan_vc is not None and validation_cache is not self._scan_vc:
+                self._reset_scan()  # entries were dropped under another cache's rules
+            self._scan_vc = validation_cache
+            self._scan()
+            dropped = []
+            for eid, (rel, ts) in reversed(self._unvalidated.items()):  # newest first
+                if (eligible is not None and not eligible(rel)) or _older_than(ts, cutoff):
+                    dropped.append(eid)
                     continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if _is_rotation_marker(entry):
-                    continue  # tombstones carry "file" but are not edits
-                if "target_id" in entry and "valid" in entry:
-                    already_validated.add(entry["target_id"])
-                elif "target_id" not in entry and entry.get("file"):
-                    pending.append(entry)
-        except Exception:
-            return []
-
-        # Most recent first, skip already validated
-        to_validate = [e for e in reversed(pending) if e["id"] not in already_validated][:batch]
+                to_validate.append((eid, rel))
+                if len(to_validate) >= batch:
+                    break
+            for eid in dropped:
+                del self._unvalidated[eid]
         if not to_validate:
             return []
 
         results = []
         patches = []
-        for entry in to_validate:
+        gone = []
+        for eid, rel in to_validate:
             try:
-                result = validation_cache.validate_file(entry["file"])
+                result = validation_cache.validate_file(rel)
             except Exception:
                 result = None
             if result is None:
+                # A busy checker or a read error is retried; a deleted file is not.
+                if not (self.project_path / rel).exists():
+                    gone.append(eid)
                 continue
             patch = {
-                "target_id": entry["id"],
+                "target_id": eid,
                 "valid": result.get("valid", True),
                 "errors": result.get("errors", []),
                 "validated_at": datetime.now(timezone.utc).isoformat(),
             }
             patches.append(patch)
-            results.append({"id": entry["id"], "file": entry["file"], **patch})
+            results.append({"id": eid, "file": rel, **patch})
 
+        written = False
         if patches:
             with self._write_lock:
                 try:
                     with open(self.ledger_file, "a", encoding="utf-8") as f:
                         for patch in patches:
                             f.write(json.dumps(patch) + "\n")
+                    written = True
                 except Exception:
                     pass
+        with self._scan_lock:
+            for eid in gone:
+                self._unvalidated.pop(eid, None)
+            if written:
+                for patch in patches:
+                    self._unvalidated.pop(patch["target_id"], None)
         return results

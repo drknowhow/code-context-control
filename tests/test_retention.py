@@ -552,6 +552,73 @@ class TestFileMemoryPrune(RetentionBase):
         self.assertTrue(record.exists())
 
 
+class TestFileMemoryEvictUnindexable(RetentionBase):
+    """Records for paths the index never walks are never refreshed, and on a
+    project with agent worktrees they outnumbered the real ones 21 to 1."""
+
+    UNINDEXED = ["node_modules/pkg/index.js", "wt/copy.py"]
+
+    def _store(self, outside=False):
+        from services.file_memory import FileMemoryStore
+        for rel in ["src/real.py", *self.UNINDEXED]:
+            path = self.project / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("def f():\n    pass\n", encoding="utf-8")
+        # A linked worktree: a directory whose .git is a FILE.
+        (self.project / "wt" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        store = FileMemoryStore(str(self.project))
+        for rel in ["src/real.py", *self.UNINDEXED]:
+            self.assertIsNotNone(store.update(rel), rel)
+        if outside:
+            (store.store_dir / ("f" * 32 + ".json")).write_text(
+                json.dumps({"path": "../elsewhere/x.py"}), encoding="utf-8")
+        return store
+
+    @staticmethod
+    def _backdate(store, days):
+        old = time.time() - days * 86400
+        for record in store.store_dir.glob("*.json"):
+            os.utime(record, (old, old))
+
+    def test_old_records_the_index_never_covers_are_evicted(self):
+        store = self._store(outside=True)
+        self._backdate(store, 30)
+        evicted = store.evict_unindexable(min_age_s=7 * 86400)
+        self.assertEqual(sorted(evicted), ["../elsewhere/x.py", *self.UNINDEXED])
+        self.assertEqual(store.list_tracked(), ["src/real.py"])
+        self.assertTrue(all(r["path"] == "src/real.py" for r in store.search("f")))
+
+    def test_recent_records_are_kept(self):
+        store = self._store(outside=True)
+        self.assertEqual(store.evict_unindexable(min_age_s=7 * 86400), [])
+        self.assertEqual(len(store.list_tracked()), 4)
+
+    def test_a_call_deletes_at_most_limit(self):
+        store = self._store()
+        self._backdate(store, 30)
+        self.assertEqual(len(store.evict_unindexable(limit=1)), 1)
+        self.assertEqual(len(store.evict_unindexable(limit=1)), 1)
+        self.assertEqual(store.evict_unindexable(limit=1), [])
+
+    def test_the_sweep_uses_the_configured_age(self):
+        store = self._store()
+        self._backdate(store, 3)
+        summary = RetentionManager(str(self.project), file_memory=store).run_sweep()
+        self.assertNotIn("file_memory_evicted", summary)  # default: 7 days
+        _write_config(self.project, {"file_memory_unindexed_keep_days": 2})
+        summary = RetentionManager(str(self.project), file_memory=store).run_sweep()
+        self.assertEqual(summary["file_memory_evicted"], 2)
+        self.assertEqual(store.list_tracked(), ["src/real.py"])
+
+    def test_zero_keeps_them(self):
+        store = self._store()
+        self._backdate(store, 30)
+        _write_config(self.project, {"file_memory_unindexed_keep_days": 0})
+        summary = RetentionManager(str(self.project), file_memory=store).run_sweep()
+        self.assertNotIn("file_memory_evicted", summary)
+        self.assertEqual(len(store.list_tracked()), 3)
+
+
 class TestNotificationsRotation(RetentionBase):
     def _store(self):
         from services.notifications import NotificationStore

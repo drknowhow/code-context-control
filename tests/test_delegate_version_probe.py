@@ -12,8 +12,10 @@ and leaking its two reader threads.
 tests/test_cli_smoke.py already documents this footgun and works around it for
 test code; _probe_cli_version applies the same convention to production code.
 """
+import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +85,14 @@ def timing_out_popen(monkeypatch):
     monkeypatch.setattr(delegate.subprocess, "Popen", _TimingOutPopen)
     monkeypatch.setattr(delegate, "_kill_proc_tree", _fake_kill_tree)
     return killed
+
+
+@pytest.fixture(autouse=True)
+def version_cache(tmp_path, monkeypatch):
+    """Each test gets its own empty --version cache."""
+    path = tmp_path / "cache" / "cli_versions.json"
+    monkeypatch.setattr(delegate, "_version_cache_file", lambda: path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +253,108 @@ def test_no_health_check_uses_subprocess_run():
         assert "subprocess.run" not in src, (
             f"{name} went back to subprocess.run -- see _probe_cli_version"
         )
+
+
+# ---------------------------------------------------------------------------
+# The per-machine --version cache
+# ---------------------------------------------------------------------------
+
+
+def _fake_exe(tmp_path, body=b"v1"):
+    exe = tmp_path / "fakecli"
+    exe.write_bytes(body)
+    return str(exe)
+
+
+def _counting_probe(monkeypatch, *answers):
+    calls = []
+
+    def probe(exe, timeout=10):
+        calls.append(exe)
+        return answers[min(len(calls), len(answers)) - 1]
+
+    monkeypatch.setattr(delegate, "_probe_cli_version", probe)
+    return calls
+
+
+def test_cached_probe_reuses_a_success(tmp_path, monkeypatch, version_cache):
+    calls = _counting_probe(monkeypatch, ("1.2.3", "", 0))
+    exe = _fake_exe(tmp_path)
+
+    assert delegate._probe_cli_version_cached(exe) == ("1.2.3", "", 0)
+    assert delegate._probe_cli_version_cached(exe) == ("1.2.3", "", 0)
+
+    assert len(calls) == 1
+    assert version_cache.exists()
+
+
+def test_cached_probe_reprobes_a_changed_executable(tmp_path, monkeypatch):
+    calls = _counting_probe(monkeypatch, ("1.0", "", 0), ("2.0", "", 0))
+    exe = _fake_exe(tmp_path, b"v1")
+    assert delegate._probe_cli_version_cached(exe)[0] == "1.0"
+
+    Path(exe).write_bytes(b"version two")  # an upgrade: new size and mtime
+
+    assert delegate._probe_cli_version_cached(exe)[0] == "2.0"
+    assert len(calls) == 2
+
+
+def test_cached_probe_never_stores_a_failure_or_timeout(tmp_path, monkeypatch, version_cache):
+    calls = _counting_probe(monkeypatch, ("", "boom", 3), None)
+    exe = _fake_exe(tmp_path)
+
+    assert delegate._probe_cli_version_cached(exe) == ("", "boom", 3)
+    assert delegate._probe_cli_version_cached(exe) is None
+    assert delegate._probe_cli_version_cached(exe) is None
+
+    assert len(calls) == 3
+    assert not version_cache.exists()
+
+
+def test_cached_probe_expires_after_the_ttl(tmp_path, monkeypatch, version_cache):
+    calls = _counting_probe(monkeypatch, ("1.0", "", 0))
+    exe = _fake_exe(tmp_path)
+    delegate._probe_cli_version_cached(exe)
+
+    data = json.loads(version_cache.read_text(encoding="utf-8"))
+    for entry in data.values():
+        entry["at"] -= delegate._VERSION_CACHE_TTL_S + 1
+    version_cache.write_text(json.dumps(data), encoding="utf-8")
+
+    delegate._probe_cli_version_cached(exe)
+    assert len(calls) == 2
+
+
+def test_cached_probe_skips_an_executable_it_cannot_stat(monkeypatch, version_cache):
+    calls = _counting_probe(monkeypatch, ("1.0", "", 0))
+
+    assert delegate._probe_cli_version_cached("/no/such/cli") == ("1.0", "", 0)
+    assert delegate._probe_cli_version_cached("/no/such/cli") == ("1.0", "", 0)
+
+    assert len(calls) == 2
+    assert not version_cache.exists()
+
+
+def test_cached_probe_ignores_a_corrupt_cache(tmp_path, monkeypatch, version_cache):
+    calls = _counting_probe(monkeypatch, ("1.0", "", 0))
+    version_cache.parent.mkdir(parents=True)
+    version_cache.write_text("{not json", encoding="utf-8")
+
+    assert delegate._probe_cli_version_cached(_fake_exe(tmp_path)) == ("1.0", "", 0)
+    assert len(calls) == 1
+    assert isinstance(json.loads(version_cache.read_text(encoding="utf-8")), dict)
+
+
+def test_health_check_answers_from_the_cache(tmp_path, monkeypatch):
+    calls = _counting_probe(monkeypatch, ("0.9.1", "", 0))
+    exe = _fake_exe(tmp_path)
+    monkeypatch.setattr(delegate, "_which", lambda name: exe)
+
+    assert delegate.check_gemini() == {"status": "ok", "version": "0.9.1"}
+    assert delegate.check_gemini() == {"status": "ok", "version": "0.9.1"}
+
+    assert len(calls) == 1
+    assert delegate._gemini_available is True
 
 
 if __name__ == "__main__":

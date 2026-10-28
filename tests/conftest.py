@@ -63,6 +63,20 @@ def fresh_ollama_probe_cache():
     clear_probe_cache()
 
 
+@pytest.fixture(autouse=True)
+def fresh_access_rules():
+    """access_guard keeps built rules for a few seconds per project; start
+    each test without rules an earlier test's files or fake keyring built."""
+    try:
+        from services.access_guard import invalidate_cache
+    except ImportError:
+        yield
+        return
+    invalidate_cache()
+    yield
+    invalidate_cache()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_c3_home():
     """Point C3_HOME at an empty directory for the whole session."""

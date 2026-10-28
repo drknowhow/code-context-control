@@ -26,6 +26,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services.file_memo import FileMemo
+
 SCHEMA_VERSION = 1
 STATUSES = ("backlog", "in_progress", "blocked", "done")
 PRIORITIES = ("p0", "p1", "p2", "p3")
@@ -129,13 +131,9 @@ class _FileLock:
         return False
 
 
-def open_task_count(project_path) -> int:
-    """Cheap open-task counter for hub card chips (no store instantiation)."""
-    pm_file = Path(project_path) / ".c3" / "pm" / "pm.json"
-    if not pm_file.exists():
-        return 0
+def _count_open_tasks(pm_file) -> int:
     try:
-        doc = json.loads(pm_file.read_text(encoding="utf-8"))
+        doc = json.loads(Path(pm_file).read_text(encoding="utf-8"))
         return sum(
             1 for t in doc.get("tasks", [])
             if isinstance(t, dict)
@@ -144,6 +142,15 @@ def open_task_count(project_path) -> int:
         )
     except Exception:
         return 0
+
+
+# The hub and Oracle ask for every registered project on every poll.
+_open_task_counts = FileMemo(_count_open_tasks)
+
+
+def open_task_count(project_path) -> int:
+    """Cheap open-task counter for hub card chips (no store instantiation)."""
+    return _open_task_counts.get(Path(project_path) / ".c3" / "pm" / "pm.json")
 
 
 class TaskStore:

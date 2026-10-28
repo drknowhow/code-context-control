@@ -178,6 +178,14 @@ _MAX_WAIT_S = 30
 # Re-scan cadence while holding. The scan is skipped unless an mtime moved,
 # so this is a stat() per second, not a feed rebuild per second.
 _WAIT_TICK_S = 1.0
+# A held target is HOT when a feed file or its .c3/live heartbeat directory
+# changed within _HOT_WINDOW_S, and only hot targets are stat'ed every tick;
+# the rest are stat'ed every _COLD_EVERY_S. A live session beats every 60 s
+# (services.session_live), so its project stays hot. One waiter over 90
+# registered projects stats 4 files of each: 360 stats a second before this;
+# after it, 4 a second per hot project plus 36 a second for the cold ones.
+_HOT_WINDOW_S = 300.0
+_COLD_EVERY_S = 10.0
 # Each waiter parks a server thread for up to _MAX_WAIT_S, and the Oracle
 # serves the desktop UI and discovery off the same pool. Past the cap `wait`
 # degrades to an ordinary immediate answer rather than queueing behind other
@@ -252,10 +260,11 @@ def configure(get_cfg, get_limiter) -> None:
 
 def init_services(scanner, checker=None, reporter=None) -> None:
     """Attach the shared Oracle services. Called from ``_init_services``."""
-    global _scanner, _checker, _reporter
+    global _scanner, _checker, _reporter, _roots_memo
     _scanner = scanner
     _checker = checker
     _reporter = reporter
+    _roots_memo = None
 
 
 def _cfg() -> dict:
@@ -474,10 +483,23 @@ def _caller() -> str:
 
 # ── Path validation ───────────────────────────────────────
 
+# _registered_roots() is reused for this long: discover() deep-copies every
+# project, each root costs a resolve(), and a feed or override request asks
+# more than once. The scanner itself keeps a removed project for up to its
+# own TTL (20 s), so this adds at most 5 s to that.
+_ROOTS_TTL_S = 5.0
+_roots_memo = None  # (scanner, expires_at, roots)
+
+
 def _registered_roots() -> list[Path]:
     """Resolved path of every scanner-registered project with a .c3 dir."""
+    global _roots_memo
     if _scanner is None:
         return []
+    now = time.monotonic()
+    memo = _roots_memo
+    if memo is not None and memo[0] is _scanner and now < memo[1]:
+        return list(memo[2])
     roots = []
     for proj in _scanner.discover():
         if not proj.get("has_c3"):
@@ -486,6 +508,7 @@ def _registered_roots() -> list[Path]:
             roots.append(Path(proj["path"]).resolve())
         except (OSError, ValueError):
             continue
+    _roots_memo = (_scanner, now + _ROOTS_TTL_S, tuple(roots))
     return roots
 
 
@@ -826,6 +849,31 @@ def _feed_mtime(targets: list) -> float:
     return latest
 
 
+def _split_hot(targets: list) -> tuple:
+    """``(hot, cold, hot_mtime, cold_mtime)`` for one hold (see _HOT_WINDOW_S).
+
+    The mtimes are of feed files only. A heartbeat moves a target into the hot
+    group but never wakes the hold, or every live session would trigger a
+    feed rebuild once a minute.
+    """
+    now = time.time()
+    hot, cold = [], []
+    hot_m = cold_m = 0.0
+    for t in targets:
+        feed = _feed_mtime([t])
+        try:
+            live = (Path(t["path"]) / ".c3" / "live").stat().st_mtime
+        except OSError:
+            live = 0.0
+        if len(targets) == 1 or now - max(feed, live) <= _HOT_WINDOW_S:
+            hot.append(t)
+            hot_m = max(hot_m, feed)
+        else:
+            cold.append(t)
+            cold_m = max(cold_m, feed)
+    return hot, cold, hot_m, cold_m
+
+
 def _hold_for_items(targets: list, collect, wait_s: int):
     """Block up to *wait_s* for the feed to produce something.
 
@@ -833,7 +881,8 @@ def _hold_for_items(targets: list, collect, wait_s: int):
     be a full history read per target, so the loop watches mtimes and only
     pays for a rebuild when one moves. An mtime that moves without producing a
     matching item — a severity this client filters out, say — re-baselines
-    instead of re-scanning on every subsequent tick.
+    instead of re-scanning on every subsequent tick. Hot targets are watched
+    every tick and cold ones every _COLD_EVERY_S (see _split_hot).
 
     Returns immediately when every waiter slot is taken — globally, or for
     this caller's kind. The caller then behaves exactly as if ``wait`` had
@@ -844,17 +893,25 @@ def _hold_for_items(targets: list, collect, wait_s: int):
     if not _acquire_waiter(kind):
         return [], 0.0
     try:
-        seen = _feed_mtime(targets)
+        hot, cold, seen_hot, seen_cold = _split_hot(targets)
+        next_cold = started + _COLD_EVERY_S
         deadline = started + wait_s
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return [], time.monotonic() - started
             time.sleep(min(_WAIT_TICK_S, remaining))
-            current = _feed_mtime(targets)
-            if current == seen:
+            moved = False
+            current = _feed_mtime(hot)
+            if current != seen_hot:
+                seen_hot, moved = current, True
+            if cold and time.monotonic() >= next_cold:
+                next_cold = time.monotonic() + _COLD_EVERY_S
+                current = _feed_mtime(cold)
+                if current != seen_cold:
+                    seen_cold, moved = current, True
+            if not moved:
                 continue
-            seen = current
             found = collect()
             if found:
                 return found, time.monotonic() - started

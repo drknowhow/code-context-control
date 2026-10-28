@@ -8,12 +8,15 @@ outputs compose per Claude Code hook semantics:
   - unimportable sub-hooks / corrupted state surface a visible
     "[c3:hook-error]" warning
 """
+import contextlib
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -278,6 +281,102 @@ class TestDispatchEndToEnd(DispatchBase):
         self.assertEqual(len(snaps), 1)
         # terse advisor silent without transcript → no structured output
         self.assertIsNone(out)
+
+
+class TestTakesParam(unittest.TestCase):
+    """_takes_param answers like inspect.signature without importing inspect
+    for plain functions (the import costs every hook process ~7 ms)."""
+
+    def test_plain_functions(self):
+        def guard(payload, project_path=None, *, defer_consume=False):
+            return payload
+
+        def legacy(payload, project_path):
+            defer_consume = True  # a local, not a parameter
+            return defer_consume
+
+        self.assertTrue(hook_dispatch._takes_param(guard, "defer_consume"))
+        self.assertFalse(hook_dispatch._takes_param(legacy, "defer_consume"))
+        self.assertFalse(hook_dispatch._takes_param(lambda p, q: None, "defer_consume"))
+
+    def test_other_callables_use_the_signature(self):
+        import functools
+
+        def guard(payload, project_path=None, defer_consume=False):
+            return payload
+
+        @functools.wraps(guard)
+        def wrapped(*args, **kwargs):
+            return guard(*args, **kwargs)
+
+        class Hook:
+            def __call__(self, payload, project_path, defer_consume=False):
+                return payload
+
+        for fn in (functools.partial(guard), wrapped, Hook()):
+            self.assertTrue(hook_dispatch._takes_param(fn, "defer_consume"), fn)
+        self.assertFalse(hook_dispatch._takes_param(print, "defer_consume"))
+
+    def test_call_run_passes_defer_consume_only_where_accepted(self):
+        seen = []
+
+        def guard(payload, project_path, defer_consume=False):
+            seen.append(defer_consume)
+
+        hook_dispatch._call_run(guard, "hook_access_guard", "pretool", {}, None)
+        hook_dispatch._call_run(lambda p, q: seen.append("two-arg"),
+                                "hook_access_guard", "pretool", {}, None)
+        hook_dispatch._call_run(guard, "hook_other", "pretool", {}, None)
+        self.assertEqual(seen, [True, "two-arg", False])
+
+
+class TestParseArgs(unittest.TestCase):
+    """_parse_args reads the hook commands' own shapes without argparse (about
+    18 ms per hook process on Python 3.14) and hands the rest to argparse."""
+
+    FAST = (
+        [],
+        [""],
+        ["pretool"],
+        ["pretool", "--host", "codex"],
+        ["--host=claude-code", "posttool"],
+        ["prompt", "--project", "C:/a b/proj"],
+        ["prompt", "--project=C:/a=b"],
+        ["start", "--project="],
+        ["end", "--host", "codex", "--host", "grok"],
+    )
+    SLOW = (
+        ["-h"],
+        ["--proj", "x"],
+        ["pretool", "posttool"],
+        ["--host", "bogus"],
+        ["--host="],
+        ["--project"],
+        ["--project", "-x"],
+        ["--", "pretool"],
+        ["-"],
+    )
+
+    def test_hook_command_shapes_match_argparse(self):
+        for argv in self.FAST:
+            with mock.patch.object(hook_dispatch, "_parse_args_slow",
+                                   side_effect=AssertionError("went to argparse")):
+                fast = hook_dispatch._parse_args(list(argv))
+            self.assertEqual(fast, hook_dispatch._parse_args_slow(list(argv)), argv)
+
+    def test_everything_else_goes_to_argparse(self):
+        for argv in self.SLOW:
+            with mock.patch.object(hook_dispatch, "_parse_args_slow",
+                                   return_value=("slow", None, None)) as slow:
+                self.assertEqual(hook_dispatch._parse_args(list(argv)),
+                                 ("slow", None, None), argv)
+            slow.assert_called_once_with(list(argv))
+
+    def test_argparse_still_rejects_a_bad_host(self):
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:
+            hook_dispatch._parse_args(["pretool", "--host", "bogus"])
+        self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == "__main__":

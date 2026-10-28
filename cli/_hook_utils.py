@@ -10,7 +10,6 @@ import os
 import re
 import shlex
 import sys
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,6 +95,7 @@ def log_hook_error(hook_name: str, exc: BaseException) -> None:
         except Exception:
             pass
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        import traceback  # noqa: PLC0415 — ~7 ms; only a failing hook pays it
         tb = traceback.format_exc().strip()
         line = f"[{ts}] [{hook_name}] {type(exc).__name__}: {exc}\n{tb}\n---\n"
         with open(log_file, "a", encoding="utf-8") as f:
@@ -411,9 +411,12 @@ def detect_host(data: dict, explicit_host: str | None = None) -> str:
         return aliases[named]
     if not isinstance(data, dict):
         return HOST_CLAUDE
-    from core.grok_payload import is_grok_payload
-    if is_grok_payload(data):
-        return HOST_GROK
+    # Grok's envelope is the only one with camelCase hookEventName; checking
+    # for it first spares every other host the ~5 ms import of `core`.
+    if "hookEventName" in data:
+        from core.grok_payload import is_grok_payload
+        if is_grok_payload(data):
+            return HOST_GROK
     if data.get("turn_id"):
         return HOST_CODEX
     response = data.get("tool_response")

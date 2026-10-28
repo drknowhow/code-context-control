@@ -36,7 +36,6 @@ emit a short "[c3:hook-error] ..." additionalContext warning so enforcement
 cannot silently stop enforcing.
 """
 import importlib
-import inspect
 import json
 import sys
 from pathlib import Path
@@ -239,13 +238,29 @@ def _call_run(run_fn, module_name: str, event: str, payload: dict,
     two-argument lambdas, and a legacy single-file hook must keep working.
     """
     if event == "pretool" and module_name in _DEFER_CONSUME:
-        try:
-            accepts = "defer_consume" in inspect.signature(run_fn).parameters
-        except (TypeError, ValueError):
-            accepts = False
-        if accepts:
+        if _takes_param(run_fn, "defer_consume"):
             return run_fn(payload, project_path, defer_consume=True)
     return run_fn(payload, project_path)
+
+
+def _takes_param(fn, name: str) -> bool:
+    """True when *fn* declares a parameter called *name*.
+
+    A plain function answers from its code object. ``inspect`` costs every
+    hook process about 7 ms to import, and this check runs on every
+    PreToolUse, so it is only imported for other callables (partials,
+    callable objects, and decorated functions, whose wrapper's code would
+    hide the signature ``inspect`` follows ``__wrapped__`` to).
+    """
+    code = getattr(fn, "__code__", None)
+    if code is not None and not hasattr(fn, "__wrapped__"):
+        n_params = code.co_argcount + code.co_kwonlyargcount
+        return name in code.co_varnames[:n_params]
+    import inspect  # noqa: PLC0415 — rare path, see above
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _grant_lost_deny() -> dict:
@@ -561,17 +576,57 @@ def dispatch(event: str, payload: dict, project_path: Path | None = None) -> dic
     return merge_outputs(outputs, warnings, event=event, host=host)
 
 
+_HOSTS = ("codex", "claude", "claude-code", "gemini", "grok")
+
+
+def _parse_args(argv: list) -> tuple:
+    """``(event, host, project)`` as main()'s argparse parser reads *argv*.
+
+    Hook commands are written as an event plus ``--host NAME`` or
+    ``--project PATH`` (either also as ``--opt=value``), and those shapes are
+    read here: argparse costs every hook process about 18 ms on Python 3.14,
+    because each add_argument builds a help formatter, which imports shutil
+    and _colorize. Anything else (help, an abbreviation, an unknown or
+    invalid argument) goes to argparse, which answers or exits as before.
+    """
+    event, opts = None, {"--host": None, "--project": None}
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        name, eq, value = tok.partition("=")
+        if name in opts:
+            if not eq:
+                if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                    return _parse_args_slow(argv)
+                i += 1
+                value = argv[i]
+            opts[name] = value
+        elif event is None and not tok.startswith("-"):
+            event = tok
+        else:
+            return _parse_args_slow(argv)
+        i += 1
+    if opts["--host"] is not None and opts["--host"] not in _HOSTS:
+        return _parse_args_slow(argv)
+    return event or "", opts["--host"], opts["--project"]
+
+
+def _parse_args_slow(argv: list) -> tuple:
+    import argparse  # noqa: PLC0415 — see _parse_args
+    parser = argparse.ArgumentParser()
+    parser.add_argument("event", nargs="?", default="")
+    parser.add_argument("--host", choices=list(_HOSTS))
+    parser.add_argument("--project")
+    args = parser.parse_args(argv)
+    return args.event, args.host, args.project
+
+
 def main() -> None:
     # Windows hook subprocesses get cp1252 pipes; sub-hook _text may carry
     # box-drawing chars / emoji, so print(text) below would UnicodeEncodeError.
     _hook_utils.ensure_utf8_stdio()
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("event", nargs="?", default="")
-    parser.add_argument("--host", choices=["codex", "claude", "claude-code", "gemini", "grok"])
-    parser.add_argument("--project")
-    args = parser.parse_args()
-    event = args.event.strip().lower()
+    event, host, project = _parse_args(sys.argv[1:])
+    event = event.strip().lower()
     if event not in (*VALID_EVENTS, "start", "compact", "end"):
         log_hook_error(
             "hook_dispatch",
@@ -592,9 +647,9 @@ def main() -> None:
         return
 
     try:
-        if args.host:
-            payload["_c3_host"] = args.host
-        output = dispatch(event, payload, Path(args.project).resolve() if args.project else None)
+        if host:
+            payload["_c3_host"] = host
+        output = dispatch(event, payload, Path(project).resolve() if project else None)
     except Exception as exc:
         # The dispatcher itself failing is critical — say so. Route the notice
         # through merge_outputs so even the panic path speaks the host's

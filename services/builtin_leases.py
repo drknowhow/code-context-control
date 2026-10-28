@@ -55,9 +55,8 @@ def _digest(row: dict) -> str:
 
 def _attested(row: dict) -> bool:
     try:
-        import keyring  # noqa: PLC0415 — lazy, as in access_guard
-        return keyring.get_password(ag._ACCESS_KEYRING_SERVICE,
-                                    _account(str(row.get("id")))) == _digest(row)
+        return ag._keyring_get(ag._ACCESS_KEYRING_SERVICE,
+                               _account(str(row.get("id")))) == _digest(row)
     except Exception:
         return False
 
@@ -159,6 +158,7 @@ def mint(glob, mode: str, *, scope: str, project_path: str = ".",
         rows = [r for r in _load() if _live(r, at)]
         rows.append(row)
         _save(rows)
+    ag.invalidate_cache()
     return row
 
 
@@ -179,4 +179,5 @@ def revoke(lease_id: str) -> dict | None:
         keyring.set_password(ag._ACCESS_KEYRING_SERVICE, _account(lease_id), "")
     except Exception:  # a keyring that cannot be written cannot be read either
         pass           # so a re-added copy of the row stays unattested
+    ag.invalidate_cache()
     return gone if _live(gone, at) else None
