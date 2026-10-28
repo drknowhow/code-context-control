@@ -51,6 +51,13 @@ _KIND_RANK = {"source": 0, "config": 1, "doc": 2, "test": 3}
 # separators.
 _PATHLIKE_RE = re.compile(r"/|^[\w.\-]+\.[A-Za-z0-9]{1,6}$")
 _REGEX_META = set("\\^$.|?*+()[]{}")
+# `exact` walked the tree on every call (150 ms of 670 ms on this repo). The
+# walk is reused while the project's watcher runs and nothing changed: the
+# watcher bumps structure_generation on every create, delete or move, and
+# the rules, the root .gitignore and the walk settings are compared too. The
+# TTL bounds what a missed file-system event could cost.
+_MANIFEST_TTL_S = 30.0
+_manifest_cache: dict = {}  # project -> (generation, state, monotonic stamp, rels)
 
 
 def _read_denied(path, svc) -> bool:
@@ -230,6 +237,20 @@ def _search_manifest(svc) -> list:
     if isinstance(prefixes, list) and prefixes and callable(is_excluded):
         def exclude_parts(parts, _c=is_excluded, _p=prefixes):
             return _c(parts, _p)
+    else:
+        prefixes = None
+
+    # Read before the walk: an event landing during it moves the generation
+    # on, so the next call walks again.
+    generation = _watcher_generation(svc)
+    state = _manifest_state(project, exts, prefixes) if generation is not None else None
+    key = str(project)
+    if state is not None:
+        hit = _manifest_cache.get(key)
+        if (hit is not None and hit[0] == generation and hit[1] == state
+                and time.monotonic() - hit[2] < _MANIFEST_TTL_S):
+            return list(hit[3])
+
     rels = []
     for fpath in iter_files(project, exts=exts, skip_dirs=set(SKIP_DIRS),
                             exclude_parts=exclude_parts):
@@ -237,7 +258,43 @@ def _search_manifest(svc) -> list:
             rels.append(fpath.relative_to(project).as_posix())
         except ValueError:
             continue
+    if state is not None:
+        _manifest_cache[key] = (generation, state, time.monotonic(), tuple(rels))
     return rels
+
+
+def _watcher_generation(svc):
+    """The running watcher's structure_generation, or None (then: no cache)."""
+    watcher = getattr(svc, "watcher", None)
+    try:
+        if getattr(watcher, "running", False) is not True:
+            return None
+        generation = watcher.structure_generation
+    except Exception:
+        return None
+    return generation if isinstance(generation, int) else None
+
+
+def _manifest_state(project: Path, exts, prefixes):
+    """Everything besides the file tree that decides what the walk yields."""
+    try:
+        rules = access_guard.load_all(str(project))
+    except Exception:
+        return None
+    try:
+        st = (project / ".gitignore").stat()
+        gitignore = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        gitignore = None
+    return (tuple(sorted(exts)), tuple(prefixes or ()), rules, gitignore)
+
+
+def _deny_rules_only(svc) -> bool:
+    """True when Access Guard decides reads by path and deny rules alone."""
+    try:
+        return bool(access_guard.deny_rules_decide_reads(svc.project_path))
+    except Exception:
+        return False
 
 
 def _guard_rules_active(svc) -> bool:
@@ -326,19 +383,25 @@ def _exact_search(query, top_k, max_tokens, svc, finalize, ignore_case: bool = F
             allowed = set(candidates)
             targets = [rel for rel in manifest if rel in allowed]
 
+    # With no mask, corrupt scope or read-pausing confirm rule, the walk's
+    # deny filtering is the whole read verdict, so the scan reads each file
+    # directly instead of evaluating it again (2.159.2).
+    direct = _deny_rules_only(svc)
+
     def _scan_file(rel):
         """Scan one file for regex matches. Returns (rel, lines) or None."""
         full = project / rel
-        if not full.exists():
-            return None
         # Mask Guard: regex-scan the VIEW, never the raw bytes. An exact
         # search that matched real content and printed it verbatim would be a
         # complete bypass of the mask (docs/mask-guard.md §6).
         try:
-            from services.indexer import _masked_content
-            text = _masked_content(full, svc.project_path)
-            if text is None:
-                return None
+            if direct:
+                text = full.read_text(encoding="utf-8", errors="replace")
+            else:
+                from services.indexer import _masked_content
+                text = _masked_content(full, svc.project_path)
+                if text is None:
+                    return None
             lines = text.splitlines()
         except Exception:
             return None
@@ -454,6 +517,12 @@ def _rank_filenames(query: str, docs: dict) -> list:
 
 def _indexed_documents(svc):
     indexer = getattr(svc, "indexer", None)
+    sync = getattr(indexer, "sync_pending", None)
+    if callable(sync):
+        try:
+            sync()  # files the watcher saw appear or go since the last search
+        except Exception:
+            pass
     docs = getattr(indexer, "documents", None)
     if isinstance(docs, dict) and not docs:
         loader = getattr(indexer, "_load_index", None)

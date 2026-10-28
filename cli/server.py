@@ -4535,6 +4535,15 @@ def run_server(
         print("Building index for the first time...")
         result = indexer.build_index()
         print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks")
+    else:
+        # A git pull while no server ran leaves the stored index stale.
+        def _bg_refresh():
+            try:
+                indexer.refresh_stale()
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg_refresh, daemon=True, name="c3-index-refresh").start()
 
     port = find_free_port(port)
     start_path = "/nano" if nano else ""

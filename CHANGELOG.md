@@ -4,6 +4,59 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.159.2] - 2026-10-28
+
+### Fixed
+
+- A server start checks the code index against the files. The MCP and UI
+  servers loaded the index from SQLite without comparing it with the disk,
+  and the watcher only sees changes made while a server runs, so a file
+  that a git pull or branch switch changed between sessions stayed stale in
+  search until it changed again or the index was rebuilt. Each server now
+  re-checks the index once at start, on a background thread. A file whose
+  mtime matches the stored one is not read, the others are re-chunked only
+  when their content changed, and new and deleted files are added and
+  dropped. A search waits up to 2 s for the check, and stops waiting once
+  the check has found more than 25 files to update. With nothing to update
+  it took about 200 ms on this repository (803 files) and about 480 ms on a
+  2,193-file project. On that project the first check found 13 changed and
+  2 new files that the index had missed, and took 2.0 s.
+- A search first re-indexes the files the watcher saw change since the
+  previous search. Before, an edit reached search only when the staleness
+  agent refreshed the index, which it does once 15 changed files have
+  accumulated. Re-indexing one changed file took 33-140 ms on this
+  repository. More than 25 changed files, as after a branch switch, are
+  re-indexed on a background thread instead, and no search waits for that
+  or for a full build. The watcher now also queues the new name of a
+  renamed file for the index; many editors save by renaming a temporary
+  file over the original.
+- Token counting no longer fails on text that spells a tiktoken special
+  token, such as the end-of-text marker. tiktoken raises on that text by
+  default, so one file quoting the marker made every full build of its
+  project's index fail, and every refresh that re-chunked the file. A c3
+  tool call whose arguments or output contained the marker returned an
+  error, even when, as with `c3_edit`, the change had already been made.
+- A refresh no longer edits the dicts that a running search reads. It
+  builds the new documents and chunks in copies and swaps them in, and a
+  search skips a chunk that disappeared after it was ranked. Before, a
+  search that ran during a refresh could fail with a `KeyError`. Builds and
+  refreshes take turns on one lock.
+
+### Changed
+
+- `c3_search action='exact'` reuses its file walk while the project's
+  watcher runs. Creating, deleting or moving a file or directory outside the
+  pruned directories, or changing the access rules or the root
+  `.gitignore`, makes the next call walk again, and a walk is reused for at
+  most 30 s. When no mask rule, unparseable access config or read-pausing
+  confirm rule exists, the deny rules the walk applied are the whole read
+  check, so the scan reads each file directly instead of running Access
+  Guard on it a second time. Matching files are still checked before they
+  are shown. With a running watcher, the median exact search went from
+  480-510 ms to 121-158 ms on this repository and from 1.65-1.78 s to
+  0.43-0.45 s on the 2,193-file project. Without a watcher it takes
+  270-290 ms and 0.88-0.94 s.
+
 ## [2.159.1] - 2026-10-28
 
 ### Changed

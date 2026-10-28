@@ -1027,6 +1027,24 @@ def has_mask_rules(project_path: str = ".") -> bool:
     return bool(mask_rules or corrupt)
 
 
+def deny_rules_decide_reads(project_path: str = ".") -> bool:
+    """True when a read verdict can only come from path checks and deny rules.
+
+    That is exactly what ``scanner.make_access_excluder`` applies during a
+    walk, so a file the walk yielded may be read as-is without a per-file
+    ``verdict``. False while any mask rule, corrupt scope or read-pausing
+    confirm rule (``confirm_ops == "all"``) exists, or when the rules cannot
+    be loaded.
+    """
+    try:
+        rules, mask_rules, corrupt = load_all(project_path)
+    except Exception:
+        return False
+    if mask_rules or corrupt:
+        return False
+    return not any(r.kind == _KIND_CONFIRM and r.confirm_ops == "all" for r in rules)
+
+
 def has_active_rules(project_path: str = ".") -> bool:
     """True when any user rules (or corrupt scopes) exist — drives S4."""
     # The baseline counts the install-dir rule only when it actually loaded:
