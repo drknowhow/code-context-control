@@ -563,11 +563,10 @@ def mobile_now():
     jobs: list[dict] = []
     try:
         from services.shell_jobs import JobStore
-        jobs = [r for r in JobStore().list_all(project_path=None,
-                                               limit=m._SOURCE_CAP)
-                if r.get("status") in ("queued", "running")
-                and m._resolve_registered(str(r.get("project_path") or ""))
-                is not None]
+        jobs = m._registered_rows(
+            [r for r in JobStore().list_all(project_path=None,
+                                            limit=m._SOURCE_CAP)
+             if r.get("status") in ("queued", "running")])
     except Exception:
         jobs = []
     body = fleet_overview.now(_registered(), job_rows=jobs)
