@@ -36,57 +36,86 @@ EDITABLE_EXTS = {
 
 # How many tail lines to scan for version/seq (avoids full-file parse)
 _TAIL_SCAN = 50
+# Bytes read per step when walking the ledger backwards from its end
+_TAIL_CHUNK = 64 * 1024
 
 
 def _tail_lines(ledger_file: Path, n: int = _TAIL_SCAN) -> list[str]:
-    """Read the last n non-empty lines from the ledger file efficiently."""
-    try:
-        raw = ledger_file.read_bytes()
-    except Exception:
-        return []
+    """The last n non-empty lines of the ledger, oldest first.
+
+    Reads backwards from the end, so the cost follows n rather than the
+    ledger's size (it runs twice per edit, and ledgers reach megabytes).
+    """
     lines = []
-    pos = len(raw)
-    while pos > 0 and len(lines) < n:
-        nl = raw.rfind(b"\n", 0, pos - 1)
-        chunk = raw[nl + 1:pos]
-        if chunk.strip():
-            lines.append(chunk.decode("utf-8", errors="replace"))
-        pos = nl if nl >= 0 else 0
+    try:
+        with open(ledger_file, "rb") as f:
+            pos = f.seek(0, 2)
+            partial = b""
+            while pos > 0 and len(lines) < n:
+                step = min(_TAIL_CHUNK, pos)
+                pos -= step
+                f.seek(pos)
+                parts = (f.read(step) + partial).split(b"\n")
+                # Unless the read reached the start, parts[0] may begin mid-line.
+                partial = parts.pop(0) if pos > 0 else b""
+                for raw in reversed(parts):
+                    if raw.strip():
+                        lines.append(raw.decode("utf-8", errors="replace"))
+                        if len(lines) == n:
+                            break
+    except OSError:
+        return []
     return list(reversed(lines))
 
 
-def _next_version(ledger_file: Path, rel_path: str) -> str:
-    """Get next version for a file by scanning only the tail of the ledger."""
+def _lines_naming(ledger_file: Path, rel_path: str) -> list[str]:
+    """Every ledger line that contains rel_path as a JSON string, in file order.
+
+    A byte search finds the candidates, so only they get JSON-parsed. The
+    raw-UTF-8 form is searched too, for a writer that skipped ASCII escaping.
+    """
+    try:
+        raw = ledger_file.read_bytes()
+    except OSError:
+        return []
+    found = {}
+    for needle in {json.dumps(rel_path).encode("utf-8"),
+                   json.dumps(rel_path, ensure_ascii=False).encode("utf-8")}:
+        pos = raw.find(needle)
+        while pos >= 0:
+            start = raw.rfind(b"\n", 0, pos) + 1
+            end = raw.find(b"\n", pos)
+            if end < 0:
+                end = len(raw)
+            found[start] = raw[start:end]
+            pos = raw.find(needle, end)
+    return [found[k].decode("utf-8", errors="replace") for k in sorted(found)]
+
+
+def _max_version(lines: list[str], rel_path: str) -> int:
+    """Highest version number among the lines' entries for rel_path (0 if none)."""
     max_v = 0
-    for line in _tail_lines(ledger_file, _TAIL_SCAN):
+    for line in lines:
         try:
             entry = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        if entry.get("file") == rel_path:
+        if isinstance(entry, dict) and entry.get("file") == rel_path:
             v_str = entry.get("version", "v0")
             try:
                 max_v = max(max_v, int(v_str.lstrip("v")))
             except (ValueError, AttributeError):
                 pass
-    # If nothing found in tail, file might have older entries — do a quick check
-    if max_v == 0 and ledger_file.exists():
-        try:
-            for line in ledger_file.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if entry.get("file") == rel_path:
-                    v_str = entry.get("version", "v0")
-                    try:
-                        max_v = max(max_v, int(v_str.lstrip("v")))
-                    except (ValueError, AttributeError):
-                        pass
-        except Exception:
-            pass
+    return max_v
+
+
+def _next_version(ledger_file: Path, rel_path: str) -> str:
+    """Get next version for a file by scanning only the tail of the ledger."""
+    max_v = _max_version(_tail_lines(ledger_file, _TAIL_SCAN), rel_path)
+    # If nothing found in tail, file might have older entries (or a rotation
+    # tombstone at the head). Parse only the lines that name it.
+    if max_v == 0:
+        max_v = _max_version(_lines_naming(ledger_file, rel_path), rel_path)
     return f"v{max_v + 1}"
 
 
