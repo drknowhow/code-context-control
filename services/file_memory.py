@@ -405,11 +405,18 @@ class FileMemoryStore:
         Lists the store directory on every call but reads only records whose
         filename it has not seen before; removed records drop out.
         """
+        return list(self._tracked().values())
+
+    def _tracked(self) -> dict[str, str]:
+        """Record filename -> stored path for every readable record (a copy).
+
+        The refresh behind list_tracked(); {} when the store cannot be listed.
+        """
         try:
             names = {e.name for e in os.scandir(self.store_dir)
                      if e.name.endswith(".json") and not e.name.startswith("_")}
         except OSError:
-            return []
+            return {}
         with self._tracked_lock:
             known = self._tracked_paths
             for gone in known.keys() - names:
@@ -422,7 +429,7 @@ class FileMemoryStore:
                     continue
                 if path:
                     known[name] = path
-            return list(known.values())
+            return dict(known)
 
     def prune_stale(self) -> list[str]:
         """Remove records whose source file no longer exists on disk.
@@ -432,31 +439,39 @@ class FileMemoryStore:
         by the retention sweep. Records that fail to parse are left alone
         (unreadable is not the same as stale). Returns the pruned relative
         paths. Never raises.
+
+        Paths come from the list_tracked() cache, and existence is checked
+        with one listing per parent directory instead of a stat per record.
+        A name missing from its listing is confirmed with exists() before its
+        record is deleted, so a case-insensitive filesystem or an odd path
+        costs a stat, never a record.
         """
         pruned: list[str] = []
         try:
-            for store_file in list(self.store_dir.glob("*.json")):
-                if store_file.name.startswith("_"):
-                    continue
+            by_dir: dict[str, list[tuple[str, str, str]]] = {}
+            for name, rel in self._tracked().items():
+                parent, _, base = rel.replace("\\", "/").rpartition("/")
+                by_dir.setdefault(parent, []).append((name, rel, base))
+            for parent, entries in by_dir.items():
                 try:
-                    with open(store_file, encoding="utf-8") as fh:
-                        data = json.load(fh)
-                except Exception:
-                    continue
-                rel = data.get("path", "")
-                if not rel:
-                    continue
-                try:
-                    if (self.project_path / rel).exists():
+                    with os.scandir(self.project_path / parent) as it:
+                        present = {e.name for e in it}
+                except OSError:
+                    present = set()
+                for name, rel, base in entries:
+                    if base in present:
                         continue
-                except OSError:
-                    continue
-                try:
-                    store_file.unlink()
-                except OSError:
-                    continue
-                pruned.append(rel)
-                self._map_cache.pop(rel.replace("\\", "/"), None)
+                    try:
+                        if (self.project_path / rel).exists():
+                            continue
+                    except OSError:
+                        continue
+                    try:
+                        (self.store_dir / name).unlink()
+                    except OSError:
+                        continue
+                    pruned.append(rel)
+                    self._map_cache.pop(rel.replace("\\", "/"), None)
         except Exception:
             return pruned
         if pruned:
