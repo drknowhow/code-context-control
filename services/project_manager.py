@@ -101,7 +101,7 @@ class ProjectManager:
     def _verify_c3_session(self, port: int) -> bool:
         """Verify that a given port is actually a C3 session UI."""
         try:
-            url = f"http://127.0.0.1:{port}/api/health"
+            url = f"http://127.0.0.1:{port}/api/health?probe=1"
             # 2 s, not 0.8: a server re-indexing after a burst of file changes
             # answers late, and a late answer must not read as "not C3".
             with urllib.request.urlopen(url, timeout=2.0) as r:

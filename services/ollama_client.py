@@ -7,6 +7,8 @@ Includes integrated LLM response cache (formerly llm_cache.py).
 """
 import hashlib
 import json
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -56,46 +58,76 @@ class LLMCache:
             pass
 
 
+# Answers from /api/tags, shared by every OllamaClient in the process:
+# base_url -> {"avail": (monotonic ts, bool), "models": (ts, list | None)}.
+# Callers build clients per request and per agent, so a per-instance cache let
+# each of them probe the server again.
+_PROBE_TTL_SECONDS = 30.0
+_probe_cache: dict[str, dict[str, tuple[float, object]]] = {}
+_probe_lock = threading.Lock()
+
+
+def clear_probe_cache() -> None:
+    """Forget every cached availability and model-list answer."""
+    with _probe_lock:
+        _probe_cache.clear()
+
+
 class OllamaClient:
     """Minimal Ollama REST client using urllib."""
-
-    _AVAIL_TTL_SECONDS = 10.0
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, cache_dir: str = ".c3/cache/llm"):
         self.base_url = base_url.rstrip("/")
         self.cache = LLMCache(cache_dir)
-        self._avail_value: bool | None = None
-        self._avail_ts: float = 0.0
+
+    def _cached(self, key: str):
+        with _probe_lock:
+            hit = _probe_cache.get(self.base_url, {}).get(key)
+        if hit is not None and time.monotonic() - hit[0] < _PROBE_TTL_SECONDS:
+            return hit
+        return None
+
+    def _remember(self, key: str, value) -> None:
+        with _probe_lock:
+            _probe_cache.setdefault(self.base_url, {})[key] = (time.monotonic(), value)
 
     # ── Availability ──────────────────────────────────────
 
     def is_available(self, timeout: int | None = None) -> bool:
-        """Check if Ollama is reachable. Cached for ``_AVAIL_TTL_SECONDS`` to
-        avoid storm when many background agents poll concurrently."""
-        import time
-        now = time.monotonic()
-        if self._avail_value is not None and (now - self._avail_ts) < self._AVAIL_TTL_SECONDS:
-            return self._avail_value
+        """Check if Ollama is reachable. The answer is shared process-wide for
+        ``_PROBE_TTL_SECONDS``."""
+        hit = self._cached("avail")
+        if hit is not None:
+            return hit[1]
         try:
             req = urllib.request.Request(f"{self.base_url}/api/tags")
             with urllib.request.urlopen(req, timeout=timeout or _TIMEOUT):
-                self._avail_value = True
+                available = True
         except Exception:
-            self._avail_value = False
-        self._avail_ts = now
-        return self._avail_value
+            available = False
+        self._remember("avail", available)
+        return available
 
     # ── Models ────────────────────────────────────────────
 
     def list_models(self) -> list[str] | None:
-        """Return list of locally available model names, or None on failure."""
+        """Return list of locally available model names, or None on failure.
+        The answer is shared process-wide for ``_PROBE_TTL_SECONDS``."""
+        hit = self._cached("models")
+        if hit is not None:
+            return list(hit[1]) if hit[1] is not None else None
         try:
             req = urllib.request.Request(f"{self.base_url}/api/tags")
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
                 data = json.loads(resp.read())
-            return [m["name"] for m in data.get("models", [])]
+            models = [m["name"] for m in data.get("models", [])]
         except Exception:
-            return None
+            models = None
+        self._remember("models", models)
+        if models is not None:
+            self._remember("avail", True)
+            return list(models)
+        return None
 
     def has_model(self, model: str) -> bool:
         """Check if a specific model is pulled locally."""

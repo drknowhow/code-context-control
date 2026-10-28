@@ -4,6 +4,36 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.5] - 2026-10-28
+
+### Fixed — idle CPU in the MCP server, UI server and Oracle
+
+Measured on one machine with 7 MCP servers and a UI server open on a project
+whose `.c3/file_memory` holds 64k records. Most of their idle CPU went to the
+retention sweep's `prune_stale`, which re-read every record and stat'ed every
+path, about 8 CPU-seconds per sweep, every 5 minutes, in every process.
+
+- `prune_stale` takes paths from the `list_tracked` cache and lists each
+  parent directory once instead of stat'ing each path: about 0.3 s per sweep.
+  A name missing from a listing is still confirmed with `exists()` before its
+  record is deleted.
+- `RetentionManager.maybe_run` sweeps only when no process on the project has
+  in the last interval: `.c3/retention.lock` keeps two sweeps from running at
+  once, and the mtime of `.c3/retention.last` marks the last one.
+- `OllamaClient.is_available` / `list_models` share their answer across the
+  process for 30 s. The UI server built a new client on every `/api/health`,
+  so each health check cost an Ollama `/api/tags` request.
+- `GET /api/health?probe=1` on the UI server answers identity only, as the
+  Oracle's already did, and the hub's liveness check sends it. The hub ran
+  that check on every UI server on every `/api/projects` poll.
+- The Oracle's cross-project row filter (`/api/mobile/jobs` without
+  `project`, `/overrides`, the rules list, the fleet job count) resolves the
+  registered projects once per request, not once per row.
+
+A fresh idle MCP server on that project used 5.72% of a core over 15
+minutes before and 2.83–2.97% after. The Oracle's job filter took 0.98
+CPU-seconds per request before and 0.006 after.
+
 ## [2.158.4] - 2026-10-23
 
 ### Fixed — a fastmcp/mcp mismatch now says how to repair it

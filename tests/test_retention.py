@@ -18,11 +18,14 @@ All tests run in temp dirs; no real .c3 directories are touched.
 
 import gzip
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -503,6 +506,51 @@ class TestFileMemoryPrune(RetentionBase):
         # Idempotent
         self.assertEqual(store.prune_stale(), [])
 
+    def _store_with(self, *rels):
+        from services.file_memory import FileMemoryStore
+        for rel in rels:
+            path = self.project / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("def f():\n    pass\n", encoding="utf-8")
+        store = FileMemoryStore(str(self.project))
+        for rel in rels:
+            self.assertIsNotNone(store.update(rel))
+        return store
+
+    def test_prunes_files_in_subdirectories_and_in_deleted_directories(self):
+        import shutil
+        store = self._store_with("pkg/keep.py", "pkg/gone.py", "old/x.py")
+        (self.project / "pkg" / "gone.py").unlink()
+        shutil.rmtree(self.project / "old")
+        self.assertEqual(sorted(store.prune_stale()), ["old/x.py", "pkg/gone.py"])
+        self.assertEqual(store.list_tracked(), ["pkg/keep.py"])
+
+    def test_a_name_missing_from_the_listing_is_confirmed_before_pruning(self):
+        from services import file_memory
+        store = self._store_with("keep.py", "pkg/also.py")
+        real_scandir = os.scandir
+
+        def project_listing_fails(path):
+            if Path(path) == store.store_dir:
+                return real_scandir(path)
+            raise OSError("listing unavailable")
+
+        with mock.patch.object(file_memory.os, "scandir", side_effect=project_listing_fails):
+            pruned = store.prune_stale()
+        self.assertEqual(pruned, [])
+        self.assertTrue(store.is_tracked("keep.py"))
+        self.assertTrue(store.is_tracked("pkg/also.py"))
+
+    def test_a_sweep_does_not_reread_records_it_already_listed(self):
+        store = self._store_with("keep.py")
+        store.list_tracked()
+        record = store._store_path("keep.py")
+        data = json.loads(record.read_text(encoding="utf-8"))
+        data["path"] = "missing.py"
+        record.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(store.prune_stale(), [])
+        self.assertTrue(record.exists())
+
 
 class TestNotificationsRotation(RetentionBase):
     def _store(self):
@@ -558,6 +606,40 @@ class TestRetentionManager(RetentionBase):
         _write_config(self.project, {"enabled": False})
         mgr = RetentionManager(str(self.project))
         self.assertIsNone(mgr.maybe_run())
+
+    def test_second_process_skips_a_sweep_another_just_ran(self):
+        self.assertIsInstance(RetentionManager(str(self.project)).maybe_run(), dict)
+        other = RetentionManager(str(self.project))
+        with mock.patch.object(other, "run_sweep") as sweep:
+            self.assertIsNone(other.maybe_run())
+        sweep.assert_not_called()
+
+    def test_second_process_sweeps_once_the_stamp_is_older_than_the_interval(self):
+        RetentionManager(str(self.project)).maybe_run()
+        stamp = self.project / ".c3" / "retention.last"
+        old = time.time() - 301
+        os.utime(stamp, (old, old))
+        self.assertIsInstance(RetentionManager(str(self.project)).maybe_run(), dict)
+        self.assertGreater(stamp.stat().st_mtime, old + 300)
+
+    def test_a_stamp_dated_in_the_future_does_not_block_sweeps(self):
+        RetentionManager(str(self.project)).maybe_run()
+        stamp = self.project / ".c3" / "retention.last"
+        future = time.time() + 3600
+        os.utime(stamp, (future, future))
+        self.assertIsInstance(RetentionManager(str(self.project)).maybe_run(), dict)
+
+    def test_no_sweep_while_another_process_holds_the_lock(self):
+        held = retention._try_lock(self.project / ".c3" / "retention.lock")
+        self.assertIsNotNone(held)
+        try:
+            mgr = RetentionManager(str(self.project))
+            with mock.patch.object(mgr, "run_sweep") as sweep:
+                self.assertIsNone(mgr.maybe_run())
+            sweep.assert_not_called()
+        finally:
+            retention._unlock(held)
+        self.assertIsInstance(RetentionManager(str(self.project)).maybe_run(), dict)
 
     def test_full_sweep(self):
         from services.edit_ledger import EditLedger

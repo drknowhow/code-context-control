@@ -346,6 +346,10 @@ def api_projects_open():
 @app.route('/api/health')
 def api_health():
     """Lightweight health check with connection sources."""
+    # ?probe=1 is the liveness form: identity only. The hub sends it for every
+    # UI server on every /api/projects poll and only reads "service".
+    if request.args.get("probe") not in (None, "", "0", "false"):
+        return jsonify({"service": "c3-ui", "probe": True})
     sources = {"c3": True}  # If this endpoint responds, C3 API is up
 
     # Check Ollama

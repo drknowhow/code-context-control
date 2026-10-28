@@ -474,12 +474,28 @@ def _caller() -> str:
 
 # ── Path validation ───────────────────────────────────────
 
-def _resolve_registered(raw: str) -> Path | None:
+def _registered_roots() -> list[Path]:
+    """Resolved path of every scanner-registered project with a .c3 dir."""
+    if _scanner is None:
+        return []
+    roots = []
+    for proj in _scanner.discover():
+        if not proj.get("has_c3"):
+            continue
+        try:
+            roots.append(Path(proj["path"]).resolve())
+        except (OSError, ValueError):
+            continue
+    return roots
+
+
+def _resolve_registered(raw: str, roots: list[Path] | None = None) -> Path | None:
     """Resolve a request path to a scanner-registered project with a .c3 dir.
 
     Case-insensitive on Windows (normcase both sides). Returns None for
     anything unregistered — callers turn that into a 404 without ever
-    touching the filesystem at the requested location.
+    touching the filesystem at the requested location. ``roots`` is a
+    ``_registered_roots()`` result to reuse across calls.
     """
     raw = (raw or "").strip()
     if not raw or _scanner is None:
@@ -488,19 +504,13 @@ def _resolve_registered(raw: str) -> Path | None:
         target = os.path.normcase(str(Path(raw).resolve()))
     except (OSError, ValueError):
         return None
-    for proj in _scanner.discover():
-        if not proj.get("has_c3"):
-            continue
-        try:
-            candidate = os.path.normcase(str(Path(proj["path"]).resolve()))
-        except (OSError, ValueError):
-            continue
-        if candidate == target:
-            return Path(proj["path"]).resolve()
+    for root in (_registered_roots() if roots is None else roots):
+        if os.path.normcase(str(root)) == target:
+            return root
     return None
 
 
-def _serving_project(raw: str) -> Path | None:
+def _serving_project(raw: str, roots: list[Path] | None = None) -> Path | None:
     """The registered project that serves an override row's ``project_path``:
     that project itself, or the deepest registered project containing it.
 
@@ -518,13 +528,7 @@ def _serving_project(raw: str) -> Path | None:
         return None
     best: Path | None = None
     best_len = -1
-    for proj in _scanner.discover():
-        if not proj.get("has_c3"):
-            continue
-        try:
-            candidate = Path(proj["path"]).resolve()
-        except (OSError, ValueError):
-            continue
+    for candidate in (_registered_roots() if roots is None else roots):
         key = os.path.normcase(str(candidate))
         inside = target == key or target.startswith(key.rstrip("\\/") + os.sep)
         if inside and len(key) > best_len:
@@ -1022,8 +1026,7 @@ def mobile_jobs():
         # Cross-project listing must not leak rows for projects this gateway
         # does not serve (the store root is shared across every project on
         # the machine).
-        rows = [r for r in rows
-                if _resolve_registered(str(r.get("project_path") or "")) is not None]
+        rows = _registered_rows(rows)
     if status:
         rows = [r for r in rows if r.get("status") == status]
     rows = rows[:limit]
@@ -1055,8 +1058,21 @@ def _schedule_row_or_404(schedule_id: str):
     return row, None
 
 
-def _registered_rows(rows: list) -> list:
-    return [r for r in rows if _resolve_registered(str(r.get("project_path") or "")) is not None]
+def _registered_rows(rows: list, serving: bool = False) -> list:
+    """The rows whose ``project_path`` is a registered project, or, with
+    ``serving``, lies inside one. Resolves the registered projects once and
+    each distinct row path once, not once per row and project."""
+    roots = _registered_roots()
+    lookup = _serving_project if serving else _resolve_registered
+    keep: dict[str, bool] = {}
+    out = []
+    for r in rows:
+        raw = str(r.get("project_path") or "")
+        if raw not in keep:
+            keep[raw] = lookup(raw, roots) is not None
+        if keep[raw]:
+            out.append(r)
+    return out
 
 
 def _schedule_call(fn, *args, **kwargs):
@@ -2484,8 +2500,7 @@ def mobile_overrides_list():
         # Cross-project listing must not leak rows for projects this gateway
         # does not serve — the store is one file across every project on the
         # machine, including ones the scanner has since dropped.
-        rows = [r for r in rows
-                if _serving_project(str(r.get("project_path") or "")) is not None]
+        rows = _registered_rows(rows, serving=True)
     channels = _override_channels(rows)
     cards = []
     for r in rows:
@@ -2770,8 +2785,7 @@ def mobile_overrides_costs():
         # Same rule as /overrides and /jobs: the store is one file for the
         # whole machine, and a cross-project view must not name a project
         # this token cannot otherwise see.
-        rules = [r for r in rules
-                 if _serving_project(str(r.get("project_path") or "")) is not None]
+        rules = _registered_rows(rules, serving=True)
     return jsonify({"days": days, "rules": rules, "count": len(rules),
                     "project": project_path})
 

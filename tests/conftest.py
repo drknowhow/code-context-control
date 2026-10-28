@@ -49,6 +49,20 @@ def no_ambient_delegate_host(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def fresh_ollama_probe_cache():
+    """OllamaClient shares /api/tags answers process-wide; start each test
+    without an answer an earlier test (or a live Ollama) left behind."""
+    try:
+        from services.ollama_client import clear_probe_cache
+    except ImportError:
+        yield
+        return
+    clear_probe_cache()
+    yield
+    clear_probe_cache()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_c3_home():
     """Point C3_HOME at an empty directory for the whole session."""

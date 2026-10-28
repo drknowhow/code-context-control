@@ -329,6 +329,46 @@ def cap_session_files(sessions_dir, max_files: int = 50,
     return pruned
 
 
+def _try_lock(path: Path):
+    """Take a non-blocking exclusive lock on ``path``; the open handle, or None.
+
+    The OS drops the lock when the holder dies, so a crashed sweep never
+    strands it.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "ab")
+    except OSError:
+        return None
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def _unlock(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        fh.close()
+
+
 class RetentionManager:
     """Rate-limited retention sweep for a project's ``.c3`` directory.
 
@@ -341,6 +381,11 @@ class RetentionManager:
     happens at write time in their own modules; this sweep owns the
     structure-aware rotations (edit ledger, notifications), the session
     cap, file-memory pruning, and archive TTL purging.
+
+    Every C3 process on a project (each MCP server and the UI server) owns
+    one of these, so ``maybe_run`` sweeps only when no process has swept
+    within the interval: ``.c3/retention.lock`` keeps two sweeps from
+    overlapping and the mtime of ``.c3/retention.last`` records the last one.
     """
 
     def __init__(self, project_path, edit_ledger=None, notifications=None,
@@ -367,7 +412,27 @@ class RetentionManager:
         self._next_run = now + interval
         if not cfg.get("enabled", True):
             return None
-        return self.run_sweep(cfg)
+        c3_dir = self.project_path / ".c3"
+        lock = _try_lock(c3_dir / "retention.lock")
+        if lock is None:
+            return None
+        try:
+            stamp = c3_dir / "retention.last"
+            try:
+                age = time.time() - stamp.stat().st_mtime
+            except OSError:
+                age = None
+            if age is not None and 0 <= age < interval:
+                self._next_run = now + (interval - age)
+                return None
+            summary = self.run_sweep(cfg)
+            try:
+                stamp.touch()
+            except OSError:
+                pass
+            return summary
+        finally:
+            _unlock(lock)
 
     def run_sweep(self, cfg: Optional[dict] = None) -> dict:
         """Execute one full retention sweep. Never raises."""
