@@ -4,6 +4,35 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.160.0] - 2026-10-28
+
+### Changed
+
+- The hub's "Update all projects" and the sub-project update cascade run
+  several projects at once instead of one after another. Each project is
+  still its own `c3 init --force` process. The hub setting "Parallel
+  updates" (`update_workers` in `~/.c3/hub_config.json`, 1-8, default 3)
+  sets how many run together. On four 46-file projects, an update with
+  nothing new to embed took 13.4 s one at a time, 5.6 s with 3 workers and
+  3.2 s with 4. A first build, which embeds every file, went from 44.5 s to
+  30.4 s with 4 workers, because Ollama embeds one request at a time.
+  Cancel lets running projects finish and starts no more. The status
+  endpoints report `in_progress` (every project being updated) and
+  `workers`, and the update dialog marks each running row.
+- A batch update allows each project 600 s, as the cascade already did.
+  It allowed 90 s, so a large project's first embedding build was killed
+  part way and reported as failed.
+- A batch update skips a registered project whose folder no longer exists,
+  and lists it as skipped rather than failed. A path listed twice runs once.
+
+### Fixed
+
+- `install-mcp` (run by every `c3 init --force`) leaves `~/.claude/CLAUDE.md`
+  alone when its C3 block is already current, and replaces the file
+  atomically when it changes. It rewrote the file in place on every run, so
+  two installs running together could read it empty and write back only the
+  C3 block, dropping the user's own text.
+
 ## [2.159.2] - 2026-10-28
 
 ### Fixed

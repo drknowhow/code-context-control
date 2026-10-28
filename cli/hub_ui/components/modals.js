@@ -1325,12 +1325,14 @@ function BatchUpdateModal({ projects, onClose, onChanged }) {
   const total = (state && state.total) || (targets ? targets.length : 0) || 1;
   const findResult = (p) => results.find(r => (r.path || '').toLowerCase() === (p.path || '').toLowerCase());
   const okCount = results.filter(r => r.success).length;
-  const failCount = results.filter(r => !r.success).length;
+  const skipCount = results.filter(r => r.skipped).length;
+  const failCount = results.filter(r => !r.success && !r.skipped).length;
+  const inProgress = ((state && state.in_progress) || []).map(x => (x || '').toLowerCase());
 
-  const rowStatus = (p, idx) => {
+  const rowStatus = (p) => {
     const r = findResult(p);
-    if (r) return r.success ? 'done' : 'failed';
-    if (phase === 'running' && state && state.running && idx === (state.current_index || 0)) return 'running';
+    if (r) return r.success ? 'done' : r.skipped ? 'skipped' : 'failed';
+    if (phase === 'running' && state && state.running && inProgress.includes((p.path || '').toLowerCase())) return 'running';
     return 'pending';
   };
 
@@ -1353,8 +1355,8 @@ function BatchUpdateModal({ projects, onClose, onChanged }) {
           {!targets.length && (
             <div style={{ padding: 14, fontSize: 12, color: T.textDim }}>No projects registered.</div>
           )}
-          {targets.map((p, idx) => {
-            const st = rowStatus(p, idx);
+          {targets.map((p) => {
+            const st = rowStatus(p);
             const r = findResult(p);
             return (
               <div key={p.path} style={{ padding: '7px 10px', borderBottom: `1px solid ${T.border}40` }}>
@@ -1362,7 +1364,7 @@ function BatchUpdateModal({ projects, onClose, onChanged }) {
                   {st === 'done' && <I name="check" size={13} color={T.accent} />}
                   {st === 'failed' && <I name="xCircle" size={13} color={T.error} />}
                   {st === 'running' && <GlowDot color={T.warn} />}
-                  {st === 'pending' && <GlowDot color={T.textDim} />}
+                  {(st === 'pending' || st === 'skipped') && <GlowDot color={T.textDim} />}
                   <span style={{ fontSize: 13, color: T.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {p.name || p.path}
                   </span>
@@ -1372,8 +1374,8 @@ function BatchUpdateModal({ projects, onClose, onChanged }) {
                     color: st === 'done' ? T.accent : st === 'failed' ? T.error : st === 'running' ? T.warn : T.textDim,
                   }}>{st === 'running' ? 'running…' : st}</span>
                 </div>
-                {st === 'failed' && r && r.output && (
-                  <div className="mono" style={{ fontSize: 11, color: T.error, marginTop: 3, paddingLeft: 21, whiteSpace: 'pre-wrap' }}>
+                {(st === 'failed' || st === 'skipped') && r && r.output && (
+                  <div className="mono" style={{ fontSize: 11, color: st === 'failed' ? T.error : T.textDim, marginTop: 3, paddingLeft: 21, whiteSpace: 'pre-wrap' }}>
                     {r.output.split('\n').filter(l => l.trim()).slice(-2).join('\n')}
                   </div>
                 )}
@@ -1386,14 +1388,17 @@ function BatchUpdateModal({ projects, onClose, onChanged }) {
       {(phase === 'running' || phase === 'done') && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
           <ProgressBar value={results.length} max={total} />
-          <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>{results.length}/{total}</span>
+          <span className="mono" style={{ fontSize: 11, color: T.textMuted }}>
+            {results.length}/{total}{state && state.workers > 1 ? ` · ${state.workers} at once` : ''}
+          </span>
         </div>
       )}
 
       {phase === 'done' && (
         <div style={{ fontSize: 12, marginTop: 10, color: failCount ? T.error : T.accent }}>
           Batch {state && state.cancelled ? 'cancelled' : 'finished'} — {okCount} succeeded, {failCount} failed
-          {state && state.cancelled ? ` (${Math.max(0, total - results.length)} skipped)` : ''}.
+          {skipCount ? `, ${skipCount} skipped (folder missing)` : ''}
+          {state && state.cancelled ? ` (${Math.max(0, total - results.length)} not started)` : ''}.
         </div>
       )}
 

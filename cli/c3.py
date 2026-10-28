@@ -96,7 +96,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.159.2"
+__version__ = "2.160.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -5172,12 +5172,19 @@ def _ensure_global_claude_md() -> None:
     - Creates the file if it doesn't exist.
     - Updates the C3 section if present but outdated.
     - Preserves any user-written content outside the C3 section.
+
+    Every install-mcp calls this, and the hub's batch update runs several
+    installs at once. An unchanged file is left alone, and a changed one is
+    replaced atomically: a plain truncate-and-write let a concurrent run read
+    the file empty and write back the C3 block alone, dropping the user's text.
     """
+    from services.atomic_json import write_text_atomic
+
     global_md = Path.home() / ".claude" / "CLAUDE.md"
     global_md.parent.mkdir(parents=True, exist_ok=True)
 
     if not global_md.exists():
-        global_md.write_text(_GLOBAL_CLAUDE_MD_CONTENT, encoding="utf-8")
+        write_text_atomic(global_md, _GLOBAL_CLAUDE_MD_CONTENT)
         print(f"Wrote {global_md}  (global C3 enforcement)")
         return
 
@@ -5193,7 +5200,11 @@ def _ensure_global_claude_md() -> None:
 
     # Markers already present → surgical, marker-bounded replacement.
     if C3_BLOCK_BEGIN in existing:
-        global_md.write_text(merge_c3_block(existing, wrapped), encoding="utf-8")
+        merged = merge_c3_block(existing, wrapped)
+        if merged == existing:
+            print(f"Kept  {global_md}  (C3 enforcement up to date)")
+            return
+        write_text_atomic(global_md, merged)
         print(f"Updated {global_md}  (refreshed C3 enforcement)")
         return
 
@@ -5217,13 +5228,13 @@ def _ensure_global_claude_md() -> None:
         before = existing[:start].rstrip()
         after = existing[end:].lstrip()
         parts = [p for p in (before, wrapped, after) if p]
-        global_md.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+        write_text_atomic(global_md, "\n\n".join(parts) + "\n")
         print(f"Updated {global_md}  (migrated C3 enforcement to markers)")
         return
 
     # User has their own CLAUDE.md with no C3 content — append the marked block.
     merged = existing.rstrip() + "\n\n" + wrapped + "\n"
-    global_md.write_text(merged, encoding="utf-8")
+    write_text_atomic(global_md, merged)
     print(f"Updated {global_md}  (appended C3 enforcement)")
 
 
