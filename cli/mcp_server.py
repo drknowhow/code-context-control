@@ -354,26 +354,33 @@ async def lifespan(server):
 
         threading.Thread(target=_bg_build, daemon=True, name="c3-initial-index").start()
     else:
+        # Bound here too: the `import threading` lines in this function make
+        # the name local, so the module import is not visible.
+        import threading
+
         services.indexer._load_index()
-        # Build/update embedding index + warm SLTM in background. Deferred off
-        # the handshake path: build()/warm() lazily init the heavy backends, so
-        # this must NOT gate on .ready synchronously here.
-        if services.embedding_index or services.vector_store:
-            import threading
+        # In the background: re-check the stored index against the files (a
+        # git pull while no server ran leaves it stale), then build/update the
+        # embedding index and warm SLTM. Deferred off the handshake path:
+        # build()/warm() lazily init the heavy backends, so this must NOT gate
+        # on .ready synchronously here.
+        def _bg_embed():
+            try:
+                services.indexer.refresh_stale()
+            except Exception:
+                pass
+            if services.embedding_index:
+                try:
+                    services.embedding_index.build(services.indexer)
+                except Exception:
+                    pass
+            if services.vector_store:
+                try:
+                    services.vector_store.warm()
+                except Exception:
+                    pass
 
-            def _bg_embed():
-                if services.embedding_index:
-                    try:
-                        services.embedding_index.build(services.indexer)
-                    except Exception:
-                        pass
-                if services.vector_store:
-                    try:
-                        services.vector_store.warm()
-                    except Exception:
-                        pass
-
-            threading.Thread(target=_bg_embed, daemon=True, name="c3-embed-index").start()
+        threading.Thread(target=_bg_embed, daemon=True, name="c3-embed-index").start()
 
         # Build/update doc index in background for Local RAG Pipeline
         if services.doc_index:

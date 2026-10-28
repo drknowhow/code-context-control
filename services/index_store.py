@@ -259,6 +259,18 @@ class IndexStore:
             conn.close()
         return rows
 
+    def set_mtimes(self, mtimes: dict) -> None:
+        """Record new mtimes for documents whose content did not change."""
+        if not mtimes or not self.path.exists():
+            return
+        conn = self._connect()
+        try:
+            with conn:
+                conn.executemany("UPDATE docs SET mtime = ? WHERE doc_id = ?",
+                                 [(float(m), doc_id) for doc_id, m in mtimes.items()])
+        finally:
+            conn.close()
+
     # ── read ────────────────────────────────────────────────────────────────
 
     def load(self) -> dict | None:

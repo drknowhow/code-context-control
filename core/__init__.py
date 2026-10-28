@@ -15,7 +15,7 @@ def _cached_count(content_hash: str, length: int, text: str) -> int:
     """Count tokens with LRU memoization. length param ensures hash collisions are safe."""
     encoder = _get_encoder()
     if encoder:
-        return len(encoder.encode(text))
+        return len(encoder.encode(text, disallowed_special=()))
     tokens = re.findall(r'\w+|[^\w\s]', text)
     count = 0
     for t in tokens:
@@ -41,6 +41,11 @@ def count_tokens(text: str) -> int:
     Count tokens using tiktoken (cl100k_base) with LRU caching.
     Repeated calls with identical text hit the cache (~0ms vs ~1-2ms).
     Falls back to heuristic if tiktoken is unavailable.
+
+    Text that spells a special token (the end-of-text marker, say) counts
+    as ordinary text. tiktoken raises on it by default, and before 2.159.2
+    one file quoting it failed every index build and refresh of its
+    project, and any c3 tool call whose input or output contained it.
     """
     if not text:
         return 0
@@ -48,7 +53,7 @@ def count_tokens(text: str) -> int:
     if len(text) < 50:
         encoder = _get_encoder()
         if encoder:
-            return len(encoder.encode(text))
+            return len(encoder.encode(text, disallowed_special=()))
         return len(re.findall(r'\w+|[^\w\s]', text))
     h = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
     return _cached_count(h, len(text), text)

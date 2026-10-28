@@ -53,6 +53,13 @@ class _ChangeHandler(FileSystemEventHandler):
         super().__init__()
         self._lock = threading.Lock()
         self._changes = []
+        # Paths the code index has not re-read yet. Kept apart from _changes,
+        # which other agents read through change_count, so the index taking
+        # its paths early does not hide a change from them.
+        self._index_pending: set = set()
+        # Bumped by every file or directory created, deleted or moved outside
+        # the pruned directories; a cached file listing is valid while it holds.
+        self.structure_generation = 0
         self._excluder = excluder  # sub-project folders tracked by their own .c3
         self._root = Path(root) if root else None
         self._pruned = make_dir_pruner(root) if root else (lambda d: d in SKIP_DIRS)
@@ -123,28 +130,54 @@ class _ChangeHandler(FileSystemEventHandler):
                 "path": path,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
+            self._index_pending.add(path)
+
+    def _note_structure(self, path: str, is_directory: bool):
+        """Count a create, delete or move unless a pruned directory holds it."""
+        parts = self._rel_parts(Path(path))
+        dirs = parts if is_directory else parts[:-1]
+        if any(self._pruned(d) for d in dirs) or self._under_nested_checkout(dirs):
+            return
+        with self._lock:
+            self.structure_generation += 1
 
     def on_modified(self, event):
         if not event.is_directory:
             self._record("modified", event.src_path)
 
     def on_created(self, event):
+        self._note_structure(event.src_path, event.is_directory)
         if not event.is_directory:
             self._record("created", event.src_path)
 
     def on_deleted(self, event):
+        self._note_structure(event.src_path, event.is_directory)
         if not event.is_directory:
             self._record("deleted", event.src_path)
 
     def on_moved(self, event):
+        self._note_structure(event.src_path, event.is_directory)
+        self._note_structure(event.dest_path, event.is_directory)
         if not event.is_directory:
             self._record("moved", event.src_path)
+            # An editor's atomic save renames a temp file over the target:
+            # the index must re-read the destination too.
+            if self._should_track(event.dest_path):
+                with self._lock:
+                    self._index_pending.add(event.dest_path)
 
     def get_and_clear(self) -> list:
         with self._lock:
             changes = list(self._changes)
             self._changes.clear()
             return changes
+
+    def take_index_pending(self) -> list:
+        """Paths changed since the last call, for the code index; forgets them."""
+        with self._lock:
+            paths = sorted(self._index_pending)
+            self._index_pending.clear()
+            return paths
 
     @property
     def change_count(self) -> int:
@@ -239,6 +272,19 @@ class CodeWatcher:
         self._observer.join(timeout=2)
         if self._worker_thread:
             self._worker_thread.join(timeout=2)
+
+    @property
+    def running(self) -> bool:
+        """True while the observer thread delivers file-system events."""
+        return self._observer.is_alive() and not self._stop_event.is_set()
+
+    @property
+    def structure_generation(self) -> int:
+        return self._handler.structure_generation
+
+    def take_index_changes(self) -> list:
+        """Changed paths the code index has not re-read yet (see CodeIndex.sync_pending)."""
+        return self._handler.take_index_pending()
 
     def get_changes(self) -> list:
         """Return accumulated changes and clear the buffer."""

@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections import Counter, OrderedDict
 from pathlib import Path
@@ -149,6 +150,16 @@ class CodeIndex:
         self._store = IndexStore(self.index_dir)
         self._hashes: dict = {}   # doc_id -> content hash; drives refresh()
         self._lexical_ok = False
+        # Writers (build_index, refresh) take turns on this lock. Searches do
+        # not take it: refresh builds its documents and chunks in copies and
+        # swaps them in, so a search sees the old index or the new one.
+        self._write_lock = threading.RLock()
+        # True during a full build or a refresh of many files: sync_pending
+        # then searches the index as it is instead of waiting.
+        self._long_write = False
+        # The runtime points this at CodeWatcher.take_index_changes, so a
+        # search first re-reads the files changed since the last one.
+        self.pending_changes = None
 
         # Hybrid fusion (services/retrieval, plan P3): a dense backend — any
         # object with `.ready` and `.candidates(query, limit)`, in practice the
@@ -248,10 +259,11 @@ class CodeIndex:
         n = self._rerank_top_n
         head = ranked[:n]
         exact_head = [(cid, s) for cid, s in head if cid in exact_ids]
-        block = [(cid, s) for cid, s in head if cid not in exact_ids and cid in self.chunks]
+        chunks = self.chunks
+        block = [(cid, s) for cid, s in head if cid not in exact_ids and cid in chunks]
         if len(block) < 2:
             return ranked
-        docs = [(cid, passage_text(self.chunks[cid])) for cid, _ in block]
+        docs = [(cid, passage_text(chunks[cid])) for cid, _ in block]
         try:
             scored = self.reranker.rerank(query, docs)
         except Exception as exc:
@@ -350,6 +362,15 @@ class CodeIndex:
         on_progress: callable(entries_seen, files_indexed, chunks_created),
             invoked during the scan (directory granularity plus per file).
         """
+        # Set before the lock is taken: sync_pending must not wait out a build.
+        prev, self._long_write = self._long_write, True
+        try:
+            with self._write_lock:
+                return self._build_index(max_files, on_progress)
+        finally:
+            self._long_write = prev
+
+    def _build_index(self, max_files, on_progress) -> dict:
         if max_files is None:
             max_files = self._configured_max_files()
 
@@ -444,22 +465,32 @@ class CodeIndex:
 
     # ── Shared build steps ─────────────────────────────────────────────────
 
-    def _ingest_file(self, doc_id: str, fpath: Path, content: str) -> list:
-        """Register one file: document entry, chunks, hash, mtime. Returns its chunks."""
-        self.documents[doc_id] = {
+    def _ingest_file(self, doc_id: str, fpath: Path, content: str, mtime=None, maps=None) -> list:
+        """Register one file: document entry, chunks, hash, mtime. Returns its chunks.
+
+        ``maps`` is ``(documents, chunks, hashes, mtimes)`` to write into
+        instead of the live dicts; ``mtime`` is one the caller read before
+        the content, so a write landing in between is caught next time.
+        """
+        documents, chunks, hashes, mtimes = maps or (self.documents, self.chunks,
+                                                     self._hashes, self._file_mtimes)
+        documents[doc_id] = {
             "path": doc_id,
             "full_path": str(fpath),
             "lines": len(content.splitlines()),
             "tokens": count_tokens(content),
         }
-        self._hashes[doc_id] = content_hash(content)
+        hashes[doc_id] = content_hash(content)
         file_chunks = self._chunk_file(content, fpath.suffix.lower(), doc_id)
         for chunk in file_chunks:
-            self.chunks[chunk["id"]] = chunk
-        try:
-            self._file_mtimes[doc_id] = os.path.getmtime(str(fpath))
-        except Exception:
-            pass
+            chunks[chunk["id"]] = chunk
+        if mtime is None:
+            try:
+                mtime = os.path.getmtime(str(fpath))
+            except Exception:
+                pass
+        if mtime is not None:
+            mtimes[doc_id] = mtime
         return file_chunks
 
     def _rebuild_symbols(self) -> None:
@@ -510,16 +541,28 @@ class CodeIndex:
             return exclude_parts
         return None
 
-    def refresh(self, paths=None, on_progress=None) -> dict:
+    def refresh(self, paths=None, on_progress=None, trust_mtime: bool = False) -> dict:
         """Incremental update: re-chunk only files whose content hash changed.
 
         ``paths``: absolute or project-relative paths the caller knows changed
         (the watcher's list); a path that no longer exists drops its document.
         ``None`` walks the whole manifest and compares every file's hash —
         reading and hashing, not chunking and tokenizing, so it stays cheap.
+        ``trust_mtime`` (walk only): an indexed file whose mtime equals the
+        stored one counts as unchanged without being read. It is ignored while
+        mask rules exist, since a rule change alters a file's indexed view
+        without touching the file.
         Falls back to :meth:`build_index` when no store exists yet, when only a
         legacy layout is on disk, or when the incremental write fails.
         """
+        with self._write_lock:
+            prev = self._long_write
+            try:
+                return self._refresh(paths, on_progress, trust_mtime)
+            finally:
+                self._long_write = prev
+
+    def _refresh(self, paths, on_progress, trust_mtime) -> dict:
         t0 = time.perf_counter()
         if not self.chunks and not self._load_index():
             result = self.build_index(on_progress=on_progress)
@@ -533,6 +576,7 @@ class CodeIndex:
             mask_active = _ag.has_mask_rules(str(self.project_path))
         except Exception:
             mask_active = False
+        trust = trust_mtime and paths is None and not mask_active
 
         candidates: list = []
         removed: list = []
@@ -568,45 +612,68 @@ class CodeIndex:
                 elif rel in self.documents:
                     removed.append(rel)
 
-        by_doc: dict = {}
-        for cid, chunk in self.chunks.items():
-            by_doc.setdefault(chunk.get("doc_id"), []).append(cid)
-
-        upserts: dict = {}
+        fresh: list = []      # (rel, path, content, mtime) to re-chunk
+        touched: dict = {}    # rel -> new mtime, content unchanged
+        seen: set = set()     # the watcher's list can name a file twice
         changed = added = unchanged = skipped = 0
         for fpath in candidates:
             rel = str(fpath.relative_to(self.project_path))
+            if rel in seen:
+                continue
+            seen.add(rel)
+            known = rel in self.documents
+            try:
+                mtime = fpath.stat().st_mtime
+            except OSError:
+                mtime = None
+            if trust and known and mtime is not None and mtime == self._file_mtimes.get(rel):
+                unchanged += 1
+                continue
             content = self._read_indexable(fpath, mask_active)
             if content is None:
                 skipped += 1
                 continue
-            digest = content_hash(content)
-            if rel in self.documents and self._hashes.get(rel) == digest:
+            if known and self._hashes.get(rel) == content_hash(content):
                 unchanged += 1
+                if mtime is not None and mtime != self._file_mtimes.get(rel):
+                    touched[rel] = mtime
                 continue
-            existed = rel in self.documents
-            for cid in by_doc.pop(rel, []):
-                self.chunks.pop(cid, None)
-            file_chunks = self._ingest_file(rel, fpath, content)
-            upserts[rel] = (self.documents[rel], [(c["id"], c) for c in file_chunks])
-            if existed:
+            fresh.append((rel, fpath, content, mtime))
+            if known:
                 changed += 1
             else:
                 added += 1
-            if on_progress is not None:
-                try:
-                    on_progress(len(candidates), changed + added, len(self.chunks))
-                except Exception:
-                    pass
-        for rel in removed:
-            for cid in by_doc.pop(rel, []):
-                self.chunks.pop(cid, None)
-            self.documents.pop(rel, None)
-            self._hashes.pop(rel, None)
-            self._file_mtimes.pop(rel, None)
 
         rows = 0
-        if upserts or removed:
+        upserts: dict = {}
+        if len(fresh) + len(removed) > self._SYNC_INLINE_MAX:
+            self._long_write = True  # searches stop waiting for this one
+        if fresh or removed:
+            by_doc: dict = {}
+            for cid, chunk in self.chunks.items():
+                by_doc.setdefault(chunk.get("doc_id"), []).append(cid)
+            maps = (dict(self.documents), dict(self.chunks), dict(self._hashes), dict(self._file_mtimes))
+            documents, chunks, hashes, mtimes = maps
+            for rel, fpath, content, mtime in fresh:
+                for cid in by_doc.pop(rel, []):
+                    chunks.pop(cid, None)
+                file_chunks = self._ingest_file(rel, fpath, content, mtime=mtime, maps=maps)
+                upserts[rel] = (documents[rel], [(c["id"], c) for c in file_chunks])
+                if on_progress is not None:
+                    try:
+                        on_progress(len(candidates), len(upserts), len(chunks))
+                    except Exception:
+                        pass
+            for rel in removed:
+                for cid in by_doc.pop(rel, []):
+                    chunks.pop(cid, None)
+                documents.pop(rel, None)
+                hashes.pop(rel, None)
+                mtimes.pop(rel, None)
+            mtimes.update(touched)
+            # Swapped in whole, never edited in place: a search running now
+            # keeps reading the dicts it started with.
+            self.documents, self.chunks, self._hashes, self._file_mtimes = maps
             self._finish_build()
             try:
                 rows = self._store.apply(upserts, removed, self._file_mtimes, self._hashes,
@@ -615,6 +682,15 @@ class CodeIndex:
                 log.warning("incremental index write failed (%s); rebuilding", exc)
                 return self.build_index(on_progress=on_progress)
             self._lexical_ok = self._lexical_wanted() and bool(self.chunks)
+        elif touched:
+            self._file_mtimes = {**self._file_mtimes, **touched}
+        if touched:
+            # A checkout or touch that kept the content: store the new mtime
+            # so the next trust_mtime pass does not read the file again.
+            try:
+                self._store.set_mtimes(touched)
+            except Exception as exc:
+                log.debug("index mtime update failed (%s)", exc)
 
         return {
             "mode": "incremental",
@@ -630,6 +706,75 @@ class CodeIndex:
             "seconds": round(time.perf_counter() - t0, 3),
             "lexical": {"engine": self.lexical_engine},
         }
+
+    # Re-indexing one changed file took 33-140 ms on C3's own repository. A
+    # search waits for this many; more (a branch switch, a big pull) are
+    # re-indexed behind the search instead of in front of it.
+    _SYNC_INLINE_MAX = 25
+
+    def sync_pending(self, wait_s: float = 2.0) -> dict | None:
+        """Re-index the files the watcher saw change since the last sync.
+
+        Search calls this first, so a hit never shows the old content of a
+        file the watcher already reported. It waits up to ``wait_s`` for
+        another writer (the startup re-check, the staleness agent), but not
+        for a full build or a refresh of many files, and it hands more than
+        ``_SYNC_INLINE_MAX`` paths to a background thread. Returns the
+        refresh result, or None when nothing was synced inline.
+        """
+        take = self.pending_changes
+        if take is None or self._long_write or not self.documents:
+            return None
+        deadline = time.monotonic() + wait_s
+        # Short polls, so a write that turns long while this search waits
+        # (the startup check finding a big pull) stops holding it up.
+        while not self._write_lock.acquire(timeout=0.05):
+            if self._long_write or time.monotonic() >= deadline:
+                return None
+        try:
+            paths = take()
+            if not paths:
+                return None
+            if len(paths) > self._SYNC_INLINE_MAX:
+                threading.Thread(target=self._refresh_behind, args=(paths,), daemon=True,
+                                 name="c3-index-sync").start()
+                return None
+            try:
+                return self.refresh(paths=paths)
+            except Exception as exc:
+                # Not queued again: a file that breaks the refresh would fail
+                # every search. The staleness agent and the next start retry it.
+                log.warning("index sync of %d changed file(s) failed (%s)", len(paths), exc)
+                return None
+        finally:
+            self._write_lock.release()
+
+    def _refresh_behind(self, paths) -> None:
+        prev, self._long_write = self._long_write, True
+        try:
+            self.refresh(paths=paths)
+        except Exception as exc:
+            log.warning("background index sync failed (%s)", exc)
+        finally:
+            self._long_write = prev
+
+    def refresh_stale(self) -> dict | None:
+        """Bring a stored index up to date with the files on disk.
+
+        Servers run this once at start, off the request path. While no
+        server ran, a git pull or branch switch could change, add or delete
+        files with no watcher to see it, and search kept returning the old
+        code. Files whose mtime matches the stored one are not read. Returns
+        None when there is no stored index to check, or when the check fails
+        (logged as a warning).
+        """
+        if not self.documents and not self._load_index():
+            return None
+        try:
+            return self.refresh(trust_mtime=True)
+        except Exception as exc:
+            log.warning("index check against the files failed (%s)", exc)
+            return None
 
     def _store_meta(self) -> dict:
         return {"cooccurrence": getattr(self, "_cooccurrence_stats", {}),
@@ -1143,13 +1288,14 @@ class CodeIndex:
         """Exact symbol matches first; then score; then named/structural
         chunks and shorter paths on ties."""
         def key(item):
-            chunk = self.chunks[item[0]]
+            # .get: a refresh may have swapped this chunk out since it ranked.
+            chunk = self.chunks.get(item[0]) or {}
             return (
                 1 if item[0] in exact_ids else 0,
                 item[1],
                 1 if chunk.get("name") else 0,
                 1 if chunk.get("type") in {"function", "class", "method", "declaration"} else 0,
-                -len(chunk["doc_id"]),
+                -len(chunk.get("doc_id") or ""),
             )
         return key
 
@@ -1238,6 +1384,10 @@ class CodeIndex:
         candidates (services/lexical_index.Filters). ``fusion=False`` returns
         the lexical ranking alone even when a dense backend is attached.
         """
+        try:
+            self.sync_pending()
+        except Exception as exc:
+            log.debug("index sync before search failed (%s)", exc)
         if not self.chunks:
             self._load_index()
             if not self.chunks:
@@ -1247,9 +1397,12 @@ class CodeIndex:
         fuse = bool(fusion) and self._dense_ready()
         rerank_now = self._rerank_ready()
         cache_key = (query, int(top_k), int(max_tokens), bool(include_content), filters.key(), fuse, rerank_now)
-        cached = self._search_cache.get(cache_key)
+        # Held for the whole search: when a refresh swaps in a new cache
+        # meanwhile, this search's results go to the old one, not the new.
+        cache = self._search_cache
+        cached = cache.get(cache_key)
         if cached is not None:
-            self._search_cache.move_to_end(cache_key)
+            cache.move_to_end(cache_key)
             return [dict(item) for item in cached]
 
         query_tokens, query_bigrams = self._expand_query_tokens(query)
@@ -1258,10 +1411,11 @@ class CodeIndex:
         base_tokens = tokenize_code(query, dedupe=True)
 
         max_mtime = max(self._file_mtimes.values()) if self._file_mtimes else 0.0
+        chunks = self.chunks
         exact_ids = {
             cid for cid in self._exact_symbol_ids(query)
-            if cid in self.chunks
-            and filters.chunk_ok(self.chunks[cid]["doc_id"], self.chunks[cid].get("type") or "")
+            if cid in chunks
+            and filters.chunk_ok(chunks[cid]["doc_id"], chunks[cid].get("type") or "")
         }
 
         ranked = None
@@ -1289,7 +1443,9 @@ class CodeIndex:
         seen_docs = set()
 
         for chunk_id, score in ranked[:top_k * 4]:
-            chunk = self.chunks[chunk_id]
+            chunk = self.chunks.get(chunk_id)
+            if chunk is None:
+                continue
             chunk_tokens = chunk.get("tokens") or count_tokens(chunk["content"])
             window = None
 
@@ -1339,9 +1495,9 @@ class CodeIndex:
             if len(results) >= top_k or token_budget <= 0:
                 break
 
-        self._search_cache[cache_key] = [dict(item) for item in results]
-        if len(self._search_cache) > self._search_cache_max:
-            self._search_cache.popitem(last=False)
+        cache[cache_key] = [dict(item) for item in results]
+        if len(cache) > self._search_cache_max:
+            cache.popitem(last=False)
         return results
 
     def get_context(self, query: str, top_k: int = 5, max_tokens: int = 4000) -> str:

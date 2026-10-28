@@ -179,6 +179,8 @@ def build_runtime(project_path: str, ide_name: str | None = None) -> C3Runtime:
     convo_store = ConversationStore(str(project))
     snapshots = ContextSnapshot(str(project))
     watcher = CodeWatcher(str(project))
+    # Search re-reads the files the watcher saw change before it answers.
+    indexer.pending_changes = watcher.take_index_changes
     file_memory = FileMemoryStore(str(project))
     validate_cfg = hybrid_config.get("validation_pipeline", {})
     validation_cache = ValidationCache(str(project), validate_cfg) if validate_cfg.get("enabled", True) else None
