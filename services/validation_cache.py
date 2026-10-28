@@ -97,23 +97,26 @@ class ValidationCache:
 
     # ── Background validation entry point ───────────────────────────
 
+    def eligible(self, rel_path: str) -> bool:
+        """True when validate_file() checks this path's extension at all."""
+        if not self._enabled:
+            return False
+        ext = Path(rel_path).suffix.lower()
+        if ext in _FAST_EXTENSIONS:
+            return True
+        return ext in _SUBPROCESS_EXTENSIONS and self._bg_subprocess
+
     def validate_file(self, rel_path: str) -> Optional[dict]:
         """Validate a file: return cached if fresh, else run checker and cache.
 
         Called by the watcher background worker. Returns the result dict
         or None if the extension is not eligible for background validation.
         """
-        if not self._enabled:
+        if not self.eligible(rel_path):
             return None
 
         ext = Path(rel_path).suffix.lower()
-        is_fast = ext in _FAST_EXTENSIONS
         is_subprocess = ext in _SUBPROCESS_EXTENSIONS
-
-        if not is_fast and not is_subprocess:
-            return None
-        if is_subprocess and not self._bg_subprocess:
-            return None
 
         # Check cache freshness first.
         cached = self.get(rel_path)

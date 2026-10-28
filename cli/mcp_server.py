@@ -21,6 +21,11 @@ from typing import Any
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Before anything can import numpy (lifespan imports it before the threads).
+from core import blas_threads  # noqa: E402
+
+blas_threads.limit()
+
 try:
     from fastmcp import Context, FastMCP
 except Exception:

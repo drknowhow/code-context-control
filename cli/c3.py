@@ -45,6 +45,11 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Before anything can import numpy: `c3 ui` builds a full runtime.
+from core import blas_threads  # noqa: E402
+
+blas_threads.limit()
+
 from cli.commands.common import CommandDeps
 from cli.commands.common import cmd_claudemd as common_cmd_claudemd
 from cli.commands.common import cmd_compress as common_cmd_compress
@@ -91,7 +96,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.158.5"
+__version__ = "2.159.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"

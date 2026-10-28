@@ -177,6 +177,69 @@ def _probe_cli_version(exe: str, timeout: int = 10, args: list[str] | None = Non
                     pass
 
 
+# Successful `<cli> --version` answers, kept per machine for a day and keyed by
+# the executable's path, size and mtime, so an upgraded CLI is probed again.
+# Every MCP server start runs check_gemini() and check_codex() in its prewarm
+# thread, and `gemini --version` starts Node to answer: 1.1 s each time.
+_VERSION_CACHE_TTL_S = 24 * 3600
+_VERSION_CACHE_MAX = 32
+_version_cache_lock = threading.Lock()
+
+
+def _version_cache_file() -> Path:
+    home = os.environ.get("C3_HOME") or os.path.expanduser("~")
+    return Path(home) / ".c3" / "cache" / "cli_versions.json"
+
+
+def _version_cache_fresh(hit, now: float) -> bool:
+    try:
+        return isinstance(hit.get("out"), str) and 0 <= now - float(hit["at"]) < _VERSION_CACHE_TTL_S
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _read_version_cache(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _probe_cli_version_cached(exe: str, timeout: int = 10):
+    """``_probe_cli_version(exe, timeout)``, answered from the cache when fresh.
+
+    Only exit-0 answers are stored, so a failure or a timeout is probed again
+    on the next call. An executable that cannot be stat'ed is never cached.
+    """
+    try:
+        st = os.stat(exe)
+        key = f"{os.path.normcase(os.path.abspath(exe))}|{st.st_size}|{st.st_mtime_ns}"
+    except (OSError, TypeError, ValueError):
+        key = None
+    path = _version_cache_file()
+    if key:
+        hit = _read_version_cache(path).get(key)
+        if _version_cache_fresh(hit, time.time()):
+            return hit["out"], str(hit.get("err") or ""), 0
+    probed = _probe_cli_version(exe, timeout=timeout)
+    if key and probed is not None and probed[2] == 0:
+        with _version_cache_lock:
+            now = time.time()
+            data = {k: v for k, v in _read_version_cache(path).items()
+                    if _version_cache_fresh(v, now)}
+            data[key] = {"out": probed[0], "err": probed[1], "at": now}
+            if len(data) > _VERSION_CACHE_MAX:
+                keep = sorted(data, key=lambda k: data[k]["at"])[-_VERSION_CACHE_MAX:]
+                data = {k: data[k] for k in keep}
+            try:
+                from services.atomic_json import write_json_atomic
+                write_json_atomic(path, data, fsync=False)
+            except Exception:
+                pass
+    return probed
+
+
 # ---------------------------------------------------------------------------
 # Codex CLI backend
 # ---------------------------------------------------------------------------
@@ -263,7 +326,7 @@ def check_claude() -> dict:
         _claude_available = False
         return {"status": "not_installed", "detail": "claude CLI not found on PATH"}
     try:
-        probed = _probe_cli_version(exe, timeout=10)
+        probed = _probe_cli_version_cached(exe, timeout=10)
         if probed is None:
             _claude_available = False
             return {"status": "timeout", "detail": "claude --version timed out (10s)"}
@@ -1046,7 +1109,7 @@ def check_gemini() -> dict:
         _gemini_available = False
         return {"status": "not_installed", "detail": "gemini CLI not found on PATH"}
     try:
-        probed = _probe_cli_version(exe, timeout=10)
+        probed = _probe_cli_version_cached(exe, timeout=10)
         if probed is None:
             _gemini_available = False
             return {"status": "timeout", "detail": "gemini --version timed out (10s)"}
@@ -1301,7 +1364,7 @@ def check_codex() -> dict:
         _codex_available = False
         return {"status": "not_installed", "detail": "codex CLI not found on PATH"}
     try:
-        probed = _probe_cli_version(exe, timeout=10)
+        probed = _probe_cli_version_cached(exe, timeout=10)
         if probed is None:
             _codex_available = False
             return {"status": "timeout", "detail": "codex --version timed out (10s)"}
@@ -1508,7 +1571,7 @@ def check_grok() -> dict:
         _grok_available = False
         return {"status": "not_installed", "detail": "grok CLI not found on PATH"}
     try:
-        probed = _probe_cli_version(exe, timeout=10)
+        probed = _probe_cli_version_cached(exe, timeout=10)
         if probed is None:
             _grok_available = False
             return {"status": "timeout", "detail": "grok --version timed out (10s)"}

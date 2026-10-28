@@ -56,6 +56,10 @@ RETENTION_DEFAULTS = {
     # Session snapshot cap (.c3/sessions/session_*.json).
     "sessions_max_files": 50,
     "sessions_archive": True,             # gzip pruned sessions instead of deleting
+    # File-memory records for paths the index never covers (pruned dirs,
+    # nested checkouts, outside the project) are evicted once they have not
+    # been rewritten for this many days; 0 = keep them.
+    "file_memory_unindexed_keep_days": 7,
     # Notifications: acknowledged entries younger than this are kept live so
     # the store's ack-cooldown suppression window still works.
     "notifications_min_age_minutes": 120,
@@ -483,8 +487,18 @@ class RetentionManager:
         except Exception:
             pass
 
-        # 4. File-memory stale records (tracked files deleted from the repo).
+        # 4. File-memory records: old ones for paths the index never covers,
+        #    then records whose source file was deleted from the repo.
         if self.file_memory is not None:
+            try:
+                keep_days = float(cfg.get("file_memory_unindexed_keep_days", 7))
+                if keep_days > 0:
+                    evicted = self.file_memory.evict_unindexable(
+                        min_age_s=keep_days * 86400)
+                    if evicted:
+                        summary["file_memory_evicted"] = len(evicted)
+            except Exception:
+                pass
             try:
                 pruned = self.file_memory.prune_stale()
                 if pruned:

@@ -13,6 +13,7 @@ never hard-requires them; the Oracle degrades to REST-only if they are missing.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -175,11 +176,36 @@ def serve_mcp(registry, host: str = "127.0.0.1", port: int = 3332,
     app = build_app(registry, version=version, require_auth=require_auth, path=path,
                     host=host, allowed_hosts=allowed_hosts)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
-    server = uvicorn.Server(config)
+    server = _slow_tick_server_class(uvicorn.Server)(config)
     # uvicorn only installs signal handlers on the main thread; disable so this
     # can run inside a daemon thread under the Flask server.
     server.install_signal_handlers = lambda: None
     asyncio.run(server.serve())
+
+
+def _slow_tick_server_class(base):
+    """``base`` (uvicorn.Server) with a main loop that wakes once a second.
+
+    uvicorn's loop sleeps 0.1 s between ticks only to see a shutdown request
+    sooner, and refreshes its Date header on every tenth tick. Stepping the
+    counter by ten keeps that refresh once a second; shutdown waits up to a
+    second. If a uvicorn release changes the loop's shape, ``base`` is used
+    as it is.
+    """
+    if not (inspect.iscoroutinefunction(getattr(base, "main_loop", None))
+            and inspect.iscoroutinefunction(getattr(base, "on_tick", None))):
+        return base
+
+    class _SlowTickServer(base):
+        async def main_loop(self) -> None:
+            counter = 0
+            should_exit = await self.on_tick(counter)
+            while not should_exit:
+                counter = (counter + 10) % 864000
+                await asyncio.sleep(1.0)
+                should_exit = await self.on_tick(counter)
+
+    return _SlowTickServer
 
 
 def start_mcp_thread(registry, host: str = "127.0.0.1", port: int = 3332,

@@ -4,6 +4,59 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services.file_memo import FileMemo
+
+
+def _scan_last(log_file: Path, event_type: str, limit: int, chunk_bytes: int) -> list:
+    """ActivityLog.find_last's backward scan (see there), on a path."""
+    if not log_file.exists():
+        return []
+    # A row of this type holds its JSON-encoded name, so a chunk or line
+    # without those bytes cannot match and is skipped unparsed.
+    needle = json.dumps(event_type).encode("utf-8")
+    events: list = []
+    try:
+        with open(log_file, "rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            tail = b""
+            while position > 0 and len(events) < limit:
+                step = min(chunk_bytes, position)
+                position -= step
+                handle.seek(position)
+                block = handle.read(step) + tail
+                # The first line may be partial: keep it for the next
+                # (earlier) chunk unless we are at the file start.
+                tail = b""
+                if position > 0:
+                    cut = block.find(b"\n")
+                    if cut < 0:
+                        tail = block
+                        continue
+                    tail, block = block[:cut], block[cut + 1:]
+                if needle not in block:
+                    continue
+                for raw in reversed(block.split(b"\n")):
+                    if needle not in raw:
+                        continue
+                    try:
+                        entry = json.loads(raw.decode("utf-8", "replace"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if entry.get("type") != event_type:
+                        continue
+                    events.append(entry)
+                    if len(events) >= limit:
+                        break
+    except OSError:
+        return events
+    return events
+
+
+# The hub asks for several rare types per project on every poll, and an
+# unchanged log answers from here at the cost of one stat.
+_last_rows = FileMemo(_scan_last)
+
 
 class ActivityLog:
     """Persistent activity log stored as .c3/activity_log.jsonl.
@@ -71,50 +124,11 @@ class ActivityLog:
 
         Reads backwards in chunks and stops at the first ``limit`` matches, so
         the common case (the row is near the end) touches one chunk instead of
-        the whole file. Newest first, like ``get_recent``.
+        the whole file. Newest first, like ``get_recent``. An unchanged log is
+        answered from a memo keyed by its stat signature (services.file_memo).
         """
-        if not self.log_file.exists():
-            return []
-        # A row of this type holds its JSON-encoded name, so a chunk or line
-        # without those bytes cannot match and is skipped unparsed.
-        needle = json.dumps(event_type).encode("utf-8")
-        events: list = []
-        try:
-            with open(self.log_file, "rb") as handle:
-                handle.seek(0, 2)
-                position = handle.tell()
-                tail = b""
-                while position > 0 and len(events) < limit:
-                    step = min(chunk_bytes, position)
-                    position -= step
-                    handle.seek(position)
-                    block = handle.read(step) + tail
-                    # The first line may be partial: keep it for the next
-                    # (earlier) chunk unless we are at the file start.
-                    tail = b""
-                    if position > 0:
-                        cut = block.find(b"\n")
-                        if cut < 0:
-                            tail = block
-                            continue
-                        tail, block = block[:cut], block[cut + 1:]
-                    if needle not in block:
-                        continue
-                    for raw in reversed(block.split(b"\n")):
-                        if needle not in raw:
-                            continue
-                        try:
-                            entry = json.loads(raw.decode("utf-8", "replace"))
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            continue
-                        if entry.get("type") != event_type:
-                            continue
-                        events.append(entry)
-                        if len(events) >= limit:
-                            break
-        except OSError:
-            return events
-        return events
+        rows = _last_rows.get(self.log_file, event_type, limit, chunk_bytes)
+        return [dict(row) for row in rows]
 
     def get_recent(self, limit: int = 100, event_type: str = None,
                     since: str = None, until: str = None) -> list:

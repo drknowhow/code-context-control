@@ -49,7 +49,7 @@ from cli.tools.shell_render import (
     split_lines,
     split_preview,
 )
-from core import count_tokens
+from core import blas_threads, count_tokens
 from services import access_guard
 from services.shell_output import (
     TEXT_MAX_BYTES,
@@ -196,8 +196,9 @@ def _select_bash() -> str | None:
 def _popen_kwargs(extra_env: dict | None = None) -> dict:
     # Force UTF-8 in child processes so Unicode output (→, box-drawing, emoji)
     # doesn't crash on Windows' legacy cp1252 console encoding. setdefault so an
-    # intentional caller-set encoding still wins.
-    env = dict(os.environ)
+    # intentional caller-set encoding still wins. The user's command also gets
+    # the user's own OpenBLAS thread count, not the one C3 pins for itself.
+    env = blas_threads.user_env(dict(os.environ))
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
     if extra_env:

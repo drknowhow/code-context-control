@@ -474,16 +474,77 @@ class FileMemoryStore:
                     self._map_cache.pop(rel.replace("\\", "/"), None)
         except Exception:
             return pruned
-        if pruned:
-            with self._search_lock:
-                if not self._search_dirty:
-                    for rel in pruned:
-                        try:
-                            self._search_index.remove(rel)
-                        except Exception:
-                            self._search_dirty = True
-                            break
+        self._unindex(pruned)
         return pruned
+
+    def evict_unindexable(self, min_age_s: float = 7 * 86400, limit: int = 5000) -> list[str]:
+        """Remove old records for paths the code index never covers.
+
+        c3_read builds a record for any file it maps, including files under
+        pruned directories (SKIP_DIRS and the root .gitignore), inside nested
+        checkouts such as ``.claude/worktrees/*``, and outside the project.
+        The index never walks those paths, so nothing refreshes their records,
+        and on a project that keeps agent worktrees they outnumber the real
+        ones (Yep on 2026-10-28: 45,501 of 47,673 records). A record not
+        rewritten for ``min_age_s`` seconds is deleted; mapping the file again
+        rebuilds it. Deletes at most ``limit`` per call and returns the
+        evicted paths. Never raises.
+        """
+        evicted: list[str] = []
+        try:
+            from services.scanner import is_nested_checkout, make_dir_pruner
+            pruned_dir = make_dir_pruner(self.project_path)
+            cutoff = time.time() - max(0.0, float(min_age_s))
+            root = str(self.project_path)
+            nested_dirs: dict[str, bool] = {}
+
+            def in_nested_checkout(parts) -> bool:
+                cur = root
+                for part in parts:
+                    cur = os.path.join(cur, part)
+                    hit = nested_dirs.get(cur)
+                    if hit is None:
+                        hit = nested_dirs[cur] = is_nested_checkout(cur)
+                    if hit:
+                        return True
+                return False
+
+            for name, rel in self._tracked().items():
+                if len(evicted) >= limit:
+                    break
+                norm = rel.replace("\\", "/")
+                parts = norm.split("/")[:-1]
+                outside = os.path.isabs(norm) or ".." in parts
+                if not (outside or any(pruned_dir(p) for p in parts)
+                        or in_nested_checkout(parts)):
+                    continue
+                store_file = self.store_dir / name
+                try:
+                    if store_file.stat().st_mtime >= cutoff:
+                        continue
+                    store_file.unlink()
+                except OSError:
+                    continue
+                evicted.append(rel)
+                self._map_cache.pop(norm, None)
+        except Exception:
+            pass
+        self._unindex(evicted)
+        return evicted
+
+    def _unindex(self, rel_paths: list[str]) -> None:
+        """Drop deleted records from a search index that is already built."""
+        if not rel_paths:
+            return
+        with self._search_lock:
+            if self._search_dirty:
+                return
+            for rel in rel_paths:
+                try:
+                    self._search_index.remove(rel)
+                except Exception:
+                    self._search_dirty = True
+                    return
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         with self._search_lock:

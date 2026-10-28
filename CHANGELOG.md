@@ -4,6 +4,86 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.159.0] - 2026-10-28
+
+### Changed — less memory, CPU and waiting per process and per tool call
+
+Measured on one Windows machine (20 logical cores) that runs 10 MCP servers,
+3 UI servers, the hub and the Oracle. Each before/after pair ran the 2.158.5
+and the 2.159.0 code against the same data.
+
+- C3's own processes run OpenBLAS on one thread. numpy's bundled OpenBLAS
+  starts a worker per core when numpy loads and commits a buffer for each,
+  which added about 600 MB of commit charge and about 20 threads to every
+  MCP and UI server here. `cli/mcp_server.py` and `cli/c3.py` set
+  `OPENBLAS_NUM_THREADS=1` before anything imports numpy, unless the
+  environment already sets it, and commands run through `c3_shell`,
+  `c3_shell_job` and local CI get the user's own setting back. An idle MCP
+  server on a scratch clone of this repository held 1,048 MB committed and
+  108 threads under 2.158.5, and holds 436-457 MB and 83-89 threads under
+  2.159.0. Its median tool calls got faster with the rest of this release:
+  a `c3_read` map from 5.8-6.6 ms to 4.9 ms, a code search from 15 ms to
+  5-6 ms, and an exact search from 1.2-1.3 s to 0.55 s.
+- Access Guard reuses the rules it built while the files they came from are
+  unchanged. Each verdict used to re-read both scopes' `config.json` three
+  times, the leases file and the keyring. A cached build is used only while
+  every file it read has the same stat signature, for at most 5 s (keyring
+  attestations have no file to stat), and never past the next lease expiry.
+  While any of those files is less than 2 s old every verdict rebuilds, and
+  every writer in the process clears the cache. A verdict went from 1.6 ms to
+  0.3 ms: one verdict for each of a project's 2,149 tracked files, which is
+  what an exact search asks for, took 3.5 s and now takes 0.6 s.
+- The PreToolUse hook reads keyring attestations with `CredReadW` through
+  ctypes when keyring itself would read the Windows vault: on Windows, with
+  no backend named in `PYTHON_KEYRING_BACKEND` or keyring's config file, no
+  other installed package registering a keyring backend, and keyring not yet
+  imported. Listing the registered backends takes about 100 ms, so the
+  answer is kept in `~/.c3/cache/keyring_backends.json` against the mtime of
+  every `sys.path` entry. A credential the vault does not hold reads as
+  missing, as it does through keyring, and a ctypes error falls back to
+  keyring. The hook reads attestations whenever a config sets a builtin mode
+  or a lease file exists, and importing keyring for that cost each hook
+  process about 250 ms. The hooks also parse the arguments their commands
+  are written with, without importing `argparse` (about 18 ms on Python
+  3.14), `services.atomic_json` names its
+  temp files with `os.urandom` instead of importing `secrets`, and
+  `inspect`, `traceback`, `shutil` and `core.grok_payload` load only on the
+  paths that use them. Here, where the global config sets one builtin mode,
+  the median PreToolUse call for Read, Edit and Bash went from 258-260 ms to
+  79-83 ms, PostToolUse from 86-98 ms to 61-73 ms, and UserPromptSubmit from
+  84 ms to 52 ms.
+- The edit-ledger enricher parses the ledger once per process and afterwards
+  reads only the lines appended since, so an unchanged ledger costs one
+  `stat`. A ledger that was replaced, truncated or rewritten in place is read
+  again from the start. `validate_pending` drops entries the validation
+  cache never checks and entries whose file is gone instead of retrying them
+  every cycle: five Markdown edits after a Python edit used to keep the
+  Python edit from ever being checked. It checks only edits from the last 24
+  hours, because the checker reads the file as it is now. On a copy of an
+  8.7 MB ledger a cycle took 160-180 ms, every 30 s in every process; the
+  first now takes 83 ms and later ones 0.1 ms.
+- `c3_delegate`'s CLI checks keep each `--version` answer for 24 hours per
+  executable (path, size and mtime) in `~/.c3/cache/cli_versions.json`.
+  `gemini --version` starts Node and took 1.1 s at every MCP server start.
+- The retention sweep deletes file-memory records for paths the index never
+  covers (pruned directories, nested checkouts such as `.claude/worktrees/*`,
+  and paths outside the project) once they have not been rewritten for 7
+  days, at most 5,000 per sweep. On one project these were 45,501 of 47,673
+  records, and its first `list_tracked()` took 3.55 s. Mapping such a file
+  again rebuilds its record. `retention.file_memory_unindexed_keep_days` in
+  `.c3/config.json` sets the age; 0 keeps them.
+- The hub keeps each project's unacknowledged-notification count, open-task
+  count and last activity rows keyed by the source file's stat signature, and
+  resolved paths for 30 s. `GET /api/projects` over 96 projects took
+  270-370 ms (170-280 ms CPU) and takes 125-180 ms (30-60 ms CPU) after the
+  first poll.
+- In the Oracle, a held `/api/mobile/feed?wait=` checks the projects whose
+  feed files and live-heartbeat directory have not changed for 5 minutes
+  every 10 s instead of every second; one waiter over 90 projects made 360
+  `stat` calls a second. `_registered_roots()` is reused for 5 s, and the
+  discovery MCP server's uvicorn loop wakes once a second instead of ten
+  times. These Oracle changes were not measured.
+
 ## [2.158.5] - 2026-10-28
 
 ### Fixed — idle CPU in the MCP server, UI server and Oracle

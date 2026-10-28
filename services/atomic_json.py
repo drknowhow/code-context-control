@@ -40,8 +40,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
-import shutil
 import time
 from pathlib import Path
 
@@ -58,8 +56,13 @@ REPLACE_BACKOFF_S = 0.02
 
 
 def atomic_tmp_path(path: Path) -> Path:
-    """``<name>.tmp<pid>-<random>`` beside ``path`` — unique per write."""
-    return path.with_name(f"{path.name}.tmp{os.getpid()}-{secrets.token_hex(4)}")
+    """``<name>.tmp<pid>-<random>`` beside ``path`` — unique per write.
+
+    ``os.urandom(4).hex()`` is what ``secrets.token_hex(4)`` returns, without
+    the ~5 ms import of ``secrets`` (hmac, hashlib, random) that every
+    importer of this module, the PreToolUse hook among them, would pay.
+    """
+    return path.with_name(f"{path.name}.tmp{os.getpid()}-{os.urandom(4).hex()}")
 
 
 def write_bytes_atomic(path, data: bytes, *, fsync: bool = True) -> None:
@@ -87,6 +90,7 @@ def write_bytes_atomic(path, data: bytes, *, fsync: bool = True) -> None:
                 fh.flush()
                 os.fsync(fh.fileno())
         if os.name != "nt" and path.exists():
+            import shutil  # noqa: PLC0415 — POSIX only; hooks import this module
             shutil.copymode(path, tmp)
         last_exc: OSError | None = None
         for attempt in range(REPLACE_ATTEMPTS):

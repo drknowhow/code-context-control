@@ -34,6 +34,7 @@ from core.ide import PROFILES, detect_ide, get_profile, load_ide_config, normali
 from services import access_guard, fleet_overview
 from services.activity_log import ActivityLog
 from services.atomic_json import write_json_atomic
+from services.file_memo import FileMemo
 from services.project_manager import ProjectManager
 from services.tool_classifier import CATEGORIES
 
@@ -531,25 +532,31 @@ def api_hub_config_set():
 
 # ─── Routes: projects ────────────────────────────────────────────────────────
 
-def _notification_count(project_path: str) -> int:
-    """Count unacknowledged notifications for a project by reading its .c3/notifications.jsonl."""
-    nf = Path(project_path) / ".c3" / "notifications.jsonl"
-    if not nf.exists():
-        return 0
+def _count_unacknowledged(nf) -> int:
     count = 0
     try:
-        for line in nf.read_text(encoding="utf-8").strip().splitlines():
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-                if not entry.get("acknowledged"):
-                    count += 1
-            except json.JSONDecodeError:
-                continue
+        with open(nf, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if not entry.get("acknowledged"):
+                        count += 1
+                except (json.JSONDecodeError, AttributeError):
+                    continue
     except OSError:
         pass
     return count
+
+
+# /api/projects asks for every registered project on every poll.
+_notification_counts = FileMemo(_count_unacknowledged)
+
+
+def _notification_count(project_path: str) -> int:
+    """Count unacknowledged notifications for a project by reading its .c3/notifications.jsonl."""
+    return _notification_counts.get(Path(project_path) / ".c3" / "notifications.jsonl")
 
 
 _sub_links_cache = {"fp": None, "ts": 0.0, "data": None, "computing": False}
@@ -578,14 +585,31 @@ def _sub_federation_errors(sub):
     return ""
 
 
+_REALPATH_TTL_S = 30.0
+_realpath_cache: dict = {}
+
+
 def _norm_realpath(s):
     """resolve()+normcase, matching services.subprojects._norm — plain
     normcase alone would flag symlinked/8.3/trailing-slash registry rows
-    as false orphans that Reconcile then denies."""
+    as false orphans that Reconcile then denies.
+
+    Kept for _REALPATH_TTL_S: every /api/projects poll resolves each row's
+    path several times, and a resolve() costs a filesystem round trip.
+    """
+    key = str(s or "")
+    now = time.monotonic()
+    hit = _realpath_cache.get(key)
+    if hit is not None and now < hit[0]:
+        return hit[1]
     try:
-        return os.path.normcase(str(Path(s).resolve()))
+        value = os.path.normcase(str(Path(s).resolve()))
     except Exception:
-        return os.path.normcase(str(s or ""))
+        value = os.path.normcase(key)
+    if len(_realpath_cache) >= 1024:
+        _realpath_cache.clear()
+    _realpath_cache[key] = (now + _REALPATH_TTL_S, value)
+    return value
 
 
 def _compute_subproject_links(projects):
