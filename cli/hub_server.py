@@ -526,6 +526,11 @@ def api_hub_config_set():
             cfg["runtime_cache_size"] = max(1, int(data["runtime_cache_size"]))
         except (ValueError, TypeError):
             return jsonify({"error": "runtime_cache_size must be an integer"}), 400
+    if "update_workers" in data:
+        try:
+            cfg["update_workers"] = max(1, min(int(data["update_workers"]), _UPDATE_WORKERS_MAX))
+        except (ValueError, TypeError):
+            return jsonify({"error": "update_workers must be an integer"}), 400
     _write_hub_config(cfg)
     return jsonify({"saved": True, "config": cfg})
 
@@ -1246,12 +1251,90 @@ def api_run_component():
         return jsonify({"error": str(e), "success": False}), 500
 
 
+# A first embedding build on a large project takes minutes, far past the
+# _run_c3 default.
+_UPDATE_TIMEOUT_S = 600
+_UPDATE_WORKERS_DEFAULT = 3
+_UPDATE_WORKERS_MAX = 8
+
+
+def _update_workers() -> int:
+    """Projects updated at once: hub config ``update_workers``, clamped to 1-8."""
+    try:
+        n = int(_read_hub_config().get("update_workers") or _UPDATE_WORKERS_DEFAULT)
+    except (ValueError, TypeError):
+        n = _UPDATE_WORKERS_DEFAULT
+    return max(1, min(n, _UPDATE_WORKERS_MAX))
+
+
+def _run_pooled(items: list, run_one, state: dict, lock, workers: int) -> None:
+    """Run ``run_one(item) -> row`` over ``items`` on up to ``workers`` threads.
+
+    Records each row in ``state["results"]`` as it finishes and keeps the
+    paths being worked on in ``state["in_progress"]``. Items not yet started
+    when ``state["cancelled"]`` is set are skipped; running ones finish.
+    ``run_one`` must return a row rather than raise.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def task(index, item):
+        path = item.get("path")
+        with lock:
+            if state["cancelled"]:
+                return
+            state["in_progress"].append(path)
+            state["current"] = item.get("name") or path
+            state["current_index"] = index
+        t0 = time.time()
+        row = run_one(item)
+        row.setdefault("elapsed_ms", int((time.time() - t0) * 1000))
+        with lock:
+            state["results"].append(row)
+            state["in_progress"].remove(path)
+            if not state["in_progress"]:
+                state["current"] = None
+
+    with ThreadPoolExecutor(max_workers=max(1, workers),
+                            thread_name_prefix="c3-hub-update") as pool:
+        list(pool.map(task, range(len(items)), items))
+
+
+def _dedupe_by_path(items: list) -> list:
+    seen, out = set(), []
+    for item in items:
+        key = os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+        if key and key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _update_project_row(p: dict) -> dict:
+    """Run ``c3 init --force`` for one project and return its result row."""
+    path = p["path"]
+    row = {"path": path, "name": p.get("name")}
+    if not Path(path).is_dir():
+        row.update(success=False, skipped=True, output="Project folder not found.",
+                   returncode=None)
+        return row
+    args = ["init", path, "--force"]
+    ide = p.get("ide")
+    if ide and ide not in ("unknown", "auto"):
+        args += ["--ide", ide]
+    res = _run_c3(args, timeout=_UPDATE_TIMEOUT_S)
+    row.update(success=res.get("success"), output=res.get("output"),
+               returncode=res.get("returncode"))
+    return row
+
+
 _batch_state = {
     "running": False,
     "cancelled": False,
     "results": [],
     "current": None,
     "current_index": 0,
+    "in_progress": [],
+    "workers": 1,
     "total": 0,
     "done": False,
     "error": None,
@@ -1259,37 +1342,19 @@ _batch_state = {
 _batch_lock = threading.Lock()
 
 
-def _batch_worker(projects):
+def _batch_worker(projects, workers: int = 1):
     """Run batch init in background thread, updating _batch_state."""
-    global _batch_state
-    for i, p in enumerate(projects):
+    try:
+        _run_pooled(projects, _update_project_row, _batch_state, _batch_lock, workers)
+    except Exception as e:
         with _batch_lock:
-            if _batch_state["cancelled"]:
-                break
-            _batch_state["current"] = p.get("name") or p["path"]
-            _batch_state["current_index"] = i
-
-        path = p["path"]
-        args = ["init", path, "--force"]
-        ide = p.get("ide")
-        if ide and ide != "unknown":
-            args += ["--ide", ide]
-
-        res = _run_c3(args)
-        result = {
-            "path": path,
-            "name": p.get("name"),
-            "success": res.get("success"),
-            "output": res.get("output"),
-            "returncode": res.get("returncode"),
-        }
+            _batch_state["error"] = str(e)
+    finally:
         with _batch_lock:
-            _batch_state["results"].append(result)
-
-    with _batch_lock:
-        _batch_state["running"] = False
-        _batch_state["done"] = True
-        _batch_state["current"] = None
+            _batch_state["running"] = False
+            _batch_state["done"] = True
+            _batch_state["current"] = None
+            _batch_state["in_progress"] = []
 
 
 @app.route("/api/projects/run-init/batch", methods=["POST"])
@@ -1301,9 +1366,10 @@ def api_run_init_batch():
             return jsonify({"error": "Batch update already in progress"}), 409
     try:
         data = request.get_json(force=True) or {}
-        projects = data.get("projects") or _pm().list_projects()
+        projects = _dedupe_by_path(data.get("projects") or _pm().list_projects())
         if not projects:
             return jsonify({"error": "No projects to update"}), 400
+        workers = _update_workers()
         with _batch_lock:
             _batch_state = {
                 "running": True,
@@ -1311,13 +1377,15 @@ def api_run_init_batch():
                 "results": [],
                 "current": None,
                 "current_index": 0,
+                "in_progress": [],
+                "workers": workers,
                 "total": len(projects),
                 "done": False,
                 "error": None,
             }
-        t = threading.Thread(target=_batch_worker, args=(projects,), daemon=True)
+        t = threading.Thread(target=_batch_worker, args=(projects, workers), daemon=True)
         t.start()
-        return jsonify({"started": True, "total": len(projects)})
+        return jsonify({"started": True, "total": len(projects), "workers": workers})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1326,7 +1394,10 @@ def api_run_init_batch():
 def api_batch_status():
     """Return current batch update state for polling."""
     with _batch_lock:
-        return jsonify(dict(_batch_state))
+        snap = dict(_batch_state)
+        snap["results"] = list(snap.get("results") or [])
+        snap["in_progress"] = list(snap.get("in_progress") or [])
+        return jsonify(snap)
 
 
 @app.route("/api/projects/run-init/batch/cancel", methods=["POST"])
@@ -1695,59 +1766,65 @@ def api_subprojects_reconcile():
 
 _sub_cascade_state = {
     "running": False, "cancelled": False, "results": [],
-    "current": None, "current_index": 0, "total": 0,
-    "done": False, "error": None, "op": None, "parent": None,
+    "current": None, "current_index": 0, "in_progress": [], "workers": 1,
+    "total": 0, "done": False, "error": None, "op": None, "parent": None,
 }
 _sub_cascade_lock = threading.Lock()
 
 
-def _sub_cascade_worker(op: str, targets: list):
-    """Per-child cascade in a background thread (progress + cancel like batch init)."""
-    global _sub_cascade_state
-    for i, child in enumerate(targets):
+def _sub_cascade_row(op: str, child: dict) -> dict:
+    path = child.get("path")
+    row = {"path": path, "name": child.get("name"), "success": False, "output": ""}
+    try:
+        if child.get("status") == "missing_folder":
+            row["output"] = "missing_folder"
+        elif child.get("status") == "missing_c3" and op != "update":
+            row["output"] = "missing_c3"
+        elif op == "update":
+            res = _run_c3(["init", path, "--force"], timeout=_UPDATE_TIMEOUT_S)
+            row["success"] = bool(res.get("success"))
+            row["output"] = res.get("output", "")
+        elif op == "reindex":
+            from services.doc_index import DocIndex
+            from services.indexer import CodeIndex
+            r = CodeIndex(path).build_index()
+            try:
+                DocIndex(path).build()
+            except Exception:
+                pass
+            row["success"] = True
+            row["output"] = (f"{r.get('files_indexed', 0)} files, "
+                             f"{r.get('chunks_created', 0)} chunks")
+        elif op == "health":
+            from cli.c3 import _check_c3_health
+            info = _check_c3_health(path)
+            row["success"] = bool(info.get("healthy"))
+            row["output"] = "healthy" if row["success"] else "; ".join(info.get("issues", []))
+    except Exception as e:
+        row["output"] = str(e)
+    return row
+
+
+def _sub_cascade_worker(op: str, targets: list, workers: int = 1):
+    """Per-child cascade in a background thread (progress + cancel like batch init).
+
+    Only ``update`` runs in subprocesses, so only it uses more than one worker;
+    reindex and health build indexes inside the hub process.
+    """
+    try:
+        _run_pooled(targets, lambda child: _sub_cascade_row(op, child),
+                    _sub_cascade_state, _sub_cascade_lock,
+                    workers if op == "update" else 1)
+    except Exception as e:
         with _sub_cascade_lock:
-            if _sub_cascade_state["cancelled"]:
-                break
-            _sub_cascade_state["current"] = child.get("name") or child.get("path")
-            _sub_cascade_state["current_index"] = i
-        path = child.get("path")
-        t0 = time.time()
-        row = {"path": path, "name": child.get("name"), "success": False, "output": ""}
-        try:
-            if child.get("status") == "missing_folder":
-                row["output"] = "missing_folder"
-            elif child.get("status") == "missing_c3" and op != "update":
-                row["output"] = "missing_c3"
-            elif op == "update":
-                res = _run_c3(["init", path, "--force"], timeout=600)
-                row["success"] = bool(res.get("success"))
-                row["output"] = res.get("output", "")
-            elif op == "reindex":
-                from services.doc_index import DocIndex
-                from services.indexer import CodeIndex
-                r = CodeIndex(path).build_index()
-                try:
-                    DocIndex(path).build()
-                except Exception:
-                    pass
-                row["success"] = True
-                row["output"] = (f"{r.get('files_indexed', 0)} files, "
-                                 f"{r.get('chunks_created', 0)} chunks")
-            elif op == "health":
-                from cli.c3 import _check_c3_health
-                info = _check_c3_health(path)
-                row["success"] = bool(info.get("healthy"))
-                row["output"] = "healthy" if row["success"] else "; ".join(info.get("issues", []))
-        except Exception as e:
-            row["output"] = str(e)
-        row["elapsed_ms"] = int((time.time() - t0) * 1000)
+            _sub_cascade_state["error"] = str(e)
+    finally:
         with _sub_cascade_lock:
-            _sub_cascade_state["results"].append(row)
-    with _sub_cascade_lock:
-        _sub_cascade_state["running"] = False
-        _sub_cascade_state["done"] = True
-        _sub_cascade_state["current"] = None
-    _invalidate_subproject_links()
+            _sub_cascade_state["running"] = False
+            _sub_cascade_state["done"] = True
+            _sub_cascade_state["current"] = None
+            _sub_cascade_state["in_progress"] = []
+        _invalidate_subproject_links()
 
 
 @app.route("/api/projects/subprojects/cascade", methods=["POST"])
@@ -1777,19 +1854,23 @@ def api_subprojects_cascade():
         targets = [t for t in listed if t not in skipped]
         if data.get("include_parent"):
             targets.append({"name": "(parent)", "path": sm.parent_path, "status": "ok"})
+        targets = _dedupe_by_path(targets)
+        workers = _update_workers() if op == "update" else 1
         if not targets:
             return jsonify({"error": "No cascade-eligible sub-projects"
                             + (f" ({len(skipped)} skipped)" if skipped else "")}), 400
         with _sub_cascade_lock:
             _sub_cascade_state = {
                 "running": True, "cancelled": False, "results": [],
-                "current": None, "current_index": 0, "total": len(targets),
+                "current": None, "current_index": 0, "in_progress": [],
+                "workers": workers, "total": len(targets),
                 "done": False, "error": None, "op": op, "parent": sm.parent_path,
             }
-        t = threading.Thread(target=_sub_cascade_worker, args=(op, targets), daemon=True)
+        t = threading.Thread(target=_sub_cascade_worker, args=(op, targets, workers),
+                             daemon=True)
         t.start()
         return jsonify({"started": True, "total": len(targets), "op": op,
-                        "skipped": len(skipped)})
+                        "skipped": len(skipped), "workers": workers})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -1799,7 +1880,10 @@ def api_subprojects_cascade():
 @app.route("/api/projects/subprojects/cascade/status", methods=["GET"])
 def api_subprojects_cascade_status():
     with _sub_cascade_lock:
-        return jsonify(dict(_sub_cascade_state))
+        snap = dict(_sub_cascade_state)
+        snap["results"] = list(snap.get("results") or [])
+        snap["in_progress"] = list(snap.get("in_progress") or [])
+        return jsonify(snap)
 
 
 @app.route("/api/projects/subprojects/cascade/cancel", methods=["POST"])

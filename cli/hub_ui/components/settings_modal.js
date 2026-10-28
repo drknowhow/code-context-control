@@ -1,6 +1,6 @@
 // ─── Hub settings modal ─────────────────────────────────────────
 // Config: GET/POST /api/hub/config {port, auto_open_browser, oracle_url,
-// runtime_cache_size}. Hub service: GET /api/hub/service + POST
+// runtime_cache_size, update_workers}. Hub service: GET /api/hub/service + POST
 // /api/hub/service/install|uninstall|start|stop. Restart: POST /api/hub/restart.
 // Oracle service: GET /api/oracle/service + POST
 // /api/oracle/service/install|uninstall|start|stop — runs `c3 oracle serve`
@@ -16,6 +16,7 @@ function SettingsModal({ onClose, onChanged }) {
   const [oracleUrl, setOracleUrl] = useState('');
   const [agentCmd, setAgentCmd] = useState('');   // ide_cmds['claude-code']
   const [cacheSize, setCacheSize] = useState(8);
+  const [updateWorkers, setUpdateWorkers] = useState(3);
   const [saving, setSaving] = useState(false);
   const [svc, setSvc] = useState(null);            // hub: {installed, running, method, port, log_path} | {error}
   const [svcBusy, setSvcBusy] = useState('');
@@ -54,6 +55,7 @@ function SettingsModal({ onClose, onChanged }) {
         setOracleUrl(d.oracle_url || '');
         setAgentCmd(((d.ide_cmds || {})['claude-code']) || '');
         setCacheSize(d.runtime_cache_size || 8);
+        setUpdateWorkers(d.update_workers || 3);
       } catch {
         notify('Could not load hub config', 'err');
       }
@@ -70,6 +72,7 @@ function SettingsModal({ onClose, onChanged }) {
       return;
     }
     const cache = Math.max(1, parseInt(cacheSize, 10) || 8);
+    const workers = Math.min(8, Math.max(1, parseInt(updateWorkers, 10) || 3));
     setSaving(true);
     try {
       // Blank restores the stock `claude`; other IDE overrides are left alone.
@@ -79,7 +82,7 @@ function SettingsModal({ onClose, onChanged }) {
       await api.post('/api/hub/config', {
         port: portVal, auto_open_browser: autoBrowser,
         oracle_url: oracleUrl.trim(), runtime_cache_size: cache,
-        ide_cmds: ideCmds,
+        update_workers: workers, ide_cmds: ideCmds,
       });
       const portChanged = cfg && portVal !== cfg.port;
       notify(portChanged
@@ -229,6 +232,10 @@ function SettingsModal({ onClose, onChanged }) {
         <input type="number" value={cacheSize} onChange={e => setCacheSize(e.target.value)}
           min={1} className="mono" style={inputStyle(110)} />
       ), 'Max project runtimes kept warm for drill-in and global search.')}
+      {fieldRow('Parallel updates', (
+        <input type="number" value={updateWorkers} onChange={e => setUpdateWorkers(e.target.value)}
+          min={1} max={8} className="mono" style={inputStyle(110)} />
+      ), 'Projects "Update all" and sub-project cascades update at once (1-8). Each one is a separate c3 process.')}
       {fieldRow('Agent command', (
         <input value={agentCmd} onChange={e => setAgentCmd(e.target.value)}
           placeholder="claude" className="mono" style={inputStyle(220)} />
