@@ -146,6 +146,13 @@ class TestRefreshStale(_Project):
             self.assertIsNone(idx.refresh_stale())
         build.assert_not_called()
 
+    def test_a_failed_check_is_logged_not_raised(self):
+        idx = self.build()
+        with mock.patch.object(CodeIndex, "refresh", side_effect=RuntimeError("database is locked")):
+            with self.assertLogs("c3.indexer", level="WARNING") as logs:
+                self.assertIsNone(idx.refresh_stale())
+        self.assertIn("database is locked", logs.output[0])
+
 
 class TestSyncPending(_Project):
     def test_a_search_first_reindexes_what_the_watcher_reported(self):
@@ -252,6 +259,14 @@ class TestSyncPending(_Project):
             idx._long_write = False
         self.assertLess(waited, 3.0, "the search stopped waiting once the write turned long")
         idx.pending_changes.assert_not_called()
+
+    def test_a_failed_sync_is_logged_and_the_search_still_answers(self):
+        idx = self.build()
+        idx.pending_changes = mock.Mock(side_effect=[["src/auth.py"], []])
+        with mock.patch.object(CodeIndex, "refresh", side_effect=RuntimeError("database is locked")):
+            with self.assertLogs("c3.indexer", level="WARNING"):
+                hits = idx.search("migrate_v2", top_k=1, max_tokens=800)
+        self.assertEqual(self.files(hits), ["src/store.py"])
 
     def test_without_a_watcher_nothing_is_synced(self):
         idx = self.build()

@@ -733,11 +733,19 @@ class CodeIndex:
                 return None
         try:
             paths = take()
+            if not paths:
+                return None
             if len(paths) > self._SYNC_INLINE_MAX:
                 threading.Thread(target=self._refresh_behind, args=(paths,), daemon=True,
                                  name="c3-index-sync").start()
                 return None
-            return self.refresh(paths=paths) if paths else None
+            try:
+                return self.refresh(paths=paths)
+            except Exception as exc:
+                # Not queued again: a file that breaks the refresh would fail
+                # every search. The staleness agent and the next start retry it.
+                log.warning("index sync of %d changed file(s) failed (%s)", len(paths), exc)
+                return None
         finally:
             self._write_lock.release()
 
@@ -757,11 +765,16 @@ class CodeIndex:
         server ran, a git pull or branch switch could change, add or delete
         files with no watcher to see it, and search kept returning the old
         code. Files whose mtime matches the stored one are not read. Returns
-        None when there is no stored index to check.
+        None when there is no stored index to check, or when the check fails
+        (logged as a warning).
         """
         if not self.documents and not self._load_index():
             return None
-        return self.refresh(trust_mtime=True)
+        try:
+            return self.refresh(trust_mtime=True)
+        except Exception as exc:
+            log.warning("index check against the files failed (%s)", exc)
+            return None
 
     def _store_meta(self) -> dict:
         return {"cooccurrence": getattr(self, "_cooccurrence_stats", {}),
