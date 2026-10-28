@@ -565,6 +565,30 @@ def find(project_path=".", *, session_id: str, layer: str, rule: str,
          tool: str, op: str, path) -> dict | None:
     """The grant that WOULD authorise this call — no consumption, no audit."""
     key, rel = path_key_pair(path, project_path)
+    return _find_key(project_path, session_id=session_id, layer=layer,
+                     rule=rule, tool=tool, op=op, key=key, rel=rel)
+
+
+def _pinned(grant: dict, grant_id: str) -> bool:
+    """True when *grant* may answer a lookup pinned to *grant_id*.
+
+    Unpinned (``grant_id`` empty) is the ordinary same-project lookup. A
+    pinned lookup is the cross-project one (``_approved_elsewhere``): it
+    accepts only the grant the approved request names, and never a rule
+    grant, whose glob is evaluated against its own project's root and would
+    mean a different path set under another one.
+    """
+    if not grant_id:
+        return True
+    return grant.get("id") == grant_id and grant.get("scope") != SCOPE_RULE
+
+
+def _find_key(project_path, *, session_id: str, layer: str, rule: str,
+              tool: str, op: str, key: str, rel: str = "",
+              grant_id: str = "") -> dict | None:
+    """``find`` on an already-canonical key. The key is never re-resolved
+    against *project_path*, so a relative target keeps the meaning it had
+    under the caller's base."""
     if not key or op_policy.forbidden_target(key):
         return None
     grants, corrupt = load(project_path)
@@ -572,8 +596,9 @@ def find(project_path=".", *, session_id: str, layer: str, rule: str,
         return None
     at = now()
     for g in grants:
-        if _matches(g, session_id=session_id, layer=layer, rule=rule,
-                    tool=tool, op=op, key=key, at=at, rel=rel):
+        if _pinned(g, grant_id) and _matches(
+                g, session_id=session_id, layer=layer, rule=rule, tool=tool,
+                op=op, key=key, at=at, rel=rel):
             return g
     return None
 
@@ -618,6 +643,17 @@ def consume(project_path=".", *, session_id: str, layer: str, rule: str,
     crash would leave a live grant behind (§4).
     """
     key, rel = path_key_pair(path, project_path)
+    return _consume_key(project_path, session_id=session_id, layer=layer,
+                        rule=rule, tool=tool, op=op, key=key, rel=rel)
+
+
+def _consume_key(project_path, *, session_id: str, layer: str, rule: str,
+                 tool: str, op: str, key: str, rel: str = "",
+                 grant_id: str = "", evaluated_in: str = "") -> dict | None:
+    """``consume`` on an already-canonical key; ``grant_id`` as in
+    :func:`_pinned`. ``evaluated_in`` names the project whose hook asked when
+    that is not the project holding the grant, and goes into the audit line.
+    """
     if not key or op_policy.forbidden_target(key):
         return None
     with _Lock(project_path):
@@ -627,13 +663,17 @@ def consume(project_path=".", *, session_id: str, layer: str, rule: str,
         at = now()
         hit = None
         for g in grants:
-            if _matches(g, session_id=session_id, layer=layer, rule=rule,
-                        tool=tool, op=op, key=key, at=at, rel=rel):
+            if _pinned(g, grant_id) and _matches(
+                    g, session_id=session_id, layer=layer, rule=rule,
+                    tool=tool, op=op, key=key, at=at, rel=rel):
                 hit = g
                 break
         if hit is None:
-            _near_miss(project_path, grants, session_id=session_id, layer=layer,
-                       rule=rule, tool=tool, op=op, key=key)
+            # A pinned miss is not "you approved X, the agent tried Y": the
+            # caller's own project already had that chance.
+            if not grant_id:
+                _near_miss(project_path, grants, session_id=session_id,
+                           layer=layer, rule=rule, tool=tool, op=op, key=key)
             return None
         left = _uses_left(hit)
         if left is not None:
@@ -644,12 +684,94 @@ def consume(project_path=".", *, session_id: str, layer: str, rule: str,
         hit["last_used_at"] = iso(at)
         _save(project_path, grants)
         used = dict(hit)
-    audit(project_path, EV_CONSUMED, {
+    line = {
         "grant_id": used.get("id", ""), "session_id": session_id,
         "layer": layer, "rule": rule, "tool": tool, "op": op, "path": key,
         "uses_remaining": used.get("uses_remaining", 0),
-    })
+    }
+    if evaluated_in:
+        line["evaluated_in"] = evaluated_in
+    audit(project_path, EV_CONSUMED, line)
     return used
+
+
+def _approved_elsewhere(project_path, *, session_id: str, layer_key: str,
+                        layer: str, rule: str, tool: str, op: str,
+                        key: str) -> list:
+    """``(project_path, grant_id)`` pairs: this exact call, approved for this
+    session, whose grant was minted into ANOTHER project's store.
+
+    The hooks evaluate under the session's cwd, and a session's cwd moves (a
+    ``cd`` into a worktree, back to the main checkout, into a sibling). A
+    request is filed, and its grant minted, under whichever project the cwd
+    named at the hold, so a retry from a different cwd read a store that
+    never held the grant and filed a new request instead. The machine-global
+    request store records where each approval went; this reads it back.
+
+    The row fields only choose which store to open: the pinned grant is
+    matched again on the full §4 identity by :func:`_matches` there. The rule
+    class is the one field a grant does not carry, so it is decided here, and
+    it is what keeps a one-tap confirm approval elsewhere from answering a
+    deny (typed-confirm) rule here. ``[]`` on any failure.
+    """
+    if not session_id or not key:
+        return []
+    try:
+        from services import override_requests as orq  # noqa: PLC0415 — imports this module
+        rows = orq.load()
+        approved = orq.STATUS_APPROVED
+    except Exception:
+        return []
+    here = path_key(project_path)
+    out = []
+    for r in rows:
+        if (r.get("status") != approved or not r.get("grant_id")
+                or r.get("session_id") != session_id
+                or r.get("rule_class") != layer_key
+                or r.get("layer") != layer or r.get("rule") != rule
+                or r.get("tool") != tool or r.get("op") != op
+                or r.get("path_key") != key):
+            continue
+        home = str(r.get("project_path") or "")
+        if not home or path_key(home) in ("", here):
+            continue
+        pair = (home, str(r["grant_id"]))
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+def _lookup(project_path, *, peek: bool, layer_key: str, session_id: str,
+            layer: str, rule: str, tool: str, op: str, path) -> dict | None:
+    """The grant for this call, or ``None``. Consumes one use unless *peek*.
+
+    This project's store first, unchanged. On a miss, the grant a human
+    minted for this exact call while the session's cwd named another project
+    (:func:`_approved_elsewhere`), looked up by its id in that project's
+    store and only while that project's policy still allows the layer. The
+    key is computed once, under *project_path*, and reused there.
+    """
+    key, rel = path_key_pair(path, project_path)
+    ident = {"session_id": session_id, "layer": layer, "rule": rule,
+             "tool": tool, "op": op, "key": key}
+    if peek:
+        grant = _find_key(project_path, rel=rel, **ident)
+    else:
+        grant = _consume_key(project_path, rel=rel, **ident)
+    if grant is not None:
+        return grant
+    for home, grant_id in _approved_elsewhere(project_path,
+                                              layer_key=layer_key, **ident):
+        if not op_policy.resolve(home).escalatable(layer_key):
+            continue
+        if peek:
+            grant = _find_key(home, grant_id=grant_id, **ident)
+        else:
+            grant = _consume_key(home, grant_id=grant_id,
+                                 evaluated_in=path_key(project_path), **ident)
+        if grant is not None:
+            return grant
+    return None
 
 
 def granted_context(grant: dict, rule: str) -> str:
@@ -696,9 +818,9 @@ def gate_access(project_path, denial, *, tool: str, op: str, path,
         return None
     gate = op_policy.GATE_FOR_LAYER_KEY[layer_key]
     rule = str(getattr(denial, "rule", "") or "")
-    lookup = find if peek else consume
-    grant = lookup(project_path, session_id=session_id, layer=gate, rule=rule,
-                   tool=tool, op=op, path=path)
+    grant = _lookup(project_path, peek=peek, layer_key=layer_key,
+                    session_id=session_id, layer=gate, rule=rule, tool=tool,
+                    op=op, path=path)
     return granted_context(grant, rule) if grant else None
 
 
@@ -712,11 +834,11 @@ def gate_discipline(project_path, *, tool: str, path, session_id: str,
     policy = op_policy.resolve(project_path)
     if not policy.escalatable(op_policy.LAYER_DISCIPLINE):
         return None
-    lookup = find if peek else consume
-    grant = lookup(project_path, session_id=session_id,
-                   layer=op_policy.GATE_DISCIPLINE,
-                   rule=op_policy.RULE_DISCIPLINE, tool=tool, op="write",
-                   path=path)
+    grant = _lookup(project_path, peek=peek,
+                    layer_key=op_policy.LAYER_DISCIPLINE,
+                    session_id=session_id, layer=op_policy.GATE_DISCIPLINE,
+                    rule=op_policy.RULE_DISCIPLINE, tool=tool, op="write",
+                    path=path)
     if not grant:
         return None
     return granted_context(grant, "tool discipline")

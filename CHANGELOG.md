@@ -4,6 +4,25 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.158.6] - 2026-10-28
+
+### Fixed — an approved hold is honoured after the session's cwd moves
+
+The installed PreToolUse hook passes no `--project`, so the access guard and
+the discipline gate evaluate under the session's cwd. A session's cwd moves:
+a `cd` into a linked worktree, back to the main checkout, into a sibling. A
+request is filed, and `decide` mints its grant, into whichever project the cwd
+named at the hold, so a retry from another cwd read a grant store that never
+held the grant, stayed held, and filed a new request. A Yep session editing a
+worktree's `.mcp.json` was asked three times for one edit this way. On a miss
+in its own store the gate now reads the machine-global request store for an
+approved request with the same session, layer, rule, rule class, tool, op and
+canonical path, and consumes that request's grant by id in the project that
+holds it, while that project still allows the layer. The reach is unchanged:
+one use, one path, one session; rule-scoped grants do not travel; a confirm
+approval elsewhere never answers a deny rule here. The `consumed` audit line
+names the asking project in `evaluated_in`.
+
 ## [2.158.5] - 2026-10-28
 
 ### Fixed — idle CPU in the MCP server, UI server and Oracle

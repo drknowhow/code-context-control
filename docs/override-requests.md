@@ -397,7 +397,10 @@ grant that is never used still leaves `requested` + `approved` + `expired`.
 
 A grant authorises a retry **iff all of these hold**:
 
-1. `project_path` identical,
+1. `project_path` identical — **or**, for a `scope="call"` grant only, the
+   grant is the one an approved request for this exact call named, the
+   request's `rule_class` equals this denial's, and the project holding it
+   still has the layer escalatable (see the note below),
 2. `session_id` identical (a grant never crosses sessions),
 3. `layer` identical,
 4. `rule` string-identical to the rule that is about to deny,
@@ -410,6 +413,21 @@ A grant authorises a retry **iff all of these hold**:
 
 Any mismatch ⇒ ordinary denial, and the near-miss is recorded so the phone can
 show *"the agent retried with a different path than you approved."*
+
+**Why condition 1 has a second form (v2.158.6).** The hooks run without
+`--project` and evaluate under the session's cwd, which moves within a session
+(a `cd` into a linked worktree, back to the main checkout, into a sibling). A
+request is filed, and `decide` mints its grant, into whichever project the cwd
+named at the hold. A retry from another cwd read a store that never held the
+grant and filed a new request, every time. The hook now consults its own
+store first, unchanged; on a miss it reads the machine-global request store
+for an approved row with the same session, layer, rule, rule class, tool, op
+and `path_key`, and looks up **that row's grant id** in the row's project
+store, where conditions 2–9 are checked again. The key is computed once under
+the hook's own base, so a relative target is never re-resolved against the
+other project. Rule-scoped grants do not travel: their glob is evaluated
+against their own project root. The `consumed` audit line in the holding
+project carries `evaluated_in` naming the project whose hook asked.
 
 **Consumption is atomic and happens at ALLOW time in the PreToolUse hook**
 (read-modify-write under the existing atomic helper). If the tool then fails
