@@ -4,6 +4,21 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.159.1] - 2026-10-28
+
+### Changed
+
+- The edit-ledger hook reads only the end of the ledger for each entry it
+  logs. To number an entry it read the whole file twice, and when the edited
+  file was not among the last 50 entries it also JSON-parsed every line. It
+  now reads the tail backwards in 64 KB steps, and when the tail has no entry
+  for the file it parses only the lines that contain the file's path as a
+  JSON string. On a copy of an 8.3 MB ledger the PostToolUse hook for an
+  Edit took 143-146 ms before and 86-87 ms after when the file was not in
+  the tail, and 85-87 ms before and 80 ms after when it was. A line that is
+  valid JSON but not an object no longer ends that scan early, which could
+  restart a file's version numbering at v1.
+
 ## [2.159.0] - 2026-10-28
 
 ### Changed — less memory, CPU and waiting per process and per tool call

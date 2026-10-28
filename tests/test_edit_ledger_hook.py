@@ -4,6 +4,8 @@ Covers two correctness fixes in cli/hook_edit_ledger.py + cli/_hook_utils.py:
   #3  NotebookEdit path (`notebook_path`) is extracted, so notebook edits get logged.
   #4  Generated edit ids carry a random suffix to avoid same-second collisions
       between the hook process and the server (services/edit_ledger.py).
+and the ledger scans behind each entry's id and version: the tail is read
+backwards in chunks, and a tail miss parses only the lines naming the file.
 """
 import json
 import shutil
@@ -12,10 +14,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from cli import hook_edit_ledger as hook  # noqa: E402
 from cli._hook_utils import get_tool_input_path  # noqa: E402
 
 
@@ -82,6 +86,65 @@ class TestEditLedgerHook(unittest.TestCase):
             self.assertEqual(len(parts[-1]), 4, f"missing 4-hex suffix: {eid}")
             int(parts[-1], 16)  # suffix is valid hex
         self.assertEqual(len(set(ids)), len(ids), "edit ids collided")
+
+
+class TestLedgerScans(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ledger = self.tmp / "edit_ledger.jsonl"
+        # Enough later entries that the tail scan cannot see the first ones.
+        self.filler = [{"file": f"f{i}.py", "version": "v1"}
+                       for i in range(hook._TAIL_SCAN + 10)]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, lines):
+        with open(self.ledger, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write((line if isinstance(line, str) else json.dumps(line)) + "\n")
+
+    def test_tail_lines_matches_a_full_read(self):
+        # Blank lines, CRLF endings, a line longer than the chunk, no final newline.
+        data = (b'{"a": 1}\r\n\r\n{"b": 2}\n{"long": "' + b"x" * 40 + b'"}\n'
+                b'\n{"c": 3}\r\n{"d": 4}')
+        self.ledger.write_bytes(data)
+        expected = [ln.decode() for ln in data.split(b"\n") if ln.strip()]
+        for chunk in (1, 3, 7, 64, 1 << 16):
+            with mock.patch.object(hook, "_TAIL_CHUNK", chunk):
+                for n in range(len(expected) + 2):
+                    self.assertEqual(hook._tail_lines(self.ledger, n),
+                                     expected[-n:] if n else [], f"chunk={chunk} n={n}")
+
+    def test_tail_lines_of_a_missing_ledger(self):
+        self.assertEqual(hook._tail_lines(self.tmp / "absent.jsonl", 5), [])
+
+    def test_version_found_beyond_the_tail(self):
+        self._write([{"file": "old.py", "version": "v3"}] + self.filler)
+        self.assertEqual(hook._next_version(self.ledger, "old.py"), "v4")
+        self.assertEqual(hook._next_version(self.ledger, "never.py"), "v1")
+        self.assertEqual(hook._next_version(self.tmp / "absent.jsonl", "old.py"), "v1")
+
+    def test_version_scan_counts_only_the_file_field(self):
+        self._write([
+            {"file": "pkg/foo.py", "version": "v9"},
+            {"file": "bar.py", "version": "v8", "renamed_from": "foo.py"},
+            '["foo.py", 2]',
+            'not json "foo.py"',
+            {"file": "foo.py", "version": "v2"},
+        ] + self.filler)
+        self.assertEqual(hook._next_version(self.ledger, "foo.py"), "v3")
+
+    def test_version_scan_finds_both_path_encodings(self):
+        name = "docs/übersicht.md"
+        escaped = {"file": name, "version": "v6"}
+        raw = json.dumps({"file": name, "version": "v4"}, ensure_ascii=False)
+        self._write([escaped, raw] + self.filler)
+        self.assertEqual(hook._next_version(self.ledger, name), "v7")
+        escaped["version"] = "v4"
+        raw = json.dumps({"file": name, "version": "v6"}, ensure_ascii=False)
+        self._write([escaped, raw] + self.filler)
+        self.assertEqual(hook._next_version(self.ledger, name), "v7")
 
 
 if __name__ == "__main__":
