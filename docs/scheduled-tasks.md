@@ -32,7 +32,21 @@ A **run** (`~/.c3/oracle/schedule_runs/<run_id>.json`) moves through
 failed | timeout | cancelled | lost`, or ends early as `missed`,
 `skipped_overlap`, `check_skipped`, `denied` or `expired`. It records the
 shell job id, exit code, duration, output id, and for LLM providers the cost,
-tokens, turns, model and a result excerpt.
+tokens, turns, model and a result excerpt. Also on the run:
+
+| field | meaning |
+|---|---|
+| `output_format` | how to read its stdout: `claude-stream` (Claude skill/prompt), `codex-json` (Codex) or `text` (commands, Gemini, Grok, check commands); set at dispatch |
+| `output_lines` | lines in the job's whole stdout, set when the run ends |
+| `output_dropped` | lines cut from the head of the archive (below) |
+| `stderr_tail` | the last 60 lines (at most 8 KiB) of stderr, only when the run failed, timed out, was cancelled or lost, or exited non-zero |
+
+When a run ends, its job's stdout (already credential-redacted) is copied to
+`schedule_runs/<run_id>.out`, so the transcript lives as long as the run row
+rather than the shell output store's 3 days. The archive keeps the last 8 MiB,
+starting at a line; its line N is line `output_dropped + N` of the stream. A
+run that ends at its check command (`check_skipped`, or a failed check) is not
+archived; the check's output stays in the shell output store.
 
 ## Loop
 
@@ -43,7 +57,7 @@ tokens, turns, model and a result excerpt.
 3. `ScheduleStore.claim_due` — one locked transaction advances `next_run_at` and writes the run row, so a claimed slot is never claimed again by any process; one-shots are disabled here;
 4. each claimed run passes the misfire window, the overlap rule, the check command and the autonomy gate; autonomous runs are dispatched as detached `services/shell_jobs.py` jobs (tree-kill on timeout, no console window, output kept, feed notification);
 5. approved runs are dispatched, denied or lapsed ones closed;
-6. old run files are swept after `scheduler_run_retention_days`.
+6. old run files are swept after `scheduler_run_retention_days`, with their `.out` archive and grok `.prompt.txt`.
 
 The tick never waits on a job. `start()` takes `~/.c3/oracle/scheduler.lock`;
 a second Oracle stays in `standby` and retries each tick, so two processes on
@@ -55,12 +69,17 @@ Every terminal run writes a `kind=schedule` notification into the project's
 
 ## Headless Claude
 
-A skill or prompt run is `claude -p --output-format json --no-session-persistence
---permission-mode <mode> --permission-prompts none --name sched:<id> [--model]
-[--effort] [--max-budget-usd] [--allowedTools]` with the prompt on stdin, run in
-`cwd` with `CLAUDECODE` and the other nesting markers removed so Claude does not
-treat it as a child session. Skills, CLAUDE.md, hooks and MCP servers load as
-in an interactive session. Cost is read from the JSON result.
+A skill or prompt run is `claude -p --output-format stream-json --verbose
+--no-session-persistence --permission-mode <mode> --permission-prompts none
+--name sched:<id> [--model] [--effort] [--max-budget-usd] [--allowedTools]` with
+the prompt on stdin, run in `cwd` with `CLAUDECODE` and the other nesting
+markers removed so Claude does not treat it as a child session. Skills,
+CLAUDE.md, hooks and MCP servers load as in an interactive session. stdout is
+one JSON event per line (`system`, `assistant`, `user`, `result`, ...) as the
+run goes, which is what makes it watchable; `-p` needs `--verbose` for
+`stream-json`. Cost, tokens, turns, model and the excerpt are read from the last
+`"type": "result"` event. A run cut off before that event keeps the model's
+last text as its excerpt.
 
 ## REST
 
@@ -74,6 +93,7 @@ DELETE /api/schedules/<id>                POST  /api/schedules/<id>/run   {bypas
 POST   /api/schedules/<id>/enable|disable GET   /api/schedules/<id>/runs
 GET    /api/schedules/runs?project&status&schedule_id&limit
 GET    /api/schedules/runs/<run_id>
+GET    /api/schedules/runs/<run_id>/output?after&limit
 GET    /api/schedules/approvals?status&project
 POST   /api/schedules/approvals/<id>      {decision: approve|deny, note}   (lapsed → 409)
 POST   /api/schedules/preview             {when, count} → next fire times
@@ -85,12 +105,39 @@ Desk and phone (`/api/mobile/schedules…`, Bearer on every method, capabilities
 `mobile_schedules_write`): the same list, one, runs, approvals, create, PATCH,
 DELETE, `/run`, `/enable`, `/disable` and `/approvals/<id>/decide`, every row
 filtered to the projects the gateway serves; `decided_by` is the client kind.
+`GET /api/mobile/schedules/runs/<run_id>/output?after&limit` (capability
+`schedule_output`, on with `mobile_schedules_enabled`) serves a run's output;
+a run whose project the gateway does not serve is a 404.
 
 Hub (`/api/hub/schedules…`, loopback): the same operations over the same files
-plus `?path=` project filters, `project_name` on rows, `/preview`, and
-`/status`, which proxies the Oracle's scheduler status and reports
-`reachable: false` when the Oracle is down. The Hub never dispatches; a Hub
-write is picked up on the Oracle's next tick.
+plus `?path=` project filters, `project_name` on rows, `/preview`,
+`/runs/<run_id>/output`, and `/status`, which proxies the Oracle's scheduler
+status and reports `reachable: false` when the Oracle is down. The Hub never
+dispatches; a Hub write is picked up on the Oracle's next tick.
+
+### Run output
+
+`…/runs/<run_id>/output?after=<n>&limit=<k>` returns the stdout lines numbered
+above `after` (default 0), at most `limit` (default 500, at most 2000) and
+about 1 MiB of text:
+
+```
+{ "run_id", "status", "open": run not terminal, "job_id",
+  "format": "claude-stream" | "codex-json" | "text",
+  "source": "archive" | "live" | "output_store" | "none",
+  "lines": [{"n": 1-based line number, "text": line without newline, "clipped": true}],
+  "next": n of the last line returned, or after when none,
+  "total": lines available so far, "dropped": lines cut from the archive's head,
+  "stderr_tail": "" unless the run ended badly }
+```
+
+The source is the run's `.out` archive once it ended; before that the job's
+spool while it runs (`live`: complete lines only, a line still being written
+waits for its newline), or the shell output store between the job ending and
+the next tick folding it into the run. A line keeps its number across the
+three, so a client polls with `after=next` until `open` is false. A line over
+256 KiB comes back as its first 256 KiB with `clipped: true`. Unknown run →
+404; a non-integer `after` or `limit` → 400.
 
 ## Config (`~/.c3/oracle/config.json`)
 

@@ -97,6 +97,19 @@ class TestHubScheduleRoutes(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/hub/schedules/approvals/{pending['id']}",
                                           json={"decision": "approve"}).status_code, 409)
 
+    def test_run_output(self):
+        row = self.client.post("/api/hub/schedules", json=self.body()).get_json()
+        run = self.store.request_run(row["id"])
+        url = f"/api/hub/schedules/runs/{run['run_id']}/output"
+        body = self.client.get(url).get_json()
+        self.assertEqual((body["source"], body["lines"], body["open"], body["format"]), ("none", [], True, "text"))
+        (self.store.runs_dir / f"{run['run_id']}.out").write_bytes(b"built\n")
+        self.store.update_run(run["run_id"], output_lines=1, output_dropped=0)
+        body = self.client.get(url).get_json()
+        self.assertEqual((body["source"], body["lines"]), ("archive", [{"n": 1, "text": "built"}]))
+        self.assertEqual(self.client.get("/api/hub/schedules/runs/sr-0000000000/output").status_code, 404)
+        self.assertEqual(self.client.get(url + "?after=-").status_code, 400)
+
     def test_preview_and_status_unreachable(self):
         resp = self.client.post("/api/hub/schedules/preview",
                                 json={"when": {"type": "cron", "expr": "*/30 * * * *", "tz": "UTC"}, "count": 2})

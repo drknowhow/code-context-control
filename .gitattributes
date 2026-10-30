@@ -1,1 +1,3 @@
 CHANGELOG.md merge=union
+# Recorded CLI output: keep the bytes the CLI wrote, even on a CRLF checkout.
+tests/fixtures/**/*.jsonl text eol=lf

@@ -3349,6 +3349,13 @@ def api_hub_schedule_runs():
     return jsonify({"runs": _sched_with_names(rows), "count": len(rows), "project": project_path})
 
 
+@app.route("/api/hub/schedules/runs/<run_id>/output", methods=["GET"])
+def api_hub_schedule_run_output(run_id):
+    data, err = _sched_call(_schedule_api().run_output, str(run_id), after=request.args.get("after"),
+                            limit=request.args.get("limit"))
+    return err or jsonify(data)
+
+
 @app.route("/api/hub/schedules/approvals", methods=["GET"])
 def api_hub_schedule_approvals():
     project_path, err = _sched_project_arg()

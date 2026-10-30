@@ -9,6 +9,8 @@ from services import schedule_runner as sr
 from services import schedule_store as ss
 
 REPO = Path(__file__).resolve().parents[1]
+STREAM_FIXTURE = REPO / "tests" / "fixtures" / "claude" / "stream_json_bash_echo.jsonl"
+STREAM_RESULT = "**DONE** The `echo hi` command ran with the Bash tool and printed `hi`."
 
 
 def sched(**over):
@@ -56,7 +58,8 @@ class TestPlan(unittest.TestCase):
 
     def test_claude_skill_run(self):
         fire = sr.plan(sched(model="sonnet", effort="medium", max_budget_usd=0.5, allowed_tools="Read Edit"))
-        self.assertEqual(fire.argv[:5], ["/bin/claude", "-p", "--output-format", "json", "--no-session-persistence"])
+        self.assertEqual(fire.argv[:6], ["/bin/claude", "-p", "--output-format", "stream-json", "--verbose",
+                                         "--no-session-persistence"])
         self.assertNotIn("--safe-mode", fire.argv)
         self.assertIn("--permission-mode", fire.argv)
         self.assertEqual(fire.argv[fire.argv.index("--permission-mode") + 1], "acceptEdits")
@@ -135,6 +138,20 @@ class TestParseResult(unittest.TestCase):
         self.assertEqual(out["tokens"], {"input_tokens": 1200, "output_tokens": 300, "cache_read_tokens": 50})
         self.assertEqual(out["model"], "claude-sonnet-5-5")
 
+    def test_claude_stream_json_reads_the_result_event(self):
+        out = sr.parse_result("claude", STREAM_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(out["result_excerpt"], STREAM_RESULT)
+        self.assertEqual((out["cost_usd"], out["turns"], out["model"]), (0.01060426, 2, "claude-haiku-5-5"))
+        self.assertEqual(out["tokens"], {"input_tokens": 4, "output_tokens": 107, "cache_read_tokens": 49596,
+                                         "cache_write_tokens": 50272})
+
+    def test_claude_stream_cut_before_its_result_keeps_the_last_text(self):
+        lines = STREAM_FIXTURE.read_text(encoding="utf-8").splitlines()
+        self.assertIn('"type":"result"', lines[-1])
+        out = sr.parse_result("claude", "\n".join(lines[:-1]) + "\n")
+        self.assertEqual(out, {"result_excerpt": STREAM_RESULT})
+        self.assertIn("[claude:error]", sr.parse_result("claude", "\n".join(lines[:3]))["result_excerpt"])
+
     def test_claude_error_payload_keeps_reason(self):
         out = sr.parse_result("claude", json.dumps({"is_error": True, "result": "budget exceeded"}))
         self.assertIn("budget exceeded", out["result_excerpt"])
@@ -169,15 +186,15 @@ class TestDispatchFinalize(unittest.TestCase):
     def test_dispatch_records_job(self):
         jobs = FakeJobStore()
         run = sr.dispatch(self.store, jobs, self.row, self.run)
-        self.assertEqual((run["status"], run["job_id"]), ("dispatched", "j-1"))
+        self.assertEqual((run["status"], run["job_id"], run["output_format"]), ("dispatched", "j-1", "text"))
         call = jobs.calls[0]
         self.assertEqual((call["session_id"], call["cwd"], call["timeout_s"]), (sr.SESSION_ID, str(REPO), 1800))
         self.assertEqual(call["payload"]["cmd"], "echo hi")
 
     def test_check_dispatch(self):
-        row = dict(self.row, check_command="exit 1")
+        row = dict(self.row, kind="skill", target={"skill": "/x"}, provider="claude", check_command="exit 1")
         run = sr.dispatch(self.store, FakeJobStore(), row, self.run, check=True)
-        self.assertEqual(run["status"], "check_running")
+        self.assertEqual((run["status"], run["output_format"]), ("check_running", "text"))
 
     def test_spawn_failure_and_plan_error_finish_the_run(self):
         failed = sr.dispatch(self.store, FakeJobStore(status="failed"), self.row, self.run)

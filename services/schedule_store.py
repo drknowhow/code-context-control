@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -72,7 +73,12 @@ _RUN_FIELDS = (
     "run_id", "schedule_id", "schedule_name", "project_path", "trigger", "due_at", "claimed_at",
     "dispatched_at", "finished_at", "status", "job_id", "approval_id", "exit_code", "duration_ms",
     "output_id", "cost_usd", "tokens", "turns", "model", "result_excerpt", "error",
+    "output_format", "output_lines", "output_dropped", "stderr_tail",
 )
+# Files kept beside ``<run_id>.json`` and swept with it: the stdout archive
+# (services/schedule_runner.archive_output) and grok's prompt file.
+RUN_SIDE_FILES = (".out", ".out.tmp", ".prompt.txt")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 class ScheduleError(ValueError):
@@ -454,6 +460,8 @@ class ScheduleStore:
         write_json_atomic(self._run_path(run["run_id"]), run, ensure_ascii=False, fsync=False)
 
     def get_run(self, run_id: str) -> dict | None:
+        if not _RUN_ID_RE.match(run_id or ""):
+            return None
         path = self._run_path(run_id)
         if not path.exists():
             return None
@@ -555,7 +563,12 @@ class ScheduleStore:
                     self._run_path(run["run_id"]).unlink()
                     removed += 1
                 except OSError:
-                    pass
+                    continue
+                for suffix in RUN_SIDE_FILES:
+                    try:
+                        (self.runs_dir / f"{run['run_id']}{suffix}").unlink(missing_ok=True)
+                    except OSError:
+                        pass
         return removed
 
 
