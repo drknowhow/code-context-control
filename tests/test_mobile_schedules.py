@@ -117,6 +117,44 @@ class TestMobileSchedules(unittest.TestCase):
         self.assertEqual(self.client.get("/api/mobile/schedules?project=" + str(self.outsider),
                                          headers=AUTH).status_code, 404)
 
+    def archived_run(self, **over):
+        run = self.store.request_run(self.store.create(self.body(**over))["id"])
+        (self.store.runs_dir / f"{run['run_id']}.out").write_bytes(b"one\ntwo\n")
+        self.store.update_run(run["run_id"], output_lines=2, output_dropped=0)
+        return run
+
+    def test_run_output_needs_bearer_and_pages_the_archive(self):
+        run = self.archived_run(name="out")
+        url = f"/api/mobile/schedules/runs/{run['run_id']}/output"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        resp = self.client.get(url + "?after=1", headers=AUTH)
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        body = resp.get_json()
+        self.assertEqual((body["run_id"], body["source"], body["format"], body["open"]),
+                         (run["run_id"], "archive", "claude-stream", True))
+        self.assertEqual((body["lines"], body["next"], body["total"], body["dropped"]),
+                         ([{"n": 2, "text": "two"}], 2, 2, 0))
+        self.assertEqual(self.client.get(url + "?limit=x", headers=AUTH).status_code, 400)
+        self.assertEqual(self.client.get("/api/mobile/schedules/runs/sr-0000000000/output",
+                                         headers=AUTH).status_code, 404)
+
+    def test_run_output_capability_follows_the_schedules_switch(self):
+        run = self.archived_run(name="switched")
+        url = f"/api/mobile/schedules/runs/{run['run_id']}/output"
+        self.assertIn("schedule_output", self.client.get("/api/mobile/info", headers=AUTH).get_json()["capabilities"])
+        with mock.patch.dict(srv._cfg, {"mobile_schedules_enabled": False}):
+            caps = self.client.get("/api/mobile/info", headers=AUTH).get_json()["capabilities"]
+            self.assertNotIn("schedule_output", caps)
+            self.assertEqual(self.client.get(url, headers=AUTH).status_code, 404)
+        with mock.patch.dict(srv._cfg, {"mobile_schedules_write": False}):
+            self.assertEqual(self.client.get(url, headers=AUTH).status_code, 200)
+
+    def test_run_output_of_an_unserved_project_is_404(self):
+        run = self.archived_run(name="hidden-out", project_path=str(self.outsider))
+        resp = self.client.get(f"/api/mobile/schedules/runs/{run['run_id']}/output", headers=AUTH)
+        self.assertEqual(resp.status_code, 404)
+        self.assertNotIn("two", resp.get_data(as_text=True))
+
     def test_approvals_decide_and_409(self):
         row = self.store.create(self.body(name="gated", autonomy="approval"))
         run = self.store.request_run(row["id"])

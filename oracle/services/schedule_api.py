@@ -13,9 +13,13 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from services import schedule_runner as runner
 from services.cron_expr import preview, validate_when
 from services.schedule_approvals import ApprovalError
-from services.schedule_store import RUN_STATUSES, RevConflict, ScheduleError
+from services.schedule_store import OPEN_RUN_STATUSES, RUN_STATUSES, RevConflict, ScheduleError
+
+OUTPUT_DEFAULT_LIMIT = 500
+OUTPUT_MAX_LIMIT = 2000
 
 bp = Blueprint("schedule_api", __name__, url_prefix="/api/schedules")
 
@@ -131,6 +135,85 @@ def preview_when(body: dict) -> dict:
     return {"when": when, "next": [f.isoformat() for f in fires]}
 
 
+def run_output(run_id: str, after=0, limit=OUTPUT_DEFAULT_LIMIT, *, jobstore=None) -> dict:
+    """One page of a run's stdout: the lines numbered ``n > after``.
+
+    Reads ``schedule_runs/<run_id>.out`` once the run has one; before that the
+    job's spool while it runs (``live``, complete lines only) or its kept
+    output once it ended (``output_store``). A line keeps its number across
+    the three. ``after`` and ``limit`` may be strings from a query;
+    ``limit`` is clamped to 1..2000. Raises ``ApiError`` 404 for an unknown
+    run and 400 for a non-integer ``after``/``limit``.
+    """
+    store = _get_store()
+    run = store.get_run(str(run_id or ""))
+    if run is None:
+        raise ApiError(f"no run {run_id}", 404)
+    after = _int_arg(after, 0, "after")
+    limit = min(max(_int_arg(limit, OUTPUT_DEFAULT_LIMIT, "limit"), 1), OUTPUT_MAX_LIMIT)
+    status = run.get("status")
+    out = {"run_id": run["run_id"], "status": status, "open": status in OPEN_RUN_STATUSES,
+           "job_id": run.get("job_id") or None, "format": _run_format(store, run),
+           "source": "none", "lines": [], "next": after, "total": 0, "dropped": 0,
+           "stderr_tail": str(run.get("stderr_tail") or "")}
+
+    def page(path, source: str, first_n: int = 1) -> bool:
+        try:
+            lines, total = runner.page_lines(path, first_n=first_n, after=after, limit=limit,
+                                             complete_only=source == "live")
+        except OSError:
+            return False
+        out.update(source=source, lines=lines, total=total, next=lines[-1]["n"] if lines else after)
+        return True
+
+    archive = store.runs_dir / f"{run['run_id']}.out"
+    if run.get("output_lines") is not None and archive.is_file():
+        dropped = int(run.get("output_dropped") or 0)
+        if page(archive, "archive", dropped + 1):
+            out["dropped"] = dropped
+            return out
+    job_id = run.get("job_id")
+    if not job_id:
+        return out
+    jobs = jobstore if jobstore is not None else _jobstore()
+    job = jobs.find(job_id)
+    if job is not None and not job.terminal and job.spool.get("stdout"):
+        if page(job.spool["stdout"], "live"):
+            return out
+        job = jobs.find(job_id)          # the spool was promoted between the two reads
+    if job is not None and job.terminal:
+        path = runner.job_stream_path(jobs, job, "stdout")
+        if path is not None:
+            page(path, "output_store")
+    return out
+
+
+def _int_arg(value, default: int, name: str) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError) as exc:
+        raise ApiError(f"{name} must be an integer", 400) from exc
+
+
+def _run_format(store, run: dict) -> str:
+    if run.get("output_format"):
+        return str(run["output_format"])
+    if run.get("status") in ("check_running", "check_skipped"):
+        return "text"
+    schedule = store.get(run.get("schedule_id") or "")
+    return runner.output_format(schedule) if schedule else "text"
+
+
+def _jobstore():
+    jobstore = getattr(_get_scheduler(), "jobstore", None)
+    if jobstore is not None:
+        return jobstore
+    from services.shell_jobs import JobStore
+    return JobStore()
+
+
 def _limit(default: int = 50, cap: int = 500) -> int:
     try:
         return max(1, min(int(request.args.get("limit") or default), cap))
@@ -196,6 +279,11 @@ def one_run(run_id: str):
     if run is None:
         raise ApiError(f"no run {run_id}", 404)
     return jsonify(run)
+
+
+@bp.route("/runs/<run_id>/output", methods=["GET"])
+def one_run_output(run_id: str):
+    return jsonify(run_output(run_id, after=request.args.get("after"), limit=request.args.get("limit")))
 
 
 @bp.route("/approvals", methods=["GET"])

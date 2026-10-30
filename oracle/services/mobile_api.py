@@ -87,6 +87,8 @@ from services.atomic_json import write_json_atomic
 #    and /overrides/policy/clear; built-in guards read + tighten + lease
 #    revoke (/access/builtin*); the session catalog (/sessions*, no
 #    transcript text by default); and /now.
+# 7 (unchanged, additive): `schedule_output` capability and
+#    GET /schedules/runs/<run_id>/output, a run's stdout paged by line.
 API_VERSION = 7
 
 CAPABILITIES = [
@@ -105,7 +107,8 @@ CAPABILITIES = [
     "jobs", "ci",
     # Scheduled tasks (/schedules): read the schedules, their runs and pending
     # approvals; write = create/edit/run-now/decide (docs/scheduled-tasks.md).
-    "schedules", "schedules_write",
+    # schedule_output: a run's stdout while it runs and after it ends.
+    "schedules", "schedules_write", "schedule_output",
     # Poll-based chat transport, served by services/chat_poll.py under
     # /api/mobile/chat/*. Advertised here because /info is the single place a
     # client probes; the routes themselves live in that blueprint.
@@ -139,6 +142,7 @@ _CAPABILITY_SWITCHES = {
     "suggestions_write": "mobile_suggestions_write",
     "schedules": "mobile_schedules_enabled",
     "schedules_write": "mobile_schedules_write",
+    "schedule_output": "mobile_schedules_enabled",
     # v7: each overview goes dark with the subsystem it reads; locks_overview
     # and now are ops reads like /locks and /status, so always on.
     "access_overview": "mobile_access_enabled",
@@ -1192,6 +1196,21 @@ def mobile_schedule_runs():
                       project_path=project_path or None, limit=_SOURCE_CAP)
     rows = _registered_rows(rows)[:_limit_arg()]
     return jsonify({"runs": rows, "count": len(rows), "project": project_path})
+
+
+@bp.route("/schedules/runs/<run_id>/output", methods=["GET"])
+def mobile_schedule_run_output(run_id):
+    """A run's stdout lines after ``after`` (query: after, limit); see schedule_api.run_output."""
+    gate = _feature_or_404("schedule_output")
+    if gate:
+        return gate
+    api = _schedule_api()
+    run = api._get_store().get_run(str(run_id))
+    if run is None or _resolve_registered(str(run.get("project_path") or "")) is None:
+        return jsonify({"error": "unknown run"}), 404
+    data, err = _schedule_call(api.run_output, str(run_id), after=request.args.get("after"),
+                               limit=request.args.get("limit"))
+    return err or jsonify(data)
 
 
 @bp.route("/schedules/approvals", methods=["GET"])

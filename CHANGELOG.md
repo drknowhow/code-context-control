@@ -4,6 +4,43 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.161.0] - 2026-10-30
+
+### Added
+
+- A scheduled run's output can be read while it runs and after it ends.
+  `GET /api/schedules/runs/<run_id>/output?after=&limit=` (and the same path
+  under `/api/mobile/schedules` and `/api/hub/schedules`) returns the stdout
+  lines numbered above `after`, at most `limit` (500, up to 2000) and about
+  1 MiB of text, with `next` to poll from, `total`, `open` while the run is
+  not finished, a `format` hint (`claude-stream`, `codex-json` or `text`) and
+  `source`: the job's spool while it runs, the shell output store once it
+  ends, then the run's archive. A line keeps its number across the three. A
+  line over 256 KiB is cut to 256 KiB and flagged `clipped`. The gateway
+  advertises it as the `schedule_output` capability, switched with
+  `mobile_schedules_enabled`, and answers 404 for a run whose project it
+  does not serve. See docs/scheduled-tasks.md.
+- When a run ends, its stdout is copied to
+  `~/.c3/oracle/schedule_runs/<run_id>.out` and kept as long as the run row
+  (`scheduler_run_retention_days`), not the shell output store's 3 days. The
+  archive keeps the last 8 MiB from a line start; the run records
+  `output_lines` and `output_dropped`. A run that failed, timed out, was
+  cancelled or exited non-zero also records `stderr_tail`, the last 60 lines
+  (at most 8 KiB) of its stderr. Runs record `output_format` at dispatch.
+
+### Changed
+
+- Scheduled Claude runs use `claude -p --output-format stream-json --verbose`
+  instead of `--output-format json`, which printed nothing until the run
+  ended. Cost, tokens, turns and the excerpt come from the stream's last
+  `result` event; a run cut off before it keeps the model's last text as its
+  excerpt.
+- The run sweep deletes a run's `.out` archive and grok `.prompt.txt` with
+  its json; the prompt file was left behind before.
+- `ScheduleStore.get_run` returns None for an id that is not a plain
+  `[A-Za-z0-9_-]` name, so a run id from a URL cannot name a file outside
+  `schedule_runs`.
+
 ## [2.160.0] - 2026-10-28
 
 ### Changed
