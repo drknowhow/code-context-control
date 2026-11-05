@@ -1050,8 +1050,15 @@ def _parse_cli_ide_arg(value: str) -> str:
     return normalized
 
 
-def _do_init(project_path: str, ide_name: str = None, no_embed: bool = False):
-    """Run the core init steps (shared by new install and re-init after clear/reset)."""
+def _do_init(project_path: str, ide_name: str = None, no_embed: bool = False,
+             rebuild_index: bool = True):
+    """Run the core init steps (shared by new install and re-init after clear/reset).
+
+    ``rebuild_index=False`` re-checks the stored code index file by file instead of
+    rebuilding it, but only when the project was last set up by this C3 version;
+    after an upgrade the chunker may have changed, so it rebuilds anyway.
+    """
+    prior_version = (load_config(project_path) or {}).get("version")
     config = _build_init_config(project_path)
     save_config(config, project_path)
 
@@ -1066,13 +1073,24 @@ def _do_init(project_path: str, ide_name: str = None, no_embed: bool = False):
     _prog = ProgressLine()
     _t0 = _t.perf_counter()
     indexer = CodeIndex(project_path)
-    result = indexer.build_index(
-        on_progress=lambda entries, files, chunks: _prog.update(
-            f"  scanning: {entries:,} entries | {files:,} files | {chunks:,} chunks"))
+
+    def _on_scan(entries, files, chunks):
+        _prog.update(f"  scanning: {entries:,} entries | {files:,} files | {chunks:,} chunks")
+
+    if not rebuild_index and prior_version == __version__:
+        result = indexer.refresh(on_progress=_on_scan)
+    else:
+        result = indexer.build_index(on_progress=_on_scan)
     _prog.done()
-    entries = result.get("entries_scanned", 0)
-    print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks "
-          f"in {_t.perf_counter() - _t0:.1f}s ({entries:,} entries scanned)")
+    if result.get("mode") == "incremental":
+        updated = result["files_changed"] + result["files_added"]
+        print(f"  Index current: {result['files_indexed']} files, {result['chunks_total']} chunks; "
+              f"{updated} updated, {result['files_removed']} removed "
+              f"in {_t.perf_counter() - _t0:.1f}s (--rebuild-index for a full rebuild)")
+    else:
+        entries = result.get("entries_scanned", 0)
+        print(f"  Indexed {result['files_indexed']} files, {result['chunks_created']} chunks "
+              f"in {_t.perf_counter() - _t0:.1f}s ({entries:,} entries scanned)")
     capped = result.get("files_capped", 0)
     if capped:
         total = result["files_indexed"] + capped
@@ -1387,7 +1405,8 @@ def cmd_init(args):
     # â”€â”€ Non-interactive (--force) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if getattr(args, "force", False):
         print("\n[--force] Applying update...")
-        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed)
+        _do_init(project_path, ide_name=requested_ide, no_embed=no_embed,
+                 rebuild_index=bool(getattr(args, "rebuild_index", False)))
         if git_requested:
             _init_local_git_repo(project_path)
         _run_install_mcp(project_path, requested_ide, mcp_mode=getattr(args, "mcp_mode", "direct"), banner="Updating MCP tools...")

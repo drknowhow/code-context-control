@@ -161,23 +161,23 @@ c3 ci inspect --json</code></pre>
 
       <p>A real <code>c3 ci inspect</code> against this repository, from Windows:</p>
       <pre><code>Workflows in . (host Windows):
-  CI  [pull_request, push, workflow_dispatch]  jobs=4
-  Release  [push, workflow_dispatch]  jobs=4
+  CI  [pull_request, push, workflow_dispatch]  jobs=2
+  Release  [push, workflow_dispatch]  jobs=2
 
 Job graph (dependency order):
-  CI::lint                                   runnable (container)
+  CI::checks                                 runnable (container)
   CI::test (macos-latest, 3.12)              other-OS (macos-latest)
+  CI::test (ubuntu-latest, 3.10)             runnable (container)
   CI::test (ubuntu-latest, 3.12)             runnable (container)
   CI::test (windows-latest, 3.12)            runnable here
-  CI::build                                  runnable (container)  needs=lint,jsx,test
-  Release::verify-ci                         UNSUPPORTED
-  Release::publish-pypi                      runnable (container)  needs=build
+  Release::build                             UNSUPPORTED
+  Release::publish                           runnable (container)  needs=build
 
-Runnable here: 12 of 16  (3 native, 9 container)
+Runnable here: 5 of 7  (1 native, 4 container)
   engines: native + act (act version 0.2.89)
   other-OS (3): these target a runner no available engine can reproduce. …
   unsupported (1):
-    Release::verify-ci: step 1 env GH_TOKEN has unresolved expression(s): github.token</code></pre>
+    Release::build: step 1 env GH_TOKEN has unresolved expression(s): github.token</code></pre>
       <p>That last line is the point: an unresolved <code>${{ secrets.X }}</code> or <code>github.token</code> blocks rather than silently becoming an empty string, because a job that quietly passes locally on a blank secret and fails in real CI is worse than a job that refuses.</p>
     </section>
 
