@@ -34,6 +34,7 @@ Imported for its side effect (route registration) at the bottom of
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from flask import jsonify, request
@@ -45,6 +46,10 @@ bp = m.bp
 #: Row fields that are verbatim transcript text.
 _TRANSCRIPT_FIELDS = ("first_prompt", "last_prompt")
 _STALE_FILTERS = {"hide", "only", "likely", "all"}
+#: A Remote Control session name: shown in claude.ai/code and the Claude app.
+#: Letters, digits, space and ``._-`` only, so nothing from the request is ever
+#: shell syntax; the name also rides in argv, never through a shell.
+_RC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$")
 _RESUME_ELSEWHERE = ("resume opens a terminal on the PC - use C3 Desk or the "
                      "Hub there")
 
@@ -548,6 +553,44 @@ def mobile_sessions_mark():
     if isinstance(row, dict):
         res = {**res, "row": _session_wire(row, _transcripts_allowed())}
     return jsonify(res)
+
+
+@bp.route("/sessions/start", methods=["POST"])
+def mobile_sessions_start():
+    """Open a terminal on this PC running ``claude --remote-control`` in a project.
+
+    Body: ``{project, name?}``. The project must be registered. The command is
+    fixed: only the validated name reaches argv (as one element, no shell), and
+    the working directory is the registered project path. The new session shows
+    up in the Claude app / claude.ai/code under the name given (default: the
+    project name). Off unless ``mobile_sessions_start`` is on.
+    """
+    gate = (m._feature_or_404("sessions") or m._feature_or_404("sessions_write")
+            or m._feature_or_404("sessions_start"))
+    if gate:
+        return gate
+    data = request.get_json(silent=True) or {}
+    resolved, err = m._project_or_404(str(data.get("project") or ""))
+    if err:
+        return err
+    name = str(data.get("name") or "").strip()
+    if name and not _RC_NAME_RE.match(name):
+        return jsonify({"error": "name must be 1-60 characters: letters, digits, "
+                                 "space, dot, dash or underscore"}), 400
+    if not name:
+        # The default comes from the project's own name, which may hold
+        # characters the pattern refuses: replace them rather than fail.
+        name = re.sub(r"[^A-Za-z0-9 ._-]+", "-", _name_for(resolved)).strip(" .-_")[:60]
+        name = name if _RC_NAME_RE.match(name) else "c3-session"
+    argv = ["claude", "--remote-control", name]
+    from services import terminal_launch
+    try:
+        terminal_launch.spawn_terminal(str(resolved), argv)
+    except Exception as exc:
+        return jsonify({"error": f"could not open a terminal on the PC: {exc}"}), 500
+    m._gw_audit("mobile.sessions.start", {"name": name})
+    return jsonify({"launched": True, "name": name,
+                    "project": {"name": _name_for(resolved), "path": str(resolved)}})
 
 
 # ── Now ───────────────────────────────────────────────────

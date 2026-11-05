@@ -94,6 +94,9 @@ DEFAULTS = {
     "mobile_sessions_enabled": True,
     "mobile_sessions_write": True,
     "mobile_sessions_transcripts": False,
+    # Start a Remote Control session (`claude --remote-control`) in a registered
+    # project: opens a terminal on this PC, so it is opt-in (docs/sessions.md).
+    "mobile_sessions_start": False,
     "auto_open_browser": True,
     "theme": "dark",
     "ui_last_tab": "chat",          # persisted UI preference (hub parity)

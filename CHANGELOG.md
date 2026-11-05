@@ -4,6 +4,18 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.162.0] - 2026-11-05
+
+### Added
+
+- The phone can start a Remote Control session in any registered project.
+  `POST /api/mobile/sessions/start {project, name?}` opens a terminal on the
+  PC running `claude --remote-control <name>` in that project, so the session
+  shows up in the Claude app and claude.ai/code. The command is fixed and the
+  name is validated before it reaches argv. Advertised as the `sessions_start`
+  capability and switched by `mobile_sessions_start`, which is **off by
+  default** because it opens a window on the PC. See docs/sessions.md.
+
 ## [2.161.0] - 2026-10-30
 
 ### Added

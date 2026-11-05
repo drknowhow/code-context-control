@@ -132,6 +132,14 @@ machine. Since 2.157.0 the gateway serves the catalog to the phone without it:
 | `GET /api/mobile/sessions?project=&stale=&q=&limit=&before=` | rows with `first_prompt` / `last_prompt` blanked and a title copied from the first prompt replaced by `(untitled)` (`title_source: withheld`); `resume` is only `{remote_url, can_launch: false, why_not}` |
 | `GET /api/mobile/sessions/detail?project=&id=` | row + decisions, snapshot and tasks; `preview` is empty |
 | `POST /api/mobile/sessions/mark {project, id, op, ...}` | recorded as `by: user` |
+| `POST /api/mobile/sessions/start {project, name?}` | opens a terminal on the PC running `claude --remote-control <name>` in a registered project, so the session appears in the Claude app and claude.ai/code. 404 while `mobile_sessions_start` is off |
+
+Starting a session is the one gateway action that opens a window on the PC,
+so `mobile_sessions_start` is **off by default**. Set it to `true` in
+`~/.c3/oracle/config.json` to advertise the `sessions_start` capability. The
+command is fixed; only `name` (1-60 characters of letters, digits, space,
+`.`, `-`, `_`, starting with a letter or digit) reaches argv, and the working
+directory is the registered project. The default name is the project's.
 
 `mobile_sessions_transcripts: true` in `~/.c3/oracle/config.json` lets the
 prompts, titles and preview through; every response says which with

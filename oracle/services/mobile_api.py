@@ -117,7 +117,7 @@ CAPABILITIES = [
     "locks_overview", "access_overview", "enforcement_overview",
     "enforcement_clear", "override_policy_overview", "override_policy_clear",
     "builtin", "builtin_tighten",
-    "sessions", "sessions_write",
+    "sessions", "sessions_write", "sessions_start",
     "now",
 ]
 
@@ -154,6 +154,7 @@ _CAPABILITY_SWITCHES = {
     "builtin_tighten": "mobile_builtin_tighten",
     "sessions": "mobile_sessions_enabled",
     "sessions_write": "mobile_sessions_write",
+    "sessions_start": "mobile_sessions_start",
 }
 
 FEED_TYPES = ("notification", "activity", "edit", "session_stat")
