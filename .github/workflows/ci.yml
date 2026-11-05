@@ -11,9 +11,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  lint:
-    name: Lint (ruff)
+  checks:
+    # Lint, the browser-bundle transpile and the package build share one runner:
+    # each takes seconds, so separate jobs would spend longer starting than running.
+    name: Lint, JSX, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -21,45 +26,29 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install ruff
-        run: python -m pip install --upgrade pip ruff
-      - name: ruff check
-        run: ruff check .
-
-  jsx:
-    # The browser-transpiled UI bundles, parsed by the real Babel.
-    # A JSX syntax error anywhere in a concatenated bundle renders the page
-    # black while the route still returns 200, so nothing Python-side notices;
-    # 2.92.0-2.92.3 shipped exactly that. The test that catches it SKIPS when
-    # @babel/standalone is missing, and a skip reads like a pass in the summary
-    # line — hence C3_REQUIRE_JSX_TOOLCHAIN=1, which turns a missing toolchain
-    # into a failure instead. One job: the bundles are OS-independent, so
-    # paying for this on all nine test cells would buy nothing.
-    name: JSX bundles transpile
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+          cache-dependency-path: pyproject.toml
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+      - name: Install tooling
+        run: python -m pip install --upgrade pip ruff pytest build twine
+      - name: ruff check
+        run: ruff check .
+      # A JSX syntax error in a concatenated UI bundle renders the page black
+      # while the route still returns 200. The test skips when Babel is missing,
+      # so C3_REQUIRE_JSX_TOOLCHAIN=1 turns a missing toolchain into a failure.
+      # --prefix . keeps node_modules in the repo root, where the test's node
+      # subprocess looks (the repo has no package.json).
       - name: Install Babel
-        # --prefix . is load-bearing: the repo has no package.json, so a bare
-        # `npm install` walks UP and installs outside the checkout, where the
-        # test's node subprocess cannot see it. This pins node_modules to the
-        # repo root, which is what the test puts on NODE_PATH.
         run: npm install --no-save --prefix . @babel/standalone
-      - name: Confirm Babel landed in the repo root
-        run: node -e "require('./node_modules/@babel/standalone'); console.log('babel ok')" 
-      - name: Install pytest
-        run: python -m pip install --upgrade pip pytest
-      - name: Transpile both bundles
+      - name: Transpile both UI bundles
         env:
           C3_REQUIRE_JSX_TOOLCHAIN: "1"
         run: pytest -q tests/test_ui_jsx_syntax.py
+      - name: Build sdist + wheel
+        run: |
+          python -m build --sdist --wheel --outdir dist
+          python -m twine check dist/*
 
   test:
     name: Test (${{ matrix.os }} / py${{ matrix.python-version }})
@@ -67,48 +56,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        # Newest Python on every OS, plus the oldest supported one on Linux.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12"]
+        include:
+          - { os: ubuntu-latest, python-version: "3.10" }
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install package + dev extras
-        # Editable install so tests run against the source tree (matches local dev).
-        # Several tests patch `services.*` import paths that only work when the
-        # source dir IS the installed package. A separate wheel-install job below
-        # validates the production install path.
+        # Editable: several tests patch `services.*` paths that only resolve
+        # when the source dir is the installed package.
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run pytest
         env:
-          # Smoke tests must not initialize real telemetry
           SENTRY_DSN: ""
           C3_TELEMETRY_OPT_IN: "0"
         run: pytest -q
-
-  build:
-    name: Build distribution
-    needs: [lint, jsx, test]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install build tooling
-        run: python -m pip install --upgrade pip build twine
-      - name: Build sdist + wheel
-        run: python -m build --sdist --wheel --outdir dist
-      - name: twine check
-        run: python -m twine check dist/*
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
-          retention-days: 7

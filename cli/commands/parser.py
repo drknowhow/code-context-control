@@ -29,6 +29,7 @@ def build_parser(version: str, parse_cli_ide_arg):
     p_init.add_argument("--mcp-mode", choices=["direct", "proxy"], default="direct", help="Default MCP mode if install is selected during init (default: direct)")
     p_init.add_argument("--git", action="store_true", help="Initialize a local Git repository during init/update")
     p_init.add_argument("--no-embed", action="store_true", help="Skip building the semantic embedding index during init")
+    p_init.add_argument("--rebuild-index", action="store_true", help="With --force, rebuild the code index from scratch instead of re-checking it file by file")
     p_init.add_argument("--permissions", choices=["read-only", "c3-strict", "standard", "permissive"], default=None, help="Apply Claude Code permission tier (Claude Code only, used with --force)")
     p_init.add_argument("--enforcement", choices=["strict", "advisory", "off"], default=None, help="Tool-discipline mode. Omit to derive from --permissions (standard->advisory, permissive->off, strict/read-only->strict)")
     p_init.add_argument("--include-mcp-wildcard", action="store_true", help="Add mcp__* wildcard so non-C3 MCP servers don't prompt per-call")

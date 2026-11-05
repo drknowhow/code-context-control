@@ -62,6 +62,7 @@ Or `pip install "code-context-control[tui]"` for the optional Textual UI.
 ```bash
 c3 init /path/to/project --force --ide claude --mcp-mode direct --permissions standard
 c3 init /path/to/huge-repo --force --no-embed     # skip the embedding index on large repos
+c3 init /path/to/project --force --rebuild-index  # re-index from scratch (default re-checks files and reuses the index)
 ```
 
 Upgrade with `c3 upgrade` (or `pipx upgrade code-context-control`). MCP is wired through the `c3-mcp` entry point, so upgrading needs no per-project reconfiguration.

@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  verify-ci:
-    name: Verify CI passed on tagged commit
+  build:
+    name: Verify CI, build distribution
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,17 +57,11 @@ jobs:
           done
           echo "::error::Timed out after 30 minutes waiting for CI on ${COMMIT_SHA}."
           exit 1
-
-  build:
-    name: Build distribution
-    needs: verify-ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install build tooling
         run: python -m pip install --upgrade pip build twine
       - name: Verify tag matches package version
@@ -88,8 +82,8 @@ jobs:
           name: dist
           path: dist/
 
-  publish-pypi:
-    name: Publish to PyPI
+  publish:
+    name: Publish to PyPI and GitHub
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -97,6 +91,7 @@ jobs:
       url: https://pypi.org/p/code-context-control
     permissions:
       id-token: write  # required for Trusted Publishing
+      contents: write  # GitHub Release
     steps:
       - name: Download distribution artifacts
         uses: actions/download-artifact@v8
@@ -105,20 +100,9 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
-  github-release:
-    name: Attach artifacts to GitHub Release
-    needs: publish-pypi
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Download distribution artifacts
-        uses: actions/download-artifact@v8
         with:
-          name: dist
-          path: dist/
+          # A re-run after a failed Release step must not fail on the files PyPI already has.
+          skip-existing: true
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:

@@ -426,7 +426,9 @@ class RetentionManager:
                 age = time.time() - stamp.stat().st_mtime
             except OSError:
                 age = None
-            if age is not None and 0 <= age < interval:
+            # NTFS can stamp an mtime a few ms past time.time(); a stamp
+            # further in the future than that is a clock change, so sweep.
+            if age is not None and -2.0 <= age < interval:
                 self._next_run = now + (interval - age)
                 return None
             summary = self.run_sweep(cfg)
