@@ -108,6 +108,7 @@ class FleetBase(unittest.TestCase):
             "mobile_sessions_enabled": True,
             "mobile_sessions_write": True,
             "mobile_sessions_transcripts": False,
+            "mobile_sessions_start": True,
             "hub_url": "http://127.0.0.1:9",
         }
         mobile_api._sec_limiter = None
@@ -140,7 +141,7 @@ class TestCapabilities(FleetBase):
     NEW = ("locks_overview", "access_overview", "enforcement_overview",
            "enforcement_clear", "override_policy_overview",
            "override_policy_clear", "builtin", "builtin_tighten",
-           "sessions", "sessions_write", "now")
+           "sessions", "sessions_write", "sessions_start", "now")
 
     def test_v7_advertises_every_fleet_capability(self):
         _, info = self.get("/api/mobile/info")
@@ -499,6 +500,63 @@ class TestSessions(FleetBase):
         status, _ = self.post("/api/mobile/sessions/mark", {
             "project": str(self.proj), "id": "11111111", "op": "stale"})
         self.assertEqual(status, 404)
+
+    def test_start_opens_a_remote_control_terminal_in_the_project(self):
+        from services import terminal_launch
+        with mock.patch.object(terminal_launch, "spawn_terminal") as spawn:
+            status, body = self.post("/api/mobile/sessions/start", {
+                "project": str(self.proj), "name": "Phone work"})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["launched"])
+        cwd, argv = spawn.call_args.args
+        self.assertEqual(Path(cwd).resolve(), self.proj.resolve())
+        self.assertEqual(argv, ["claude", "--remote-control", "Phone work"])
+
+    def test_start_defaults_the_name_to_the_project_and_sanitizes_it(self):
+        from services import terminal_launch
+        with mock.patch.object(terminal_launch, "spawn_terminal") as spawn:
+            status, body = self.post("/api/mobile/sessions/start",
+                                     {"project": str(self.proj)})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(spawn.call_args.args[1][:2], ["claude", "--remote-control"])
+        self.assertRegex(spawn.call_args.args[1][2], r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+
+    def test_start_refuses_a_name_that_could_be_an_option_or_shell_syntax(self):
+        from services import terminal_launch
+        for bad in ("--dangerously-skip-permissions", "a & calc", "x\"y", "a" * 61):
+            with mock.patch.object(terminal_launch, "spawn_terminal") as spawn:
+                status, _ = self.post("/api/mobile/sessions/start", {
+                    "project": str(self.proj), "name": bad})
+            self.assertEqual(status, 400, bad)
+            spawn.assert_not_called()
+
+    def test_start_unregistered_project_is_a_404_and_launches_nothing(self):
+        from services import terminal_launch
+        with mock.patch.object(terminal_launch, "spawn_terminal") as spawn:
+            status, _ = self.post("/api/mobile/sessions/start",
+                                  {"project": str(self.ghost)})
+        self.assertEqual(status, 404)
+        spawn.assert_not_called()
+
+    def test_start_switch_off_is_a_404_and_drops_the_capability(self):
+        from services import terminal_launch
+        srv._cfg["mobile_sessions_start"] = False
+        _, info = self.get("/api/mobile/info")
+        self.assertNotIn("sessions_start", info["capabilities"])
+        with mock.patch.object(terminal_launch, "spawn_terminal") as spawn:
+            status, _ = self.post("/api/mobile/sessions/start",
+                                  {"project": str(self.proj)})
+        self.assertEqual(status, 404)
+        spawn.assert_not_called()
+
+    def test_start_reports_a_terminal_failure(self):
+        from services import terminal_launch
+        with mock.patch.object(terminal_launch, "spawn_terminal",
+                               side_effect=FileNotFoundError("no terminal")):
+            status, body = self.post("/api/mobile/sessions/start",
+                                     {"project": str(self.proj)})
+        self.assertEqual(status, 500)
+        self.assertIn("no terminal", body["error"])
 
     def test_overview_counts_registered_projects(self):
         with mock.patch.object(sc, "overview", return_value={
