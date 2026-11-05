@@ -4,6 +4,24 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.163.0] - 2026-11-05
+
+### Changed
+
+- `c3 init --force` no longer rebuilds the code index from scratch. When the
+  project was last set up by the same C3 version it re-checks each file and
+  re-indexes only what changed: 0.5s instead of 13-21s on this repository.
+  After an upgrade it still rebuilds. `--rebuild-index` forces a full build.
+- CI runs 5 jobs instead of 12: one lint, JSX and build job, and tests on
+  Linux (Python 3.10 and 3.12), Windows 3.12 and macOS 3.12. The release
+  workflow is 2 jobs, and its PyPI step skips files PyPI already has.
+
+### Fixed
+
+- The retention sweep no longer runs twice when its stamp file's mtime is a
+  few milliseconds ahead of the clock, which failed
+  `test_second_process_skips_a_sweep_another_just_ran` on Windows.
+
 ## [2.162.0] - 2026-11-05
 
 ### Added
