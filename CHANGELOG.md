@@ -4,6 +4,33 @@ All notable changes to Code Context Control (C3) are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.164.0] - 2026-11-14
+
+### Added — the vault backup is on by default on Windows and repairs itself
+
+The backup from 2.145.0 had to be turned on by hand with a passphrase, and
+restoring was a manual step after every Credential Manager wipe. See
+`docs/integrations.md` → Credential vault → Backup.
+
+- On Windows the first value stored creates `~/.c3/vault_backup.json` with a
+  *device key*: the backup's private key wrapped with DPAPI, no passphrase.
+  Every value that currently resolves is copied. `C3_VAULT_BACKUP=off` opts
+  out.
+- A registered value the keychain no longer holds is restored from the backup
+  the next time it is listed or used (`credential_backup.heal`), under the
+  same rules as `restore`. Automatic restores are logged by name.
+- If the account's own DPAPI key is unusable, the device key is wrapped with
+  the computer's key instead, and `c3 creds backup status` warns about it.
+- `c3 creds backup restore` asks for the passphrase only when the device key
+  cannot open the backup. `c3 creds backup init` (or `passphrase`) adds a
+  passphrase to a backup that has only a device key; a passphrase restore
+  gives a passphrase-only backup a device key.
+- `status` reports `passphrase`, `device` and `device_scheme`.
+
+### Changed
+
+- Restoring a value no longer re-seals it into the backup it came from.
+
 ## [2.163.0] - 2026-11-05
 
 ### Changed
@@ -33,7 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name is validated before it reaches argv. Advertised as the `sessions_start`
   capability and switched by `mobile_sessions_start`, which is **off by
   default** because it opens a window on the PC. See docs/sessions.md.
-
 ## [2.161.0] - 2026-10-30
 
 ### Added

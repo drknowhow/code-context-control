@@ -96,7 +96,7 @@ console = Console() if HAS_RICH else None
 # Config
 CONFIG_DIR = ".c3"
 CONFIG_FILE = ".c3/config.json"
-__version__ = "2.163.0"
+__version__ = "2.164.0"
 
 # The PreToolUse matcher for native subagent calls (installer and hub migration).
 AGENT_MATCHER = "Agent|Task"
@@ -6635,11 +6635,19 @@ def _creds_cmd_backup(args, project_path: str) -> None:
     from services import credential_backup as backup
 
     action = args.backup_cmd
-    if action in ("init", "restore", "passphrase") and not sys.stdin.isatty():
+    if action == "init" and backup.is_enabled() and not backup.has_passphrase():
+        # C3 already turned the backup on with a device key; the user is
+        # here to add the passphrase.
+        action = "passphrase"
+    needs_passphrase = action in ("init", "passphrase") or (
+        action == "restore" and not backup.device_opens())
+    if needs_passphrase and not sys.stdin.isatty():
         print("[error] run this in your own terminal: the passphrase is read from "
               "the keyboard, never from a pipe or an argument.")
         return
     try:
+        if action in ("status", "sync"):
+            backup.ensure_default(_creds_known_projects(project_path))
         if action == "init":
             print("Choose a passphrase for the vault backup. Without it the backup "
                   "cannot be opened -- keep it in your password manager.")
@@ -6666,6 +6674,19 @@ def _creds_cmd_backup(args, project_path: str) -> None:
             if st["enabled"]:
                 print(f"Vault backup: on ({st['path']}, created {st['created']}) -- "
                       f"{st['backed_up']} value(s) held.")
+                if st["device"]:
+                    print("  opens on this Windows account without a prompt: a value "
+                          "the keychain loses is put back the next time it is read.")
+                if st["device"] and st["device_scheme"] == "dpapi-machine":
+                    print("  [warn] Windows could not use this account's own DPAPI key, "
+                          "so the copy is locked with this computer's key: an "
+                          "administrator, or anyone with the unencrypted disk, can "
+                          "open it.")
+                if not st["passphrase"]:
+                    print("  no passphrase set: if the Windows profile is reset this "
+                          "copy is lost too. Add one with `c3 creds backup passphrase`.")
+                elif not st["device"]:
+                    print("  opens with the passphrase only (`c3 creds backup restore`).")
             else:
                 print("Vault backup: off -- values live only in the OS keychain. "
                       "Turn it on with `c3 creds backup init`.")
@@ -6675,7 +6696,8 @@ def _creds_cmd_backup(args, project_path: str) -> None:
                 if st[key] and (st["enabled"] or key == "lost"):
                     print(f"  {label}: {', '.join(st[key])}")
         elif action == "restore":
-            passphrase = _creds_read_passphrase("Backup passphrase: ")
+            passphrase = (_creds_read_passphrase("Backup passphrase: ")
+                          if needs_passphrase else None)
             only = [n.strip() for n in (args.only or "").split(",") if n.strip()]
             out = backup.restore(passphrase, only=only or None)
             print(f"[OK] Restored {len(out['restored'])} value(s)"
@@ -6688,12 +6710,14 @@ def _creds_cmd_backup(args, project_path: str) -> None:
             if out["restored"]:
                 _creds_log_restore(out["restored"])
         else:  # passphrase
-            old = _creds_read_passphrase("Current passphrase: ")
+            had = backup.has_passphrase()
+            old = _creds_read_passphrase("Current passphrase: ") if had else None
             new = _creds_read_passphrase(
                 f"New passphrase (min {backup.MIN_PASSPHRASE} chars): ", confirm=True)
-            if old and new:
+            if new and (old or not had):
                 backup.change_passphrase(old, new)
-                print("[OK] Backup passphrase changed.")
+                print("[OK] Backup passphrase changed." if had else
+                      "[OK] Backup passphrase set. Keep it in your password manager.")
     except backup.BackupError as exc:
         print(f"[error] {exc}")
 

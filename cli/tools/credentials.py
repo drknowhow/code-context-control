@@ -106,6 +106,9 @@ def _act_list(project_path: str) -> str:
         from services import credential_backup
         way_back = ("The user restores them in a terminal with `c3 creds backup "
                     "restore` (it asks for the backup passphrase)"
+                    if credential_backup.has_passphrase() else
+                    "The vault backup holds no copy that opens here; the user "
+                    "re-enters them (Credentials UI or `c3 creds set`)"
                     if credential_backup.is_enabled() else
                     "No vault backup is configured; the user re-enters them "
                     "(Credentials UI or `c3 creds set`)")
