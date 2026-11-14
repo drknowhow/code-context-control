@@ -746,7 +746,7 @@ def _display_projection(ctype: str, fields: dict) -> dict:
 
 
 def _store_value(name: str, value: str, *, scope: str, project_path: str,
-                 realm_s: str) -> tuple:
+                 realm_s: str, backup: bool = True) -> tuple:
     """Write the value to whichever backend its size calls for.
 
     Returns ``(storage, raw_bytes, backup)`` where ``backup`` is the
@@ -755,6 +755,8 @@ def _store_value(name: str, value: str, *, scope: str, project_path: str,
     and the "clean up the backend we are no longer using" half exist once —
     a value that grew past the threshold must leave the keyring, and one
     that shrank must leave the sidecar, or a stale copy outlives the entry.
+    ``backup=False`` skips the seal (result ``"kept"``): the value came out
+    of the backup, so its copy there is already current.
     """
     from services import credential_backup
     raw = value.encode("utf-8")
@@ -772,7 +774,8 @@ def _store_value(name: str, value: str, *, scope: str, project_path: str,
             _keyring_module().delete_password(KEYRING_SERVICE, _account(realm_s, name))
         except Exception:
             pass
-    return storage, raw, credential_backup.seal(realm_s, name, value)
+    return storage, raw, (credential_backup.seal(realm_s, name, value)
+                          if backup else "kept")
 
 
 def set_credential(
@@ -977,7 +980,8 @@ def restore_value(name: str, value: str, *, scope: str, project_path: str = ".")
     if entry is None:
         raise CredentialError(f"{name!r} is not registered in {scope} scope")
     realm_s = realm(scope, project_path)
-    _store_value(name, value, scope=scope, project_path=project_path, realm_s=realm_s)
+    _store_value(name, value, scope=scope, project_path=project_path,
+                 realm_s=realm_s, backup=False)
     ctype = str(entry.get("type") or "")
     if ctype in STRUCTURED_TYPES:
         _write_struct_attestation(realm_s, name, ctype)
@@ -1194,6 +1198,12 @@ def value_presence(scope: str, project_path: str = ".", names=None) -> dict:
         except Exception:
             attested = ""
         out[name] = attested not in STRUCTURED_TYPES
+    missing = [n for n, ok in out.items() if not ok]
+    if missing:
+        from services import credential_backup
+        healed = credential_backup.heal(realm_s, missing)
+        if healed:
+            out.update(value_presence(scope, project_path, names=healed))
     return out
 
 
@@ -1220,8 +1230,20 @@ def _get_raw(name: str, *, project_path: str = ".", scope: str = "") -> Optional
     if not isinstance(entry, dict):
         return None
     realm_s = realm(owning, project_path)
+    raw = _read_stored(entry, owning, project_path, realm_s, name)
+    if raw is None:
+        from services import credential_backup
+        if credential_backup.heal(realm_s, [name]):
+            # The restore may have moved the value between backends.
+            entry = _read_entries(owning, project_path).get(name) or entry
+            raw = _read_stored(entry, owning, project_path, realm_s, name)
+    return raw
+
+
+def _read_stored(entry: dict, scope: str, project_path: str, realm_s: str,
+                 name: str) -> Optional[str]:
     if entry.get("storage") == "file":
-        return _file_get(owning, project_path, realm_s, name)
+        return _file_get(scope, project_path, realm_s, name)
     try:
         return _keyring_module().get_password(KEYRING_SERVICE, _account(realm_s, name))
     except Exception:

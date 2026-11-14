@@ -77,6 +77,16 @@ boundaries operators should understand:
   one. Anyone who can write the file can plant records, since sealing needs
   only the public key; restore only fills entries still registered whose
   value is gone, and never raises `agent_readable`.
+- **On Windows the backup is created automatically (v2.164.0)** with a
+  *device key*: the same private key wrapped with DPAPI for the signed-in
+  user, no passphrase. Any process running as that user can open it, which is
+  also true of Credential Manager, and a value the keychain lost is restored
+  on the next read without a prompt, so a planted record is applied without a
+  user step (planting one needs the same write access as replacing the
+  keychain entry). When the user's DPAPI key is unusable the wrap falls back
+  to machine scope: any administrator, or anyone with the unencrypted disk,
+  can then open it; `c3 creds backup status` warns. `C3_VAULT_BACKUP=off`
+  disables the automatic backup.
 
 ## Hardening notes for operators
 

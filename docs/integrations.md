@@ -96,23 +96,39 @@ metadata only.
 **Backup (v2.145.0).** The keyring is the only copy of a value, and Windows has
 been seen to empty Credential Manager on a restart. The registry survives such
 a wipe and the values do not; `c3 creds list` then shows `VALUE MISSING`.
-`c3 creds backup init` turns on a second copy in `~/.c3/vault_backup.json`
-that depends on neither the keyring nor DPAPI:
+A second copy in `~/.c3/vault_backup.json` survives that.
+
+**On Windows it is on by default (v2.164.0).** The first value you store
+creates the backup, with its key protected by DPAPI (a *device key*), and
+copies every value that currently resolves. From then on a value the keychain
+loses is put back the next time it is listed or used, with no prompt. Set
+`C3_VAULT_BACKUP=off` to keep C3 from creating the file. If Windows cannot use
+your account's own DPAPI key (the same fault that stops Credential Manager
+saving to disk), the device key is protected with the computer's key instead
+and `c3 creds backup status` says so: an administrator, or anyone holding the
+unencrypted disk, could then open the copy. A device key does not survive a
+reset Windows profile or a new PC; a passphrase does.
+
+**Elsewhere, or for a copy that needs no device,** `c3 creds backup init`
+locks the backup with a passphrase and depends on neither the keyring nor
+DPAPI. On a backup Windows already created, the same command adds the
+passphrase.
 
 ```bash
 c3 creds backup init      # choose a passphrase, 16+ chars (keep it in a password manager)
-c3 creds backup status    # held / restorable / lost / not backed up yet
-c3 creds backup restore   # after a wipe: asks for the passphrase, refills lost values
+c3 creds backup status    # held / restorable / lost / not backed up yet, and how it opens
+c3 creds backup restore   # refills lost values; asks for the passphrase only if the device key cannot open it
 c3 creds backup sync      # copy every live value now (init already did this once)
 c3 creds backup passphrase
 ```
 
 Every value write afterwards (CLI, Hub, UI, `c3_credentials`, `.env` import)
-is sealed to the backup's public key without a prompt; only restore needs the
-passphrase. Restore never overwrites a value that still resolves, does not
-recreate an entry deleted since, and brings reveal-enabled entries back
-injection-only. `init`, `restore` and `passphrase` refuse to run without a
-terminal, so the passphrase cannot be piped in. The file is a Tier-0 Access
+is sealed to the backup's public key without a prompt. Restore, automatic or
+not, never overwrites a value that still resolves, does not recreate an entry
+deleted since, and brings reveal-enabled entries back injection-only. Automatic
+restores are written to the activity log by name (`c3 creds audit`). `init`,
+`passphrase`, and a `restore` that needs the passphrase refuse to run without
+a terminal, so the passphrase cannot be piped in. The file is a Tier-0 Access
 Guard path, like `secrets.enc`. Forgetting the passphrase makes the backup
 unopenable; delete the file and run `init` again to start over.
 

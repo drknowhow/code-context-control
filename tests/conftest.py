@@ -78,6 +78,22 @@ def fresh_access_rules():
 
 
 @pytest.fixture(scope="session", autouse=True)
+def no_automatic_vault_backup():
+    """On Windows a credential write creates the vault backup with a real
+    DPAPI key. Keep it off unless a test opts in, so a stubbed keyring never
+    produces a backup file."""
+    previous = os.environ.get("C3_VAULT_BACKUP")
+    os.environ["C3_VAULT_BACKUP"] = "off"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("C3_VAULT_BACKUP", None)
+        else:
+            os.environ["C3_VAULT_BACKUP"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def isolated_c3_home():
     """Point C3_HOME at an empty directory for the whole session."""
     previous = os.environ.get("C3_HOME")
